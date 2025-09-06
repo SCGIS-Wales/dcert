@@ -1,3 +1,6 @@
+// File: src/main.rs
+// Copy to: dcert repository src/ folder
+
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use clap::Parser;
@@ -7,8 +10,8 @@ use std::path::PathBuf;
 use x509_parser::prelude::*;
 
 #[derive(Parser)]
-#[command(name = "tls-cert-validator")]
-#[command(about = "A CLI tool to validate TLS certificates from PEM files")]
+#[command(name = "dcert")]
+#[command(about = "A CLI tool to decode and validate TLS certificates from PEM files")]
 #[command(version = "0.1.0")]
 struct Args {
     /// Path to the PEM file containing one or more certificates
