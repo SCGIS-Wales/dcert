@@ -1,10 +1,11 @@
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
 use clap::{Parser, ValueEnum};
 use colored::*;
-use pem::parse_many;
 use std::fs;
+use std::io::Cursor;
 use std::path::PathBuf;
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
 use x509_parser::prelude::*;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -36,33 +37,48 @@ struct CertInfo {
     subject: String,
     issuer: String,
     serial_number: String,
-    not_before: DateTime<Utc>,
-    not_after: DateTime<Utc>,
+    not_before: String, // RFC 3339 string for simplicity and compatibility
+    not_after: String,  // RFC 3339 string
     is_expired: bool,
 }
 
 fn parse_pem_certificates(pem_data: &str) -> Result<Vec<X509Certificate<'_>>> {
     let mut certs = Vec::new();
-    for block in parse_many(pem_data.as_bytes()) {
-        if block.tag != "CERTIFICATE" {
-            continue;
-        }
-        let (_, parsed) = X509Certificate::from_der(&block.contents)
+
+    // Read all CERTIFICATE blocks from the PEM file
+    let mut reader = Cursor::new(pem_data.as_bytes());
+    // rustls_pemfile::certs returns Vec<Vec<u8>> of DER bytes
+    let ders = rustls_pemfile::certs(&mut reader)
+        .map_err(|e| anyhow::anyhow!("Failed reading PEM blocks: {e}"))?;
+
+    for der in ders {
+        let (_, parsed) = X509Certificate::from_der(&der)
             .map_err(|e| anyhow::anyhow!("Failed to parse DER: {e}"))?;
         certs.push(parsed);
     }
+
     Ok(certs)
 }
 
 fn extract_cert_info(cert: &X509Certificate<'_>, index: usize) -> Result<CertInfo> {
     let subject = cert.subject().to_string();
     let issuer = cert.issuer().to_string();
-    let serial_number = cert.serial().to_bn().to_hex_str().to_string();
 
-    let not_before = DateTime::<Utc>::from(cert.validity().not_before.to_datetime());
-    let not_after = DateTime::<Utc>::from(cert.validity().not_after.to_datetime());
-    let now = Utc::now();
-    let is_expired = not_after < now;
+    // Serial as uppercase hex
+    let serial_bytes = cert.raw_serial();
+    let serial_number = serial_bytes
+        .iter()
+        .map(|b| format!("{:02X}", b))
+        .collect::<String>();
+
+    // x509-parser exposes time as time::OffsetDateTime via to_datetime()
+    let nb: OffsetDateTime = cert.validity().not_before.to_datetime();
+    let na: OffsetDateTime = cert.validity().not_after.to_datetime();
+    let now = OffsetDateTime::now_utc();
+
+    let not_before = nb.format(&Rfc3339).unwrap_or_else(|_| nb.to_string());
+    let not_after = na.format(&Rfc3339).unwrap_or_else(|_| na.to_string());
+    let is_expired = na < now;
 
     Ok(CertInfo {
         index,
@@ -84,11 +100,7 @@ fn print_pretty(infos: &[CertInfo]) {
         println!("  Serial       : {}", info.serial_number);
         println!("  Not Before   : {}", info.not_before);
         println!("  Not After    : {}", info.not_after);
-        let status = if info.is_expired {
-            "expired".red()
-        } else {
-            "valid".green()
-        };
+        let status = if info.is_expired { "expired".red() } else { "valid".green() };
         println!("  Status       : {}", status);
         println!();
     }
@@ -155,12 +167,14 @@ mod tests {
 
     #[test]
     fn test_invalid_pem() {
+        // Not valid PEM headers
         let result = parse_pem_certificates("invalid pem data");
-        assert!(result.is_err());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 0);
     }
 
     /// Reads certificate data from tests/data/test.pem.
-    /// To enable, place a valid PEM certificate file at that path.
+    /// Add a valid PEM there and run with `cargo test -- --ignored`
     #[test]
     #[ignore]
     fn test_valid_from_external_file() -> Result<()> {
@@ -168,11 +182,11 @@ mod tests {
         assert!(path.exists(), "tests/data/test.pem is missing");
         let pem = fs::read_to_string(&path)?;
         let certs = parse_pem_certificates(&pem)?;
-        assert!(certs.len() > 0, "expected at least one certificate");
-        let info = extract_cert_info(&certs[0], 0)?;
+        assert!(!certs.is_empty(), "expected at least one certificate");
+        let info = super::extract_cert_info(&certs[0], 0)?;
         assert!(!info.subject.is_empty());
         assert!(!info.issuer.is_empty());
-        assert!(info.serial_number.len() > 0);
+        assert!(!info.serial_number.is_empty());
         Ok(())
     }
 }
