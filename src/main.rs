@@ -9,7 +9,7 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use x509_parser::certificate::X509Certificate;
 use x509_parser::extensions::{GeneralName, ParsedExtension};
-use x509_parser::oid_registry::OID_COMMON_NAME;
+use x509_parser::oid_registry::OID_X509_COMMON_NAME;
 use x509_parser::prelude::FromDer;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -106,7 +106,7 @@ fn parse_cert_infos_from_pem(pem_data: &str, expired_only: bool) -> Result<Vec<C
 fn extract_common_name(cert: &X509Certificate<'_>) -> Option<String> {
     cert.subject()
         .iter_attributes()
-        .find(|attr| attr.attr_type() == OID_COMMON_NAME)
+        .find(|attr| attr.attr_type() == OID_X509_COMMON_NAME)
         .and_then(|attr| attr.attr_value().as_str().ok())
         .map(|s| s.to_string())
 }
