@@ -111,7 +111,6 @@ fn extract_common_name(cert: &x509_parser::certificate::X509Certificate<'_>) -> 
         .map(|s| s.to_string())
 }
 
-
 fn extract_sans(cert: &X509Certificate<'_>) -> Vec<String> {
     let mut out = Vec::new();
 
