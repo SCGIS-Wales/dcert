@@ -48,12 +48,10 @@ fn parse_pem_certificates(pem_data: &str) -> Result<Vec<X509Certificate<'_>>> {
     // Read all CERTIFICATE blocks from the PEM file
     let mut reader = Cursor::new(pem_data.as_bytes());
     // rustls_pemfile::certs returns Vec<Vec<u8>> of DER bytes
-    let ders = rustls_pemfile::certs(&mut reader)
-        .map_err(|e| anyhow::anyhow!("Failed reading PEM blocks: {e}"))?;
+    let ders = rustls_pemfile::certs(&mut reader).map_err(|e| anyhow::anyhow!("Failed reading PEM blocks: {e}"))?;
 
     for der in ders {
-        let (_, parsed) = X509Certificate::from_der(&der)
-            .map_err(|e| anyhow::anyhow!("Failed to parse DER: {e}"))?;
+        let (_, parsed) = X509Certificate::from_der(&der).map_err(|e| anyhow::anyhow!("Failed to parse DER: {e}"))?;
         certs.push(parsed);
     }
 
@@ -66,10 +64,7 @@ fn extract_cert_info(cert: &X509Certificate<'_>, index: usize) -> Result<CertInf
 
     // Serial as uppercase hex
     let serial_bytes = cert.raw_serial();
-    let serial_number = serial_bytes
-        .iter()
-        .map(|b| format!("{:02X}", b))
-        .collect::<String>();
+    let serial_number = serial_bytes.iter().map(|b| format!("{:02X}", b)).collect::<String>();
 
     // x509-parser exposes time as time::OffsetDateTime via to_datetime()
     let nb: OffsetDateTime = cert.validity().not_before.to_datetime();
@@ -113,11 +108,10 @@ fn print_pretty(infos: &[CertInfo]) {
 fn run() -> Result<i32> {
     let args = Args::parse();
 
-    let pem_data = fs::read_to_string(&args.file)
-        .with_context(|| format!("Failed to read file: {}", args.file.display()))?;
+    let pem_data =
+        fs::read_to_string(&args.file).with_context(|| format!("Failed to read file: {}", args.file.display()))?;
 
-    let mut certificates =
-        parse_pem_certificates(&pem_data).with_context(|| "Failed to parse PEM certificates")?;
+    let mut certificates = parse_pem_certificates(&pem_data).with_context(|| "Failed to parse PEM certificates")?;
 
     if certificates.is_empty() {
         eprintln!("{}", "No valid certificates found in the file".red());
