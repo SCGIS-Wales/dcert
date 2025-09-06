@@ -12,7 +12,7 @@ on:
       force_release:
         description: 'Force a new release even if no dependencies changed'
         required: false
-        default: 'false'
+        default: false
         type: boolean
       release_type:
         description: 'Type of release to create'
@@ -183,37 +183,7 @@ jobs:
         
         echo "✅ Version updated in all files"
 
-    - name: Generate changelog entry
-      if: steps.new_version.outputs.should_release == 'true'
-      id: changelog
-      run: |
-        NEW_VERSION="${{ steps.new_version.outputs.new_version }}"
-        DATE=$(date +%Y-%m-%d)
-        
-        # Create changelog entry
-        cat > changelog_entry.md << EOF
-        ## [$NEW_VERSION] - $DATE
-        
-        ### Changed
-        - 📦 Updated dependencies to latest versions
-        - 🔒 Applied security updates
-        - 🧪 Verified compatibility with updated dependencies
-        
-        ### Dependencies Updated
-        EOF
-        
-        # Add dependency changes if available
-        if [ -f Cargo.lock.backup ]; then
-          echo "- See commit diff for detailed dependency changes" >> changelog_entry.md
-        fi
-        
-        # Read changelog entry for GitHub release
-        CHANGELOG_CONTENT=$(cat changelog_entry.md)
-        echo "changelog_content<<EOF" >> $GITHUB_OUTPUT
-        echo "$CHANGELOG_CONTENT" >> $GITHUB_OUTPUT
-        echo "EOF" >> $GITHUB_OUTPUT
-
-    - name: Commit changes
+    - name: Commit changes1
       if: steps.new_version.outputs.should_release == 'true'
       run: |
         NEW_VERSION="${{ steps.new_version.outputs.new_version }}"
@@ -353,7 +323,7 @@ jobs:
         echo "$CHANGELOG_CONTENT" >> $GITHUB_OUTPUT
         echo "EOF" >> $GITHUB_OUTPUT
 
-    - name: Commit changes
+    - name: Commit changes2
       if: steps.new_version.outputs.should_release == 'true'
       run: |
         NEW_VERSION="${{ steps.new_version.outputs.new_version }}"
