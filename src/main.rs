@@ -9,7 +9,6 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use x509_parser::certificate::X509Certificate;
 use x509_parser::extensions::{GeneralName, ParsedExtension};
-use x509_parser::oid_registry::OID_X509_COMMON_NAME;
 use x509_parser::prelude::FromDer;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
