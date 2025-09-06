@@ -26,8 +26,6 @@ Thumbs.db
 
 # Test files and artifacts
 test-certs/
-*.pem
-*.crt
 *.key
 test_*.txt
 *_output.txt
