@@ -52,8 +52,8 @@ fn parse_pem_certificates(pem_data: &str) -> Result<Vec<X509Certificate<'_>>> {
         .map_err(|e| anyhow::anyhow!("Failed reading PEM blocks: {e}"))?;
 
     for der in ders {
-        let (_, parsed) =
-            X509Certificate::from_der(&der).map_err(|e| anyhow::anyhow!("Failed to parse DER: {e}"))?;
+        let (_, parsed) = X509Certificate::from_der(&der)
+            .map_err(|e| anyhow::anyhow!("Failed to parse DER: {e}"))?;
         certs.push(parsed);
     }
 
@@ -66,7 +66,10 @@ fn extract_cert_info(cert: &X509Certificate<'_>, index: usize) -> Result<CertInf
 
     // Serial as uppercase hex
     let serial_bytes = cert.raw_serial();
-    let serial_number = serial_bytes.iter().map(|b| format!("{:02X}", b)).collect::<String>();
+    let serial_number = serial_bytes
+        .iter()
+        .map(|b| format!("{:02X}", b))
+        .collect::<String>();
 
     // x509-parser exposes time as time::OffsetDateTime via to_datetime()
     let nb: OffsetDateTime = cert.validity().not_before.to_datetime();
@@ -181,7 +184,7 @@ mod tests {
     fn test_valid_from_external_file() -> Result<()> {
         let path = PathBuf::from("tests/data/test.pem");
         assert!(path.exists(), "tests/data/test.pem is missing");
-        let pem = fs::read_to_string(&path)?;
+        let pem = std::fs::read_to_string(&path)?;
         let certs = parse_pem_certificates(&pem)?;
         assert!(!certs.is_empty(), "expected at least one certificate");
         let info = super::extract_cert_info(&certs[0], 0)?;
