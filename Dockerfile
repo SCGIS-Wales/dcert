@@ -3,28 +3,23 @@
 ############################
 # Builder
 ############################
-FROM rust:1.81-alpine AS builder
+FROM rust:1.89-alpine3.22 AS builder
 WORKDIR /app
 
-# Build deps needed for static-ish binaries
+# Install build dependencies for musl targets
 RUN apk add --no-cache musl-dev
 
-# Copy manifest only, generate lockfile if missing
+# Copy manifest and ensure lockfile exists for reproducible builds
 COPY Cargo.toml ./
-# Always ensure a lockfile exists so subsequent steps are stable
 RUN cargo generate-lockfile
 
-# Prime dependency cache with a dummy main, then build once
+# Create dummy main.rs to prebuild dependencies
 RUN mkdir -p src && echo 'fn main() {}' > src/main.rs
 RUN cargo build --release
-# Clean placeholder sources to avoid stale code
 RUN rm -rf src
 
-# Copy the actual project sources
-# If your repo includes a Cargo.lock, this will overwrite the generated one
+# Copy full source and rebuild with actual code
 COPY . .
-
-# Build your binary
 RUN cargo build --release
 
 ############################
@@ -33,4 +28,5 @@ RUN cargo build --release
 FROM alpine:3.18 AS runtime
 RUN apk add --no-cache ca-certificates
 COPY --from=builder /app/target/release/dcert /usr/local/bin/dcert
+
 ENTRYPOINT ["/usr/local/bin/dcert"]
