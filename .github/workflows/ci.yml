@@ -1,0 +1,672 @@
+# File: .github/workflows/ci.yml
+# Copy to: dcert repository .github/workflows/ folder
+
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rust:
+          - stable
+          - beta
+          - nightly
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ matrix.rust }}
+        components: rustfmt, clippy
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+
+    - name: Check formatting
+      run: cargo fmt -- --check
+      if: matrix.rust == 'stable'
+
+    - name: Run clippy
+      run: cargo clippy -- -D warnings
+      if: matrix.rust == 'stable'
+
+    - name: Run tests
+      run: cargo test --verbose --all-features
+
+    - name: Run tests with no default features
+      run: cargo test --verbose --no-default-features
+
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install cargo-audit
+      run: cargo install cargo-audit
+
+    - name: Run security audit
+      run: cargo audit
+
+  build-linux:
+    name: Build Linux Binary
+    runs-on: ubuntu-latest
+    needs: [test]
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-gnu
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+
+    - name: Install cross-compilation tools
+      if: matrix.target == 'aarch64-unknown-linux-gnu'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-aarch64-linux-gnu
+
+    - name: Install musl-tools
+      if: matrix.target == 'x86_64-unknown-linux-musl'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y musl-tools
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-${{ matrix.target }}-cargo-
+
+    - name: Build release binary
+      run: |
+        if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+          export CC=aarch64-linux-gnu-gcc
+          export AR=aarch64-linux-gnu-ar
+        fi
+        cargo build --release --target ${{ matrix.target }}
+
+    - name: Strip binary
+      run: |
+        if [ "${{ matrix.target }}" = "x86_64-unknown-linux-gnu" ] || [ "${{ matrix.target }}" = "x86_64-unknown-linux-musl" ]; then
+          strip target/${{ matrix.target }}/release/dcert
+        elif [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+          aarch64-linux-gnu-strip target/${{ matrix.target }}/release/dcert
+        fi
+
+    - name: Test binary
+      if: matrix.target == 'x86_64-unknown-linux-gnu'
+      run: |
+        # Create a test certificate
+        echo "-----BEGIN CERTIFICATE-----" > test.pem
+        echo "MIIDXTCCAkWgAwIBAgIJAL3qgn0W6jQxMA0GCSqGSIb3DQEBCwUAMEUxCzAJBgNV" >> test.pem
+        echo "BAYTAkFVMRMwEQYDVQQIDApTb21lLVN0YXRlMSEwHwYDVQQKDBhJbnRlcm5ldCBX" >> test.pem
+        echo "aWRnaXRzIFB0eSBMdGQwHhcNMjAwMTAxMTIwMDAwWhcNMzAwMTAxMTIwMDAwWjBF" >> test.pem
+        echo "MQswCQYDVQQGEwJBVTETMBEGA1UECAwKU29tZS1TdGF0ZTEhMB8GA1UECgwYSW50" >> test.pem
+        echo "ZXJuZXQgV2lkZ2l0cyBQdHkgTHRkMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIB" >> test.pem
+        echo "CgKCAQEA0f+bBhJ/9K9/W9E5q1OL1zI8fT9YR2R6x8vQK3rY3QN2x9Jl7JL1o7AJ" >> test.pem
+        echo "kS3s8c7+8JfZ9gAn0fJM4+4PnV5Qx2X7GZWJrZ7rK1M1Q2F6oP2W2M4M8NbZ3b0m" >> test.pem
+        echo "Z5g6vL7VQ3mL4d5wHmN+5k9XQKYgF0dJdN9I0qzB7yU1JtF0P9wH8A6B2k7QV5cO" >> test.pem
+        echo "BnSr8iZ8tQ5e1fgBmYk9Q0mZ3W4Rn8K9I5rZ8p4P6Y9J4cN4B7S1K8U7M9Ox9V7F" >> test.pem
+        echo "QW3f5E9t0s3V7MKqJX2nG8N0yF1Q0VlJ6MZ4vX2eJ1l0x0dZ2gG7Y6bC8qZ2L5l1" >> test.pem
+        echo "P6F2a0y1qZ5R0a1M6x7N7Z8F0X1sVwIDAQABo1AwTjAdBgNVHQ4EFgQUhGL9+5qx" >> test.pem
+        echo "SjZS9F6qoUkQQ0FO3VYwHwYDVR0jBBgwFoAUhGL9+5qxSjZS9F6qoUkQQ0FO3VYw" >> test.pem
+        echo "DAYDVR0TBAUwAwEB/zANBgkqhkiG9w0BAQsFAAOCAQEAJcDzZ8WFNfYBwGh9XKRR" >> test.pem
+        echo "3w2Bs8e4Nb0ZKWj1vgBt2T2x0yF3Qz0T6K8Y2jQ2W4q5pK7Vh8z0P9s3n7G7b6K2" >> test.pem
+        echo "9F8y4X1l0l3E1f8Q0s0vZ5qF8S7Q3vR0rU6p1M9K8q9nV6q3s3P4K1l9v1w7mX4r" >> test.pem
+        echo "2Y0q2sT5p9Q3t5K1n1c1q5t9q0s7Z4Y2F1n6L7R5X9T0f3d2p9K4a8G9S3V1H0E7" >> test.pem
+        echo "b5W9L7p2F3t0Y9P1R7g5s3k1t4q1N4Z2E8X5M3V2C7B9O0a9q8Q7m1T6A9L0k7e" >> test.pem
+        echo "1N7W9E5S2Z7M4r9K3z1P7t8c9N0q1m9R3B6N8Y0f4Q7d9S9T1e1Y2Z0G9M3T6c" >> test.pem
+        echo "-----END CERTIFICATE-----" >> test.pem
+        
+        # Test the binary
+        ./target/${{ matrix.target }}/release/dcert --file test.pem
+
+    - name: Create binary archive
+      run: |
+        mkdir -p dist
+        tar czf dist/dcert-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release dcert
+
+    - name: Upload build artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: dcert-${{ matrix.target }}
+        path: dist/dcert-${{ matrix.target }}.tar.gz
+        retention-days: 7
+
+  release:
+    name: Create Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, security-audit, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+
+    - name: Create release directory
+      run: |
+        mkdir -p release
+        find artifacts -name "*.tar.gz" -exec cp {} release/ \;
+
+    - name: Generate checksums
+      run: |
+        cd release
+        sha256sum *.tar.gz > checksums.txt
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          release/*.tar.gz
+          release/checksums.txt
+        generate_release_notes: true
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  docker:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    needs: [test]
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to GitHub Container Registry
+      if: github.event_name != 'pull_request'
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ghcr.io/${{ github.repository }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        platforms: linux/amd64,linux/arm64
+        push: ${{ github.event_name != 'pull_request' }}
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+
+    - name: Check formatting
+      run: cargo fmt -- --check
+      if: matrix.rust == 'stable'
+
+    - name: Run clippy
+      run: cargo clippy -- -D warnings
+      if: matrix.rust == 'stable'
+
+    - name: Run tests
+      run: cargo test --verbose --all-features
+
+    - name: Run tests with no default features
+      run: cargo test --verbose --no-default-features
+
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install cargo-audit
+      run: cargo install cargo-audit
+
+    - name: Run security audit
+      run: cargo audit
+
+  build-linux:
+    name: Build Linux Binary
+    runs-on: ubuntu-latest
+    needs: [test]
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-gnu
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+
+    - name: Install cross-compilation tools
+      if: matrix.target == 'aarch64-unknown-linux-gnu'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-aarch64-linux-gnu
+
+    - name: Install musl-tools
+      if: matrix.target == 'x86_64-unknown-linux-musl'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y musl-tools
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-${{ matrix.target }}-cargo-
+
+    - name: Build release binary
+      run: |
+        if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+          export CC=aarch64-linux-gnu-gcc
+          export AR=aarch64-linux-gnu-ar
+        fi
+        cargo build --release --target ${{ matrix.target }}
+
+    - name: Strip binary
+      run: |
+        if [ "${{ matrix.target }}" = "x86_64-unknown-linux-gnu" ] || [ "${{ matrix.target }}" = "x86_64-unknown-linux-musl" ]; then
+          strip target/${{ matrix.target }}/release/dcert
+        elif [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+          aarch64-linux-gnu-strip target/${{ matrix.target }}/release/dcert
+        fi
+
+    - name: Test binary
+      if: matrix.target == 'x86_64-unknown-linux-gnu'
+      run: |
+        # Create a test certificate
+        echo "-----BEGIN CERTIFICATE-----" > test.pem
+        echo "MIIDXTCCAkWgAwIBAgIJAL3qgn0W6jQxMA0GCSqGSIb3DQEBCwUAMEUxCzAJBgNV" >> test.pem
+        echo "BAYTAkFVMRMwEQYDVQQIDApTb21lLVN0YXRlMSEwHwYDVQQKDBhJbnRlcm5ldCBX" >> test.pem
+        echo "aWRnaXRzIFB0eSBMdGQwHhcNMjAwMTAxMTIwMDAwWhcNMzAwMTAxMTIwMDAwWjBF" >> test.pem
+        echo "MQswCQYDVQQGEwJBVTETMBEGA1UECAwKU29tZS1TdGF0ZTEhMB8GA1UECgwYSW50" >> test.pem
+        echo "ZXJuZXQgV2lkZ2l0cyBQdHkgTHRkMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIB" >> test.pem
+        echo "CgKCAQEA0f+bBhJ/9K9/W9E5q1OL1zI8fT9YR2R6x8vQK3rY3QN2x9Jl7JL1o7AJ" >> test.pem
+        echo "kS3s8c7+8JfZ9gAn0fJM4+4PnV5Qx2X7GZWJrZ7rK1M1Q2F6oP2W2M4M8NbZ3b0m" >> test.pem
+        echo "Z5g6vL7VQ3mL4d5wHmN+5k9XQKYgF0dJdN9I0qzB7yU1JtF0P9wH8A6B2k7QV5cO" >> test.pem
+        echo "BnSr8iZ8tQ5e1fgBmYk9Q0mZ3W4Rn8K9I5rZ8p4P6Y9J4cN4B7S1K8U7M9Ox9V7F" >> test.pem
+        echo "QW3f5E9t0s3V7MKqJX2nG8N0yF1Q0VlJ6MZ4vX2eJ1l0x0dZ2gG7Y6bC8qZ2L5l1" >> test.pem
+        echo "P6F2a0y1qZ5R0a1M6x7N7Z8F0X1sVwIDAQABo1AwTjAdBgNVHQ4EFgQUhGL9+5qx" >> test.pem
+        echo "SjZS9F6qoUkQQ0FO3VYwHwYDVR0jBBgwFoAUhGL9+5qxSjZS9F6qoUkQQ0FO3VYw" >> test.pem
+        echo "DAYDVR0TBAUwAwEB/zANBgkqhkiG9w0BAQsFAAOCAQEAJcDzZ8WFNfYBwGh9XKRR" >> test.pem
+        echo "3w2Bs8e4Nb0ZKWj1vgBt2T2x0yF3Qz0T6K8Y2jQ2W4q5pK7Vh8z0P9s3n7G7b6name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rust:
+          - stable
+          - beta
+          - nightly
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ matrix.rust }}
+        components: rustfmt, clippy
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runnername: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rust:
+          - stable
+          - beta
+          - nightly
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ matrix.rust }}
+        components: rustfmt, clippy
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+
+    - name: Check formatting
+      run: cargo fmt -- --check
+      if: matrix.rust == 'stable'
+
+    - name: Run clippy
+      run: cargo clippy -- -D warnings
+      if: matrix.rust == 'stable'
+
+    - name: Run tests
+      run: cargo test --verbose --all-features
+
+    - name: Run tests with no default features
+      run: cargo test --verbose --no-default-features
+
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install cargo-audit
+      run: cargo install cargo-audit
+
+    - name: Run security audit
+      run: cargo audit
+
+  build-linux:
+    name: Build Linux Binary
+    runs-on: ubuntu-latest
+    needs: [test]
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-gnu
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+
+    - name: Install cross-compilation tools
+      if: matrix.target == 'aarch64-unknown-linux-gnu'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-aarch64-linux-gnu
+
+    - name: Install musl-tools
+      if: matrix.target == 'x86_64-unknown-linux-musl'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y musl-tools
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-${{ matrix.target }}-cargo-
+
+    - name: Build release binary
+      run: |
+        if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+          export CC=aarch64-linux-gnu-gcc
+          export AR=aarch64-linux-gnu-ar
+        fi
+        cargo build --release --target ${{ matrix.target }}
+
+    - name: Strip binary
+      run: |
+        if [ "${{ matrix.target }}" = "x86_64-unknown-linux-gnu" ] || [ "${{ matrix.target }}" = "x86_64-unknown-linux-musl" ]; then
+          strip target/${{ matrix.target }}/release/tls-cert-validator
+        elif [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+          aarch64-linux-gnu-strip target/${{ matrix.target }}/release/tls-cert-validator
+        fi
+
+    - name: Test binary
+      if: matrix.target == 'x86_64-unknown-linux-gnu'
+      run: |
+        # Create a test certificate
+        echo "-----BEGIN CERTIFICATE-----" > test.pem
+        echo "MIIDXTCCAkWgAwIBAgIJAL3qgn0W6jQxMA0GCSqGSIb3DQEBCwUAMEUxCzAJBgNV" >> test.pem
+        echo "BAYTAkFVMRMwEQYDVQQIDApTb21lLVN0YXRlMSEwHwYDVQQKDBhJbnRlcm5ldCBX" >> test.pem
+        echo "aWRnaXRzIFB0eSBMdGQwHhcNMjAwMTAxMTIwMDAwWhcNMzAwMTAxMTIwMDAwWjBF" >> test.pem
+        echo "MQswCQYDVQQGEwJBVTETMBEGA1UECAwKU29tZS1TdGF0ZTEhMB8GA1UECgwYSW50" >> test.pem
+        echo "ZXJuZXQgV2lkZ2l0cyBQdHkgTHRkMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIB" >> test.pem
+        echo "CgKCAQEA0f+bBhJ/9K9/W9E5q1OL1zI8fT9YR2R6x8vQK3rY3QN2x9Jl7JL1o7AJ" >> test.pem
+        echo "kS3s8c7+8JfZ9gAn0fJM4+4PnV5Qx2X7GZWJrZ7rK1M1Q2F6oP2W2M4M8NbZ3b0m" >> test.pem
+        echo "Z5g6vL7VQ3mL4d5wHmN+5k9XQKYgF0dJdN9I0qzB7yU1JtF0P9wH8A6B2k7QV5cO" >> test.pem
+        echo "BnSr8iZ8tQ5e1fgBmYk9Q0mZ3W4Rn8K9I5rZ8p4P6Y9J4cN4B7S1K8U7M9Ox9V7F" >> test.pem
+        echo "QW3f5E9t0s3V7MKqJX2nG8N0yF1Q0VlJ6MZ4vX2eJ1l0x0dZ2gG7Y6bC8qZ2L5l1" >> test.pem
+        echo "P6F2a0y1qZ5R0a1M6x7N7Z8F0X1sVwIDAQABo1AwTjAdBgNVHQ4EFgQUhGL9+5qx" >> test.pem
+        echo "SjZS9F6qoUkQQ0FO3VYwHwYDVR0jBBgwFoAUhGL9+5qxSjZS9F6qoUkQQ0FO3VYw" >> test.pem
+        echo "DAYDVR0TBAUwAwEB/zANBgkqhkiG9w0BAQsFAAOCAQEAJcDzZ8WFNfYBwGh9XKRR" >> test.pem
+        echo "3w2Bs8e4Nb0ZKWj1vgBt2T2x0yF3Qz0T6K8Y2jQ2W4q5pK7Vh8z0P9s3n7G7b6K2" >> test.pem
+        echo "9F8y4X1l0l3E1f8Q0s0vZ5qF8S7Q3vR0rU6p1M9K8q9nV6q3s3P4K1l9v1w7mX4r" >> test.pem
+        echo "2Y0q2sT5p9Q3t5K1n1c1q5t9q0s7Z4Y2F1n6L7R5X9T0f3d2p9K4a8G9S3V1H0E7" >> test.pem
+        echo "b5W9L7p2F3t0Y9P1R7g5s3k1t4q1N4Z2E8X5M3V2C7B9O0a9q8Q7m1T6A9L0k7e" >> test.pem
+        echo "1N7W9E5S2Z7M4r9K3z1P7t8c9N0q1m9R3B6N8Y0f4Q7d9S9T1e1Y2Z0G9M3T6c" >> test.pem
+        echo "-----END CERTIFICATE-----" >> test.pem
+        
+        # Test the binary
+        ./target/${{ matrix.target }}/release/dcert --file test.pemRMwEQYDVQQIDApTb21lLVN0YXRlMSEwHwYDVQQKDBhJbnRlcm5ldCBX" >> test.pem
+        echo "aWRnaXRzIFB0eSBMdGQwHhcNMjAwMTAxMTIwMDAwWhcNMzAwMTAxMTIwMDAwWjBF" >> test.pem
+        echo "MQswCQYDVQQGEwJBVTETMBEGA1UECAwKU29tZS1TdGF0ZTEhMB8GA1UECgwYSW50" >> test.pem
+        echo "ZXJuZXQgV2lkZ2l0cyBQdHkgTHRkMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIB" >> test.pem
+        echo "CgKCAQEA0f+bBhJ/9K9/W9E5q1OL1zI8fT9YR2R6x8vQK3rY3QN2x9Jl7JL1o7AJ" >> test.pem
+        echo "kS3s8c7+8JfZ9gAn0fJM4+4PnV5Qx2X7GZWJrZ7rK1M1Q2F6oP2W2M4M8NbZ3b0m" >> test.pem
+        echo "Z5g6vL7VQ3mL4d5wHmN+5k9XQKYgF0dJdN9I0qzB7yU1JtF0P9wH8A6B2k7QV5cO" >> test.pem
+        echo "BnSr8iZ8tQ5e1fgBmYk9Q0mZ3W4Rn8K9I5rZ8p4P6Y9J4cN4B7S1K8U7M9Ox9V7F" >> test.pem
+        echo "QW3f5E9t0s3V7MKqJX2nG8N0yF1Q0VlJ6MZ4vX2eJ1l0x0dZ2gG7Y6bC8qZ2L5l1" >> test.pem
+        echo "P6F2a0y1qZ5R0a1M6x7N7Z8F0X1sVwIDAQABo1AwTjAdBgNVHQ4EFgQUhGL9+5qx" >> test.pem
+        echo "SjZS9F6qoUkQQ0FO3VYwHwYDVR0jBBgwFoAUhGL9+5qxSjZS9F6qoUkQQ0FO3VYw" >> test.pem
+        echo "DAYDVR0TBAUwAwEB/zANBgkqhkiG9w0BAQsFAAOCAQEAJcDzZ8WFNfYBwGh9XKRR" >> test.pem
+        echo "3w2Bs8e4Nb0ZKWj1vgBt2T2x0yF3Qz0T6K8Y2jQ2W4q5pK7Vh8z0P9s3n7G7b6K2" >> test.pem
+        echo "9F8y4X1l0l3E1f8Q0s0vZ5qF8S7Q3vR0rU6p1M9K8q9nV6q3s3P4K1l9v1w7mX4r" >> test.pem
+        echo "2Y0q2sT5p9Q3t5K1n1c1q5t9q0s7Z4Y2F1n6L7R5X9T0f3d2p9K4a8G9S3V1H0E7" >> test.pem
+        echo "b5W9L7p2F3t0Y9P1R7g5s3k1t4q1N4Z2E8X5M3V2C7B9O0a9q8Q7m1T6A9L0k7e" >> test.pem
+        echo "1N7W9E5S2Z7M4r9K3z1P7t8c9N0q1m9R3B6N8Y0f4Q7d9S9T1e1Y2Z0G9M3T6c" >> test.pem
+        echo "-----END CERTIFICATE-----" >> test.pem
+        
+        # Test the binary
+        ./target/${{ matrix.target }}/release/tls-cert-validator --file test.pem
+
+    - name: Create binary archive
+      run: |
+        mkdir -p dist
+        if [ "${{ matrix.target }}" = "x86_64-unknown-linux-musl" ]; then
+          tar czf dist/dcert-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release dcert
+        else
+          tar czf dist/dcert-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release dcert
+        fi
+
+    - name: Upload build artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: dcert-${{ matrix.target }}
+        path: dist/dcert-${{ matrix.target }}.tar.gz
+        retention-days: 7
+
+  release:
+    name: Create Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, security-audit, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+
+    - name: Create release directory
+      run: |
+        mkdir -p release
+        find artifacts -name "*.tar.gz" -exec cp {} release/ \;
+
+    - name: Generate checksums
+      run: |
+        cd release
+        sha256sum *.tar.gz > checksums.txt
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          release/*.tar.gz
+          release/checksums.txt
+        generate_release_notes: true
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  docker:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    needs: [test]
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to GitHub Container Registry
+      if: github.event_name != 'pull_request'
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ghcr.io/${{ github.repository }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        platforms: linux/amd64,linux/arm64
+        push: ${{ github.event_name != 'pull_request' }}
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max

@@ -1,0 +1,67 @@
+# File: .github/dependabot.yml
+# Copy to: dcert repository .github/ folder
+
+version: 2
+updates:
+  # Rust dependencies
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 10
+    reviewers:
+      - "api-py"
+    assignees:
+      - "api-py"
+    commit-message:
+      prefix: "deps"
+      prefix-development: "deps-dev"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "automated"
+    
+    # Allow updates for all dependency types
+    allow:
+      - dependency-type: "direct:production"
+      - dependency-type: "direct:development"
+      - dependency-type: "indirect"
+    
+    # Ignore specific packages if needed
+    ignore:
+      # Example: ignore major version updates for stable packages
+      # - dependency-name: "serde"
+      #   update-types: ["version-update:semver-major"]
+    
+    # Group related dependencies
+    groups:
+      serde:
+        patterns:
+          - "serde*"
+      tokio:
+        patterns:
+          - "tokio*"
+      clap:
+        patterns:
+          - "clap*"
+
+  # GitHub Actions dependencies
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "10:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    reviewers:
+      - "api-py"
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    labels:
+      - "github-actions"
+      - "dependencies"
