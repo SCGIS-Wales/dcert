@@ -103,13 +103,14 @@ fn parse_cert_infos_from_pem(pem_data: &str, expired_only: bool) -> Result<Vec<C
     Ok(infos)
 }
 
-fn extract_common_name(cert: &X509Certificate<'_>) -> Option<String> {
+fn extract_common_name(cert: &x509_parser::certificate::X509Certificate<'_>) -> Option<String> {
     cert.subject()
         .iter_attributes()
-        .find(|attr| attr.attr_type() == OID_X509_COMMON_NAME)
+        .find(|attr| *attr.attr_type() == x509_parser::oid_registry::OID_X509_COMMON_NAME)
         .and_then(|attr| attr.attr_value().as_str().ok())
         .map(|s| s.to_string())
 }
+
 
 fn extract_sans(cert: &X509Certificate<'_>) -> Vec<String> {
     let mut out = Vec::new();
