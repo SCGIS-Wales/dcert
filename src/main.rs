@@ -37,8 +37,8 @@ struct CertInfo {
     subject: String,
     issuer: String,
     serial_number: String,
-    not_before: String, // RFC 3339 string for simplicity and compatibility
-    not_after: String,  // RFC 3339 string
+    not_before: String, // RFC 3339
+    not_after: String,  // RFC 3339
     is_expired: bool,
 }
 
@@ -52,8 +52,8 @@ fn parse_pem_certificates(pem_data: &str) -> Result<Vec<X509Certificate<'_>>> {
         .map_err(|e| anyhow::anyhow!("Failed reading PEM blocks: {e}"))?;
 
     for der in ders {
-        let (_, parsed) = X509Certificate::from_der(&der)
-            .map_err(|e| anyhow::anyhow!("Failed to parse DER: {e}"))?;
+        let (_, parsed) =
+            X509Certificate::from_der(&der).map_err(|e| anyhow::anyhow!("Failed to parse DER: {e}"))?;
         certs.push(parsed);
     }
 
@@ -66,10 +66,7 @@ fn extract_cert_info(cert: &X509Certificate<'_>, index: usize) -> Result<CertInf
 
     // Serial as uppercase hex
     let serial_bytes = cert.raw_serial();
-    let serial_number = serial_bytes
-        .iter()
-        .map(|b| format!("{:02X}", b))
-        .collect::<String>();
+    let serial_number = serial_bytes.iter().map(|b| format!("{:02X}", b)).collect::<String>();
 
     // x509-parser exposes time as time::OffsetDateTime via to_datetime()
     let nb: OffsetDateTime = cert.validity().not_before.to_datetime();
@@ -100,7 +97,11 @@ fn print_pretty(infos: &[CertInfo]) {
         println!("  Serial       : {}", info.serial_number);
         println!("  Not Before   : {}", info.not_before);
         println!("  Not After    : {}", info.not_after);
-        let status = if info.is_expired { "expired".red() } else { "valid".green() };
+        let status = if info.is_expired {
+            "expired".red()
+        } else {
+            "valid".green()
+        };
         println!("  Status       : {}", status);
         println!();
     }
