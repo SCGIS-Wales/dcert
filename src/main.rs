@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use colored::*;
-use oid_registry::OID_COMMON_NAME;
 use std::fs;
 use std::io::Cursor;
 use std::net::IpAddr;
@@ -10,6 +9,7 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use x509_parser::certificate::X509Certificate;
 use x509_parser::extensions::{GeneralName, ParsedExtension};
+use x509_parser::oid_registry::OID_COMMON_NAME;
 use x509_parser::prelude::FromDer;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -104,19 +104,11 @@ fn parse_cert_infos_from_pem(pem_data: &str, expired_only: bool) -> Result<Vec<C
 }
 
 fn extract_common_name(cert: &X509Certificate<'_>) -> Option<String> {
-    // Scan the subject RDNs for CN
-    for attr in cert.subject().iter_attributes() {
-        if attr.attr_type() == OID_COMMON_NAME {
-            // Convert to UTF8 if possible
-            if let Ok(s) = attr.attr_value().as_str() {
-                return Some(s.to_string());
-            } else {
-                // Fallback to the raw printable form
-                return Some(attr.attr_value().to_string());
-            }
-        }
-    }
-    None
+    cert.subject()
+        .iter_attributes()
+        .find(|attr| attr.attr_type() == OID_COMMON_NAME)
+        .and_then(|attr| attr.attr_value().as_str().ok())
+        .map(|s| s.to_string())
 }
 
 fn extract_sans(cert: &X509Certificate<'_>) -> Vec<String> {
@@ -129,25 +121,19 @@ fn extract_sans(cert: &X509Certificate<'_>) -> Vec<String> {
                     GeneralName::DNSName(d) => out.push(format!("DNS:{}", d)),
                     GeneralName::RFC822Name(e) => out.push(format!("Email:{}", e)),
                     GeneralName::URI(u) => out.push(format!("URI:{}", u)),
-                    GeneralName::IPAddress(bytes) => {
-                        // Expect 4 or 16 bytes for v4 or v6
-                        match bytes.len() {
-                            4 => {
-                                if let Ok(v4) = <[u8; 4]>::try_from(&bytes[..]) {
-                                    out.push(format!("IP:{}", IpAddr::from(v4)));
-                                }
-                            }
-                            16 => {
-                                if let Ok(v6) = <[u8; 16]>::try_from(&bytes[..]) {
-                                    out.push(format!("IP:{}", IpAddr::from(v6)));
-                                }
-                            }
-                            _ => {
-                                // Unknown length, skip to avoid noisy output
+                    GeneralName::IPAddress(bytes) => match bytes.len() {
+                        4 => {
+                            if let Ok(v4) = <[u8; 4]>::try_from(&bytes[..]) {
+                                out.push(format!("IP:{}", IpAddr::from(v4)));
                             }
                         }
-                    }
-                    // OtherName, DirectoryName, RegisteredID etc are omitted for brevity
+                        16 => {
+                            if let Ok(v6) = <[u8; 16]>::try_from(&bytes[..]) {
+                                out.push(format!("IP:{}", IpAddr::from(v6)));
+                            }
+                        }
+                        _ => {}
+                    },
                     _ => {}
                 }
             }
@@ -251,7 +237,6 @@ mod tests {
         let infos = parse_cert_infos_from_pem(&pem, false)?;
         assert!(!infos.is_empty(), "expected at least one certificate");
         let first = &infos[0];
-        // Basic sanity checks
         assert!(!first.subject.is_empty());
         assert!(!first.issuer.is_empty());
         assert!(!first.serial_number.is_empty());
