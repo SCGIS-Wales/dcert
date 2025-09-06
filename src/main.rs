@@ -5,8 +5,9 @@ use std::fs;
 use std::io::Cursor;
 use std::path::PathBuf;
 use time::format_description::well_known::Rfc3339;
-use time::offset_date_time::OffsetDateTime;
+use time::OffsetDateTime;
 use x509_parser::certificate::X509Certificate;
+use x509_parser::prelude::FromDer;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum OutputFormat {
@@ -48,7 +49,7 @@ fn parse_pem_certificates(pem_data: &str) -> Result<Vec<X509Certificate<'_>>> {
     // Read all CERTIFICATE blocks from the PEM file
     let mut reader = Cursor::new(pem_data.as_bytes());
 
-    // In rustls-pemfile 2.2, `certs` returns an iterator of Result<CertificateDer<'static>, Error>
+    // rustls-pemfile 2.2 returns an iterator of Result<CertificateDer<'static>, Error>
     let iter = rustls_pemfile::certs(&mut reader);
     for der_res in iter {
         let der = der_res.map_err(|e| anyhow::anyhow!("Failed reading PEM blocks: {e}"))?;
@@ -68,7 +69,7 @@ fn extract_cert_info(cert: &X509Certificate<'_>, index: usize) -> Result<CertInf
     let serial_bytes = cert.raw_serial();
     let serial_number = serial_bytes.iter().map(|b| format!("{:02X}", b)).collect::<String>();
 
-    // x509-parser exposes time as time::OffsetDateTime via to_datetime()
+    // x509-parser exposes time as time::OffsetDateTime via to_datetime
     let nb: OffsetDateTime = cert.validity().not_before.to_datetime();
     let na: OffsetDateTime = cert.validity().not_after.to_datetime();
     let now = OffsetDateTime::now_utc();
