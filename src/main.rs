@@ -1,12 +1,15 @@
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use colored::*;
+use oid_registry::OID_COMMON_NAME;
 use std::fs;
 use std::io::Cursor;
+use std::net::IpAddr;
 use std::path::PathBuf;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use x509_parser::certificate::X509Certificate;
+use x509_parser::extensions::{GeneralName, ParsedExtension};
 use x509_parser::prelude::FromDer;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -37,6 +40,10 @@ struct CertInfo {
     index: usize,
     subject: String,
     issuer: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    common_name: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    subject_alternative_names: Vec<String>,
     serial_number: String,
     not_before: String, // RFC 3339
     not_after: String,  // RFC 3339
@@ -56,6 +63,7 @@ fn parse_cert_infos_from_pem(pem_data: &str, expired_only: bool) -> Result<Vec<C
         let (_, cert) =
             X509Certificate::from_der(der.as_ref()).map_err(|e| anyhow::anyhow!("Failed to parse DER: {e}"))?;
 
+        // Build owned info
         let subject = cert.subject().to_string();
         let issuer = cert.issuer().to_string();
 
@@ -76,10 +84,15 @@ fn parse_cert_infos_from_pem(pem_data: &str, expired_only: bool) -> Result<Vec<C
             continue;
         }
 
+        let common_name = extract_common_name(&cert);
+        let subject_alternative_names = extract_sans(&cert);
+
         infos.push(CertInfo {
             index: idx,
             subject,
             issuer,
+            common_name,
+            subject_alternative_names,
             serial_number,
             not_before,
             not_after,
@@ -90,15 +103,80 @@ fn parse_cert_infos_from_pem(pem_data: &str, expired_only: bool) -> Result<Vec<C
     Ok(infos)
 }
 
+fn extract_common_name(cert: &X509Certificate<'_>) -> Option<String> {
+    // Scan the subject RDNs for CN
+    for attr in cert.subject().iter_attributes() {
+        if attr.attr_type() == OID_COMMON_NAME {
+            // Convert to UTF8 if possible
+            if let Ok(s) = attr.attr_value().as_str() {
+                return Some(s.to_string());
+            } else {
+                // Fallback to the raw printable form
+                return Some(attr.attr_value().to_string());
+            }
+        }
+    }
+    None
+}
+
+fn extract_sans(cert: &X509Certificate<'_>) -> Vec<String> {
+    let mut out = Vec::new();
+
+    for ext in cert.extensions() {
+        if let ParsedExtension::SubjectAlternativeName(san) = ext.parsed_extension() {
+            for gn in &san.general_names {
+                match gn {
+                    GeneralName::DNSName(d) => out.push(format!("DNS:{}", d)),
+                    GeneralName::RFC822Name(e) => out.push(format!("Email:{}", e)),
+                    GeneralName::URI(u) => out.push(format!("URI:{}", u)),
+                    GeneralName::IPAddress(bytes) => {
+                        // Expect 4 or 16 bytes for v4 or v6
+                        match bytes.len() {
+                            4 => {
+                                if let Ok(v4) = <[u8; 4]>::try_from(&bytes[..]) {
+                                    out.push(format!("IP:{}", IpAddr::from(v4)));
+                                }
+                            }
+                            16 => {
+                                if let Ok(v6) = <[u8; 16]>::try_from(&bytes[..]) {
+                                    out.push(format!("IP:{}", IpAddr::from(v6)));
+                                }
+                            }
+                            _ => {
+                                // Unknown length, skip to avoid noisy output
+                            }
+                        }
+                    }
+                    // OtherName, DirectoryName, RegisteredID etc are omitted for brevity
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    out
+}
+
 fn print_pretty(infos: &[CertInfo]) {
     for info in infos {
         println!("{}", "Certificate".bold());
         println!("  Index        : {}", info.index);
+        if let Some(cn) = &info.common_name {
+            println!("  Common Name  : {}", cn);
+        }
         println!("  Subject      : {}", info.subject);
         println!("  Issuer       : {}", info.issuer);
         println!("  Serial       : {}", info.serial_number);
         println!("  Not Before   : {}", info.not_before);
         println!("  Not After    : {}", info.not_after);
+
+        if !info.subject_alternative_names.is_empty() {
+            println!("  SANs         :");
+            for san in &info.subject_alternative_names {
+                println!("    - {}", san);
+            }
+        }
+
         let status = if info.is_expired {
             "expired".red()
         } else {
@@ -173,6 +251,7 @@ mod tests {
         let infos = parse_cert_infos_from_pem(&pem, false)?;
         assert!(!infos.is_empty(), "expected at least one certificate");
         let first = &infos[0];
+        // Basic sanity checks
         assert!(!first.subject.is_empty());
         assert!(!first.issuer.is_empty());
         assert!(!first.serial_number.is_empty());
