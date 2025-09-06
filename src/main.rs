@@ -56,7 +56,6 @@ fn parse_cert_infos_from_pem(pem_data: &str, expired_only: bool) -> Result<Vec<C
         let (_, cert) =
             X509Certificate::from_der(der.as_ref()).map_err(|e| anyhow::anyhow!("Failed to parse DER: {e}"))?;
 
-        // Build owned info
         let subject = cert.subject().to_string();
         let issuer = cert.issuer().to_string();
 
@@ -116,8 +115,8 @@ fn run() -> Result<i32> {
     let pem_data =
         fs::read_to_string(&args.file).with_context(|| format!("Failed to read file: {}", args.file.display()))?;
 
-    let infos = parse_cert_infos_from_pem(&pem_data, args.expired_only)
-        .with_context(|| "Failed to parse PEM certificates")?;
+    let infos =
+        parse_cert_infos_from_pem(&pem_data, args.expired_only).with_context(|| "Failed to parse PEM certificates")?;
 
     if infos.is_empty() {
         eprintln!("{}", "No valid certificates found in the file".red());
