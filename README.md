@@ -1,6 +1,3 @@
-# File: README.md
-# Copy to: dcert repository root
-
 # dcert - TLS Certificate Decoder
 
 A robust command-line tool written in Rust for decoding and validating TLS certificates from PEM files. Supports single or multiple certificates in one file and provides comprehensive validation information with enhanced Subject Alternative Names (SANs) support for domain names, IPv4, and IPv6 addresses.

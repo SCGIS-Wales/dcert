@@ -5,8 +5,8 @@ use std::fs;
 use std::io::Cursor;
 use std::path::PathBuf;
 use time::format_description::well_known::Rfc3339;
-use time::OffsetDateTime;
-use x509_parser::prelude::*;
+use time::offset_date_time::OffsetDateTime;
+use x509_parser::certificate::X509Certificate;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum OutputFormat {
@@ -47,11 +47,13 @@ fn parse_pem_certificates(pem_data: &str) -> Result<Vec<X509Certificate<'_>>> {
 
     // Read all CERTIFICATE blocks from the PEM file
     let mut reader = Cursor::new(pem_data.as_bytes());
-    // rustls_pemfile::certs returns Vec<Vec<u8>> of DER bytes
-    let ders = rustls_pemfile::certs(&mut reader).map_err(|e| anyhow::anyhow!("Failed reading PEM blocks: {e}"))?;
 
-    for der in ders {
-        let (_, parsed) = X509Certificate::from_der(&der).map_err(|e| anyhow::anyhow!("Failed to parse DER: {e}"))?;
+    // In rustls-pemfile 2.2, `certs` returns an iterator of Result<CertificateDer<'static>, Error>
+    let iter = rustls_pemfile::certs(&mut reader);
+    for der_res in iter {
+        let der = der_res.map_err(|e| anyhow::anyhow!("Failed reading PEM blocks: {e}"))?;
+        let (_, parsed) =
+            X509Certificate::from_der(der.as_ref()).map_err(|e| anyhow::anyhow!("Failed to parse DER: {e}"))?;
         certs.push(parsed);
     }
 
