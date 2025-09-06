@@ -1,31 +1,19 @@
-# File: Cargo.toml
-# Copy to: dcert repository root
-
 [package]
 name = "dcert"
 version = "0.1.0"
 edition = "2021"
-authors = ["Dejan Gregor <api-py@users.noreply.github.com>"]
 description = "A CLI tool to decode and validate TLS certificates from PEM files"
-license = "MIT"
-repository = "https://github.com/SCGIS-Wales/dcert"
-homepage = "https://github.com/SCGIS-Wales/dcert"
-readme = "README.md"
-keywords = ["tls", "certificate", "ssl", "pem", "validation"]
-categories = ["command-line-utilities", "cryptography"]
 
 [[bin]]
 name = "dcert"
 path = "src/main.rs"
 
 [dependencies]
-clap = { version = "4.4", features = ["derive"] }
-x509-parser = "0.15"
-pem = "3.0"
-chrono = { version = "0.4", features = ["serde"] }
-anyhow = "1.0"
-colored = "2.0"
-serde_json = "1.0"
-
-[dev-dependencies]
-tempfile = "3.8"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+colored = "2"
+rustls-pemfile = "2"
+time = { version = "0.3", features = ["formatting"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+x509-parser = "0.18"
