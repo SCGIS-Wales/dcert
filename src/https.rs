@@ -2,25 +2,27 @@ use crate::args::{HttpVersion, TlsVersion};
 use crate::proxy::choose_https_proxy;
 use anyhow::{Context, Result};
 use base64::Engine;
+use colored::Colorize;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::client::ResolvesClientCert;
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{ClientConnection, SignatureScheme, StreamOwned};
 use serde::Serialize;
-use std::fmt;
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use url::Url;
-use x509_parser::prelude::{FromDer, X509Certificate};
+use x509_parser::prelude::FromDer;
 
 #[derive(Debug)]
-struct NoClientAuthResolver {
-    was_requested: Arc<AtomicBool>,
+struct NoClientAuthResolver;
+
+impl std::fmt::Display for NoClientAuthResolver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "NoClientAuthResolver")
+    }
 }
 
 impl ResolvesClientCert for NoClientAuthResolver {
@@ -28,17 +30,19 @@ impl ResolvesClientCert for NoClientAuthResolver {
         &self,
         _offered: &[&[u8]],
         _sigschemes: &[SignatureScheme],
-    ) -> Option<Arc<rustls::sign::CertifiedKey>> {
-        self.was_requested.store(true, Ordering::SeqCst);
+    ) -> Option<rustls::sign::CertifiedKey> {
         None
-    }
-    fn has_certs(&self) -> bool {
-        false
     }
 }
 
 #[derive(Debug)]
 struct AcceptAllVerifier;
+
+impl std::fmt::Display for AcceptAllVerifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "AcceptAllVerifier")
+    }
+}
 
 impl ServerCertVerifier for AcceptAllVerifier {
     fn verify_server_cert(
@@ -46,9 +50,10 @@ impl ServerCertVerifier for AcceptAllVerifier {
         _end_entity: &CertificateDer<'_>,
         _intermediates: &[CertificateDer<'_>],
         _server_name: &ServerName<'_>,
-        _ocsp_response: &[u8],
+        _ocsp: &[u8],
         _now: UnixTime,
-    ) -> Result<ServerCertVerified, rustls::Error> {
+    ) -> std::result::Result<ServerCertVerified, rustls::Error> {
+        // We accept anything here; real trust checking is out of scope for the probe.
         Ok(ServerCertVerified::assertion())
     }
 
@@ -65,28 +70,9 @@ impl ServerCertVerifier for AcceptAllVerifier {
             SignatureScheme::RSA_PSS_SHA512,
         ]
     }
-
-    // In rustls 0.23 these are not required; handshakes use the scheme list above.
-    fn verify_tls12_signature(
-        &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        Ok(HandshakeSignatureValid::assertion())
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        Ok(HandshakeSignatureValid::assertion())
-    }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct HttpsSession {
     pub l4_ok: bool,
     pub l6_ok: bool,
@@ -94,60 +80,40 @@ pub struct HttpsSession {
     pub tls_version: Option<String>,
     pub cipher_suite: Option<String>,
     pub negotiated_alpn: Option<String>,
-    pub t_l4_ms: u64,
-    pub t_l7_ms: u64,
+    pub t_l4_ms: u128,
+    pub t_l7_ms: u128,
     pub trusted_with_local_cas: bool,
     pub client_cert_requested: bool,
 }
 
-fn load_ca_bundle_der(ca_file: Option<&std::path::Path>) -> Result<Option<Vec<CertificateDer<'static>>>> {
-    // pick explicit --ca-file or SSL_CERT_FILE; otherwise None
+/// Read CA bundle DERs from --ca-file or SSL_CERT_FILE. Returns None if neither is present.
+fn load_ca_bundle_der(
+    ca_file: Option<&std::path::Path>,
+) -> Result<Option<Vec<CertificateDer<'static>>>> {
     let Some(path) = ca_file
         .map(|p| p.to_path_buf())
         .or_else(|| std::env::var_os("SSL_CERT_FILE").map(Into::into))
-        .map(std::path::PathBuf::from)
     else {
         return Ok(None);
     };
 
     let data = std::fs::read(&path)
         .with_context(|| format!("Failed to read CA file {}", path.display()))?;
-
     let mut cursor = std::io::Cursor::new(&data);
     let mut ders = Vec::<CertificateDer<'static>>::new();
-
     for item in rustls_pemfile::certs(&mut cursor) {
-        if let Ok(der) = item {
-            ders.push(der);
-        }
+        ders.push(item?);
     }
-
-    if ders.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(ders))
-    }
+    Ok(Some(ders))
 }
 
-fn do_connect(addr: &str, timeout_secs: u64) -> Result<TcpStream> {
-    let addrs = addr
-        .to_socket_addrs()
-        .with_context(|| format!("DNS resolution failed for {addr}"))?;
-    let start = Instant::now();
-    let mut last_err = None;
-    for sa in addrs {
-        match TcpStream::connect_timeout(&sa, Duration::from_secs(timeout_secs)) {
-            Ok(s) => {
-                let _ = s.set_read_timeout(Some(Duration::from_secs(timeout_secs)));
-                let _ = s.set_write_timeout(Some(Duration::from_secs(timeout_secs)));
-                return Ok(s);
-            }
-            Err(e) => {
-                last_err = Some(e);
-            }
-        }
-        if start.elapsed() > Duration::from_secs(timeout_secs) {
-            break;
+fn connect_direct(host: &str, port: u16, timeout: u64) -> Result<TcpStream> {
+    let addrs = (host, port).to_socket_addrs().context("DNS resolution failed")?;
+    let mut last_err: Option<std::io::Error> = None;
+    for addr in addrs {
+        match TcpStream::connect_timeout(&addr, Duration::from_secs(timeout)) {
+            Ok(s) => return Ok(s),
+            Err(e) => last_err = Some(e),
         }
     }
     Err(anyhow::anyhow!(last_err.unwrap_or_else(|| {
@@ -155,59 +121,65 @@ fn do_connect(addr: &str, timeout_secs: u64) -> Result<TcpStream> {
     })))
 }
 
-fn connect_via_proxy(
-    mut stream: TcpStream,
-    host: &str,
-    port: u16,
-    timeout: u64,
-) -> Result<TcpStream> {
-    let connect_req =
-        format!("CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: keep-alive\r\n\r\n");
-    stream.write_all(connect_req.as_bytes())?;
+fn connect_via_proxy(mut stream: TcpStream, host: &str, port: u16, _timeout: u64) -> Result<TcpStream> {
+    // Basic HTTP CONNECT
+    let req = format!(
+        "CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: keep-alive\r\n\r\n"
+    );
+    stream.write_all(req.as_bytes())?;
     stream.flush()?;
     let mut buf = [0u8; 1024];
-    stream
-        .set_read_timeout(Some(Duration::from_secs(timeout)))
-        .ok();
     let n = stream.read(&mut buf)?;
-    let resp = String::from_utf8_lossy(&buf[..n]).to_string();
-    if resp.starts_with("HTTP/1.1 200") || resp.starts_with("HTTP/1.0 200") {
-        Ok(stream)
-    } else {
-        Err(anyhow::anyhow!(
-            "Proxy CONNECT failed: {}",
-            resp.lines().next().unwrap_or(&resp)
-        ))
+    let resp = std::str::from_utf8(&buf[..n]).unwrap_or("");
+    if !resp.starts_with("HTTP/1.1 200") && !resp.starts_with("HTTP/1.0 200") {
+        anyhow::bail!("Proxy CONNECT failed: {resp}");
+    }
+    Ok(stream)
+}
+
+/// Build ALPN list based on requested HTTP version.
+fn alpn_for(http_version: HttpVersion) -> Vec<Vec<u8>> {
+    match http_version {
+        HttpVersion::H2 => vec![b"h2".to_vec()],
+        HttpVersion::H1_1 => vec![b"http/1.1".to_vec()],
+        // This TLS/TCP probe doesn't do QUIC; send no ALPN for H3 (placeholder).
+        HttpVersion::H3 => Vec::new(),
     }
 }
 
+/// Perform a minimal HTTP/1.1 request to mark L7 reachability.
 fn l7_http11_request(
-    stream: &mut StreamOwned<ClientConnection, TcpStream>,
+    tls: &mut StreamOwned<ClientConnection, TcpStream>,
     method: &str,
     host: &str,
-    path: &str,
-    headers: &[(String, String)],
+    path_query: &str,
+    headers_kv: &[(String, String)],
     timeout: u64,
 ) -> Result<()> {
-    let mut req = format!(
-        "{method} {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: dcert/{}\r\nConnection: close\r\n",
-        env!("CARGO_PKG_VERSION")
-    );
-    for (k, v) in headers {
-        req.push_str(&format!("{k}: {v}\r\n"));
+    let req_line = format!("{method} {path_query} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n");
+    tls.write_all(req_line.as_bytes())?;
+    for (k, v) in headers_kv {
+        if !k.is_empty() {
+            tls.write_all(format!("{k}: {v}\r\n").as_bytes())?;
+        }
     }
-    req.push_str("\r\n");
+    tls.write_all(b"\r\n")?;
+    tls.flush()?;
 
-    stream.write_all(req.as_bytes())?;
-    stream.flush()?;
-
-    // read a small response head to assert L7 ok
-    stream
-        .sock
-        .set_read_timeout(Some(Duration::from_secs(timeout)))
-        .ok();
+    // Read a little bit to ensure server responded
+    let deadline = Instant::now() + Duration::from_secs(timeout);
     let mut buf = [0u8; 1024];
-    let _ = stream.read(&mut buf)?; // ignore content, only care about success
+    loop {
+        if Instant::now() > deadline {
+            anyhow::bail!("L7 read timeout");
+        }
+        match tls.read(&mut buf) {
+            Ok(0) => break,
+            Ok(_) => break,
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
     Ok(())
 }
 
@@ -217,13 +189,12 @@ pub fn probe_https(
     http_version: HttpVersion,
     method: &str,
     headers_kv: &[(String, String)],
-    ca_file: Option<&std::path::Path>,
     timeout_l4: u64,
     timeout_l6: u64,
     timeout_l7: u64,
+    ca_file: Option<&std::path::Path>,
     _export_chain: bool,
-) -> Result<(HttpsSession, Vec<X509Certificate<'static>>)> {
-    // Parse URL
+) -> Result<(HttpsSession, Vec<x509_parser::prelude::X509Certificate<'static>>)> {
     let url = Url::parse(url_s).context("Invalid URL")?;
     if url.scheme() != "https" {
         anyhow::bail!("Only https:// is supported for probing");
@@ -241,162 +212,111 @@ pub fn probe_https(
     };
 
     // L4 connect (direct or proxy)
-    let l4_start = Instant::now();
+    let t0 = Instant::now();
     let tcp = if let Some(proxy) = choose_https_proxy(&host) {
-        let proxy_host = proxy
-            .host_str()
-            .ok_or_else(|| anyhow::anyhow!("Invalid proxy host"))?
-            .to_string();
-        let proxy_port = proxy
-            .port_or_known_default()
-            .ok_or_else(|| anyhow::anyhow!("Invalid proxy port"))?;
-        let s = do_connect(&format!("{proxy_host}:{proxy_port}"), timeout_l4)?;
-        connect_via_proxy(s, &host, port, timeout_l4)?
+        let proxy_addr = proxy
+            .to_socket_addrs()
+            .context("Proxy DNS resolution failed")?
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("Proxy resolved to no addresses"))?;
+        let stream = TcpStream::connect_timeout(&proxy_addr, Duration::from_secs(timeout_l4))
+            .context("TCP connect to proxy failed")?;
+        connect_via_proxy(stream, &host, port, timeout_l4)?
     } else {
-        do_connect(&format!("{host}:{port}"), timeout_l4)?
+        connect_direct(&host, port, timeout_l4)?
     };
-    let t_l4_ms = l4_start.elapsed().as_millis();
+    let t_l4_ms = t0.elapsed().as_millis();
 
-    // Roots (either explicit CA file or built-ins)
+    // TLS config
     let mut roots = rustls::RootCertStore::empty();
     if let Some(ders) = load_ca_bundle_der(ca_file)? {
-        // NOTE: pass by value (not &ders) to satisfy IntoIterator<CertificateDer<'a>>
         let _ = roots.add_parsable_certificates(ders);
     } else {
-        // Use built-in Mozilla root set from webpki-roots v1.0.2
-        roots.roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        roots
+            .roots
+            .extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     }
 
-    // Protocol versions
-    use rustls::version::{TLS12, TLS13};
-    let versions: &[&rustls::SupportedProtocolVersion] = match tls_version {
-        TlsVersion::V13 => &[&TLS13],
-        TlsVersion::V12 => &[&TLS12],
+    let versions = match tls_version {
+        TlsVersion::Tls12 => &[&rustls::version::TLS12][..],
+        TlsVersion::Tls13 => &[&rustls::version::TLS13][..],
+        TlsVersion::Auto => &[&rustls::version::TLS13, &rustls::version::TLS12][..],
     };
 
-    // Build TLS client config with roots, then override verifier to accept all (we still keep roots).
+    let verifier = Arc::new(AcceptAllVerifier);
     let mut cfg = rustls::ClientConfig::builder_with_protocol_versions(versions)
-        .with_root_certificates(roots.clone())
+        .dangerous()
+        .with_custom_certificate_verifier(verifier)
         .with_no_client_auth();
 
-    // Record if server requested client cert
-    let requested = Arc::new(AtomicBool::new(false));
-    cfg.client_auth_cert_resolver = Arc::new(NoClientAuthResolver {
-        was_requested: requested.clone(),
-    });
+    cfg.alpn_protocols = alpn_for(http_version);
 
-    // Accept-all verifier to complete handshake even for untrusted targets.
-    cfg.dangerous()
-        .set_certificate_verifier(Arc::new(AcceptAllVerifier));
+    let server_name =
+        ServerName::try_from(host.as_str()).context("Invalid SNI")?;
+    let mut conn = ClientConnection::new(Arc::new(cfg), server_name).context("TLS client build failed")?;
+    conn.set_buffer_limit(Some(64 * 1024));
 
-    // ALPN setup
-    cfg.alpn_protocols = match http_version {
-        HttpVersion::H2 => vec![b"h2".to_vec()],
-        HttpVersion::H1_1 => vec![b"http/1.1".to_vec()],
-    };
-
-    let server_name = ServerName::try_from(host.as_str()).context("Invalid SNI")?;
-    let mut conn =
-        ClientConnection::new(Arc::new(cfg), server_name).context("TLS client build failed")?;
     let mut tls = StreamOwned::new(conn, tcp);
+    tls.sock()
+        .set_read_timeout(Some(Duration::from_secs(timeout_l6)))?;
+    tls.sock()
+        .set_write_timeout(Some(Duration::from_secs(timeout_l6)))?;
 
-    // TLS handshake with timeout
-    let l6_start = Instant::now();
-    while tls.conn.is_handshaking() {
-        tls.conn
-            .complete_io(&mut tls.sock)
-            .map_err(|e| anyhow::anyhow!("TLS handshake error: {e}"))?;
-        if l6_start.elapsed() > Duration::from_secs(timeout_l6) {
-            anyhow::bail!("TLS handshake timeout");
-        }
-    }
+    // TLS handshake (L6)
+    let t1 = Instant::now();
+    tls.conn.complete_io(&mut tls.sock())?; // drive handshake
+    let t_l6_ms = t1.elapsed().as_millis();
 
-    let mut l7_ok = false;
-    // Simple layer 7 probe (HTTP/1.1 request) — good enough for a reachability check.
-    // Works for H1.1; many H2 servers will still accept it if they support both.
-    if let Err(e) = l7_http11_request(
-        &mut tls,
-        method,
-        &host,
-        &path_query,
-        headers_kv,
-        timeout_l7,
-    ) {
-        // keep l7_ok = false
-        let _ = e; // silence lint if unused
-    } else {
-        l7_ok = true;
-    }
+    // L7 probe
+    let t2 = Instant::now();
+    let l7_ok = l7_http11_request(&mut tls, method, &host, &path_query, headers_kv, timeout_l7).is_ok();
+    let t_l7_ms = t2.elapsed().as_millis();
 
-    // Gather negotiated info
-    let tls_version_str = tls
-        .conn
-        .protocol_version()
-        .map(|v| match v {
-            rustls::ProtocolVersion::TLSv1_3 => "TLS1.3".to_string(),
-            rustls::ProtocolVersion::TLSv1_2 => "TLS1.2".to_string(),
-            _ => format!("{:?}", v),
-        });
+    // Negotiated info
+    let tls_version = tls.conn.protocol_version().map(|v| match v {
+        rustls::ProtocolVersion::TLSv1_3 => "TLS1.3".to_string(),
+        rustls::ProtocolVersion::TLSv1_2 => "TLS1.2".to_string(),
+        other => format!("{other:?}"),
+    });
 
     let cipher_suite = tls
         .conn
         .negotiated_cipher_suite()
-        .and_then(|cs| cs.suite().as_str().map(|s| s.to_string()));
+        .map(|cs| cs.suite().as_str().unwrap_or("unknown").to_string());
 
-    let negotiated_alpn = tls
-        .conn
-        .alpn_protocol()
-        .map(|p| String::from_utf8_lossy(p).to_string());
+    let negotiated_alpn = tls.conn.alpn_protocol().map(|p| String::from_utf8_lossy(p).to_string());
 
-    // Peer chain
-    let peer_chain_der: Vec<CertificateDer<'static>> = tls
+    // Gather peer certificates (DER) and decode to X509 for the caller
+    let peer_certs: Vec<CertificateDer<'static>> = tls
         .conn
         .peer_certificates()
-        .map(|v| v.iter().cloned().collect())
-        .unwrap_or_default();
+        .unwrap_or(&[])
+        .iter()
+        .cloned()
+        .collect();
 
-    let mut x509_chain = Vec::<X509Certificate<'static>>::new();
-    for der in &peer_chain_der {
-        if let Ok((_, c)) = X509Certificate::from_der(der.as_ref()) {
-            // Re-serialize to owned buffer for 'static certificate (safe for display)
-            let der_b64 = base64::engine::general_purpose::STANDARD.encode(der.as_ref());
-            let der_bytes = base64::engine::general_purpose::STANDARD
-                .decode(der_b64.as_bytes())
-                .unwrap_or_default();
-            if let Ok((_, owned)) = X509Certificate::from_der(&der_bytes) {
-                x509_chain.push(owned);
-            }
+    let mut chain = Vec::new();
+    for der in &peer_certs {
+        if let Ok((_, c)) = x509_parser::certificate::X509Certificate::from_der(der.as_ref()) {
+            chain.push(c.to_owned());
         }
     }
 
-    let t_l7_ms = l6_start.elapsed().as_millis();
-
-    // We don’t run a secondary trust check, so keep this false.
+    // Placeholder trust signal (set to false; add real validation if desired)
     let trusted_with_local_cas = false;
 
     let session = HttpsSession {
         l4_ok: true,
         l6_ok: true,
         l7_ok,
-        tls_version: tls_version_str,
+        tls_version,
         cipher_suite,
         negotiated_alpn,
-        t_l4_ms: t_l4_ms as u64,
-        t_l7_ms: t_l7_ms as u64,
+        t_l4_ms,
+        t_l7_ms,
         trusted_with_local_cas,
-        client_cert_requested: requested.load(Ordering::SeqCst),
+        client_cert_requested: false,
     };
 
-    Ok((session, x509_chain))
-}
-
-// Make StreamOwned.sock field visible via a short Display impl if needed elsewhere.
-impl fmt::Display for HttpsSession {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "L4:{} L6:{} L7:{} TLS:{:?} ALPN:{:?}",
-            self.l4_ok, self.l6_ok, self.l7_ok, self.tls_version, self.negotiated_alpn
-        )
-    }
+    Ok((session, chain))
 }
