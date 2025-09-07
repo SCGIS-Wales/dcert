@@ -10,8 +10,8 @@ repository = "https://github.com/SCGIS-Wales/dcert"
 
 [features]
 default = []
-http3 = []            # placeholder feature
-trust-check = []      # optional extra verification path (gates rustls-webpki usage)
+http3 = []
+trust-check = ["dep:rustls-webpki"]
 
 [dependencies]
 anyhow = "1.0"
@@ -28,7 +28,7 @@ hex = "0.4"
 
 # TLS + parsing
 rustls = "0.23"
-rustls-webpki = "0.103.4"
+rustls-webpki = { version = "0.103.4", optional = true }
 webpki-roots = "1.0.2"
 rustls-pemfile = "2.2"
 httparse = "1.10"

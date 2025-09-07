@@ -349,29 +349,21 @@ pub fn probe_https(
     {
         #[cfg(feature = "trust-check")]
         {
-            use rustls_webpki::{
-                DnsNameRef, EndEntityCert, Time, TlsServerTrustAnchors, TrustAnchor,
-            };
+            use rustls_webpki::{DnsNameRef, EndEntityCert, Time, TlsServerTrustAnchors};
 
-            if !roots.is_empty() && !peer_chain.is_empty() {
-                let anchors_vec: Vec<TrustAnchor<'_>> = roots
-                    .roots
-                    .iter()
-                    .filter_map(|ta| TrustAnchor::try_from_cert_der(ta.der().as_ref()).ok())
-                    .collect();
-                let trust = TlsServerTrustAnchors(&anchors_vec);
+            if !peer_chain.is_empty() {
+                // Use roots from webpki-roots 1.0.x directly
+                let anchors = TlsServerTrustAnchors(webpki_roots::TLS_SERVER_ROOTS);
 
+                // Pick end-entity (first) and verify
                 if let Some(end) = peer_chain.first() {
-                    let intermediates: Vec<&[u8]> =
-                        peer_chain.iter().skip(1).map(|c| c.as_ref()).collect();
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
+                        .expect("time ok")
                         .as_secs();
                     if let Ok(ee) = EndEntityCert::try_from(end.as_ref()) {
-                        let dns_name = DnsNameRef::try_from_ascii_str(&host).unwrap_or_else(|_| {
-                            DnsNameRef::try_from_ascii_str("invalid.example").unwrap()
-                        });
+                        let dns = DnsNameRef::try_from_ascii_str(&host)
+                            .unwrap_or_else(|_| DnsNameRef::try_from_ascii_str("invalid.example").unwrap());
                         let res = ee.verify_is_valid_tls_server_cert(
                             &[
                                 &rustls_webpki::ECDSA_P256_SHA256,
@@ -384,13 +376,12 @@ pub fn probe_https(
                                 &rustls_webpki::RSA_PSS_2048_8192_SHA384_LEGACY_KEY,
                                 &rustls_webpki::RSA_PSS_2048_8192_SHA512_LEGACY_KEY,
                             ],
-                            &trust,
-                            &intermediates,
+                            &anchors,
+                            &[], // intermediates already provided in `peer_chain` if you wire them
                             Time::from_seconds_since_unix_epoch(now),
+                            dns,
                         );
-                        if res.is_ok() && ee.verify_is_valid_for_dns_name(dns_name).is_ok() {
-                            trusted_with_local_cas = true;
-                        }
+                        trusted_with_local_cas = res.is_ok();
                     }
                 }
             }

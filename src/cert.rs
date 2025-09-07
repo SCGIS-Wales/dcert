@@ -4,7 +4,7 @@ use rustls_pemfile as pemfile;
 use serde::Serialize;
 use std::net::IpAddr;
 use time::format_description::well_known::Rfc3339;
-use x509_parser::extensions::{GeneralName, SubjectAlternativeName};
+use use x509_parser::extensions::GeneralName;
 use x509_parser::prelude::{FromDer, X509Certificate};
 use x509_parser::time::ASN1Time;
 
@@ -68,7 +68,8 @@ fn get_cn(cert: &X509Certificate<'_>) -> Option<String> {
 
 fn has_embedded_sct(cert: &X509Certificate<'_>) -> bool {
     // OID: 1.3.6.1.4.1.11129.2.4.2 (SCT list)
-    let sct_oid = x509_parser::asn1_rs::Oid::new_unwrap("1.3.6.1.4.1.11129.2.4.2");
+    let sct_oid = x509_parser::asn1_rs::Oid::from(&[1, 3, 6, 1, 4, 1, 11129, 2, 4, 2])
+        .expect("valid SCT OID");
     cert.extensions().iter().any(|ext| ext.oid == sct_oid)
 }
 
