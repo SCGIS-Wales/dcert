@@ -169,14 +169,14 @@ fn main() -> Result<()> {
         for i in &infos {
             wtr.write_record([
                 i.index.to_string(),
-                &i.subject,
-                &i.issuer,
-                &i.serial_number,
-                &i.not_before,
-                &i.not_after,
+                i.subject.clone(),
+                i.issuer.clone(),
+                i.serial_number.clone(),
+                i.not_before.clone(),
+                i.not_after.clone(),
                 i.is_expired.to_string(),
-                i.common_name.as_deref().unwrap_or(""),
-                &i.subject_alternative_names.join(";"),
+                i.common_name.clone().unwrap_or_default(),
+                i.subject_alternative_names.join(";"),
                 i.is_ca.to_string(),
                 i.ct_scts_embedded.to_string(),
             ])?;

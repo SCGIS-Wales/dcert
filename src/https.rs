@@ -1,3 +1,4 @@
+use x509_parser::prelude::FromDer;
 use crate::args::{HttpVersion, TlsVersion};
 use crate::proxy::choose_https_proxy;
 use anyhow::{Context, Result};
