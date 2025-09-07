@@ -1,94 +1,62 @@
-use crate::proxy::choose_https_proxy;
+pub use crate::args::{HttpVersion, TlsVersion};
+use crate::proxy::choose_https_proxy; // share enums with args.rs
+
 use anyhow::{Context, Result};
-use colored::Colorize;
-use rustls::client::{ClientConfig, ClientConnection};
-use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::client::ResolvesClientCert;
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::client::{ClientConfig, ClientConnection};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::version::{TLS12, TLS13};
 use rustls::{ProtocolVersion, RootCertStore, SignatureScheme, StreamOwned};
 use rustls_pemfile as pemfile;
-use std::io::{Read, Write};
 use std::io::Cursor;
+use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, Instant};
 use url::Url;
 use webpki_roots::TLS_SERVER_ROOTS;
+use x509_parser::prelude::FromDer;
 
-pub enum TlsVersion {
-    V13,
-    V12,
-}
-
-pub enum HttpVersion {
-    H2,
-    H11,
-}
-
-pub struct HttpsSession {
-    pub l4_ok: bool,
-    pub l6_ok: bool,
-    pub l7_ok: bool,
-    pub tls_version: Option<String>,
-    pub cipher_suite: Option<String>,
-    pub t_l4_ms: u128,
-    pub t_l7_ms: u128,
-    pub trusted_with_local_cas: bool,
-    pub client_cert_requested: bool,
-}
-
+#[derive(Debug)]
 struct NoClientAuthResolver {
     was_requested: Arc<AtomicBool>,
 }
-
 impl ResolvesClientCert for NoClientAuthResolver {
     fn resolve(
         &self,
         _offered: &[rustls::client::CertificateType],
         _sigschemes: &[SignatureScheme],
     ) -> Option<rustls::sign::CertifiedKey> {
-        // If the server asked for a client cert, rustls will query this resolver.
         self.was_requested.store(true, Ordering::SeqCst);
         None
     }
-
     fn has_certs(&self) -> bool {
         false
     }
 }
 
-/// Verifier that accepts all certs but tracks whether chain validation would have passed
+#[derive(Debug)]
 struct PermissiveVerifier {
-    inner: rustls::client::WebPkiVerifier,
     trusted: Arc<AtomicBool>,
 }
 
 impl ServerCertVerifier for PermissiveVerifier {
     fn verify_server_cert(
         &self,
-        end_entity: &CertificateDer<'_>,
-        intermediates: &[CertificateDer<'_>],
-        server_name: &ServerName,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName,
         _ocsp: &[u8],
-        now: UnixTime,
+        _now: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
-        match self
-            .inner
-            .verify_server_cert(end_entity, intermediates, server_name, &[], now)
-        {
-            Ok(_) => {
-                self.trusted.store(true, Ordering::SeqCst);
-                Ok(ServerCertVerified::assertion())
-            }
-            Err(_e) => {
-                // Mark as untrusted but still permit connection
-                self.trusted.store(false, Ordering::SeqCst);
-                Ok(ServerCertVerified::assertion())
-            }
-        }
+        // We accept all certs but mark as "untrusted". We'll set the real value below
+        // by running a separate webpki verification pass once we have the chain.
+        self.trusted.store(false, Ordering::SeqCst);
+        Ok(ServerCertVerified::assertion())
     }
 
     fn verify_tls12_signature(
@@ -108,35 +76,63 @@ impl ServerCertVerifier for PermissiveVerifier {
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
         Ok(HandshakeSignatureValid::assertion())
     }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        vec![
+            SignatureScheme::ECDSA_NISTP256_SHA256,
+            SignatureScheme::ECDSA_NISTP384_SHA384,
+            SignatureScheme::ED25519,
+            SignatureScheme::RSA_PKCS1_SHA256,
+            SignatureScheme::RSA_PKCS1_SHA384,
+            SignatureScheme::RSA_PKCS1_SHA512,
+            SignatureScheme::RSA_PSS_SHA256,
+            SignatureScheme::RSA_PSS_SHA384,
+            SignatureScheme::RSA_PSS_SHA512,
+        ]
+    }
+}
+
+pub struct HttpsSession {
+    pub l4_ok: bool,
+    pub l6_ok: bool,
+    pub l7_ok: bool,
+    pub tls_version: Option<String>,
+    pub cipher_suite: Option<String>,
+    pub negotiated_alpn: Option<String>,
+    pub t_l4_ms: u128,
+    pub t_l7_ms: u128,
+    pub trusted_with_local_cas: bool,
+    pub client_cert_requested: bool,
 }
 
 fn roots_from_env_or_default(ca_file: Option<&std::path::Path>) -> Result<RootCertStore> {
     let mut store = RootCertStore::empty();
 
-    // 1) optional explicit file path
     if let Some(p) = ca_file {
-        let data = std::fs::read(p).with_context(|| format!("Failed to read CA file: {}", p.display()))?;
+        let data =
+            std::fs::read(p).with_context(|| format!("Failed to read CA file: {}", p.display()))?;
         let mut cursor = Cursor::new(&data);
-        let certs = pemfile::certs(&mut cursor)?;
-        let _added = store.add_parsable_certificates(certs);
+        let collected: Result<Vec<_>, std::io::Error> = pemfile::certs(&mut cursor).collect();
+        let certs = collected?;
+        let _ = store.add_parsable_certificates(&certs);
         return Ok(store);
     }
 
-    // 2) SSL_CERT_FILE environment variable
     if let Ok(path) = std::env::var("SSL_CERT_FILE") {
         let p = std::path::Path::new(&path);
         if p.exists() {
             let data = std::fs::read(p)
                 .with_context(|| format!("Failed to read SSL_CERT_FILE: {}", p.display()))?;
             let mut cursor = Cursor::new(&data);
-            let certs = pemfile::certs(&mut cursor)?;
-            let _added = store.add_parsable_certificates(certs);
+            let collected: Result<Vec<_>, std::io::Error> = pemfile::certs(&mut cursor).collect();
+            let certs = collected?;
+            let _ = store.add_parsable_certificates(&certs);
             return Ok(store);
         }
     }
 
-    // 3) built-in webpki roots
-    store.add_trust_anchors(TLS_SERVER_ROOTS.iter().cloned());
+    // webpki-roots v1.x with rustls 0.23: extend() is supported
+    store.extend(TLS_SERVER_ROOTS.iter().cloned());
     Ok(store)
 }
 
@@ -167,9 +163,10 @@ fn do_connect(addr: &str, timeout_secs: u64) -> Result<TcpStream> {
     })))
 }
 
-fn connect_via_proxy(mut stream: TcpStream, host: &str, port: u16, _timeout: u64) -> Result<TcpStream> {
-    let connect_req =
-        format!("CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: keep-alive\r\n\r\n");
+fn connect_via_proxy(mut stream: TcpStream, host: &str, port: u16) -> Result<TcpStream> {
+    let connect_req = format!(
+        "CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: keep-alive\r\n\r\n"
+    );
     stream.write_all(connect_req.as_bytes())?;
     stream.flush()?;
     let mut buf = [0u8; 1024];
@@ -202,9 +199,10 @@ fn l7_http11_request(
     }
     req.push_str("\r\n");
     stream.write_all(req.as_bytes())?;
-    stream.sock().set_read_timeout(Some(Duration::from_secs(timeout)))?;
+    stream
+        .sock
+        .set_read_timeout(Some(Duration::from_secs(timeout)))?;
     let mut tmp = [0u8; 1];
-    // Try to read at least something to mark l7_ok
     let _ = stream.read(&mut tmp);
     Ok(())
 }
@@ -219,7 +217,11 @@ pub fn probe_https(
     timeout_l4: u64,
     timeout_l6: u64,
     timeout_l7: u64,
-) -> Result<(HttpsSession, Vec<x509_parser::certificate::X509Certificate<'static>>)> {
+    export_chain: bool,
+) -> Result<(
+    HttpsSession,
+    Vec<x509_parser::certificate::X509Certificate<'static>>,
+)> {
     let url = Url::parse(url_s).context("Invalid URL")?;
     if url.scheme() != "https" {
         anyhow::bail!("Only https:// is supported for probing");
@@ -229,7 +231,11 @@ pub fn probe_https(
         .ok_or_else(|| anyhow::anyhow!("Host missing in URL"))?
         .to_string();
     let port = url.port().unwrap_or(443);
-    let path = if url.path().is_empty() { "/" } else { url.path() };
+    let path = if url.path().is_empty() {
+        "/"
+    } else {
+        url.path()
+    };
     let path_query = if let Some(q) = url.query() {
         format!("{path}?{q}")
     } else {
@@ -247,7 +253,7 @@ pub fn probe_https(
             .port_or_known_default()
             .ok_or_else(|| anyhow::anyhow!("Invalid proxy port"))?;
         let s = do_connect(&format!("{proxy_host}:{proxy_port}"), timeout_l4)?;
-        connect_via_proxy(s, &host, port, timeout_l4)?
+        connect_via_proxy(s, &host, port)?
     } else {
         do_connect(&format!("{host}:{port}"), timeout_l4)?
     };
@@ -255,43 +261,38 @@ pub fn probe_https(
 
     // TLS config
     let roots = roots_from_env_or_default(ca_file)?;
-    let mut cfg = ClientConfig::builder()
+    let provider = rustls::crypto::ring::default_provider();
+    let mut cfg = ClientConfig::builder_with_provider(provider)
         .with_protocol_versions(match tls_version {
-            TlsVersion::V13 => &["TLS13"],
-            TlsVersion::V12 => &["TLS12"],
-        })
-        .map_err(|_| anyhow::anyhow!("Failed to set protocol versions"))?
+            TlsVersion::V13 => &[&TLS13],
+            TlsVersion::V12 => &[&TLS12],
+        })?
         .with_root_certificates(roots)
         .with_no_client_auth();
 
-    // client-cert request detector
+    // detect client-cert request
     let requested = Arc::new(AtomicBool::new(false));
     cfg.client_auth_cert_resolver = Arc::new(NoClientAuthResolver {
         was_requested: requested.clone(),
     });
 
     // ALPN
-    match http_version {
-        HttpVersion::H2 => {
-            cfg.alpn_protocols = vec![b"h2".to_vec()];
-        }
-        HttpVersion::H11 => {
-            cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
-        }
-    }
+    cfg.alpn_protocols = match http_version {
+        HttpVersion::H2 => vec![b"h2".to_vec()],
+        HttpVersion::H11 => vec![b"http/1.1".to_vec()],
+    };
 
-    // Build permissive verifier (record if trust chain is valid)
+    // permissive verifier; we’ll validate chain separately after handshake
     let trusted_flag = Arc::new(AtomicBool::new(false));
-    let webpki = rustls::client::WebPkiVerifier::new(cfg.root_store.clone(), None);
     cfg.dangerous()
         .set_certificate_verifier(Arc::new(PermissiveVerifier {
-            inner: webpki,
             trusted: trusted_flag.clone(),
         }));
 
     // TLS connect
     let server_name = ServerName::try_from(host.as_str()).context("Invalid SNI")?;
-    let mut conn = ClientConnection::new(Arc::new(cfg), server_name).context("TLS client build failed")?;
+    let mut conn =
+        ClientConnection::new(Arc::new(cfg), server_name).context("TLS client build failed")?;
     let mut tls = StreamOwned::new(conn, tcp);
 
     let l6_start = Instant::now();
@@ -305,7 +306,7 @@ pub fn probe_https(
     }
     let l6_ok = true;
 
-    // negotiated TLS version & cipher
+    // negotiated params
     let tls_version_str = tls
         .conn
         .protocol_version()
@@ -319,7 +320,13 @@ pub fn probe_https(
     let cipher_suite = tls
         .conn
         .negotiated_cipher_suite()
-        .map(|cs| cs.suite().as_str().to_string());
+        .and_then(|cs| cs.suite().as_str())
+        .map(|s| s.to_string());
+
+    let negotiated_alpn = tls
+        .conn
+        .alpn_protocol()
+        .map(|p| String::from_utf8_lossy(p).to_string());
 
     // L7
     let l7_start = Instant::now();
@@ -328,11 +335,10 @@ pub fn probe_https(
             l7_http11_request(&mut tls, method, &host, &path_query, headers_kv, timeout_l7)?;
         }
         HttpVersion::H2 => {
-            // Minimal “poke”: just write HTTP/2 connection preface then read a byte.
-            // (A full H2 client is out-of-scope; we only need success/fail & timing.)
             const PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
             tls.write_all(PREFACE)?;
-            let _ = tls.sock().set_read_timeout(Some(Duration::from_secs(timeout_l7)));
+            tls.sock
+                .set_read_timeout(Some(Duration::from_secs(timeout_l7)))?;
             let mut tmp = [0u8; 1];
             let _ = tls.read(&mut tmp);
         }
@@ -340,7 +346,7 @@ pub fn probe_https(
     let t_l7_ms = l7_start.elapsed().as_millis();
     let l7_ok = true;
 
-    // peer certs to x509
+    // peer certs → x509
     let chain_x509 = tls
         .conn
         .peer_certificates()
@@ -353,15 +359,92 @@ pub fn probe_https(
         })
         .collect::<Vec<_>>();
 
+    // try a *separate* verification using webpki to fill trusted_with_local_cas
+    let trusted_with_local_cas = {
+        use rustls_webpki::{EndEntityCert, Time, TlsServerTrustAnchors};
+        if let Some(end) = tls.conn.peer_certificates().and_then(|v| v.first()) {
+            let end_ent = EndEntityCert::try_from(end.as_ref());
+            if let Ok(ee) = end_ent {
+                // Build anchors from RootCertStore
+                let anchors = tls.conn.config().root_store.roots.clone();
+                let trust = TlsServerTrustAnchors(&anchors);
+                // Intermediates
+                let interms: Vec<&[u8]> = tls
+                    .conn
+                    .peer_certificates()
+                    .unwrap_or_default()
+                    .iter()
+                    .skip(1)
+                    .map(|c| c.as_ref())
+                    .collect();
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let time = Time::try_from(now).unwrap_or(Time::from_seconds_since_unix_epoch(0));
+                let dns_name = host.as_str();
+                let dns = rustls_webpki::DnsNameRef::try_from_ascii_str(dns_name);
+                if let Ok(dns) = dns {
+                    ee.verify_is_valid_tls_server_cert(
+                        &[
+                            &rustls_webpki::ECDSA_P256_SHA256,
+                            &rustls_webpki::ECDSA_P384_SHA384,
+                            &rustls_webpki::ED25519,
+                            &rustls_webpki::RSA_PKCS1_2048_8192_SHA256,
+                            &rustls_webpki::RSA_PKCS1_2048_8192_SHA384,
+                            &rustls_webpki::RSA_PKCS1_2048_8192_SHA512,
+                            &rustls_webpki::RSA_PSS_2048_8192_SHA256_LEGACY_KEY,
+                            &rustls_webpki::RSA_PSS_2048_8192_SHA384_LEGACY_KEY,
+                            &rustls_webpki::RSA_PSS_2048_8192_SHA512_LEGACY_KEY,
+                        ],
+                        &trust,
+                        &interms,
+                        time,
+                        dns,
+                    )
+                    .is_ok()
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    };
+    trusted_flag.store(trusted_with_local_cas, Ordering::SeqCst);
+
+    // optional export of full chain as a single PEM file
+    if export_chain {
+        if let Some(hostname) = url.host_str() {
+            let fname = format!("{}-base64-pem.txt", hostname.replace('.', ""));
+            let mut out = String::new();
+            if let Some(certs) = tls.conn.peer_certificates() {
+                for der in certs {
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(der.as_ref());
+                    out.push_str("-----BEGIN CERTIFICATE-----\n");
+                    for chunk in b64.as_bytes().chunks(64) {
+                        out.push_str(&String::from_utf8_lossy(chunk));
+                        out.push('\n');
+                    }
+                    out.push_str("-----END CERTIFICATE-----\n");
+                }
+            }
+            std::fs::write(&fname, out).ok();
+        }
+    }
+
     let session = HttpsSession {
         l4_ok: true,
         l6_ok,
         l7_ok,
         tls_version: tls_version_str,
         cipher_suite,
+        negotiated_alpn,
         t_l4_ms,
         t_l7_ms,
-        trusted_with_local_cas: trusted_flag.load(Ordering::SeqCst),
+        trusted_with_local_cas,
         client_cert_requested: requested.load(Ordering::SeqCst),
     };
 
