@@ -4,9 +4,9 @@ use rustls_pemfile as pemfile;
 use serde::Serialize;
 use std::net::IpAddr;
 use time::format_description::well_known::Rfc3339;
-use use x509_parser::extensions::GeneralName;
+use x509_parser::extensions::GeneralName;
 use x509_parser::prelude::{FromDer, X509Certificate};
-use x509_parser::time::ASN1Time;
+
 
 #[derive(Debug, Serialize, Clone)]
 pub struct CertInfo {

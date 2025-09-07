@@ -28,8 +28,8 @@ hex = "0.4"
 
 # TLS + parsing
 rustls = "0.23"
-rustls-webpki = { version = "0.103.4", optional = true }
 webpki-roots = "1.0.2"
+rustls-webpki = { version = "0.103.4", optional = true }
 rustls-pemfile = "2.2"
 httparse = "1.10"
 

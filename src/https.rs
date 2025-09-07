@@ -352,18 +352,18 @@ pub fn probe_https(
             use rustls_webpki::{DnsNameRef, EndEntityCert, Time, TlsServerTrustAnchors};
 
             if !peer_chain.is_empty() {
-                // Use roots from webpki-roots 1.0.x directly
                 let anchors = TlsServerTrustAnchors(webpki_roots::TLS_SERVER_ROOTS);
 
-                // Pick end-entity (first) and verify
                 if let Some(end) = peer_chain.first() {
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
-                        .expect("time ok")
+                        .unwrap()
                         .as_secs();
+
                     if let Ok(ee) = EndEntityCert::try_from(end.as_ref()) {
                         let dns = DnsNameRef::try_from_ascii_str(&host)
                             .unwrap_or_else(|_| DnsNameRef::try_from_ascii_str("invalid.example").unwrap());
+
                         let res = ee.verify_is_valid_tls_server_cert(
                             &[
                                 &rustls_webpki::ECDSA_P256_SHA256,
@@ -377,10 +377,11 @@ pub fn probe_https(
                                 &rustls_webpki::RSA_PSS_2048_8192_SHA512_LEGACY_KEY,
                             ],
                             &anchors,
-                            &[], // intermediates already provided in `peer_chain` if you wire them
+                            &[], // (optional) intermediates if you wire them separately
                             Time::from_seconds_since_unix_epoch(now),
                             dns,
                         );
+
                         trusted_with_local_cas = res.is_ok();
                     }
                 }
