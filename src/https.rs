@@ -1,21 +1,21 @@
-use x509_parser::prelude::FromDer;
 use crate::args::{HttpVersion, TlsVersion};
 use crate::proxy::choose_https_proxy;
 use anyhow::{Context, Result};
 use base64::Engine;
-use rustls::client::ResolvesClientCert;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::client::ResolvesClientCert;
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{ClientConnection, SignatureScheme, StreamOwned};
 use serde::Serialize;
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::{
-    Arc,
     atomic::{AtomicBool, Ordering},
+    Arc,
 };
 use std::time::{Duration, Instant};
 use url::Url;
+use x509_parser::prelude::FromDer;
 
 #[derive(Debug)]
 struct NoClientAuthResolver {
