@@ -13,13 +13,12 @@ pub struct CertInfo {
     pub index: usize,
     pub subject: String,
     pub issuer: String,
-    pub serial: String, // <-- Add this field
+    pub serial: String,
     pub not_before: String,
     pub not_after: String,
     pub common_name: Option<String>,
     pub subject_alt_names: Vec<String>,
     pub has_embedded_sct: bool,
-    pub is_ca: Option<bool>,
 }
 
 /// Convert DER certificates to PEM base64 strings.
@@ -109,32 +108,29 @@ pub fn infos_from_der_certs(ders: &[CertificateDer]) -> Vec<CertInfo> {
         .enumerate()
         .filter_map(|(index, der)| {
             let (_, cert) = X509Certificate::from_der(der.as_ref()).ok()?;
-            let serial = cert.serial.to_str_radix(16);
+            let serial = cert
+                .raw_serial()
+                .iter()
+                .map(|b| format!("{:02X}", b))
+                .collect::<String>();
             let common_name = cert
                 .subject()
                 .iter_common_name()
                 .next()
                 .map(|cn| cn.as_str().unwrap_or("").to_string());
-            let subject_alt_names = cert
-                .subject_alternative_name()
-                .map(|san_ext| {
-                    san_ext
-                        .unwrap()
-                        .value
-                        .general_names
-                        .iter()
-                        .filter_map(|gn| match gn {
-                            GeneralName::DNSName(dns) => Some(dns.to_string()),
-                            _ => None,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
+            let subject_alt_names = match cert.subject_alternative_name() {
+                Ok(Some(ext)) => ext
+                    .value
+                    .general_names
+                    .iter()
+                    .filter_map(|gn| match gn {
+                        GeneralName::DNSName(dns) => Some(dns.to_string()),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
             let has_embedded_sct = has_embedded_sct(&cert);
-            let is_ca = cert
-                .basic_constraints()
-                .ok()
-                .and_then(|ext| ext.map(|bc| bc.value.ca));
             Some(CertInfo {
                 index,
                 subject: cert.subject().to_string(),
@@ -153,7 +149,6 @@ pub fn infos_from_der_certs(ders: &[CertificateDer]) -> Vec<CertInfo> {
                 common_name,
                 subject_alt_names,
                 has_embedded_sct,
-                is_ca,
             })
         })
         .collect()
