@@ -1,25 +1,41 @@
 [package]
 name = "dcert"
-version = "0.1.1"
-edition = "2021"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.89.0"
+authors = ["SCGIS Wales"]
+description = "Decode PEM TLS certificates from files or HTTPS endpoints, with timing and TLS details"
 license = "MIT"
 repository = "https://github.com/SCGIS-Wales/dcert"
-description = "A CLI tool to decode and validate TLS certificates from PEM files"
-readme = "README.md"
 
-[[bin]]
-name = "dcert"
-path = "src/main.rs"
+[features]
+default = []
+# Placeholder for future HTTP3 client support
+http3 = []
 
 [dependencies]
-anyhow = "1"
-clap = { version = "4", features = ["derive"] }
-colored = "2"
-rustls-pemfile = "2"
-time = { version = "0.3", features = ["formatting"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+colored = "3"
+time = { version = "0.3", features = ["formatting", "parsing"] }
 x509-parser = "0.18"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+csv = "1.3"
+url = "2.5"
+
+# TLS stack
+rustls = { version = "0.23" }
+webpki-roots = "0.26"
+rustls-pemfile = "2.2"
+rustls-pki-types = "1.12"
+
+# Minimal HTTP parsing and helpers
+httparse = "1.9"
+base64 = "0.22"
+
+[build-dependencies]
+toml = "0.8"
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = "3.12"

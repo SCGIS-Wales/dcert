@@ -1,32 +1,15 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1
 
-############################
-# Builder
-############################
-FROM rust:1.89-alpine3.22 AS builder
+FROM rust:1-alpine3.22 AS builder
 WORKDIR /app
-
-# Install build dependencies for musl targets
-RUN apk add --no-cache musl-dev
-
-# Copy manifest and ensure lockfile exists for reproducible builds
+RUN apk add --no-cache musl-dev openssl-dev pkgconfig
 COPY Cargo.toml ./
-RUN cargo generate-lockfile
-
-# Create dummy main.rs to prebuild dependencies
-RUN mkdir -p src && echo 'fn main() {}' > src/main.rs
-RUN cargo build --release
-RUN rm -rf src
-
-# Copy full source and rebuild with actual code
-COPY . .
+RUN mkdir -p src && echo 'fn main(){}' > src/main.rs && cargo build --release || true
+COPY src ./src
+COPY build.rs ./
 RUN cargo build --release
 
-############################
-# Runtime
-############################
-FROM alpine:3.18 AS runtime
+FROM alpine:3.18
 RUN apk add --no-cache ca-certificates
 COPY --from=builder /app/target/release/dcert /usr/local/bin/dcert
-
-ENTRYPOINT ["/usr/local/bin/dcert"]
+ENTRYPOINT ["dcert"]

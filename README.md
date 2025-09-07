@@ -1,223 +1,70 @@
-# dcert · TLS PEM base64 certificate decoder
+# dcert – TLS Certificate Decoder and HTTPS Probe
 
-A small Rust CLI that reads one or more PEM encoded X.509 certificates from a file, extracts key fields, and prints them in a friendly table or as JSON.
+A robust command line tool in Rust for decoding PEM certificates and probing HTTPS endpoints. It extracts Common Name and SANs, detects Certificate Transparency SCTs, prints TLS version and cipher suite, and measures Layer 4, Layer 6, and Layer 7 timings. It supports proxies, custom CA bundles, and optional chain export.
 
-[![CI/CD Pipeline](https://github.com/SCGIS-Wales/dcert/actions/workflows/ci.yml/badge.svg)](https://github.com/SCGIS-Wales/dcert/actions/workflows/ci.yml)
-
-## Features
-
-- Parse one or many certificates from a single PEM file
-- Show subject, issuer, serial number, validity window, and expiry status
-- Pretty console output or JSON
-- Filter to only expired certificates
-
-## Installation
-
-### Prebuilt binaries
-
-Download the latest release from the **Releases** page and place the `dcert` binary on your `PATH`.
+## Install from source
 
 ```bash
-# Example for x86_64 glibc
-curl -L https://github.com/SCGIS-Wales/dcert/releases/latest/download/dcert-x86_64-unknown-linux-gnu.tar.gz | tar xz
-chmod +x dcert
-sudo mv dcert /usr/local/bin/
-```
-
-### Build from source
-
-Prerequisites: Rust and Cargo.
-
-```bash
-git clone https://github.com/SCGIS-Wales/dcert.git
-cd dcert
 cargo build --release
-# Optional install to ~/.cargo/bin
-cargo install --path .
-```
-
-### Docker
-
-```bash
-# Pull
-docker pull ghcr.io/scgis-wales/dcert:main
-
-# Run with a local PEM file (positional filename)
-docker run --rm -v "$PWD:/data" ghcr.io/scgis-wales/dcert:main /data/certificate.pem
+# optional HTTP/3 feature placeholder
+# cargo build --release --features http3
 ```
 
 ## Usage
 
-### Basic
+### File mode
 
 ```bash
-# Validate a single certificate file
-dcert certificate.pem
-
-# Only show expired certificates
-dcert certificates.pem --expired-only
-
-# Output in JSON format
-dcert certificate.pem --format json
+dcert path/to/certs.pem [--format pretty|json|csv] [--expired-only]
 ```
 
-### Options
-
-```
-dcert [OPTIONS] <FILE>
-
-Arguments:
-  <FILE>  Path to a PEM file with one or more certificates
-
-Options:
-  -F, --format <FORMAT>  Output format [default: pretty] [possible values: pretty, json]
-      --expired-only     Show only expired certificates
-  -h, --help             Print help
-  -V, --version          Print version
-```
-
-### Input format
-
-A single file can contain multiple certificates back to back:
-
-```pem
------BEGIN CERTIFICATE-----
-...base64...
------END CERTIFICATE-----
------BEGIN CERTIFICATE-----
-...base64...
------END CERTIFICATE-----
-```
-
-## Output examples
-
-### Pretty
-
-```
-Certificate
-  Index        : 0
-  Subject      : C=US, ST=WA, L=Redmond, O=Microsoft Corporation, CN=portal.azure.com
-  Issuer       : C=US, O=Microsoft Corporation, CN=Microsoft Azure RSA TLS Issuing CA 07
-  Serial       : 3302491B72E6A86185CFC9711A000002491B72
-  Not Before   : 2025-08-26T06:32:23Z
-  Not After    : 2026-02-22T06:32:23Z
-  SANs         :
-    - DNS:portal.azure.com
-    - DNS:*.portal.azure.com
-    - DNS:*.portal.azure.net
-    - DNS:devicemanagement.microsoft.com
-    - DNS:endpoint.microsoft.com
-    - DNS:canary-endpoint.microsoft.com
-    - DNS:lighthouse.microsoft.com
-    - DNS:shell.azure.com
-    - DNS:*.reactblade.portal.azure.net
-    - DNS:*.reactblade-rc.portal.azure.net
-    - DNS:*.reactblade-ms.portal.azure.net
-    - DNS:vlcentral.microsoft.com
-  Status       : valid
-
-Certificate
-  Index        : 1
-  Subject      : C=US, O=Microsoft Corporation, CN=Microsoft Azure RSA TLS Issuing CA 07
-  Issuer       : C=US, O=DigiCert Inc, OU=www.digicert.com, CN=DigiCert Global Root G2
-  Serial       : 0A43A9509B01352F899579EC7208BA50
-  Not Before   : 2023-06-08T00:00:00Z
-  Not After    : 2026-08-25T23:59:59Z
-  Status       : valid
-
-Certificate
-  Index        : 2
-  Subject      : C=US, O=DigiCert Inc, OU=www.digicert.com, CN=DigiCert Global Root G2
-  Issuer       : C=US, O=DigiCert Inc, OU=www.digicert.com, CN=DigiCert Global Root G2
-  Serial       : 033AF1E6A711A9A0BB2864B11D09FAE5
-  Not Before   : 2013-08-01T12:00:00Z
-  Not After    : 2038-01-15T12:00:00Z
-  Status       : valid
-```
-
-### JSON
-
-```json
-[
-  {
-    "index": 0,
-    "subject": "C=US, ST=WA, L=Redmond, O=Microsoft Corporation, CN=portal.azure.com",
-    "issuer": "C=US, O=Microsoft Corporation, CN=Microsoft Azure RSA TLS Issuing CA 07",
-    "subject_alternative_names": [
-      "DNS:portal.azure.com",
-      "DNS:*.portal.azure.com",
-      "DNS:*.portal.azure.net",
-      "DNS:devicemanagement.microsoft.com",
-      "DNS:endpoint.microsoft.com",
-      "DNS:canary-endpoint.microsoft.com",
-      "DNS:lighthouse.microsoft.com",
-      "DNS:shell.azure.com",
-      "DNS:*.reactblade.portal.azure.net",
-      "DNS:*.reactblade-rc.portal.azure.net",
-      "DNS:*.reactblade-ms.portal.azure.net",
-      "DNS:vlcentral.microsoft.com"
-    ],
-    "serial_number": "3302491B72E6A86185CFC9711A000002491B72",
-    "not_before": "2025-08-26T06:32:23Z",
-    "not_after": "2026-02-22T06:32:23Z",
-    "is_expired": false
-  },
-  {
-    "index": 1,
-    "subject": "C=US, O=Microsoft Corporation, CN=Microsoft Azure RSA TLS Issuing CA 07",
-    "issuer": "C=US, O=DigiCert Inc, OU=www.digicert.com, CN=DigiCert Global Root G2",
-    "serial_number": "0A43A9509B01352F899579EC7208BA50",
-    "not_before": "2023-06-08T00:00:00Z",
-    "not_after": "2026-08-25T23:59:59Z",
-    "is_expired": false
-  },
-  {
-    "index": 2,
-    "subject": "C=US, O=DigiCert Inc, OU=www.digicert.com, CN=DigiCert Global Root G2",
-    "issuer": "C=US, O=DigiCert Inc, OU=www.digicert.com, CN=DigiCert Global Root G2",
-    "serial_number": "033AF1E6A711A9A0BB2864B11D09FAE5",
-    "not_before": "2013-08-01T12:00:00Z",
-    "not_after": "2038-01-15T12:00:00Z",
-    "is_expired": false
-  }
-]
-```
-
-## Tips
-
-### Inspect a live site quickly
+### HTTPS mode
 
 ```bash
-echo | openssl s_client -connect example.com:443 2>/dev/null   | openssl crl2pkcs7 -nocrl -certfile /dev/stdin | openssl pkcs7 -print_certs   | dcert --format json -
+dcert https://example.com   --tls-version 1.3   --http-version h2   --method GET   --headers key=value,key2=value2   --ca-file /path/to/ca.pem   --export-chain   --timeout-l4 15 --timeout-l6 15 --timeout-l7 15   --format pretty
 ```
 
-### Filter only expired from a bundle
+Notes:
+- Default TLS is 1.3.
+- Default HTTP is HTTP/2. When h3 is chosen, this build prints a notice unless compiled with a dedicated HTTP/3 client.
+- Proxies: honours `HTTPS_PROXY` or `HTTP_PROXY` and `NO_PROXY` patterns. Example: `NO_PROXY=::1,.internal.net`.
+- CA bundle: `--ca-file` overrides `SSL_CERT_FILE`. If verification fails, the handshake still completes and **Trusted with local TLS CAs** is set to `false`.
+- Chain export: `--export-chain` writes `domain-base64-pem.txt` in UTF 8.
 
-```bash
-dcert bundle.pem --expired-only
+### Output example (HTTPS)
+
+```
+HTTPS session
+  Connection on OSI layer 4 (TCP)     : OK
+  Connection on OSI layer 6 (TLS)     : OK
+  Connection on OSI layer 7 (HTTPS)   : OK
+  TLS version agreed                  : 1.3
+  TLS cipher suite                    : TLS13_AES_256_GCM_SHA384
+  Negotiated ALPN                     : h2
+  Network delay to layer 4 (ms)       : 23
+  Network delay to layer 7 (ms)       : 118
+  Trusted with local TLS CAs          : true
+  Client certificate requested        : false
 ```
 
-## Development
+Then the certificate chain is printed in the chosen format with `common_name`, `subject_alternative_names`, `ct_scts_embedded`, and more.
+
+### Version info
 
 ```bash
-# Format and lint
-cargo fmt --all
-cargo clippy --all-targets --all-features -- -D warnings
+dcert --version
+```
+Prints the tool version and all dependency versions captured from `Cargo.lock` at build time.
 
-# Tests
-cargo test
+## Docker
+
+A simple Alpine based multi stage build is included.
+
+```bash
+docker build -t dcert:local .
+docker run --rm -v $PWD:/work -w /work dcert:local dcert https://example.com
 ```
 
 ## Licence
 
-MIT. See [LICENCE](LICENSE).
-
-## Acknowledgements
-
-- Parsing by [x509-parser]
-- CLI by [clap]
-- Terminal colours by [colored]
-
-[x509-parser]: https://crates.io/crates/x509-parser
-[clap]: https://crates.io/crates/clap
-[colored]: https://crates.io/crates/colored
+MIT

@@ -1,244 +1,157 @@
+mod args;
+mod cert;
+mod https;
+mod proxy;
+
 use anyhow::{Context, Result};
-use clap::{Parser, ValueEnum};
-use colored::*;
+use args::{Args, OutputFormat};
+use clap::Parser;
+use colored::Colorize;
 use std::fs;
-use std::io::Cursor;
-use std::net::IpAddr;
-use std::path::PathBuf;
-use time::format_description::well_known::Rfc3339;
-use time::OffsetDateTime;
-use x509_parser::certificate::X509Certificate;
-use x509_parser::extensions::{GeneralName, ParsedExtension};
-use x509_parser::prelude::FromDer;
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
-enum OutputFormat {
-    Pretty,
-    Json,
-}
+include!(concat!(env!("OUT_DIR"), "/deps.rs"));
 
-#[derive(Parser, Debug)]
-#[command(name = "dcert")]
-#[command(about = "Decode and validate TLS certificates from a PEM file")]
-#[command(version = "0.1.0")]
-struct Args {
-    /// Path to the PEM file containing one or more certificates
-    file: PathBuf,
-
-    /// Output format
-    #[arg(short, long, value_enum, default_value_t = OutputFormat::Pretty)]
-    format: OutputFormat,
-
-    /// Show only expired certificates
-    #[arg(long)]
-    expired_only: bool,
-}
-
-#[derive(Debug, serde::Serialize)]
-struct CertInfo {
-    index: usize,
-    subject: String,
-    issuer: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    common_name: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    subject_alternative_names: Vec<String>,
-    serial_number: String,
-    not_before: String, // RFC 3339
-    not_after: String,  // RFC 3339
-    is_expired: bool,
-}
-
-/// Parse all PEM certificate blocks from `pem_data` and return owned `CertInfo`
-/// for each certificate. We do not store `X509Certificate` to avoid lifetime issues.
-fn parse_cert_infos_from_pem(pem_data: &str, expired_only: bool) -> Result<Vec<CertInfo>> {
-    let mut reader = Cursor::new(pem_data.as_bytes());
-    let mut infos = Vec::new();
-
-    // rustls-pemfile 2.x returns an iterator of Result<CertificateDer<'static>, Error>
-    let iter = rustls_pemfile::certs(&mut reader);
-    for (idx, der_res) in iter.enumerate() {
-        let der = der_res.map_err(|e| anyhow::anyhow!("Failed reading PEM blocks: {e}"))?;
-        let (_, cert) =
-            X509Certificate::from_der(der.as_ref()).map_err(|e| anyhow::anyhow!("Failed to parse DER: {e}"))?;
-
-        // Build owned info
-        let subject = cert.subject().to_string();
-        let issuer = cert.issuer().to_string();
-
-        // Serial as uppercase hex
-        let serial_bytes = cert.raw_serial();
-        let serial_number = serial_bytes.iter().map(|b| format!("{:02X}", b)).collect::<String>();
-
-        // Validity converted to RFC3339 strings
-        let nb: OffsetDateTime = cert.validity().not_before.to_datetime();
-        let na: OffsetDateTime = cert.validity().not_after.to_datetime();
-        let now = OffsetDateTime::now_utc();
-
-        let not_before = nb.format(&Rfc3339).unwrap_or_else(|_| nb.to_string());
-        let not_after = na.format(&Rfc3339).unwrap_or_else(|_| na.to_string());
-        let is_expired = na < now;
-
-        if expired_only && !is_expired {
-            continue;
-        }
-
-        let common_name = extract_common_name(&cert);
-        let subject_alternative_names = extract_sans(&cert);
-
-        infos.push(CertInfo {
-            index: idx,
-            subject,
-            issuer,
-            common_name,
-            subject_alternative_names,
-            serial_number,
-            not_before,
-            not_after,
-            is_expired,
-        });
+fn print_version() {
+    println!("dcert {}", PKG_VERSION);
+    println!("Dependencies:");
+    for line in DEP_VERSIONS.lines() {
+        println!("  {line}");
     }
-
-    Ok(infos)
 }
 
-fn extract_common_name(cert: &x509_parser::certificate::X509Certificate<'_>) -> Option<String> {
-    cert.subject()
-        .iter_attributes()
-        .find(|attr| *attr.attr_type() == x509_parser::oid_registry::OID_X509_COMMON_NAME)
-        .and_then(|attr| attr.attr_value().as_str().ok())
-        .map(|s| s.to_string())
-}
-
-fn extract_sans(cert: &X509Certificate<'_>) -> Vec<String> {
-    let mut out = Vec::new();
-
-    for ext in cert.extensions() {
-        if let ParsedExtension::SubjectAlternativeName(san) = ext.parsed_extension() {
-            for gn in &san.general_names {
-                match gn {
-                    GeneralName::DNSName(d) => out.push(format!("DNS:{}", d)),
-                    GeneralName::RFC822Name(e) => out.push(format!("Email:{}", e)),
-                    GeneralName::URI(u) => out.push(format!("URI:{}", u)),
-                    GeneralName::IPAddress(bytes) => match bytes.len() {
-                        4 => {
-                            if let Ok(v4) = <[u8; 4]>::try_from(&bytes[..]) {
-                                out.push(format!("IP:{}", IpAddr::from(v4)));
-                            }
-                        }
-                        16 => {
-                            if let Ok(v6) = <[u8; 16]>::try_from(&bytes[..]) {
-                                out.push(format!("IP:{}", IpAddr::from(v6)));
-                            }
-                        }
-                        _ => {}
-                    },
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    out
-}
-
-fn print_pretty(infos: &[CertInfo]) {
+fn print_pretty(infos: &[cert::CertInfo]) {
     for info in infos {
         println!("{}", "Certificate".bold());
         println!("  Index        : {}", info.index);
-        if let Some(cn) = &info.common_name {
-            println!("  Common Name  : {}", cn);
-        }
         println!("  Subject      : {}", info.subject);
         println!("  Issuer       : {}", info.issuer);
         println!("  Serial       : {}", info.serial_number);
         println!("  Not Before   : {}", info.not_before);
         println!("  Not After    : {}", info.not_after);
-
-        if !info.subject_alternative_names.is_empty() {
-            println!("  SANs         :");
-            for san in &info.subject_alternative_names {
-                println!("    - {}", san);
-            }
+        println!("  Status       : {}", if info.is_expired { "expired".red() } else { "valid".green() });
+        if let Some(cn) = &info.common_name {
+            println!("  Common Name  : {}", cn);
         }
-
-        let status = if info.is_expired {
-            "expired".red()
-        } else {
-            "valid".green()
-        };
-        println!("  Status       : {}", status);
+        if !info.subject_alternative_names.is_empty() {
+            println!("  SANs         : {}", info.subject_alternative_names.join(", "));
+        }
+        println!("  Is CA        : {}", info.is_ca);
+        println!("  CT embedded  : {}", info.ct_scts_embedded);
         println!();
     }
 }
 
-fn run() -> Result<i32> {
+fn to_csv(infos: &[cert::CertInfo]) -> Result<String> {
+    let mut wtr = csv::Writer::from_writer(vec![]);
+    wtr.write_record([
+        "index","subject","issuer","serial_number","not_before","not_after","is_expired","common_name","sans","is_ca","ct_scts_embedded"
+    ])?;
+    for i in infos {
+        wtr.write_record([
+            i.index.to_string(),
+            i.subject.clone(),
+            i.issuer.clone(),
+            i.serial_number.clone(),
+            i.not_before.clone(),
+            i.not_after.clone(),
+            i.is_expired.to_string(),
+            i.common_name.clone().unwrap_or_default(),
+            i.subject_alternative_names.join(";"),
+            i.is_ca.to_string(),
+            i.ct_scts_embedded.to_string(),
+        ])?;
+    }
+    let data = String::from_utf8(wtr.into_inner()?)?;
+    Ok(data)
+}
+
+fn main() -> Result<()> {
+    // Custom --version that prints dependencies too
+    if std::env::args().any(|a| a == "--version" || a == "-V") && std::env::args().count() == 2 {
+        print_version();
+        return Ok(());
+    }
+
     let args = Args::parse();
 
-    let pem_data =
-        fs::read_to_string(&args.file).with_context(|| format!("Failed to read file: {}", args.file.display()))?;
+    if args.input.starts_with("https://") {
+        // HTTPS probe
+        let headers_kv: Vec<(String,String)> = args.headers.as_deref()
+            .map(|s| s.split(',')
+                .filter_map(|kv| {
+                    let mut it = kv.splitn(2,'=');
+                    let k = it.next()?.trim().to_string();
+                    let v = it.next().unwrap_or("").trim().to_string();
+                    if k.is_empty() { None } else { Some((k,v)) }
+                })
+                .collect()
+            ).unwrap_or_default();
 
-    let infos =
-        parse_cert_infos_from_pem(&pem_data, args.expired_only).with_context(|| "Failed to parse PEM certificates")?;
+        let (session, chain) = https::probe_https(
+            &args.input,
+            args.tls_version,
+            args.http_version,
+            &args.method,
+            &headers_kv,
+            args.ca_file.as_ref().map(|p| p.as_path()),
+            args.timeout_l4,
+            args.timeout_l6,
+            args.timeout_l7,
+            args.export_chain,
+        ).with_context(|| "HTTPS probe failed")?;
 
-    if infos.is_empty() {
-        eprintln!("{}", "No valid certificates found in the file".red());
-        return Ok(1);
+        println!("{}", "HTTPS session".bold());
+        println!("  Connection on OSI layer 4 (TCP)     : {}", if session.l4_ok { "OK".green() } else { "NOT OK".red() });
+        println!("  Connection on OSI layer 6 (TLS)     : {}", if session.l6_ok { "OK".green() } else { "NOT OK".red() });
+        println!("  Connection on OSI layer 7 (HTTPS)   : {}", if session.l7_ok { "OK".green() } else { "NOT OK".red() });
+        if let Some(tv) = &session.tls_version {
+            println!("  TLS version agreed                  : {}", tv);
+        }
+        if let Some(cs) = &session.tls_cipher_suite {
+            println!("  TLS cipher suite                    : {}", cs);
+        }
+        if let Some(alpn) = &session.negotiated_alpn {
+            println!("  Negotiated ALPN                     : {}", alpn);
+        }
+        println!("  Network delay to layer 4 (ms)       : {}", session.t_l4_ms);
+        println!("  Network delay to layer 7 (ms)       : {}", session.t_l7_ms);
+        println!("  Trusted with local TLS CAs          : {}", session.trusted_with_local_cas);
+        println!("  Client certificate requested        : {}", session.client_cert_requested);
+
+        // Print certificates
+        let infos = cert::infos_from_x509(&chain);
+        match args.format {
+            OutputFormat::Pretty => {
+                println!();
+                print_pretty(&infos);
+            }
+            OutputFormat::Json => {
+                println!("{}", serde_json::to_string_pretty(&infos)?);
+            }
+            OutputFormat::Csv => {
+                println!("{}", to_csv(&infos)?);
+            }
+        }
+        return Ok(());
+    }
+
+    // File mode
+    let pem_data = fs::read_to_string(&args.input)
+        .with_context(|| format!("Failed to read file: {}", args.input))?;
+
+    let certs = cert::parse_pem_certificates(&pem_data)
+        .with_context(|| "Failed to parse PEM certificates")?;
+
+    let mut infos = cert::infos_from_x509(&certs);
+    if args.expired_only {
+        infos.retain(|i| i.is_expired);
     }
 
     match args.format {
         OutputFormat::Pretty => print_pretty(&infos),
-        OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&infos)?);
-        }
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&infos)?),
+        OutputFormat::Csv => println!("{}", to_csv(&infos)?),
     }
 
-    Ok(0)
-}
-
-fn main() {
-    match run() {
-        Ok(code) => std::process::exit(code),
-        Err(e) => {
-            eprintln!("{} {}", "Error:".red().bold(), e);
-            std::process::exit(2);
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_empty_pem() {
-        let result = parse_cert_infos_from_pem("", false);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap().len(), 0);
-    }
-
-    #[test]
-    fn test_invalid_pem() {
-        // Not valid PEM headers, should yield zero certs not an error
-        let result = parse_cert_infos_from_pem("invalid pem data", false);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap().len(), 0);
-    }
-
-    /// Reads certificate data from tests/data/test.pem.
-    /// Add a valid PEM there and run with `cargo test -- --ignored`
-    #[test]
-    #[ignore]
-    fn test_valid_from_external_file() -> Result<()> {
-        let path = PathBuf::from("tests/data/test.pem");
-        assert!(path.exists(), "tests/data/test.pem is missing");
-        let pem = std::fs::read_to_string(&path)?;
-        let infos = parse_cert_infos_from_pem(&pem, false)?;
-        assert!(!infos.is_empty(), "expected at least one certificate");
-        let first = &infos[0];
-        assert!(!first.subject.is_empty());
-        assert!(!first.issuer.is_empty());
-        assert!(!first.serial_number.is_empty());
-        Ok(())
-    }
+    Ok(())
 }
