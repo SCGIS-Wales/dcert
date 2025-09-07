@@ -1,8 +1,8 @@
 use crate::args::{HttpVersion, TlsVersion};
 use crate::proxy::choose_https_proxy;
 use anyhow::{Context, Result};
-use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::client::ResolvesClientCert;
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{ClientConnection, SignatureScheme, StreamOwned};
 use serde::Serialize;
@@ -53,7 +53,6 @@ impl ServerCertVerifier for AcceptAllVerifier {
         Ok(ServerCertVerified::assertion())
     }
 
-    // If your rustls requires these, return a blanket 'ok' for handshake signature checks too.
     #[allow(unused_variables)]
     fn verify_tls12_signature(
         &self,
@@ -145,7 +144,6 @@ fn connect_via_proxy(
     port: u16,
     _timeout: u64,
 ) -> Result<TcpStream> {
-    // Basic HTTP CONNECT
     let req = format!(
         "CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: keep-alive\r\n\r\n"
     );
@@ -165,7 +163,7 @@ fn alpn_for(http_version: HttpVersion) -> Vec<Vec<u8>> {
     match http_version {
         HttpVersion::H2 => vec![b"h2".to_vec()],
         HttpVersion::H1_1 => vec![b"http/1.1".to_vec()],
-        // This TLS/TCP probe doesn't do QUIC; send no ALPN for H3 (placeholder).
+        // Placeholder for H3 (QUIC not handled in this TCP/TLS probe).
         HttpVersion::H3 => Vec::new(),
     }
 }
@@ -190,7 +188,6 @@ fn l7_http11_request(
     tls.write_all(b"\r\n")?;
     tls.flush()?;
 
-    // Read a little bit to ensure server responded
     let deadline = Instant::now() + Duration::from_secs(timeout);
     let mut buf = [0u8; 1024];
     loop {
@@ -218,7 +215,10 @@ pub fn probe_https(
     timeout_l7: u64,
     ca_file: Option<&std::path::Path>,
     _export_chain: bool,
-) -> Result<(HttpsSession, Vec<x509_parser::prelude::X509Certificate<'static>>)> {
+) -> Result<(
+    HttpsSession,
+    Vec<x509_parser::prelude::X509Certificate<'static>>,
+)> {
     let url = Url::parse(url_s).context("Invalid URL")?;
     if url.scheme() != "https" {
         anyhow::bail!("Only https:// is supported for probing");
@@ -228,7 +228,11 @@ pub fn probe_https(
         .ok_or_else(|| anyhow::anyhow!("Host missing in URL"))?
         .to_string();
     let port = url.port().unwrap_or(443);
-    let path = if url.path().is_empty() { "/" } else { url.path() };
+    let path = if url.path().is_empty() {
+        "/"
+    } else {
+        url.path()
+    };
     let path_query = if let Some(q) = url.query() {
         format!("{path}?{q}")
     } else {
@@ -289,7 +293,7 @@ pub fn probe_https(
     // TLS handshake (L6)
     let t1 = Instant::now();
     tls.conn.complete_io(&mut tls.sock())?;
-    let _t_l6_ms = t1.elapsed().as_millis(); // kept local; not exposed
+    let _t_l6_ms = t1.elapsed().as_millis();
 
     // L7 probe
     let t2 = Instant::now();
@@ -314,7 +318,7 @@ pub fn probe_https(
         .alpn_protocol()
         .map(|p| String::from_utf8_lossy(p).to_string());
 
-    // Gather peer certificates (DER) and decode to X509 for the caller
+    // Peer certificates
     let peer_certs: Vec<CertificateDer<'static>> = tls
         .conn
         .peer_certificates()
