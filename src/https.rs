@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use url::Url;
 use x509_parser::prelude::FromDer;
 
+#[allow(dead_code)]
 #[derive(Debug)]
 struct NoClientAuthResolver;
 
@@ -207,6 +208,7 @@ fn l7_http11_request(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn probe_https(
     url_s: &str,
     tls_version: TlsVersion,
@@ -226,9 +228,11 @@ pub fn probe_https(
     if url.scheme() != "https" {
         anyhow::bail!("Only https:// is supported for probing");
     }
-    let host = url
+    let host_owned = url
         .host_str()
-        .ok_or_else(|| anyhow::anyhow!("Host missing in URL"))?;
+        .ok_or_else(|| anyhow::anyhow!("Host missing in URL"))?
+        .to_string();
+    let host_static: &'static str = Box::leak(host_owned.into_boxed_str());
     let port = url.port().unwrap_or(443);
     let path = if url.path().is_empty() {
         "/"
@@ -243,7 +247,7 @@ pub fn probe_https(
     // url will be dropped automatically at the end of its scope
 
     let t0 = Instant::now();
-    let tcp = if let Some(proxy) = choose_https_proxy(&host) {
+    let tcp = if let Some(proxy) = choose_https_proxy(host_static) {
         let proxy_host = proxy
             .host_str()
             .ok_or_else(|| anyhow::anyhow!("Proxy missing host"))?
@@ -258,9 +262,9 @@ pub fn probe_https(
             .ok_or_else(|| anyhow::anyhow!("Proxy resolved to no addresses"))?;
         let stream = TcpStream::connect_timeout(&proxy_addr, Duration::from_secs(timeout_l4))
             .context("TCP connect to proxy failed")?;
-        connect_via_proxy(stream, &host, port, timeout_l4)?
+        connect_via_proxy(stream, host_static, port, timeout_l4)?
     } else {
-        connect_direct(&host, port, timeout_l4)?
+        connect_direct(host_static, port, timeout_l4)?
     };
     let t_l4_ms = t0.elapsed().as_millis();
 
@@ -287,8 +291,8 @@ pub fn probe_https(
         .with_no_client_auth();
 
     cfg.alpn_protocols = alpn_for(http_version);
-    let server_name = ServerName::try_from(host).context("Invalid SNI")?;
-    let mut conn =
+    let server_name = ServerName::try_from(host_static).context("Invalid SNI")?;
+    let conn =
         ClientConnection::new(Arc::new(cfg), server_name).context("TLS client build failed")?;
     // Set timeouts before wrapping TcpStream in StreamOwned
     tcp.set_read_timeout(Some(Duration::from_secs(timeout_l6)))?;
@@ -297,7 +301,10 @@ pub fn probe_https(
 
     // TLS handshake (L6)
     let t1 = Instant::now();
-    tls.conn.complete_io(tls.get_mut())?;
+    // Perform TLS handshake manually
+    while tls.conn.is_handshaking() {
+        tls.conn.complete_io(&mut tls.sock)?;
+    }
     let _t_l6_ms = t1.elapsed().as_millis();
 
     // L7 probe
@@ -305,7 +312,7 @@ pub fn probe_https(
     let l7_ok = l7_http11_request(
         &mut tls,
         method,
-        host,
+        host_static,
         path_query.as_str(),
         headers_kv,
         timeout_l7,
