@@ -1,8 +1,6 @@
 use crate::args::{HttpVersion, TlsVersion};
 use crate::proxy::choose_https_proxy;
 use anyhow::{Context, Result};
-use base64::Engine;
-use colored::Colorize;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::client::ResolvesClientCert;
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
@@ -10,7 +8,6 @@ use rustls::{ClientConnection, SignatureScheme, StreamOwned};
 use serde::Serialize;
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use url::Url;
@@ -53,8 +50,28 @@ impl ServerCertVerifier for AcceptAllVerifier {
         _ocsp: &[u8],
         _now: UnixTime,
     ) -> std::result::Result<ServerCertVerified, rustls::Error> {
-        // We accept anything here; real trust checking is out of scope for the probe.
         Ok(ServerCertVerified::assertion())
+    }
+
+    // If your rustls requires these, return a blanket 'ok' for handshake signature checks too.
+    #[allow(unused_variables)]
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    #[allow(unused_variables)]
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+        Ok(HandshakeSignatureValid::assertion())
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
@@ -82,7 +99,6 @@ pub struct HttpsSession {
     pub negotiated_alpn: Option<String>,
     pub t_l4_ms: u128,
     pub t_l7_ms: u128,
-    pub trusted_with_local_cas: bool,
     pub client_cert_requested: bool,
 }
 
@@ -108,7 +124,9 @@ fn load_ca_bundle_der(
 }
 
 fn connect_direct(host: &str, port: u16, timeout: u64) -> Result<TcpStream> {
-    let addrs = (host, port).to_socket_addrs().context("DNS resolution failed")?;
+    let addrs = (host, port)
+        .to_socket_addrs()
+        .context("DNS resolution failed")?;
     let mut last_err: Option<std::io::Error> = None;
     for addr in addrs {
         match TcpStream::connect_timeout(&addr, Duration::from_secs(timeout)) {
@@ -121,7 +139,12 @@ fn connect_direct(host: &str, port: u16, timeout: u64) -> Result<TcpStream> {
     })))
 }
 
-fn connect_via_proxy(mut stream: TcpStream, host: &str, port: u16, _timeout: u64) -> Result<TcpStream> {
+fn connect_via_proxy(
+    mut stream: TcpStream,
+    host: &str,
+    port: u16,
+    _timeout: u64,
+) -> Result<TcpStream> {
     // Basic HTTP CONNECT
     let req = format!(
         "CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: keep-alive\r\n\r\n"
@@ -156,7 +179,8 @@ fn l7_http11_request(
     headers_kv: &[(String, String)],
     timeout: u64,
 ) -> Result<()> {
-    let req_line = format!("{method} {path_query} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n");
+    let req_line =
+        format!("{method} {path_query} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n");
     tls.write_all(req_line.as_bytes())?;
     for (k, v) in headers_kv {
         if !k.is_empty() {
@@ -251,9 +275,9 @@ pub fn probe_https(
 
     cfg.alpn_protocols = alpn_for(http_version);
 
-    let server_name =
-        ServerName::try_from(host.as_str()).context("Invalid SNI")?;
-    let mut conn = ClientConnection::new(Arc::new(cfg), server_name).context("TLS client build failed")?;
+    let server_name = ServerName::try_from(host.as_str()).context("Invalid SNI")?;
+    let mut conn =
+        ClientConnection::new(Arc::new(cfg), server_name).context("TLS client build failed")?;
     conn.set_buffer_limit(Some(64 * 1024));
 
     let mut tls = StreamOwned::new(conn, tcp);
@@ -264,12 +288,13 @@ pub fn probe_https(
 
     // TLS handshake (L6)
     let t1 = Instant::now();
-    tls.conn.complete_io(&mut tls.sock())?; // drive handshake
-    let t_l6_ms = t1.elapsed().as_millis();
+    tls.conn.complete_io(&mut tls.sock())?;
+    let _t_l6_ms = t1.elapsed().as_millis(); // kept local; not exposed
 
     // L7 probe
     let t2 = Instant::now();
-    let l7_ok = l7_http11_request(&mut tls, method, &host, &path_query, headers_kv, timeout_l7).is_ok();
+    let l7_ok =
+        l7_http11_request(&mut tls, method, &host, &path_query, headers_kv, timeout_l7).is_ok();
     let t_l7_ms = t2.elapsed().as_millis();
 
     // Negotiated info
@@ -284,7 +309,10 @@ pub fn probe_https(
         .negotiated_cipher_suite()
         .map(|cs| cs.suite().as_str().unwrap_or("unknown").to_string());
 
-    let negotiated_alpn = tls.conn.alpn_protocol().map(|p| String::from_utf8_lossy(p).to_string());
+    let negotiated_alpn = tls
+        .conn
+        .alpn_protocol()
+        .map(|p| String::from_utf8_lossy(p).to_string());
 
     // Gather peer certificates (DER) and decode to X509 for the caller
     let peer_certs: Vec<CertificateDer<'static>> = tls
@@ -302,9 +330,6 @@ pub fn probe_https(
         }
     }
 
-    // Placeholder trust signal (set to false; add real validation if desired)
-    let trusted_with_local_cas = false;
-
     let session = HttpsSession {
         l4_ok: true,
         l6_ok: true,
@@ -314,7 +339,6 @@ pub fn probe_https(
         negotiated_alpn,
         t_l4_ms,
         t_l7_ms,
-        trusted_with_local_cas,
         client_cert_requested: false,
     };
 

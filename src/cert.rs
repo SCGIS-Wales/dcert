@@ -32,7 +32,6 @@ pub fn parse_pem_to_der(pem: &str) -> Result<Vec<CertificateDer<'static>>> {
 
 /// Extract a displayable "CN=" value from the subject, if present.
 fn get_cn(cert: &X509Certificate<'_>) -> Option<String> {
-    // x509-parser exposes a helper iterator for commonName
     let mut it = cert.subject().iter_common_name();
     it.next()
         .and_then(|cn| cn.as_str().ok())
@@ -47,7 +46,7 @@ fn get_sans(cert: &X509Certificate<'_>) -> Vec<String> {
             match gn {
                 GeneralName::DNSName(dns) => out.push(dns.to_string()),
                 GeneralName::IPAddress(ip_bytes) => {
-                    // Try to render IPv4/IPv6; otherwise hex-encode.
+                    // Try IPv4/IPv6; otherwise hex-encode.
                     let s = match ip_bytes.len() {
                         4 => IpAddr::from([ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]])
                             .to_string(),
@@ -69,12 +68,9 @@ fn get_sans(cert: &X509Certificate<'_>) -> Vec<String> {
 
 /// Return true if the SCT list extension (1.3.6.1.4.1.11129.2.4.2) is present.
 fn has_embedded_sct(cert: &X509Certificate<'_>) -> bool {
-    // Build the OID safely (const fn is not available for this in the crate)
     let sct_oid =
         x509_parser::asn1_rs::Oid::from(&[1, 3, 6, 1, 4, 1, 11129, 2, 4, 2]).expect("valid OID");
-    cert.extensions()
-        .iter()
-        .any(|ext| ext.oid == sct_oid)
+    cert.extensions().iter().any(|ext| ext.oid == sct_oid)
 }
 
 /// Minimal time string formatter; x509-parser's time types implement Display.
