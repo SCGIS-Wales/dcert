@@ -275,8 +275,8 @@ pub fn probe_https(
     }
 
     let versions = match tls_version {
-        TlsVersion::Tls12 => &[&rustls::version::TLS12][..],
-        TlsVersion::Tls13 => &[&rustls::version::TLS13][..],
+        TlsVersion::V12 => &[&rustls::version::TLS12][..],
+        TlsVersion::V13 => &[&rustls::version::TLS13][..],
         TlsVersion::Auto => &[&rustls::version::TLS13, &rustls::version::TLS12][..],
     };
 
@@ -294,9 +294,9 @@ pub fn probe_https(
     conn.set_buffer_limit(Some(64 * 1024));
 
     let mut tls = StreamOwned::new(conn, tcp);
-    tls.sock()
+    tls.get_mut()
         .set_read_timeout(Some(Duration::from_secs(timeout_l6)))?;
-    tls.sock()
+    tls.get_mut()
         .set_write_timeout(Some(Duration::from_secs(timeout_l6)))?;
 
     // TLS handshake (L6)

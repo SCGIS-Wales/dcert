@@ -8,6 +8,9 @@ pub enum TlsVersion {
     /// TLS 1.3 (default)
     #[clap(name = "1.3")]
     V13,
+    /// Auto (default)
+    #[clap(name = "auto")]
+    Auto,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
