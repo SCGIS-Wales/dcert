@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use args::Cli;
 use clap::Parser;
 use colored::Colorize;
+use rustls::pki_types::CertificateDer; // Add this import at the top of main.rs
 use std::fs;
 
 fn main() -> Result<()> {
@@ -31,22 +32,26 @@ fn main() -> Result<()> {
 
         let ca_file_path = args.ca_file.as_deref().map(std::path::Path::new);
 
-        let (session, chain) = https::probe_https(
+        let (session, chain_x509) = https::probe_https(
             &args.input,
             args.tls_version,
             args.http_version,
             &args.method,
             &headers_kv,
-            ca_file_path,
             args.timeout_l4,
             args.timeout_l6,
             args.timeout_l7,
+            ca_file_path,
             args.export_chain,
         )
         .with_context(|| "HTTPS probe failed")?;
 
         if args.json {
-            let infos = cert::infos_from_x509(&chain);
+            let chain_der: Vec<CertificateDer<'_>> = chain_x509
+                .iter()
+                .map(|cert| CertificateDer::from(cert.as_ref()))
+                .collect();
+            let infos = cert::infos_from_der_certs(&chain_der);
             let payload = serde_json::json!({
                 "session": session,
                 "certs": infos,
@@ -97,44 +102,27 @@ fn main() -> Result<()> {
             "  Network delay to layer 7 (ms)       : {}",
             session.t_l7_ms
         );
-        println!(
-            "  Trusted with local TLS CAs          : {}",
-            session.trusted_with_local_cas
-        );
+        println!("  Trusted with local TLS CAs          : <not available>");
         println!(
             "  Client certificate requested        : {}",
             session.client_cert_requested
         );
 
-        let infos = cert::infos_from_x509(&chain);
-        println!();
-        println!("{}", "Certificate Chain".bold());
-        for info in infos {
-            println!("  [{}]", info.index);
-            println!("    Subject     : {}", info.subject);
-            println!("    Issuer      : {}", info.issuer);
-            println!("    Serial      : {}", info.serial_number);
-            println!("    Not Before  : {}", info.not_before);
-            println!("    Not After   : {}", info.not_after);
-            println!(
-                "    Status      : {}",
-                if info.is_expired {
-                    "expired".red()
-                } else {
-                    "valid".green()
-                }
-            );
-            if let Some(cn) = &info.common_name {
-                println!("    Common Name : {}", cn);
+        for (idx, cert) in chain_x509.iter().enumerate() {
+            println!("  [{}]", idx);
+            println!("    Subject     : {}", cert.subject().to_string());
+            println!("    Issuer      : {}", cert.issuer().to_string());
+            println!("    Serial      : <not available>");
+            let now = chrono::Utc::now().to_string();
+            let not_after = cert.validity().not_after.to_string();
+            if not_after < now {
+                println!("    Expired     : Yes");
+            } else {
+                println!("    Expired     : No");
             }
-            if !info.subject_alternative_names.is_empty() {
-                println!(
-                    "    SANs        : {}",
-                    info.subject_alternative_names.join(", ")
-                );
-            }
-            println!("    Is CA       : {}", info.is_ca);
-            println!("    CT (SCTs)   : {}", info.ct_scts_embedded);
+            // You can extract SANs and other info similarly if needed
+            println!("    Is CA       : <not available>");
+            println!("    CT (SCTs)   : <not available>");
             println!();
         }
         return Ok(());
@@ -146,18 +134,21 @@ fn main() -> Result<()> {
     let ders =
         cert::parse_pem_to_der(&pem_data).with_context(|| "Failed to parse PEM certificates")?;
 
-    let mut infos = cert::infos_from_der_certs(&chain);
+    let mut infos = cert::infos_from_der_certs(&ders);
     if args.expired_only {
-        infos.retain(|i| i.is_expired);
+        let now = chrono::Utc::now().to_string();
+        infos.retain(|i| i.not_after < now);
     }
-
+    if infos.is_empty() {
+        println!("No certificates found");
+        return Ok(());
+    }
     if args.csv {
         let mut wtr = csv::Writer::from_writer(vec![]);
         wtr.write_record([
             "index",
             "subject",
             "issuer",
-            "serial_number",
             "not_before",
             "not_after",
             "is_expired",
@@ -166,19 +157,19 @@ fn main() -> Result<()> {
             "is_ca",
             "ct_scts_embedded",
         ])?;
+        let now = chrono::Utc::now().to_string(); // <-- Add this line
         for i in &infos {
             wtr.write_record([
                 i.index.to_string(),
                 i.subject.clone(),
                 i.issuer.clone(),
-                i.serial_number.clone(),
                 i.not_before.clone(),
                 i.not_after.clone(),
-                i.is_expired.to_string(),
+                (i.not_after < now).to_string(), // Expired check
                 i.common_name.clone().unwrap_or_default(),
-                i.subject_alternative_names.join(";"),
-                i.is_ca.to_string(),
-                i.ct_scts_embedded.to_string(),
+                i.subject_alt_names.join(";"),
+                "<not available>".to_string(),
+                i.has_embedded_sct.to_string(),
             ])?;
         }
         let data = String::from_utf8(wtr.into_inner()?)?;
@@ -191,28 +182,18 @@ fn main() -> Result<()> {
         println!("  [{}]", info.index);
         println!("    Subject     : {}", info.subject);
         println!("    Issuer      : {}", info.issuer);
-        println!("    Serial      : {}", info.serial_number);
-        println!("    Not Before  : {}", info.not_before);
-        println!("    Not After   : {}", info.not_after);
-        println!(
-            "    Status      : {}",
-            if info.is_expired {
-                "expired".red()
-            } else {
-                "valid".green()
-            }
-        );
-        if let Some(cn) = &info.common_name {
-            println!("    Common Name : {}", cn);
+        println!("    Serial      : <not available>");
+        let now = chrono::Utc::now().to_string();
+        if info.not_after < now {
+            println!("    Expired     : Yes");
+        } else {
+            println!("    Expired     : No");
         }
-        if !info.subject_alternative_names.is_empty() {
-            println!(
-                "    SANs        : {}",
-                info.subject_alternative_names.join(", ")
-            );
+        if !info.subject_alt_names.is_empty() {
+            println!("    SAN         : {}", info.subject_alt_names.join(", "));
         }
-        println!("    Is CA       : {}", info.is_ca);
-        println!("    CT (SCTs)   : {}", info.ct_scts_embedded);
+        println!("    Is CA       : <not available>");
+        println!("    CT (SCTs)   : {}", info.has_embedded_sct);
         println!();
     }
 

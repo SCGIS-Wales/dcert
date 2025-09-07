@@ -228,8 +228,7 @@ pub fn probe_https(
     }
     let host = url
         .host_str()
-        .ok_or_else(|| anyhow::anyhow!("Host missing in URL"))?
-        .to_string();
+        .ok_or_else(|| anyhow::anyhow!("Host missing in URL"))?;
     let port = url.port().unwrap_or(443);
     let path = if url.path().is_empty() {
         "/"
@@ -241,17 +240,18 @@ pub fn probe_https(
     } else {
         path.to_string()
     };
+    // url will be dropped automatically at the end of its scope
 
-    // L4 connect (direct or proxy)
     let t0 = Instant::now();
     let tcp = if let Some(proxy) = choose_https_proxy(&host) {
         let proxy_host = proxy
             .host_str()
-            .ok_or_else(|| anyhow::anyhow!("Proxy missing host"))?;
+            .ok_or_else(|| anyhow::anyhow!("Proxy missing host"))?
+            .to_string();
         let proxy_port = proxy
             .port_or_known_default()
             .ok_or_else(|| anyhow::anyhow!("Proxy missing port"))?;
-        let proxy_addr = (proxy_host, proxy_port)
+        let proxy_addr = (proxy_host.as_str(), proxy_port)
             .to_socket_addrs()
             .context("Proxy DNS resolution failed")?
             .next()
@@ -287,30 +287,32 @@ pub fn probe_https(
         .with_no_client_auth();
 
     cfg.alpn_protocols = alpn_for(http_version);
-
-    let server_name = ServerName::try_from(host.as_str()).context("Invalid SNI")?;
+    let server_name = ServerName::try_from(host).context("Invalid SNI")?;
     let mut conn =
         ClientConnection::new(Arc::new(cfg), server_name).context("TLS client build failed")?;
-    conn.set_buffer_limit(Some(64 * 1024));
-
+    // Set timeouts before wrapping TcpStream in StreamOwned
+    tcp.set_read_timeout(Some(Duration::from_secs(timeout_l6)))?;
+    tcp.set_write_timeout(Some(Duration::from_secs(timeout_l6)))?;
     let mut tls = StreamOwned::new(conn, tcp);
-    tls.get_mut()
-        .set_read_timeout(Some(Duration::from_secs(timeout_l6)))?;
-    tls.get_mut()
-        .set_write_timeout(Some(Duration::from_secs(timeout_l6)))?;
 
     // TLS handshake (L6)
     let t1 = Instant::now();
-    tls.conn.complete_io(&mut tls.sock())?;
+    tls.conn.complete_io(tls.get_mut())?;
     let _t_l6_ms = t1.elapsed().as_millis();
 
     // L7 probe
     let t2 = Instant::now();
-    let l7_ok =
-        l7_http11_request(&mut tls, method, &host, &path_query, headers_kv, timeout_l7).is_ok();
+    let l7_ok = l7_http11_request(
+        &mut tls,
+        method,
+        host,
+        path_query.as_str(),
+        headers_kv,
+        timeout_l7,
+    )
+    .is_ok();
     let t_l7_ms = t2.elapsed().as_millis();
 
-    // Negotiated info
     let tls_version = tls.conn.protocol_version().map(|v| match v {
         rustls::ProtocolVersion::TLSv1_3 => "TLS1.3".to_string(),
         rustls::ProtocolVersion::TLSv1_2 => "TLS1.2".to_string(),
@@ -328,18 +330,23 @@ pub fn probe_https(
         .map(|p| String::from_utf8_lossy(p).to_string());
 
     // Peer certificates
-    let peer_certs: Vec<CertificateDer<'static>> = tls
+    let peer_certs: Vec<Vec<u8>> = tls
         .conn
         .peer_certificates()
         .unwrap_or(&[])
         .iter()
-        .cloned()
+        .map(|cert| cert.as_ref().to_vec())
         .collect();
 
     let mut chain = Vec::new();
+    let mut der_vecs: Vec<Box<[u8]>> = Vec::new();
     for der in &peer_certs {
-        if let Ok((_, c)) = x509_parser::certificate::X509Certificate::from_der(der.as_ref()) {
-            chain.push(c.to_owned());
+        // Allocate DER data on the heap and leak it to get 'static lifetime
+        let der_box: Box<[u8]> = der.clone().into_boxed_slice();
+        let der_static: &'static [u8] = Box::leak(der_box);
+        der_vecs.push(Box::from(der_static));
+        if let Ok((_, c)) = x509_parser::certificate::X509Certificate::from_der(der_static) {
+            chain.push(c);
         }
     }
 
