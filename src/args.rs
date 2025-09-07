@@ -1,77 +1,82 @@
 use clap::{Parser, ValueEnum};
-use std::path::PathBuf;
 
-#[derive(Copy, Clone, Debug, ValueEnum)]
-pub enum OutputFormat {
-    Pretty,
-    Json,
-    Csv,
-}
-
-#[derive(Copy, Clone, Debug, ValueEnum)]
+#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
 pub enum TlsVersion {
-    V13,
+    /// TLS 1.2
+    #[clap(name = "1.2")]
     V12,
+    /// TLS 1.3 (default)
+    #[clap(name = "1.3")]
+    V13,
 }
 
-#[derive(Copy, Clone, Debug, ValueEnum, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
 pub enum HttpVersion {
-    H3,
-    H2,
+    /// HTTP/1.1
+    #[clap(name = "HTTP/1.1")]
     H1_1,
+    /// HTTP/2 (default)
+    #[clap(name = "HTTP/2")]
+    H2,
+    /// HTTP/3 (experimental flag only)
+    #[clap(name = "HTTP/3")]
+    H3,
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "dcert", about = "Decode PEM TLS certificates from files or HTTPS endpoints")]
+#[command(
+    name = "dcert",
+    about = "Decode PEM TLS certificates from files or HTTPS endpoints"
+)]
 pub struct Cli {
     /// File path (.pem) or https:// URL
     pub input: String,
 
-    /// Output format
-    #[arg(long, default_value = "pretty", value_enum)]
-    pub format: OutputFormat,
-
-    /// Only print expired certificates
-    #[arg(long, default_value_t = false)]
-    pub expired_only: bool,
-
-    /// Show extended version info and exit
-    #[arg(long = "version-only", default_value_t = false)]
-    pub version_only: bool,
-
-    /// Preferred TLS version (default TLS 1.3)
-    #[arg(long = "tls-version", value_enum, default_value = "v13")]
+    /// TLS version to use (default: 1.3)
+    #[arg(long = "tls-version", value_enum, default_value = "1.3")]
     pub tls_version: TlsVersion,
 
-    /// HTTP protocol version to negotiate (default H2)
-    #[arg(long = "http-version", value_enum, default_value = "h2")]
+    /// HTTP protocol version to request (default: HTTP/2)
+    #[arg(long = "http-version", value_enum, default_value = "HTTP/2")]
     pub http_version: HttpVersion,
 
-    /// HTTP method for HTTPS probe (default GET)
-    #[arg(long, default_value = "GET")]
+    /// HTTP method (default: GET)
+    #[arg(long = "method", default_value = "GET")]
     pub method: String,
 
-    /// Optional request headers: "k=v,k2=v2"
-    #[arg(long)]
+    /// Optional extra headers: key=value,key2=value2
+    #[arg(long = "headers")]
     pub headers: Option<String>,
 
-    /// Override CA bundle file path (PEM). If not set, respects SSL_CERT_FILE.
+    /// Path to a CA bundle file to prefer over SSL_CERT_FILE
     #[arg(long = "ca-file")]
-    pub ca_file: Option<PathBuf>,
+    pub ca_file: Option<String>,
 
-    /// Timeout for layer 4 connect (seconds)
+    /// TCP connect timeout (seconds) – L4
     #[arg(long = "timeout-l4", default_value_t = 15)]
     pub timeout_l4: u64,
 
-    /// Timeout for TLS handshake (seconds)
+    /// TLS handshake timeout (seconds) – L6
     #[arg(long = "timeout-l6", default_value_t = 15)]
     pub timeout_l6: u64,
 
-    /// Timeout for HTTP request (seconds)
+    /// First-byte HTTP timeout (seconds) – L7
     #[arg(long = "timeout-l7", default_value_t = 15)]
     pub timeout_l7: u64,
 
-    /// Export full server chain as base64-PEM to <host>-base64-pem.txt
+    /// Export full TLS chain (PEM, base64) to file
     #[arg(long = "export-chain", default_value_t = false)]
     pub export_chain: bool,
+
+    /// Show only expired certs (file input mode)
+    #[arg(long = "expired-only", default_value_t = false)]
+    pub expired_only: bool,
+
+    /// Output JSON instead of text (endpoint mode)
+    #[arg(long = "json", default_value_t = false)]
+    pub json: bool,
+
+    /// Output CSV instead of text (file mode)
+    #[arg(long = "csv", default_value_t = false)]
+    pub csv: bool,
 }

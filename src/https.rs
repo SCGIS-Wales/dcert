@@ -2,19 +2,16 @@ use crate::args::{HttpVersion, TlsVersion};
 use crate::proxy::choose_https_proxy;
 use anyhow::{Context, Result};
 use base64::Engine;
-use rustls::client::danger::{
-    HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
-};
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::client::ResolvesClientCert;
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{ClientConnection, SignatureScheme, StreamOwned};
 use serde::Serialize;
-use std::fmt::Debug;
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, Instant};
 use url::Url;
@@ -87,7 +84,9 @@ impl ServerCertVerifier for AcceptAllVerifier {
 }
 
 /// Read CA bundle DERs from --ca-file or SSL_CERT_FILE. Returns None if neither is present.
-fn load_ca_bundle_der(ca_file: Option<&std::path::Path>) -> Result<Option<Vec<CertificateDer<'static>>>> {
+fn load_ca_bundle_der(
+    ca_file: Option<&std::path::Path>,
+) -> Result<Option<Vec<CertificateDer<'static>>>> {
     let path_opt = ca_file
         .map(|p| p.to_path_buf())
         .or_else(|| std::env::var_os("SSL_CERT_FILE").map(std::path::PathBuf::from));
@@ -96,8 +95,8 @@ fn load_ca_bundle_der(ca_file: Option<&std::path::Path>) -> Result<Option<Vec<Ce
         return Ok(None);
     };
 
-    let data = std::fs::read(&path)
-        .with_context(|| format!("Failed to read CA file {}", path.display()))?;
+    let data =
+        std::fs::read(&path).with_context(|| format!("Failed to read CA file {}", path.display()))?;
 
     let mut cursor = std::io::Cursor::new(&data);
     let mut ders = Vec::<CertificateDer<'static>>::new();
@@ -129,71 +128,52 @@ fn do_connect(addr: &str, timeout_secs: u64) -> Result<TcpStream> {
             break;
         }
     }
-    Err(anyhow::anyhow!(last_err.unwrap_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::TimedOut, "connect timeout")
-    })))
+
+    Err(anyhow::anyhow!(
+        last_err.unwrap_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::TimedOut, "connect timeout")
+        })
+    ))
 }
 
 fn connect_via_proxy(mut stream: TcpStream, host: &str, port: u16, timeout: u64) -> Result<TcpStream> {
-    let connect_req =
-        format!("CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: keep-alive\r\n\r\n");
+    let connect_req = format!(
+        "CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: keep-alive\r\n\r\n"
+    );
     stream.write_all(connect_req.as_bytes())?;
     stream.flush()?;
     let mut buf = [0u8; 1024];
-    let start = Instant::now();
-    let mut total = 0usize;
-    loop {
-        let n = stream.read(&mut buf[total..])?;
-        total += n;
-        if total >= 12 {
-            let s = std::str::from_utf8(&buf[..total]).unwrap_or("");
-            if s.starts_with("HTTP/1.1 200") || s.starts_with("HTTP/1.0 200") {
-                return Ok(stream);
-            }
-            if s.starts_with("HTTP/1.1 ") || s.starts_with("HTTP/1.0 ") {
-                let first = s.lines().next().unwrap_or(s);
-                return Err(anyhow::anyhow!("Proxy CONNECT failed: {first}"));
-            }
-        }
-        if start.elapsed() > Duration::from_secs(timeout) {
-            return Err(anyhow::anyhow!("Proxy CONNECT timeout"));
-        }
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(timeout)));
+    let n = stream.read(&mut buf)?;
+    let resp = String::from_utf8_lossy(&buf[..n]);
+    if resp.starts_with("HTTP/1.1 200") || resp.starts_with("HTTP/1.0 200") {
+        Ok(stream)
+    } else {
+        Err(anyhow::anyhow!(
+            "Proxy CONNECT failed: {}",
+            resp.lines().next().unwrap_or(&resp)
+        ))
     }
 }
 
-fn l7_http11_request(
-    stream: &mut StreamOwned<ClientConnection, TcpStream>,
+fn http11_request(
+    tls: &mut StreamOwned<ClientConnection, TcpStream>,
     method: &str,
     host: &str,
     path: &str,
     headers: &[(String, String)],
-    timeout: u64,
 ) -> Result<()> {
     let mut req = format!(
-        "{method} {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: dcert/{}\r\nConnection: close\r\n",
-        env!("CARGO_PKG_VERSION")
+        "{method} {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: dcert/{ver}\r\nConnection: close\r\n",
+        ver = env!("CARGO_PKG_VERSION"),
     );
     for (k, v) in headers {
         req.push_str(&format!("{k}: {v}\r\n"));
     }
     req.push_str("\r\n");
-    stream.write_all(req.as_bytes())?;
-    stream.flush()?;
-
-    // Read a tiny bit to be sure L7 is reachable
-    let start = Instant::now();
-    let mut buf = [0u8; 1024];
-    loop {
-        match stream.read(&mut buf) {
-            Ok(0) => return Err(anyhow::anyhow!("EOF before HTTP response")),
-            Ok(_) => return Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(e) => return Err(e.into()),
-        }
-        if start.elapsed() > Duration::from_secs(timeout) {
-            return Err(anyhow::anyhow!("HTTP read timeout"));
-        }
-    }
+    tls.write_all(req.as_bytes())?;
+    tls.flush()?;
+    Ok(())
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -203,7 +183,7 @@ pub struct HttpsSession {
     pub l7_ok: bool,
     pub tls_version: Option<String>,
     pub cipher_suite: Option<String>,
-    pub alpn: Option<String>,
+    pub negotiated_alpn: Option<String>,
     pub t_l4_ms: u128,
     pub t_l7_ms: u128,
     pub trusted_with_local_cas: bool,
@@ -221,7 +201,7 @@ pub fn probe_https(
     timeout_l6: u64,
     timeout_l7: u64,
     export_chain: bool,
-) -> Result<(HttpsSession, Vec<CertificateDer<'static>>)> {
+) -> Result<(HttpsSession, Vec<x509_parser::prelude::X509Certificate<'static>>)> {
     let url = Url::parse(url_s).context("Invalid URL")?;
     if url.scheme() != "https" {
         anyhow::bail!("Only https:// is supported for probing");
@@ -240,7 +220,7 @@ pub fn probe_https(
 
     // L4 connect (direct or proxy)
     let l4_start = Instant::now();
-    let mut tcp = if let Some(proxy) = choose_https_proxy(&host) {
+    let tcp = if let Some(proxy) = choose_https_proxy(&host) {
         let proxy_host = proxy
             .host_str()
             .ok_or_else(|| anyhow::anyhow!("Invalid proxy host"))?
@@ -249,195 +229,204 @@ pub fn probe_https(
             .port_or_known_default()
             .ok_or_else(|| anyhow::anyhow!("Invalid proxy port"))?;
         let s = do_connect(&format!("{proxy_host}:{proxy_port}"), timeout_l4)?;
-        let s = connect_via_proxy(s, &host, port, timeout_l4)?;
-        s
+        connect_via_proxy(s, &host, port, timeout_l4)?
     } else {
         do_connect(&format!("{host}:{port}"), timeout_l4)?
     };
     let t_l4_ms = l4_start.elapsed().as_millis();
 
-    // TLS config
-    let verifier: Arc<dyn ServerCertVerifier> = Arc::new(AcceptAllVerifier);
+    // Build rustls config
+    let mut roots = rustls::RootCertStore::empty();
+    if let Some(bundle) = load_ca_bundle_der(ca_file)? {
+        let _ = roots.add_parsable_certificates(bundle);
+    }
 
-    use rustls::version::{TLS12, TLS13};
-    let versions = match tls_version {
-        TlsVersion::V13 => &[&TLS13][..],
-        TlsVersion::V12 => &[&TLS12][..],
+    let alpn_protocols = match http_version {
+        HttpVersion::H2 => vec![b"h2".to_vec()],
+        HttpVersion::H1_1 => vec![b"http/1.1".to_vec()],
+        HttpVersion::H3 => vec![b"h2".to_vec(), b"http/1.1".to_vec()], // placeholder; HTTP/3 not implemented here
+    };
+
+    let versions: &[&'static rustls::SupportedProtocolVersion] = match tls_version {
+        TlsVersion::V13 => &[&rustls::version::TLS13],
+        TlsVersion::V12 => &[&rustls::version::TLS12],
     };
 
     let mut cfg = rustls::ClientConfig::builder_with_protocol_versions(versions)
         .dangerous()
-        .with_custom_certificate_verifier(verifier)
+        .with_custom_certificate_verifier(Arc::new(AcceptAllVerifier))
+        .with_root_certificates(roots.clone())
         .with_no_client_auth();
 
-    // Detect if server requests client certificate
+    // Track client-cert request
     let requested = Arc::new(AtomicBool::new(false));
     cfg.client_auth_cert_resolver = Arc::new(NoClientAuthResolver {
         was_requested: requested.clone(),
     });
 
-    // ALPN
-    cfg.alpn_protocols = match http_version {
-        HttpVersion::H1_1 => vec![b"http/1.1".to_vec()],
-        HttpVersion::H2 => vec![b"h2".to_vec()],
-        HttpVersion::H3 => vec![b"h3".to_vec(), b"h2".to_vec(), b"http/1.1".to_vec()],
-    };
+    cfg.alpn_protocols = alpn_protocols;
 
-    let server_name = ServerName::try_from(host.as_str()).context("Invalid SNI")?;
-    let mut conn = ClientConnection::new(Arc::new(cfg), server_name).context("TLS client build failed")?;
+    // SNI
+    let server_name = ServerName::try_from(host.clone()).context("Invalid SNI")?;
+    let mut conn =
+        ClientConnection::new(Arc::new(cfg), server_name).context("TLS client build failed")?;
     let mut tls = StreamOwned::new(conn, tcp);
 
     // L6 handshake
     let l6_start = Instant::now();
-    while tls.conn.is_handshaking() {
-        tls.conn
-            .complete_io(&mut tls.sock)
-            .map_err(|e| anyhow::anyhow!("TLS handshake error: {e}"))?;
+    loop {
+        match tls.conn.complete_io(&mut tls.sock) {
+            Ok(_) => {
+                if !tls.conn.is_handshaking() {
+                    break;
+                }
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!("TLS handshake error: {e}"));
+            }
+        }
         if l6_start.elapsed() > Duration::from_secs(timeout_l6) {
             anyhow::bail!("TLS handshake timeout");
         }
     }
+    let l6_ok = true;
 
-    // Collect negotiated parameters
-    let tls_version_str = tls
+    // TLS negotiated params
+    let tls_version_s = tls
         .conn
         .protocol_version()
         .map(|v| match v {
             rustls::ProtocolVersion::TLSv1_3 => "1.3".to_string(),
             rustls::ProtocolVersion::TLSv1_2 => "1.2".to_string(),
-            other => format!("{other:?}"),
+            _ => format!("{v:?}"),
         });
-
     let cipher_suite = tls
         .conn
         .negotiated_cipher_suite()
         .and_then(|cs| cs.suite().as_str().map(|s| s.to_string()));
-
-    let alpn = tls
+    let negotiated_alpn = tls
         .conn
         .alpn_protocol()
         .map(|b| String::from_utf8_lossy(b).to_string());
 
-    // L7 check
+    // L7 request (only HTTP/1.1 implemented; H2 path reaches server anyway)
     let l7_start = Instant::now();
     let mut l7_ok = false;
-    if http_version == HttpVersion::H1_1 {
-        if let Err(e) = l7_http11_request(&mut tls, method, &host, &path_query, headers_kv, timeout_l7) {
-            eprintln!("Note: HTTP/1.1 request failed: {e}");
-        } else {
+    match http_version {
+        HttpVersion::H1_1 => {
+            http11_request(&mut tls, method, &host, &path_query, headers_kv)?;
+            let mut buf = [0u8; 1];
+            let _ = tls.read(&mut buf)?;
             l7_ok = true;
         }
-    } else {
-        l7_ok = true; // consider reachable once TLS done for H2/H3
+        _ => {
+            // We don’t implement full H2/H3 here — but the TLS/ALPN is valid,
+            // so consider L7 reached once handshake finished.
+            l7_ok = true;
+        }
     }
     let t_l7_ms = l7_start.elapsed().as_millis();
 
-    // Peer chain
-    let chain: Vec<CertificateDer<'static>> = tls
+    // Capture chain for parsing/export
+    let peer_chain: Vec<CertificateDer<'static>> = tls
         .conn
         .peer_certificates()
-        .map(|v| v.iter().cloned().collect())
-        .unwrap_or_default();
+        .unwrap_or(&[])
+        .iter()
+        .cloned()
+        .collect();
 
-    // Optional export
-    if export_chain {
-        if let Some(host_only) = url.host_str() {
-            let fname = format!("{}-base64-pem.txt", host_only.replace('.', ""));
+    // Optional trust check against local bundle with rustls-webpki
+    let mut trusted_with_local_cas = false;
+    if !roots.is_empty() && !peer_chain.is_empty() {
+        // Build webpki anchors from RootCertStore
+        let anchors_vec: Vec<rustls_webpki::TrustAnchor<'_>> = roots
+            .roots
+            .iter()
+            .filter_map(|ta| {
+                rustls_webpki::TrustAnchor::try_from_cert_der(ta.der().as_ref()).ok()
+            })
+            .collect();
+        let trust = rustls_webpki::TlsServerTrustAnchors(&anchors_vec);
+
+        if let Some(end) = peer_chain.first() {
+            let intermediates: Vec<&[u8]> = peer_chain.iter().skip(1).map(|c| c.as_ref()).collect();
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            let ee = rustls_webpki::EndEntityCert::try_from(end.as_ref());
+            if let Ok(ee) = ee {
+                let dns_name = match rustls_webpki::DnsNameRef::try_from_ascii_str(&host) {
+                    Ok(n) => n,
+                    Err(_) => rustls_webpki::DnsNameRef::try_from_ascii("invalid.example").unwrap(),
+                };
+                let res = ee.verify_is_valid_tls_server_cert(
+                    &[
+                        &rustls_webpki::ECDSA_P256_SHA256,
+                        &rustls_webpki::ECDSA_P384_SHA384,
+                        &rustls_webpki::ED25519,
+                        &rustls_webpki::RSA_PKCS1_2048_8192_SHA256,
+                        &rustls_webpki::RSA_PKCS1_2048_8192_SHA384,
+                        &rustls_webpki::RSA_PKCS1_2048_8192_SHA512,
+                        &rustls_webpki::RSA_PSS_2048_8192_SHA256_LEGACY_KEY,
+                        &rustls_webpki::RSA_PSS_2048_8192_SHA384_LEGACY_KEY,
+                        &rustls_webpki::RSA_PSS_2048_8192_SHA512_LEGACY_KEY,
+                    ],
+                    &trust,
+                    &intermediates,
+                    rustls_webpki::Time::from_seconds_since_unix_epoch(now),
+                );
+                if res.is_ok() {
+                    // Hostname check
+                    if ee.verify_is_valid_for_dns_name(dns_name).is_ok() {
+                        trusted_with_local_cas = true;
+                    }
+                }
+            }
+        }
+    }
+
+    // Optionally export the chain as base64-PEM
+    if export_chain && !peer_chain.is_empty() {
+        if let Some(h) = url.host_str() {
+            let fname = format!("{}-base64-pem.txt", h.replace('.', ""));
             let mut out = String::new();
-            for der in &chain {
+            for der in &peer_chain {
                 let b64 = base64::engine::general_purpose::STANDARD.encode(der.as_ref());
                 out.push_str("-----BEGIN CERTIFICATE-----\n");
                 for chunk in b64.as_bytes().chunks(64) {
-                    out.push_str(std::str::from_utf8(chunk).unwrap_or_default());
+                    out.push_str(&String::from_utf8_lossy(chunk));
                     out.push('\n');
                 }
                 out.push_str("-----END CERTIFICATE-----\n");
             }
-            std::fs::write(&fname, out)?;
+            std::fs::write(&fname, out).with_context(|| format!("Write {fname}"))?;
         }
     }
 
-    // Trust check using local CA bundle only (ca-file or SSL_CERT_FILE)
-    let ca_bundle = load_ca_bundle_der(ca_file)?;
-    let trusted_with_local_cas = verify_chain_with_local_anchors(&host, &chain, ca_bundle.as_deref());
+    // Parse X.509s
+    let mut x509s = Vec::new();
+    for der in peer_chain {
+        if let Ok((_, c)) =
+            x509_parser::certificate::X509Certificate::from_der(der.as_ref())
+        {
+            x509s.push(c.to_owned());
+        }
+    }
 
     let session = HttpsSession {
         l4_ok: true,
-        l6_ok: true,
+        l6_ok,
         l7_ok,
-        tls_version: tls_version_str,
+        tls_version: tls_version_s,
         cipher_suite,
-        alpn,
+        negotiated_alpn,
         t_l4_ms,
         t_l7_ms,
         trusted_with_local_cas,
         client_cert_requested: requested.load(Ordering::SeqCst),
     };
 
-    Ok((session, chain))
-}
-
-/// Validate the server chain using rustls-webpki + the provided anchors (DER).
-fn verify_chain_with_local_anchors(
-    host: &str,
-    chain: &[CertificateDer<'_>],
-    anchors_der_opt: Option<&[CertificateDer<'_>]>,
-) -> bool {
-    use rustls_webpki::{EndEntityCert, Time, TlsServerTrustAnchors, TrustAnchor};
-
-    let Some(anchors_der) = anchors_der_opt else {
-        // No local bundle provided → cannot claim trusted
-        return false;
-    };
-
-    if chain.is_empty() || anchors_der.is_empty() {
-        return false;
-    }
-
-    // Convert anchor DERs into webpki TrustAnchor list.
-    let mut anchors = Vec::<TrustAnchor<'_>>::new();
-    for der in anchors_der {
-        if let Ok(ta) = TrustAnchor::try_from_cert_der(der.as_ref()) {
-            anchors.push(ta);
-        }
-    }
-    if anchors.is_empty() {
-        return false;
-    }
-
-    let end_entity = match EndEntityCert::try_from(chain[0].as_ref()) {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-
-    let intermediates: Vec<&[u8]> = chain.iter().skip(1).map(|c| c.as_ref()).collect();
-    let now = Time::try_from(std::time::SystemTime::now()).unwrap_or(Time::from_seconds_since_unix_epoch(0));
-
-    // Supported signature algorithms
-    let supported = [
-        &rustls_webpki::ECDSA_P256_SHA256,
-        &rustls_webpki::ECDSA_P384_SHA384,
-        &rustls_webpki::ED25519,
-        &rustls_webpki::RSA_PKCS1_2048_8192_SHA256,
-        &rustls_webpki::RSA_PKCS1_2048_8192_SHA384,
-        &rustls_webpki::RSA_PKCS1_2048_8192_SHA512,
-        &rustls_webpki::RSA_PSS_2048_8192_SHA256_LEGACY_KEY,
-        &rustls_webpki::RSA_PSS_2048_8192_SHA384_LEGACY_KEY,
-        &rustls_webpki::RSA_PSS_2048_8192_SHA512_LEGACY_KEY,
-    ];
-
-    let dns_name = match rustls_webpki::DnsNameRef::try_from_ascii_str(host) {
-        Ok(d) => d,
-        Err(_) => return false,
-    };
-
-    end_entity
-        .verify_is_valid_tls_server_cert(
-            &supported,
-            &TlsServerTrustAnchors(&anchors),
-            &intermediates,
-            now,
-        )
-        .is_ok()
-        && end_entity.verify_is_valid_for_dns_name(dns_name).is_ok()
+    Ok((session, x509s))
 }
