@@ -1,3 +1,4 @@
+use crate::args::{HttpVersion, TlsVersion};
 use crate::proxy::choose_https_proxy;
 use anyhow::{Context, Result};
 use base64::Engine;
@@ -14,6 +15,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 use url::Url;
+use x509_parser::prelude::FromDer;
 
 #[derive(Debug)]
 struct NoClientAuthResolver {
