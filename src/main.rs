@@ -113,28 +113,22 @@ fn main() -> Result<()> {
             println!("  [{}]", info.index);
             println!("    Subject     : {}", info.subject);
             println!("    Issuer      : {}", info.issuer);
-            println!("    Serial      : {}", info.serial_number);
-            println!("    Not Before  : {}", info.not_before);
-            println!("    Not After   : {}", info.not_after);
-            println!(
-                "    Status      : {}",
-                if info.is_expired {
-                    "expired".red()
-                } else {
-                    "valid".green()
-                }
-            );
-            if let Some(cn) = &info.common_name {
-                println!("    Common Name : {}", cn);
+            println!("    Serial      : <not available>");
+            // Expiration check: compare not_after with current time
+            let now = chrono::Utc::now().to_string();
+            if info.not_after < now {
+                println!("    Expired     : Yes");
+            } else {
+                println!("    Expired     : No");
             }
-            if !info.subject_alternative_names.is_empty() {
-                println!(
-                    "    SANs        : {}",
-                    info.subject_alternative_names.join(", ")
-                );
+            // Use subject_alt_names instead of subject_alternative_names
+            if !info.subject_alt_names.is_empty() {
+                println!("    SAN         : {}", info.subject_alt_names.join(", "));
             }
-            println!("    Is CA       : {}", info.is_ca);
-            println!("    CT (SCTs)   : {}", info.ct_scts_embedded);
+            // CA status not available in CertInfo
+            println!("    Is CA       : <not available>");
+            // Use has_embedded_sct instead of ct_scts_embedded
+            println!("    CT (SCTs)   : {}", info.has_embedded_sct);
             println!();
         }
         return Ok(());
@@ -191,28 +185,22 @@ fn main() -> Result<()> {
         println!("  [{}]", info.index);
         println!("    Subject     : {}", info.subject);
         println!("    Issuer      : {}", info.issuer);
-        println!("    Serial      : {}", info.serial_number);
-        println!("    Not Before  : {}", info.not_before);
-        println!("    Not After   : {}", info.not_after);
-        println!(
-            "    Status      : {}",
-            if info.is_expired {
-                "expired".red()
-            } else {
-                "valid".green()
-            }
-        );
-        if let Some(cn) = &info.common_name {
-            println!("    Common Name : {}", cn);
+        println!("    Serial      : <not available>");
+        // Expiration check: compare not_after with current time
+        let now = chrono::Utc::now().to_string();
+        if info.not_after < now {
+            println!("    Expired     : Yes");
+        } else {
+            println!("    Expired     : No");
         }
-        if !info.subject_alternative_names.is_empty() {
-            println!(
-                "    SANs        : {}",
-                info.subject_alternative_names.join(", ")
-            );
+        // Use subject_alt_names instead of subject_alternative_names
+        if !info.subject_alt_names.is_empty() {
+            println!("    SAN         : {}", info.subject_alt_names.join(", "));
         }
-        println!("    Is CA       : {}", info.is_ca);
-        println!("    CT (SCTs)   : {}", info.ct_scts_embedded);
+        // CA status not available in CertInfo
+        println!("    Is CA       : <not available>");
+        // Use has_embedded_sct instead of ct_scts_embedded
+        println!("    CT (SCTs)   : {}", info.has_embedded_sct);
         println!();
     }
 
