@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
+use hex;
 use rustls::pki_types::CertificateDer;
-use x509_parser::extensions::{GeneralName, SubjectAlternativeName};
+use x509_parser::extensions::GeneralName;
 use x509_parser::oid_registry::OID_X509_COMMON_NAME;
 use x509_parser::prelude::{FromDer, X509Certificate};
 
@@ -26,7 +27,6 @@ fn fmt_time(t: x509_parser::time::ASN1Time) -> String {
 }
 
 fn get_cn(cert: &X509Certificate<'_>) -> Option<String> {
-    // Prefer dedicated iterator if available; otherwise fallback to OID match
     if let Some(attr) = cert.subject().iter_common_name().next() {
         if let Ok(s) = attr.as_str() {
             return Some(s.to_string());
@@ -77,7 +77,6 @@ fn has_embedded_sct(cert: &X509Certificate<'_>) -> bool {
     cert.extensions().iter().any(|ext| ext.oid == sct_oid)
 }
 
-/// Parse PEM text into DER certificates
 pub fn parse_pem_to_der(pem_text: &str) -> Result<Vec<CertificateDer<'static>>> {
     use rustls_pemfile as pemfile;
 
@@ -90,7 +89,6 @@ pub fn parse_pem_to_der(pem_text: &str) -> Result<Vec<CertificateDer<'static>>> 
     Ok(ders)
 }
 
-/// Convert DER certs to printable `CertInfo`
 pub fn infos_from_der_certs(ders: &[CertificateDer<'_>]) -> Vec<CertInfo> {
     let now = time::OffsetDateTime::now_utc();
     ders.iter()

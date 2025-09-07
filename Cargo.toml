@@ -26,7 +26,7 @@ base64 = "0.22"
 hex = "0.4"
 
 # TLS + parsing
-rustls = { version = "0.23" }
+rustls = "0.23"
 rustls-webpki = "0.103"
 webpki-roots = "1.0.2"
 rustls-pemfile = "2.2"

@@ -7,7 +7,7 @@ use rustls::client::danger::{
 };
 use rustls::client::ResolvesClientCert;
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-use rustls::{ClientConfig, ClientConnection, RootCertStore, SignatureScheme, StreamOwned};
+use rustls::{ClientConnection, SignatureScheme, StreamOwned};
 use serde::Serialize;
 use std::fmt::Debug;
 use std::io::{Read, Write};
@@ -18,7 +18,6 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 use url::Url;
-use webpki_roots::TLS_SERVER_ROOTS;
 
 #[derive(Debug)]
 struct NoClientAuthResolver {
@@ -87,41 +86,25 @@ impl ServerCertVerifier for AcceptAllVerifier {
     }
 }
 
-fn load_root_store(ca_file: Option<&std::path::Path>) -> Result<RootCertStore> {
-    let mut store = RootCertStore::empty();
+/// Read CA bundle DERs from --ca-file or SSL_CERT_FILE. Returns None if neither is present.
+fn load_ca_bundle_der(ca_file: Option<&std::path::Path>) -> Result<Option<Vec<CertificateDer<'static>>>> {
+    let path_opt = ca_file
+        .map(|p| p.to_path_buf())
+        .or_else(|| std::env::var_os("SSL_CERT_FILE").map(std::path::PathBuf::from));
 
-    // 1) Explicit --ca-file has highest precedence
-    if let Some(path) = ca_file {
-        let data = std::fs::read(path)
-            .with_context(|| format!("Failed to read CA file {}", path.display()))?;
-        let mut cursor = std::io::Cursor::new(&data);
-        let mut v = Vec::<CertificateDer<'static>>::new();
-        for item in rustls_pemfile::certs(&mut cursor) {
-            v.push(item?);
-        }
-        let _ = store.add_parsable_certificates(v.into_iter());
-        return Ok(store);
+    let Some(path) = path_opt else {
+        return Ok(None);
+    };
+
+    let data = std::fs::read(&path)
+        .with_context(|| format!("Failed to read CA file {}", path.display()))?;
+
+    let mut cursor = std::io::Cursor::new(&data);
+    let mut ders = Vec::<CertificateDer<'static>>::new();
+    for item in rustls_pemfile::certs(&mut cursor) {
+        ders.push(item?);
     }
-
-    // 2) SSL_CERT_FILE environment variable
-    if let Ok(path) = std::env::var("SSL_CERT_FILE") {
-        let p = std::path::Path::new(&path);
-        if p.exists() {
-            let data = std::fs::read(p)
-                .with_context(|| format!("Failed to read SSL_CERT_FILE {}", p.display()))?;
-            let mut cursor = std::io::Cursor::new(&data);
-            let mut v = Vec::<CertificateDer<'static>>::new();
-            for item in rustls_pemfile::certs(&mut cursor) {
-                v.push(item?);
-            }
-            let _ = store.add_parsable_certificates(v.into_iter());
-            return Ok(store);
-        }
-    }
-
-    // 3) Fallback: bundled Mozilla roots from webpki-roots
-    let _ = store.add_parsable_certificates(TLS_SERVER_ROOTS.iter().cloned());
-    Ok(store)
+    Ok(Some(ders))
 }
 
 fn do_connect(addr: &str, timeout_secs: u64) -> Result<TcpStream> {
@@ -274,20 +257,17 @@ pub fn probe_https(
     let t_l4_ms = l4_start.elapsed().as_millis();
 
     // TLS config
-    let mut roots = load_root_store(ca_file)?;
-    // Accept all during the handshake so we can still collect chain even if invalid
     let verifier: Arc<dyn ServerCertVerifier> = Arc::new(AcceptAllVerifier);
 
-    use rustls::versions::{TLS12, TLS13};
+    use rustls::version::{TLS12, TLS13};
     let versions = match tls_version {
-        TlsVersion::V13 => &[&TLS13[..]][..],
-        TlsVersion::V12 => &[&TLS12[..]][..],
+        TlsVersion::V13 => &[&TLS13][..],
+        TlsVersion::V12 => &[&TLS12][..],
     };
 
     let mut cfg = rustls::ClientConfig::builder_with_protocol_versions(versions)
         .dangerous()
         .with_custom_certificate_verifier(verifier)
-        .with_root_certificates(roots.clone()) // still set roots for ALPN selection etc.
         .with_no_client_auth();
 
     // Detect if server requests client certificate
@@ -322,10 +302,10 @@ pub fn probe_https(
     let tls_version_str = tls
         .conn
         .protocol_version()
-        .map(|v| match v.version {
+        .map(|v| match v {
             rustls::ProtocolVersion::TLSv1_3 => "1.3".to_string(),
             rustls::ProtocolVersion::TLSv1_2 => "1.2".to_string(),
-            _ => format!("{:?}", v.version),
+            other => format!("{other:?}"),
         });
 
     let cipher_suite = tls
@@ -338,19 +318,17 @@ pub fn probe_https(
         .alpn_protocol()
         .map(|b| String::from_utf8_lossy(b).to_string());
 
-    // L7 (only perform an HTTP/1.1 request when HTTP/1.1 is selected)
+    // L7 check
     let l7_start = Instant::now();
     let mut l7_ok = false;
     if http_version == HttpVersion::H1_1 {
         if let Err(e) = l7_http11_request(&mut tls, method, &host, &path_query, headers_kv, timeout_l7) {
-            // We still proceed; certs are available already
             eprintln!("Note: HTTP/1.1 request failed: {e}");
         } else {
             l7_ok = true;
         }
     } else {
-        // For H2/H3 we consider Layer 7 reachable after handshake (ALPN negotiated)
-        l7_ok = true;
+        l7_ok = true; // consider reachable once TLS done for H2/H3
     }
     let t_l7_ms = l7_start.elapsed().as_millis();
 
@@ -379,8 +357,9 @@ pub fn probe_https(
         }
     }
 
-    // Separate trust verification (using webpki) against our chosen roots
-    let trusted_with_local_cas = verify_chain_with_roots(&host, &chain, &roots);
+    // Trust check using local CA bundle only (ca-file or SSL_CERT_FILE)
+    let ca_bundle = load_ca_bundle_der(ca_file)?;
+    let trusted_with_local_cas = verify_chain_with_local_anchors(&host, &chain, ca_bundle.as_deref());
 
     let session = HttpsSession {
         l4_ok: true,
@@ -398,17 +377,31 @@ pub fn probe_https(
     Ok((session, chain))
 }
 
-/// Validate the server chain using rustls-webpki + the given RootCertStore.
-fn verify_chain_with_roots(host: &str, chain: &[CertificateDer<'_>], roots: &RootCertStore) -> bool {
-    use rustls_webpki::{EndEntityCert, Time, TlsServerTrustAnchors};
-    // Convert roots into TrustAnchors expected by webpki.
-    let anchors_vec: Vec<rustls_webpki::TrustAnchor<'_>> = roots
-        .roots
-        .iter()
-        .filter_map(|ta| rustls_webpki::TrustAnchor::try_from_cert_der(ta.der().as_ref()).ok())
-        .collect();
+/// Validate the server chain using rustls-webpki + the provided anchors (DER).
+fn verify_chain_with_local_anchors(
+    host: &str,
+    chain: &[CertificateDer<'_>],
+    anchors_der_opt: Option<&[CertificateDer<'_>]>,
+) -> bool {
+    use rustls_webpki::{EndEntityCert, Time, TlsServerTrustAnchors, TrustAnchor};
 
-    if chain.is_empty() || anchors_vec.is_empty() {
+    let Some(anchors_der) = anchors_der_opt else {
+        // No local bundle provided → cannot claim trusted
+        return false;
+    };
+
+    if chain.is_empty() || anchors_der.is_empty() {
+        return false;
+    }
+
+    // Convert anchor DERs into webpki TrustAnchor list.
+    let mut anchors = Vec::<TrustAnchor<'_>>::new();
+    for der in anchors_der {
+        if let Ok(ta) = TrustAnchor::try_from_cert_der(der.as_ref()) {
+            anchors.push(ta);
+        }
+    }
+    if anchors.is_empty() {
         return false;
     }
 
@@ -420,7 +413,7 @@ fn verify_chain_with_roots(host: &str, chain: &[CertificateDer<'_>], roots: &Roo
     let intermediates: Vec<&[u8]> = chain.iter().skip(1).map(|c| c.as_ref()).collect();
     let now = Time::try_from(std::time::SystemTime::now()).unwrap_or(Time::from_seconds_since_unix_epoch(0));
 
-    // Supported signature algorithms list (webpki expects this)
+    // Supported signature algorithms
     let supported = [
         &rustls_webpki::ECDSA_P256_SHA256,
         &rustls_webpki::ECDSA_P384_SHA384,
@@ -441,12 +434,10 @@ fn verify_chain_with_roots(host: &str, chain: &[CertificateDer<'_>], roots: &Roo
     end_entity
         .verify_is_valid_tls_server_cert(
             &supported,
-            &TlsServerTrustAnchors(&anchors_vec),
+            &TlsServerTrustAnchors(&anchors),
             &intermediates,
             now,
         )
         .is_ok()
-        &&
-    // Name checks (SAN/CN)
-    end_entity.verify_is_valid_for_dns_name(dns_name).is_ok()
+        && end_entity.verify_is_valid_for_dns_name(dns_name).is_ok()
 }

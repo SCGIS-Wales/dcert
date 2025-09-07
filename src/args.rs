@@ -14,7 +14,7 @@ pub enum TlsVersion {
     V12,
 }
 
-#[derive(Copy, Clone, Debug, ValueEnum)]
+#[derive(Copy, Clone, Debug, ValueEnum, PartialEq, Eq)]
 pub enum HttpVersion {
     H3,
     H2,
@@ -55,7 +55,7 @@ pub struct Cli {
     #[arg(long)]
     pub headers: Option<String>,
 
-    /// Override CA bundle file path (PEM). If not set, respects SSL_CERT_FILE; otherwise uses webpki-roots.
+    /// Override CA bundle file path (PEM). If not set, respects SSL_CERT_FILE.
     #[arg(long = "ca-file")]
     pub ca_file: Option<PathBuf>,
 
