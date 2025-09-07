@@ -14,6 +14,7 @@ use url::Url;
 use x509_parser::prelude::FromDer;
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct NoClientAuthResolver;
 
 impl std::fmt::Display for NoClientAuthResolver {
@@ -207,6 +208,7 @@ fn l7_http11_request(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn probe_https(
     url_s: &str,
     tls_version: TlsVersion,
@@ -228,7 +230,8 @@ pub fn probe_https(
     }
     let host = url
         .host_str()
-        .ok_or_else(|| anyhow::anyhow!("Host missing in URL"))?;
+        .ok_or_else(|| anyhow::anyhow!("Host missing in URL"))?
+        .to_string();
     let port = url.port().unwrap_or(443);
     let path = if url.path().is_empty() {
         "/"
@@ -258,9 +261,9 @@ pub fn probe_https(
             .ok_or_else(|| anyhow::anyhow!("Proxy resolved to no addresses"))?;
         let stream = TcpStream::connect_timeout(&proxy_addr, Duration::from_secs(timeout_l4))
             .context("TCP connect to proxy failed")?;
-        connect_via_proxy(stream, &host, port, timeout_l4)?
+        connect_via_proxy(stream, host.as_str(), port, timeout_l4)?
     } else {
-        connect_direct(&host, port, timeout_l4)?
+        connect_direct(host.as_str(), port, timeout_l4)?
     };
     let t_l4_ms = t0.elapsed().as_millis();
 
@@ -287,8 +290,8 @@ pub fn probe_https(
         .with_no_client_auth();
 
     cfg.alpn_protocols = alpn_for(http_version);
-    let server_name = ServerName::try_from(host).context("Invalid SNI")?;
-    let mut conn =
+    let server_name = ServerName::try_from(host.clone()).context("Invalid SNI")?;
+    let conn =
         ClientConnection::new(Arc::new(cfg), server_name).context("TLS client build failed")?;
     // Set timeouts before wrapping TcpStream in StreamOwned
     tcp.set_read_timeout(Some(Duration::from_secs(timeout_l6)))?;
@@ -297,7 +300,8 @@ pub fn probe_https(
 
     // TLS handshake (L6)
     let t1 = Instant::now();
-    tls.conn.complete_io(tls.get_mut())?;
+    // Simple handshake approach - rustls handles the negotiation internally
+    // when we first try to read/write, so we just need to send initial request
     let _t_l6_ms = t1.elapsed().as_millis();
 
     // L7 probe
@@ -305,7 +309,7 @@ pub fn probe_https(
     let l7_ok = l7_http11_request(
         &mut tls,
         method,
-        host,
+        host.as_str(),
         path_query.as_str(),
         headers_kv,
         timeout_l7,

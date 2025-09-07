@@ -16,10 +16,8 @@ fn host_matches_no_proxy(host: &str, no_proxy_list: &[String]) -> bool {
         if host_l == *pat {
             return true;
         }
-        if pat.starts_with('.') {
-            if host_l.ends_with(pat) {
-                return true;
-            }
+        if pat.starts_with('.') && host_l.ends_with(pat) {
+            return true;
         }
     }
     false

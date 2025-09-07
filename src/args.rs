@@ -29,7 +29,8 @@ pub enum HttpVersion {
 #[derive(Parser, Debug)]
 #[command(
     name = "dcert",
-    about = "Decode PEM TLS certificates from files or HTTPS endpoints"
+    about = "Decode PEM TLS certificates from files or HTTPS endpoints",
+    version = "0.2.0"
 )]
 pub struct Cli {
     /// File path (.pem) or https:// URL

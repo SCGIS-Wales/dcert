@@ -110,8 +110,8 @@ fn main() -> Result<()> {
 
         for (idx, cert) in chain_x509.iter().enumerate() {
             println!("  [{}]", idx);
-            println!("    Subject     : {}", cert.subject().to_string());
-            println!("    Issuer      : {}", cert.issuer().to_string());
+            println!("    Subject     : {}", cert.subject());
+            println!("    Issuer      : {}", cert.issuer());
             println!("    Serial      : <not available>");
             let now = chrono::Utc::now().to_string();
             let not_after = cert.validity().not_after.to_string();
