@@ -28,12 +28,22 @@ fn print_pretty(infos: &[cert::CertInfo]) {
         println!("  Serial       : {}", info.serial_number);
         println!("  Not Before   : {}", info.not_before);
         println!("  Not After    : {}", info.not_after);
-        println!("  Status       : {}", if info.is_expired { "expired".red() } else { "valid".green() });
+        println!(
+            "  Status       : {}",
+            if info.is_expired {
+                "expired".red()
+            } else {
+                "valid".green()
+            }
+        );
         if let Some(cn) = &info.common_name {
             println!("  Common Name  : {}", cn);
         }
         if !info.subject_alternative_names.is_empty() {
-            println!("  SANs         : {}", info.subject_alternative_names.join(", "));
+            println!(
+                "  SANs         : {}",
+                info.subject_alternative_names.join(", ")
+            );
         }
         println!("  Is CA        : {}", info.is_ca);
         println!("  CT embedded  : {}", info.ct_scts_embedded);
@@ -44,7 +54,17 @@ fn print_pretty(infos: &[cert::CertInfo]) {
 fn to_csv(infos: &[cert::CertInfo]) -> Result<String> {
     let mut wtr = csv::Writer::from_writer(vec![]);
     wtr.write_record([
-        "index","subject","issuer","serial_number","not_before","not_after","is_expired","common_name","sans","is_ca","ct_scts_embedded"
+        "index",
+        "subject",
+        "issuer",
+        "serial_number",
+        "not_before",
+        "not_after",
+        "is_expired",
+        "common_name",
+        "sans",
+        "is_ca",
+        "ct_scts_embedded",
     ])?;
     for i in infos {
         wtr.write_record([
@@ -76,16 +96,20 @@ fn main() -> Result<()> {
 
     if args.input.starts_with("https://") {
         // HTTPS probe
-        let headers_kv: Vec<(String,String)> = args.headers.as_deref()
-            .map(|s| s.split(',')
-                .filter_map(|kv| {
-                    let mut it = kv.splitn(2,'=');
-                    let k = it.next()?.trim().to_string();
-                    let v = it.next().unwrap_or("").trim().to_string();
-                    if k.is_empty() { None } else { Some((k,v)) }
-                })
-                .collect()
-            ).unwrap_or_default();
+        let headers_kv: Vec<(String, String)> = args
+            .headers
+            .as_deref()
+            .map(|s| {
+                s.split(',')
+                    .filter_map(|kv| {
+                        let mut it = kv.splitn(2, '=');
+                        let k = it.next()?.trim().to_string();
+                        let v = it.next().unwrap_or("").trim().to_string();
+                        if k.is_empty() { None } else { Some((k, v)) }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
 
         let (session, chain) = https::probe_https(
             &args.input,
@@ -98,12 +122,34 @@ fn main() -> Result<()> {
             args.timeout_l6,
             args.timeout_l7,
             args.export_chain,
-        ).with_context(|| "HTTPS probe failed")?;
+        )
+        .with_context(|| "HTTPS probe failed")?;
 
         println!("{}", "HTTPS session".bold());
-        println!("  Connection on OSI layer 4 (TCP)     : {}", if session.l4_ok { "OK".green() } else { "NOT OK".red() });
-        println!("  Connection on OSI layer 6 (TLS)     : {}", if session.l6_ok { "OK".green() } else { "NOT OK".red() });
-        println!("  Connection on OSI layer 7 (HTTPS)   : {}", if session.l7_ok { "OK".green() } else { "NOT OK".red() });
+        println!(
+            "  Connection on OSI layer 4 (TCP)     : {}",
+            if session.l4_ok {
+                "OK".green()
+            } else {
+                "NOT OK".red()
+            }
+        );
+        println!(
+            "  Connection on OSI layer 6 (TLS)     : {}",
+            if session.l6_ok {
+                "OK".green()
+            } else {
+                "NOT OK".red()
+            }
+        );
+        println!(
+            "  Connection on OSI layer 7 (HTTPS)   : {}",
+            if session.l7_ok {
+                "OK".green()
+            } else {
+                "NOT OK".red()
+            }
+        );
         if let Some(tv) = &session.tls_version {
             println!("  TLS version agreed                  : {}", tv);
         }
@@ -113,10 +159,22 @@ fn main() -> Result<()> {
         if let Some(alpn) = &session.negotiated_alpn {
             println!("  Negotiated ALPN                     : {}", alpn);
         }
-        println!("  Network delay to layer 4 (ms)       : {}", session.t_l4_ms);
-        println!("  Network delay to layer 7 (ms)       : {}", session.t_l7_ms);
-        println!("  Trusted with local TLS CAs          : {}", session.trusted_with_local_cas);
-        println!("  Client certificate requested        : {}", session.client_cert_requested);
+        println!(
+            "  Network delay to layer 4 (ms)       : {}",
+            session.t_l4_ms
+        );
+        println!(
+            "  Network delay to layer 7 (ms)       : {}",
+            session.t_l7_ms
+        );
+        println!(
+            "  Trusted with local TLS CAs          : {}",
+            session.trusted_with_local_cas
+        );
+        println!(
+            "  Client certificate requested        : {}",
+            session.client_cert_requested
+        );
 
         // Print certificates
         let infos = cert::infos_from_x509(&chain);
