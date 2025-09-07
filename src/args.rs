@@ -1,74 +1,77 @@
 use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
+#[derive(Copy, Clone, Debug, ValueEnum)]
 pub enum OutputFormat {
     Pretty,
     Json,
     Csv,
 }
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
+#[derive(Copy, Clone, Debug, ValueEnum)]
 pub enum TlsVersion {
-    V12,
     V13,
+    V12,
 }
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
+#[derive(Copy, Clone, Debug, ValueEnum)]
 pub enum HttpVersion {
-    H1_1,
-    H2,
     H3,
+    H2,
+    H1_1,
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "dcert", version)]
-#[command(about = "Decode PEM TLS certificates from file or HTTPS URL")]
-pub struct Args {
-    /// Input source: a PEM file path or an https:// URL
+#[command(name = "dcert", about = "Decode PEM TLS certificates from files or HTTPS endpoints")]
+pub struct Cli {
+    /// File path (.pem) or https:// URL
     pub input: String,
 
     /// Output format
-    #[arg(short='F', long, value_enum, default_value_t = OutputFormat::Pretty)]
+    #[arg(long, default_value = "pretty", value_enum)]
     pub format: OutputFormat,
 
-    /// Only show expired certificates (file mode)
-    #[arg(long)]
+    /// Only print expired certificates
+    #[arg(long, default_value_t = false)]
     pub expired_only: bool,
 
-    /// TLS version to use when probing HTTPS (default 1.3)
-    #[arg(long, value_enum, default_value_t = TlsVersion::V13)]
+    /// Show extended version info and exit
+    #[arg(long = "version-only", default_value_t = false)]
+    pub version_only: bool,
+
+    /// Preferred TLS version (default TLS 1.3)
+    #[arg(long = "tls-version", value_enum, default_value = "v13")]
     pub tls_version: TlsVersion,
 
-    /// HTTP version preference when probing HTTPS (default h2). h3 requires a special build.
-    #[arg(long, value_enum, default_value_t = HttpVersion::H2)]
+    /// HTTP protocol version to negotiate (default H2)
+    #[arg(long = "http-version", value_enum, default_value = "h2")]
     pub http_version: HttpVersion,
 
-    /// Optional request method for HTTPS probe (GET, POST, PUT, DELETE, OPTIONS, etc.)
+    /// HTTP method for HTTPS probe (default GET)
     #[arg(long, default_value = "GET")]
     pub method: String,
 
-    /// Optional request headers, comma separated key=value pairs
+    /// Optional request headers: "k=v,k2=v2"
     #[arg(long)]
     pub headers: Option<String>,
 
-    /// Optional CA bundle file path (overrides SSL_CERT_FILE)
-    #[arg(long)]
+    /// Override CA bundle file path (PEM). If not set, respects SSL_CERT_FILE; otherwise uses webpki-roots.
+    #[arg(long = "ca-file")]
     pub ca_file: Option<PathBuf>,
 
-    /// Export fetched TLS chain to a single PEM file (URL mode only)
-    #[arg(long)]
-    pub export_chain: bool,
-
-    /// Timeout for OSI layer 4 connect, seconds (default 15)
-    #[arg(long, default_value_t = 15)]
+    /// Timeout for layer 4 connect (seconds)
+    #[arg(long = "timeout-l4", default_value_t = 15)]
     pub timeout_l4: u64,
 
-    /// Timeout for OSI layer 6 TLS handshake, seconds (default 15)
-    #[arg(long, default_value_t = 15)]
+    /// Timeout for TLS handshake (seconds)
+    #[arg(long = "timeout-l6", default_value_t = 15)]
     pub timeout_l6: u64,
 
-    /// Timeout for OSI layer 7 first-byte, seconds (default 15)
-    #[arg(long, default_value_t = 15)]
+    /// Timeout for HTTP request (seconds)
+    #[arg(long = "timeout-l7", default_value_t = 15)]
     pub timeout_l7: u64,
+
+    /// Export full server chain as base64-PEM to <host>-base64-pem.txt
+    #[arg(long = "export-chain", default_value_t = false)]
+    pub export_chain: bool,
 }
