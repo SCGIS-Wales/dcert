@@ -1,4 +1,4 @@
-# dcert · TLS certificate decoder
+# dcert · TLS PEM base64 certificate decoder
 
 A small Rust CLI that reads one or more PEM encoded X.509 certificates from a file, extracts key fields, and prints them in a friendly table or as JSON.
 
@@ -96,11 +96,42 @@ A single file can contain multiple certificates back to back:
 ```
 Certificate
   Index        : 0
-  Subject      : CN=example.com
-  Issuer       : CN=Example CA,O=Example Ltd,C=GB
-  Serial       : BEDF2A827D16EA343
-  Not Before   : 2025-01-15T12:00:00Z
-  Not After    : 2026-01-15T12:00:00Z
+  Subject      : C=US, ST=WA, L=Redmond, O=Microsoft Corporation, CN=portal.azure.com
+  Issuer       : C=US, O=Microsoft Corporation, CN=Microsoft Azure RSA TLS Issuing CA 07
+  Serial       : 3302491B72E6A86185CFC9711A000002491B72
+  Not Before   : 2025-08-26T06:32:23Z
+  Not After    : 2026-02-22T06:32:23Z
+  SANs         :
+    - DNS:portal.azure.com
+    - DNS:*.portal.azure.com
+    - DNS:*.portal.azure.net
+    - DNS:devicemanagement.microsoft.com
+    - DNS:endpoint.microsoft.com
+    - DNS:canary-endpoint.microsoft.com
+    - DNS:lighthouse.microsoft.com
+    - DNS:shell.azure.com
+    - DNS:*.reactblade.portal.azure.net
+    - DNS:*.reactblade-rc.portal.azure.net
+    - DNS:*.reactblade-ms.portal.azure.net
+    - DNS:vlcentral.microsoft.com
+  Status       : valid
+
+Certificate
+  Index        : 1
+  Subject      : C=US, O=Microsoft Corporation, CN=Microsoft Azure RSA TLS Issuing CA 07
+  Issuer       : C=US, O=DigiCert Inc, OU=www.digicert.com, CN=DigiCert Global Root G2
+  Serial       : 0A43A9509B01352F899579EC7208BA50
+  Not Before   : 2023-06-08T00:00:00Z
+  Not After    : 2026-08-25T23:59:59Z
+  Status       : valid
+
+Certificate
+  Index        : 2
+  Subject      : C=US, O=DigiCert Inc, OU=www.digicert.com, CN=DigiCert Global Root G2
+  Issuer       : C=US, O=DigiCert Inc, OU=www.digicert.com, CN=DigiCert Global Root G2
+  Serial       : 033AF1E6A711A9A0BB2864B11D09FAE5
+  Not Before   : 2013-08-01T12:00:00Z
+  Not After    : 2038-01-15T12:00:00Z
   Status       : valid
 ```
 
@@ -110,11 +141,43 @@ Certificate
 [
   {
     "index": 0,
-    "subject": "CN=example.com",
-    "issuer": "CN=Example CA,O=Example Ltd,C=GB",
-    "serial_number": "BEDF2A827D16EA343",
-    "not_before": "2025-01-15T12:00:00Z",
-    "not_after": "2026-01-15T12:00:00Z",
+    "subject": "C=US, ST=WA, L=Redmond, O=Microsoft Corporation, CN=portal.azure.com",
+    "issuer": "C=US, O=Microsoft Corporation, CN=Microsoft Azure RSA TLS Issuing CA 07",
+    "subject_alternative_names": [
+      "DNS:portal.azure.com",
+      "DNS:*.portal.azure.com",
+      "DNS:*.portal.azure.net",
+      "DNS:devicemanagement.microsoft.com",
+      "DNS:endpoint.microsoft.com",
+      "DNS:canary-endpoint.microsoft.com",
+      "DNS:lighthouse.microsoft.com",
+      "DNS:shell.azure.com",
+      "DNS:*.reactblade.portal.azure.net",
+      "DNS:*.reactblade-rc.portal.azure.net",
+      "DNS:*.reactblade-ms.portal.azure.net",
+      "DNS:vlcentral.microsoft.com"
+    ],
+    "serial_number": "3302491B72E6A86185CFC9711A000002491B72",
+    "not_before": "2025-08-26T06:32:23Z",
+    "not_after": "2026-02-22T06:32:23Z",
+    "is_expired": false
+  },
+  {
+    "index": 1,
+    "subject": "C=US, O=Microsoft Corporation, CN=Microsoft Azure RSA TLS Issuing CA 07",
+    "issuer": "C=US, O=DigiCert Inc, OU=www.digicert.com, CN=DigiCert Global Root G2",
+    "serial_number": "0A43A9509B01352F899579EC7208BA50",
+    "not_before": "2023-06-08T00:00:00Z",
+    "not_after": "2026-08-25T23:59:59Z",
+    "is_expired": false
+  },
+  {
+    "index": 2,
+    "subject": "C=US, O=DigiCert Inc, OU=www.digicert.com, CN=DigiCert Global Root G2",
+    "issuer": "C=US, O=DigiCert Inc, OU=www.digicert.com, CN=DigiCert Global Root G2",
+    "serial_number": "033AF1E6A711A9A0BB2864B11D09FAE5",
+    "not_before": "2013-08-01T12:00:00Z",
+    "not_after": "2038-01-15T12:00:00Z",
     "is_expired": false
   }
 ]
