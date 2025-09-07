@@ -56,15 +56,15 @@ pub struct Cli {
     pub ca_file: Option<String>,
 
     /// TCP connect timeout (seconds) – L4
-    #[arg(long = "timeout-l4", default_value_t = 15)]
+    #[arg(long, default_value = "3")]
     pub timeout_l4: u64,
 
     /// TLS handshake timeout (seconds) – L6
-    #[arg(long = "timeout-l6", default_value_t = 15)]
+    #[arg(long, default_value = "3")]
     pub timeout_l6: u64,
 
     /// First-byte HTTP timeout (seconds) – L7
-    #[arg(long = "timeout-l7", default_value_t = 15)]
+    #[arg(long, default_value = "3")]
     pub timeout_l7: u64,
 
     /// Export full TLS chain (PEM, base64) to file

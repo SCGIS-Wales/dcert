@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use base64::Engine;
 use rustls::pki_types::CertificateDer;
 use rustls_pemfile as pemfile;
 use serde::Serialize;
@@ -12,11 +13,32 @@ pub struct CertInfo {
     pub index: usize,
     pub subject: String,
     pub issuer: String,
+    pub serial: String, // <-- Add this field
     pub not_before: String,
     pub not_after: String,
     pub common_name: Option<String>,
     pub subject_alt_names: Vec<String>,
     pub has_embedded_sct: bool,
+    pub is_ca: Option<bool>,
+}
+
+/// Convert DER certificates to PEM base64 strings.
+#[allow(dead_code)]
+pub fn der_chain_to_pem_base64(ders: &[CertificateDer]) -> Vec<String> {
+    ders.iter()
+        .map(|der| {
+            let b64 = base64::engine::general_purpose::STANDARD.encode(der.as_ref());
+            format!(
+                "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----",
+                b64.chars()
+                    .collect::<Vec<_>>()
+                    .chunks(64)
+                    .map(|chunk| chunk.iter().collect::<String>())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        })
+        .collect()
 }
 
 /// Parse a PEM blob into a vector of DER certificates.
@@ -31,6 +53,7 @@ pub fn parse_pem_to_der(pem: &str) -> Result<Vec<CertificateDer<'static>>> {
 }
 
 /// Extract a displayable "CN=" value from the subject, if present.
+#[allow(dead_code)]
 fn get_cn(cert: &X509Certificate<'_>) -> Option<String> {
     let mut it = cert.subject().iter_common_name();
     it.next()
@@ -39,6 +62,7 @@ fn get_cn(cert: &X509Certificate<'_>) -> Option<String> {
 }
 
 /// Extract SANs (DNS/IP) as strings.
+#[allow(dead_code)]
 fn get_sans(cert: &X509Certificate<'_>) -> Vec<String> {
     let mut out = Vec::new();
     if let Ok(Some(san_ext)) = cert.subject_alternative_name() {
@@ -74,34 +98,63 @@ fn has_embedded_sct(cert: &X509Certificate<'_>) -> bool {
 }
 
 /// Minimal time string formatter; x509-parser's time types implement Display.
+#[allow(dead_code)]
 fn fmt_time<T: ToString>(t: T) -> String {
     t.to_string()
 }
 
-/// Convert parsed DER certs to high-level infos.
-pub fn infos_from_der_certs(ders: &[CertificateDer<'_>]) -> Vec<CertInfo> {
-    let mut out = Vec::new();
-    for (idx, der) in ders.iter().enumerate() {
-        if let Ok((_, cert)) = X509Certificate::from_der(der.as_ref()) {
-            let subject = cert.subject().to_string();
-            let issuer = cert.issuer().to_string();
-            let nb = fmt_time(cert.validity().not_before);
-            let na = fmt_time(cert.validity().not_after);
-            let cn = get_cn(&cert);
-            let sans = get_sans(&cert);
-            let ct = has_embedded_sct(&cert);
-
-            out.push(CertInfo {
-                index: idx,
-                subject,
-                issuer,
-                not_before: nb,
-                not_after: na,
-                common_name: cn,
-                subject_alt_names: sans,
-                has_embedded_sct: ct,
-            });
-        }
-    }
-    out
+/// Interrogate DER certificates for display info.
+pub fn infos_from_der_certs(ders: &[CertificateDer]) -> Vec<CertInfo> {
+    ders.iter()
+        .enumerate()
+        .filter_map(|(index, der)| {
+            let (_, cert) = X509Certificate::from_der(der.as_ref()).ok()?;
+            let serial = cert.serial.to_str_radix(16);
+            let common_name = cert
+                .subject()
+                .iter_common_name()
+                .next()
+                .map(|cn| cn.as_str().unwrap_or("").to_string());
+            let subject_alt_names = cert
+                .subject_alternative_name()
+                .map(|san_ext| {
+                    san_ext
+                        .unwrap()
+                        .value
+                        .general_names
+                        .iter()
+                        .filter_map(|gn| match gn {
+                            GeneralName::DNSName(dns) => Some(dns.to_string()),
+                            _ => None,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let has_embedded_sct = has_embedded_sct(&cert);
+            let is_ca = cert
+                .basic_constraints()
+                .ok()
+                .and_then(|ext| ext.map(|bc| bc.value.ca));
+            Some(CertInfo {
+                index,
+                subject: cert.subject().to_string(),
+                issuer: cert.issuer().to_string(),
+                serial,
+                not_before: cert
+                    .validity()
+                    .not_before
+                    .to_rfc2822()
+                    .unwrap_or_else(|e| format!("<invalid: {}>", e)),
+                not_after: cert
+                    .validity()
+                    .not_after
+                    .to_rfc2822()
+                    .unwrap_or_else(|e| format!("<invalid: {}>", e)),
+                common_name,
+                subject_alt_names,
+                has_embedded_sct,
+                is_ca,
+            })
+        })
+        .collect()
 }

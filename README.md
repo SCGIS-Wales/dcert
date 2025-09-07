@@ -1,6 +1,6 @@
 # dcert – TLS Certificate Decoder and HTTPS Probe
 
-A robust command line tool in Rust for decoding PEM certificates and probing HTTPS endpoints. It extracts Common Name and SANs, detects Certificate Transparency SCTs, prints TLS version and cipher suite, and measures Layer 4, Layer 6, and Layer 7 timings. It supports proxies, custom CA bundles, and optional chain export.
+`dcert` is a Rust CLI tool for decoding PEM certificates and probing HTTPS endpoints. It extracts and displays certificate details (subject, issuer, serial, common name, SANs, CA status, Certificate Transparency SCTs), prints TLS version and cipher suite, and measures connection timings for TCP, TLS, and HTTPS layers. It supports proxies, custom CA bundles, and exporting certificate chains.
 
 ## Install from source
 
@@ -10,13 +10,16 @@ cargo build --release
 
 ## Usage
 
-### File mode
+### File mode (PEM certificate decoding)
 
 ```bash
 dcert path/to/certs.pem [--format pretty|json|csv] [--expired-only]
 ```
 
-### HTTPS mode
+- **--format**: Output format (`pretty`, `json`, or `csv`). Default: `pretty`.
+- **--expired-only**: Show only expired certificates.
+
+### HTTPS mode (endpoint probe)
 
 ```bash
 dcert https://example.com \
@@ -26,16 +29,35 @@ dcert https://example.com \
   --headers key=value,key2=value2 \
   --ca-file /path/to/ca.pem \
   --export-chain \
-  --timeout-l4 15 --timeout-l6 15 --timeout-l7 15 \
+  --timeout-l4 3 --timeout-l6 3 --timeout-l7 3 \
   --format pretty
 ```
 
-Notes:
-- Default TLS version is 1.3.
-- Default HTTP version is HTTP/2.
-- Proxies: honours `HTTPS_PROXY`, `HTTP_PROXY`, and `NO_PROXY` patterns (e.g. `NO_PROXY=::1,.internal.net`).
-- CA bundle: `--ca-file` overrides `SSL_CERT_FILE`. If verification fails, the handshake still completes and **Trusted with local TLS CAs** is set to `<not available>`.
-- Chain export: `--export-chain` writes the certificate chain to a file in PEM format.
+- **--tls-version**: TLS version (`1.2`, `1.3`, or `auto`). Default: `1.3`.
+- **--http-version**: HTTP version (`HTTP/1.1` or `HTTP/2`). Default: `HTTP/2`.
+- **--method**: HTTP method. Default: `GET`.
+- **--headers**: Comma-separated HTTP headers.
+- **--ca-file**: Custom CA bundle for verification. Overrides `SSL_CERT_FILE`.
+- **--export-chain**: Export the certificate chain to PEM.
+- **--timeout-l4**: TCP connect timeout (seconds). Default: `3`.
+- **--timeout-l6**: TLS handshake timeout (seconds). Default: `3`.
+- **--timeout-l7**: HTTPS request timeout (seconds). Default: `3`.
+- **--format**: Output format (`pretty`, `json`, or `csv`). Default: `pretty`.
+
+### Features
+
+- **Certificate details**: Subject, issuer, serial number, common name, SANs (one per line), CA status, Certificate Transparency (SCTs), validity dates, and expiration status (colored).
+- **Session info**: TLS version, cipher suite, negotiated ALPN, client certificate request status, and connection timings for each layer.
+- **Proxy support**: Honors `HTTPS_PROXY`, `HTTP_PROXY`, and `NO_PROXY` environment variables.
+- **Custom CA bundle**: Use `--ca-file` to specify a CA bundle.
+- **Chain export**: Use `--export-chain` to write the certificate chain to PEM.
+- **Output formats**: Pretty table (with colors), JSON, or CSV.
+
+### Understanding the Timing Output
+
+- **Network delay to layer 4 (ms):** Time to establish the TCP connection (includes DNS and network latency).
+- **Network delay to layer 7 (ms):** Time to complete the HTTP(S) request after TLS handshake.
+- Layer 4 (TCP) always occurs before Layer 7 (HTTPS). Layer 4 can be slower due to network conditions, DNS, or proxies. Layer 7 is typically faster because it only measures the HTTP request/response after the connection is ready.
 
 ### Output example (HTTPS)
 
@@ -53,7 +75,7 @@ HTTPS session
   Client certificate requested        : false
 ```
 
-The certificate chain is printed in the chosen format with fields such as `common_name`, `subject_alt_names`, and `has_embedded_sct`.
+Certificate details are shown in a table with fields such as `Common Name`, `Subject Alternative Names`, `Serial`, `Is CA`, `Certificate Transparency (SCTs)`, `Issued on`, `Expires on`, and colored `Expired` status.
 
 ### Version info
 

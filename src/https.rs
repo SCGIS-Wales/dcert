@@ -371,3 +371,24 @@ pub fn probe_https(
 
     Ok((session, chain))
 }
+
+// Implement Display for HttpsSession
+use std::fmt;
+
+impl fmt::Display for HttpsSession {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "HttpsSession {{ l4_ok: {}, l6_ok: {}, l7_ok: {}, tls_version: {:?}, cipher_suite: {:?}, negotiated_alpn: {:?}, t_l4_ms: {}, t_l7_ms: {}, client_cert_requested: {} }}",
+            self.l4_ok,
+            self.l6_ok,
+            self.l7_ok,
+            self.tls_version,
+            self.cipher_suite,
+            self.negotiated_alpn,
+            self.t_l4_ms,
+            self.t_l7_ms,
+            self.client_cert_requested
+        )
+    }
+}

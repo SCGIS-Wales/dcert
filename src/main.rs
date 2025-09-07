@@ -7,7 +7,8 @@ use anyhow::{Context, Result};
 use args::Cli;
 use clap::Parser;
 use colored::Colorize;
-use rustls::pki_types::CertificateDer; // Add this import at the top of main.rs
+use comfy_table::{Cell, Color, ContentArrangement, Row, Table, presets::UTF8_FULL};
+use rustls::pki_types::CertificateDer;
 use std::fs;
 
 fn main() -> Result<()> {
@@ -32,7 +33,7 @@ fn main() -> Result<()> {
 
         let ca_file_path = args.ca_file.as_deref().map(std::path::Path::new);
 
-        let (session, chain_x509) = https::probe_https(
+        let probe_result = https::probe_https(
             &args.input,
             args.tls_version,
             args.http_version,
@@ -43,8 +44,25 @@ fn main() -> Result<()> {
             args.timeout_l7,
             ca_file_path,
             args.export_chain,
-        )
-        .with_context(|| "HTTPS probe failed")?;
+        );
+
+        let (session, chain_x509) = match probe_result {
+            Ok(res) => res,
+            Err(e) => {
+                eprintln!("Error: HTTPS probe failed\n");
+                if let Some(session) = e.downcast_ref::<https::HttpsSession>() {
+                    if !session.l4_ok {
+                        eprintln!("Layer 4 (TCP) failed");
+                    } else if !session.l6_ok {
+                        eprintln!("Layer 6 (TLS) failed");
+                    } else if !session.l7_ok {
+                        eprintln!("Layer 7 (HTTPS) failed");
+                    }
+                }
+                eprintln!("\nCaused by:\n    {}", e);
+                return Ok(());
+            }
+        };
 
         if args.json {
             let chain_der: Vec<CertificateDer<'_>> = chain_x509
@@ -61,52 +79,64 @@ fn main() -> Result<()> {
         }
 
         println!("{}", "HTTPS session".bold());
-        println!(
-            "  Connection on OSI layer 4 (TCP)     : {}",
-            if session.l4_ok {
+
+        let mut session_table = Table::new();
+        session_table
+            .load_preset(UTF8_FULL)
+            .set_content_arrangement(ContentArrangement::Dynamic)
+            .set_header(vec!["Check", "Status"]);
+
+        session_table.add_row(vec![
+            Cell::new("Connection on OSI layer 4 (TCP)"),
+            Cell::new(if session.l4_ok {
                 "OK".green()
             } else {
                 "NOT OK".red()
-            }
-        );
-        println!(
-            "  Connection on OSI layer 6 (TLS)     : {}",
-            if session.l6_ok {
+            }),
+        ]);
+        session_table.add_row(vec![
+            Cell::new("Connection on OSI layer 6 (TLS)"),
+            Cell::new(if session.l6_ok {
                 "OK".green()
             } else {
                 "NOT OK".red()
-            }
-        );
-        println!(
-            "  Connection on OSI layer 7 (HTTPS)   : {}",
-            if session.l7_ok {
+            }),
+        ]);
+        session_table.add_row(vec![
+            Cell::new("Connection on OSI layer 7 (HTTPS)"),
+            Cell::new(if session.l7_ok {
                 "OK".green()
             } else {
                 "NOT OK".red()
-            }
-        );
+            }),
+        ]);
         if let Some(tv) = &session.tls_version {
-            println!("  TLS version agreed                  : {}", tv);
+            session_table.add_row(vec![Cell::new("TLS version agreed"), Cell::new(tv)]);
         }
         if let Some(cs) = &session.cipher_suite {
-            println!("  TLS cipher suite                    : {}", cs);
+            session_table.add_row(vec![Cell::new("TLS cipher suite"), Cell::new(cs)]);
         }
         if let Some(alpn) = &session.negotiated_alpn {
-            println!("  ALPN negotiated                     : {}", alpn);
+            session_table.add_row(vec![Cell::new("ALPN negotiated"), Cell::new(alpn)]);
         }
-        println!(
-            "  Network delay to layer 4 (ms)       : {}",
-            session.t_l4_ms
-        );
-        println!(
-            "  Network delay to layer 7 (ms)       : {}",
-            session.t_l7_ms
-        );
-        println!("  Trusted with local TLS CAs          : <not available>");
-        println!(
-            "  Client certificate requested        : {}",
-            session.client_cert_requested
-        );
+        session_table.add_row(vec![
+            Cell::new("Network delay to layer 4 (ms)"),
+            Cell::new(session.t_l4_ms.to_string()),
+        ]);
+        session_table.add_row(vec![
+            Cell::new("Network delay to layer 7 (ms)"),
+            Cell::new(session.t_l7_ms.to_string()),
+        ]);
+        session_table.add_row(vec![
+            Cell::new("Trusted with local TLS CAs"),
+            Cell::new("<not available>"),
+        ]);
+        session_table.add_row(vec![
+            Cell::new("Client certificate requested"),
+            Cell::new(session.client_cert_requested.to_string()),
+        ]);
+
+        println!("{session_table}");
 
         for (idx, cert) in chain_x509.iter().enumerate() {
             println!("  [{}]", idx);
@@ -178,24 +208,65 @@ fn main() -> Result<()> {
     }
 
     println!("{}", "Certificates".bold());
-    for info in infos {
-        println!("  [{}]", info.index);
-        println!("    Subject     : {}", info.subject);
-        println!("    Issuer      : {}", info.issuer);
-        println!("    Serial      : <not available>");
-        let now = chrono::Utc::now().to_string();
-        if info.not_after < now {
-            println!("    Expired     : Yes");
+
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .set_content_arrangement(ContentArrangement::Dynamic)
+        .set_header(vec![
+            "Index",
+            "Subject",
+            "Issuer",
+            "Serial",
+            "Common Name",
+            "SANs",
+            "Is CA",
+            "Certificate Transparency (SCTs)",
+            "Issued on",
+            "Expires on",
+            "Expired",
+        ]);
+
+    let now = chrono::Utc::now().to_string();
+
+    for (idx, _cert_der) in ders.iter().enumerate() {
+        let info = &infos[idx];
+        let subject = info.subject.clone();
+        let issuer = info.issuer.clone();
+        let serial = "<not available>"; // Replace with actual serial extraction if possible
+        let common_name = info.common_name.clone().unwrap_or_default();
+        let sans = info.subject_alt_names.join(";");
+        let is_ca_cell = Cell::new("<not available>");
+        let ct_cell = Cell::new(if info.has_embedded_sct {
+            "true"
         } else {
-            println!("    Expired     : No");
-        }
-        if !info.subject_alt_names.is_empty() {
-            println!("    SAN         : {}", info.subject_alt_names.join(", "));
-        }
-        println!("    Is CA       : <not available>");
-        println!("    CT (SCTs)   : {}", info.has_embedded_sct);
-        println!();
+            "false"
+        });
+        let not_before = info.not_before.clone();
+        let not_after = info.not_after.clone();
+        let expired = not_after < now;
+        let expired_cell = if expired {
+            Cell::new("true").fg(Color::Red)
+        } else {
+            Cell::new("false").fg(Color::Green)
+        };
+
+        table.add_row(Row::from(vec![
+            Cell::new(idx),
+            Cell::new(subject),
+            Cell::new(issuer),
+            Cell::new(serial),
+            Cell::new(common_name),
+            Cell::new(sans),
+            is_ca_cell,
+            ct_cell,
+            Cell::new(not_before),
+            Cell::new(not_after),
+            expired_cell,
+        ]));
     }
+
+    println!("{table}");
 
     Ok(())
 }
