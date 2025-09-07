@@ -361,8 +361,9 @@ pub fn probe_https(
                         .as_secs();
 
                     if let Ok(ee) = EndEntityCert::try_from(end.as_ref()) {
-                        let dns = DnsNameRef::try_from_ascii_str(&host)
-                            .unwrap_or_else(|_| DnsNameRef::try_from_ascii_str("invalid.example").unwrap());
+                        let dns = DnsNameRef::try_from_ascii_str(&host).unwrap_or_else(|_| {
+                            DnsNameRef::try_from_ascii_str("invalid.example").unwrap()
+                        });
 
                         let res = ee.verify_is_valid_tls_server_cert(
                             &[
