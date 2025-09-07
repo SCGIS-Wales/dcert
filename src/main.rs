@@ -23,11 +23,7 @@ fn main() -> Result<()> {
                         let mut it = kv.splitn(2, '=');
                         let k = it.next()?.trim().to_string();
                         let v = it.next().unwrap_or("").trim().to_string();
-                        if k.is_empty() {
-                            None
-                        } else {
-                            Some((k, v))
-                        }
+                        if k.is_empty() { None } else { Some((k, v)) }
                     })
                     .collect()
             })
@@ -62,7 +58,11 @@ fn main() -> Result<()> {
         println!("{}", "HTTPS session".bold());
         println!(
             "  Connection on OSI layer 4 (TCP)     : {}",
-            if session.l4_ok { "OK".green() } else { "NOT OK".red() }
+            if session.l4_ok {
+                "OK".green()
+            } else {
+                "NOT OK".red()
+            }
         );
         println!(
             "  Connection on OSI layer 6 (TLS)     : {}",

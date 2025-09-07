@@ -205,7 +205,10 @@ pub fn probe_https(
     timeout_l6: u64,
     timeout_l7: u64,
     export_chain: bool,
-) -> Result<(HttpsSession, Vec<x509_parser::prelude::X509Certificate<'static>>)> {
+) -> Result<(
+    HttpsSession,
+    Vec<x509_parser::prelude::X509Certificate<'static>>,
+)> {
     let url = Url::parse(url_s).context("Invalid URL")?;
     if url.scheme() != "https" {
         anyhow::bail!("Only https:// is supported for probing");
@@ -215,7 +218,11 @@ pub fn probe_https(
         .ok_or_else(|| anyhow::anyhow!("Host missing in URL"))?
         .to_string();
     let port = url.port().unwrap_or(443);
-    let path = if url.path().is_empty() { "/" } else { url.path() };
+    let path = if url.path().is_empty() {
+        "/"
+    } else {
+        url.path()
+    };
     let path_query = if let Some(q) = url.query() {
         format!("{path}?{q}")
     } else {
@@ -248,7 +255,7 @@ pub fn probe_https(
     let alpn_protocols = match http_version {
         HttpVersion::H2 => vec![b"h2".to_vec()],
         HttpVersion::H1_1 => vec![b"http/1.1".to_vec()],
-        HttpVersion::H3 => vec![b"h2".to_vec(), b"http/1.1".to_vec()], // placeholder; HTTP/3 not implemented here
+        HttpVersion::H3 => vec![b"h2".to_vec(), b"http/1.1".to_vec()], // placeholder
     };
 
     let versions: &[&'static rustls::SupportedProtocolVersion] = match tls_version {
@@ -321,8 +328,7 @@ pub fn probe_https(
             l7_ok = true;
         }
         _ => {
-            // We don’t implement full H2/H3 here — but the TLS/ALPN is valid,
-            // so consider L7 reached once handshake finished.
+            // We don’t implement full H2/H3 here — count handshake as reaching L7.
             l7_ok = true;
         }
     }
@@ -337,13 +343,15 @@ pub fn probe_https(
         .cloned()
         .collect();
 
-    // Optional trust check against local bundle (requires rustls-webpki in Cargo.toml)
+    // Optional trust check (behind feature)
     let mut trusted_with_local_cas = false;
     #[allow(unused_mut, unused_variables)]
     {
         #[cfg(feature = "trust-check")]
         {
-            use rustls_webpki::{DnsNameRef, EndEntityCert, Time, TlsServerTrustAnchors, TrustAnchor};
+            use rustls_webpki::{
+                DnsNameRef, EndEntityCert, Time, TlsServerTrustAnchors, TrustAnchor,
+            };
 
             if !roots.is_empty() && !peer_chain.is_empty() {
                 let anchors_vec: Vec<TrustAnchor<'_>> = roots
@@ -361,8 +369,9 @@ pub fn probe_https(
                         .unwrap()
                         .as_secs();
                     if let Ok(ee) = EndEntityCert::try_from(end.as_ref()) {
-                        let dns_name = DnsNameRef::try_from_ascii_str(&host)
-                            .unwrap_or_else(|_| DnsNameRef::try_from_ascii_str("invalid.example").unwrap());
+                        let dns_name = DnsNameRef::try_from_ascii_str(&host).unwrap_or_else(|_| {
+                            DnsNameRef::try_from_ascii_str("invalid.example").unwrap()
+                        });
                         let res = ee.verify_is_valid_tls_server_cert(
                             &[
                                 &rustls_webpki::ECDSA_P256_SHA256,
