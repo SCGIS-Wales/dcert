@@ -267,7 +267,6 @@ pub fn probe_https(
     let mut cfg = rustls::ClientConfig::builder_with_protocol_versions(versions)
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(AcceptAllVerifier))
-        .with_root_certificates(roots.clone())
         .with_no_client_auth();
 
     // Track client-cert request

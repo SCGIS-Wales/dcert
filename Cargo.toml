@@ -10,7 +10,8 @@ repository = "https://github.com/SCGIS-Wales/dcert"
 
 [features]
 default = []
-http3 = [] # placeholder
+http3 = []            # placeholder feature
+trust-check = []      # optional extra verification path (gates rustls-webpki usage)
 
 [dependencies]
 anyhow = "1.0"
