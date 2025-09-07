@@ -27,8 +27,11 @@ impl ResolvesClientCert for NoClientAuthResolver {
         &self,
         _offered: &[&[u8]],
         _sigschemes: &[SignatureScheme],
-    ) -> Option<rustls::sign::CertifiedKey> {
+    ) -> Option<std::sync::Arc<rustls::sign::CertifiedKey>> {
         None
+    }
+    fn has_certs(&self) -> bool {
+        false
     }
 }
 
@@ -242,7 +245,13 @@ pub fn probe_https(
     // L4 connect (direct or proxy)
     let t0 = Instant::now();
     let tcp = if let Some(proxy) = choose_https_proxy(&host) {
-        let proxy_addr = proxy
+        let proxy_host = proxy
+            .host_str()
+            .ok_or_else(|| anyhow::anyhow!("Proxy missing host"))?;
+        let proxy_port = proxy
+            .port_or_known_default()
+            .ok_or_else(|| anyhow::anyhow!("Proxy missing port"))?;
+        let proxy_addr = (proxy_host, proxy_port)
             .to_socket_addrs()
             .context("Proxy DNS resolution failed")?
             .next()

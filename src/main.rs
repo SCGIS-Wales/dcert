@@ -141,12 +141,15 @@ fn main() -> Result<()> {
         cert::parse_pem_to_der(&pem_data).with_context(|| "Failed to parse PEM certificates")?;
 
     let mut infos = cert::infos_from_der_certs(&ders);
+    // Filtering expired certs
     if args.expired_only {
-        infos.retain(|i| i.is_expired);
+        let now = chrono::Utc::now().to_string();
+        infos.retain(|i| i.not_after < now);
     }
 
     if args.csv {
         let mut wtr = csv::Writer::from_writer(vec![]);
+        // CSV output
         wtr.write_record([
             "index",
             "subject",
@@ -161,18 +164,20 @@ fn main() -> Result<()> {
             "ct_scts_embedded",
         ])?;
         for i in &infos {
+            let now = chrono::Utc::now().to_string();
+            let is_expired = i.not_after < now;
             wtr.write_record([
                 i.index.to_string(),
                 i.subject.clone(),
                 i.issuer.clone(),
-                i.serial_number.clone(),
+                "<not available>".to_string(),
                 i.not_before.clone(),
                 i.not_after.clone(),
-                i.is_expired.to_string(),
+                is_expired.to_string(),
                 i.common_name.clone().unwrap_or_default(),
-                i.subject_alternative_names.join(";"),
-                i.is_ca.to_string(),
-                i.ct_scts_embedded.to_string(),
+                i.subject_alt_names.join(";"),
+                "<not available>".to_string(),
+                i.has_embedded_sct.to_string(),
             ])?;
         }
         let data = String::from_utf8(wtr.into_inner()?)?;
