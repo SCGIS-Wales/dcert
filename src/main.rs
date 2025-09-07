@@ -50,7 +50,6 @@ fn main() -> Result<()> {
         .with_context(|| "HTTPS probe failed")?;
 
         if args.json {
-            // Simple JSON (session + cert basics)
             let infos = cert::infos_from_x509(&chain);
             let payload = serde_json::json!({
                 "session": session,
@@ -67,11 +66,19 @@ fn main() -> Result<()> {
         );
         println!(
             "  Connection on OSI layer 6 (TLS)     : {}",
-            if session.l6_ok { "OK".green() } else { "NOT OK".red() }
+            if session.l6_ok {
+                "OK".green()
+            } else {
+                "NOT OK".red()
+            }
         );
         println!(
             "  Connection on OSI layer 7 (HTTPS)   : {}",
-            if session.l7_ok { "OK".green() } else { "NOT OK".red() }
+            if session.l7_ok {
+                "OK".green()
+            } else {
+                "NOT OK".red()
+            }
         );
         if let Some(tv) = &session.tls_version {
             println!("  TLS version agreed                  : {}", tv);
@@ -82,8 +89,14 @@ fn main() -> Result<()> {
         if let Some(alpn) = &session.negotiated_alpn {
             println!("  ALPN negotiated                     : {}", alpn);
         }
-        println!("  Network delay to layer 4 (ms)       : {}", session.t_l4_ms);
-        println!("  Network delay to layer 7 (ms)       : {}", session.t_l7_ms);
+        println!(
+            "  Network delay to layer 4 (ms)       : {}",
+            session.t_l4_ms
+        );
+        println!(
+            "  Network delay to layer 7 (ms)       : {}",
+            session.t_l7_ms
+        );
         println!(
             "  Trusted with local TLS CAs          : {}",
             session.trusted_with_local_cas

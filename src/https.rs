@@ -2,8 +2,8 @@ use crate::args::{HttpVersion, TlsVersion};
 use crate::proxy::choose_https_proxy;
 use anyhow::{Context, Result};
 use base64::Engine;
-use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::client::ResolvesClientCert;
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{ClientConnection, SignatureScheme, StreamOwned};
 use serde::Serialize;
@@ -30,6 +30,7 @@ impl ResolvesClientCert for NoClientAuthResolver {
         self.was_requested.store(true, Ordering::SeqCst);
         None
     }
+
     fn has_certs(&self) -> bool {
         false
     }
@@ -95,8 +96,8 @@ fn load_ca_bundle_der(
         return Ok(None);
     };
 
-    let data =
-        std::fs::read(&path).with_context(|| format!("Failed to read CA file {}", path.display()))?;
+    let data = std::fs::read(&path)
+        .with_context(|| format!("Failed to read CA file {}", path.display()))?;
 
     let mut cursor = std::io::Cursor::new(&data);
     let mut ders = Vec::<CertificateDer<'static>>::new();
@@ -129,14 +130,17 @@ fn do_connect(addr: &str, timeout_secs: u64) -> Result<TcpStream> {
         }
     }
 
-    Err(anyhow::anyhow!(
-        last_err.unwrap_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::TimedOut, "connect timeout")
-        })
-    ))
+    Err(anyhow::anyhow!(last_err.unwrap_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::TimedOut, "connect timeout")
+    })))
 }
 
-fn connect_via_proxy(mut stream: TcpStream, host: &str, port: u16, timeout: u64) -> Result<TcpStream> {
+fn connect_via_proxy(
+    mut stream: TcpStream,
+    host: &str,
+    port: u16,
+    timeout: u64,
+) -> Result<TcpStream> {
     let connect_req = format!(
         "CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: keep-alive\r\n\r\n"
     );
@@ -292,14 +296,11 @@ pub fn probe_https(
     let l6_ok = true;
 
     // TLS negotiated params
-    let tls_version_s = tls
-        .conn
-        .protocol_version()
-        .map(|v| match v {
-            rustls::ProtocolVersion::TLSv1_3 => "1.3".to_string(),
-            rustls::ProtocolVersion::TLSv1_2 => "1.2".to_string(),
-            _ => format!("{v:?}"),
-        });
+    let tls_version_s = tls.conn.protocol_version().map(|v| match v {
+        rustls::ProtocolVersion::TLSv1_3 => "1.3".to_string(),
+        rustls::ProtocolVersion::TLSv1_2 => "1.2".to_string(),
+        _ => format!("{v:?}"),
+    });
     let cipher_suite = tls
         .conn
         .negotiated_cipher_suite()
@@ -336,51 +337,51 @@ pub fn probe_https(
         .cloned()
         .collect();
 
-    // Optional trust check against local bundle with rustls-webpki
+    // Optional trust check against local bundle (requires rustls-webpki in Cargo.toml)
     let mut trusted_with_local_cas = false;
-    if !roots.is_empty() && !peer_chain.is_empty() {
-        // Build webpki anchors from RootCertStore
-        let anchors_vec: Vec<rustls_webpki::TrustAnchor<'_>> = roots
-            .roots
-            .iter()
-            .filter_map(|ta| {
-                rustls_webpki::TrustAnchor::try_from_cert_der(ta.der().as_ref()).ok()
-            })
-            .collect();
-        let trust = rustls_webpki::TlsServerTrustAnchors(&anchors_vec);
+    #[allow(unused_mut, unused_variables)]
+    {
+        #[cfg(feature = "trust-check")]
+        {
+            use rustls_webpki::{DnsNameRef, EndEntityCert, Time, TlsServerTrustAnchors, TrustAnchor};
 
-        if let Some(end) = peer_chain.first() {
-            let intermediates: Vec<&[u8]> = peer_chain.iter().skip(1).map(|c| c.as_ref()).collect();
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
-            let ee = rustls_webpki::EndEntityCert::try_from(end.as_ref());
-            if let Ok(ee) = ee {
-                let dns_name = match rustls_webpki::DnsNameRef::try_from_ascii_str(&host) {
-                    Ok(n) => n,
-                    Err(_) => rustls_webpki::DnsNameRef::try_from_ascii("invalid.example").unwrap(),
-                };
-                let res = ee.verify_is_valid_tls_server_cert(
-                    &[
-                        &rustls_webpki::ECDSA_P256_SHA256,
-                        &rustls_webpki::ECDSA_P384_SHA384,
-                        &rustls_webpki::ED25519,
-                        &rustls_webpki::RSA_PKCS1_2048_8192_SHA256,
-                        &rustls_webpki::RSA_PKCS1_2048_8192_SHA384,
-                        &rustls_webpki::RSA_PKCS1_2048_8192_SHA512,
-                        &rustls_webpki::RSA_PSS_2048_8192_SHA256_LEGACY_KEY,
-                        &rustls_webpki::RSA_PSS_2048_8192_SHA384_LEGACY_KEY,
-                        &rustls_webpki::RSA_PSS_2048_8192_SHA512_LEGACY_KEY,
-                    ],
-                    &trust,
-                    &intermediates,
-                    rustls_webpki::Time::from_seconds_since_unix_epoch(now),
-                );
-                if res.is_ok() {
-                    // Hostname check
-                    if ee.verify_is_valid_for_dns_name(dns_name).is_ok() {
-                        trusted_with_local_cas = true;
+            if !roots.is_empty() && !peer_chain.is_empty() {
+                let anchors_vec: Vec<TrustAnchor<'_>> = roots
+                    .roots
+                    .iter()
+                    .filter_map(|ta| TrustAnchor::try_from_cert_der(ta.der().as_ref()).ok())
+                    .collect();
+                let trust = TlsServerTrustAnchors(&anchors_vec);
+
+                if let Some(end) = peer_chain.first() {
+                    let intermediates: Vec<&[u8]> =
+                        peer_chain.iter().skip(1).map(|c| c.as_ref()).collect();
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs();
+                    if let Ok(ee) = EndEntityCert::try_from(end.as_ref()) {
+                        let dns_name = DnsNameRef::try_from_ascii_str(&host)
+                            .unwrap_or_else(|_| DnsNameRef::try_from_ascii_str("invalid.example").unwrap());
+                        let res = ee.verify_is_valid_tls_server_cert(
+                            &[
+                                &rustls_webpki::ECDSA_P256_SHA256,
+                                &rustls_webpki::ECDSA_P384_SHA384,
+                                &rustls_webpki::ED25519,
+                                &rustls_webpki::RSA_PKCS1_2048_8192_SHA256,
+                                &rustls_webpki::RSA_PKCS1_2048_8192_SHA384,
+                                &rustls_webpki::RSA_PKCS1_2048_8192_SHA512,
+                                &rustls_webpki::RSA_PSS_2048_8192_SHA256_LEGACY_KEY,
+                                &rustls_webpki::RSA_PSS_2048_8192_SHA384_LEGACY_KEY,
+                                &rustls_webpki::RSA_PSS_2048_8192_SHA512_LEGACY_KEY,
+                            ],
+                            &trust,
+                            &intermediates,
+                            Time::from_seconds_since_unix_epoch(now),
+                        );
+                        if res.is_ok() && ee.verify_is_valid_for_dns_name(dns_name).is_ok() {
+                            trusted_with_local_cas = true;
+                        }
                     }
                 }
             }
@@ -408,9 +409,7 @@ pub fn probe_https(
     // Parse X.509s
     let mut x509s = Vec::new();
     for der in peer_chain {
-        if let Ok((_, c)) =
-            x509_parser::certificate::X509Certificate::from_der(der.as_ref())
-        {
+        if let Ok((_, c)) = x509_parser::certificate::X509Certificate::from_der(der.as_ref()) {
             x509s.push(c.to_owned());
         }
     }
