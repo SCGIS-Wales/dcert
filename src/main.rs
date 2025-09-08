@@ -20,7 +20,7 @@ enum OutputFormat {
 #[derive(Parser, Debug)]
 #[command(name = "dcert")]
 #[command(about = "Decode and validate TLS certificates from a PEM file")]
-#[command(version = "0.1.0")]
+#[command(version = "0.1.2")]
 struct Args {
     /// Path to the PEM file containing one or more certificates
     file: PathBuf,
