@@ -2,23 +2,70 @@ use anyhow::{Context, Result};
 use clap::CommandFactory; // filepath: /Users/ssddgreg/dcert/src/main.rs
 use clap::{Parser, ValueEnum};
 use colored::*;
-use pem_rfc7468::{encode_string as encode_pem, LineEnding};
-use rustls::pki_types::{CertificateDer, ServerName};
-use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
-use rustls_native_certs as native_certs;
+use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
+use pem_rfc7468::LineEnding;
 use std::fs;
-use std::io::Cursor;
-use std::io::{Read, Write};
-use std::net::{IpAddr, TcpStream};
-use std::net::ToSocketAddrs;
-use std::sync::Arc;
-use std::time::Duration;
+use std::net::IpAddr;
+use std::net::TcpStream;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use url::Url;
 use x509_parser::certificate::X509Certificate;
 use x509_parser::extensions::{GeneralName, ParsedExtension};
 use x509_parser::prelude::FromDer;
+
+/// Fetch TLS certificate chain using OpenSSL, bypassing all validation.
+fn fetch_tls_chain_openssl(endpoint: &str, _method: &str) -> Result<String> {
+    let url = url::Url::parse(endpoint).map_err(|e| anyhow::anyhow!("Invalid URL: {e}"))?;
+    if url.scheme() != "https" {
+        return Err(anyhow::anyhow!("Only HTTPS scheme is supported"));
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("URL must include a host"))?;
+    let port = url.port().unwrap_or(443);
+
+    // Setup OpenSSL connector
+    let mut builder =
+        SslConnector::builder(SslMethod::tls()).map_err(|e| anyhow::anyhow!("OpenSSL builder failed: {e}"))?;
+    builder.set_verify(SslVerifyMode::NONE);
+    let connector = builder.build();
+
+    // Connect TCP
+    let stream = TcpStream::connect((host, port)).map_err(|e| anyhow::anyhow!("TCP connection failed: {e}"))?;
+
+    // Connect SSL
+    let ssl_stream = connector
+        .connect(host, stream)
+        .map_err(|e| anyhow::anyhow!("TLS handshake failed: {e}"))?;
+
+    // Get cert chain
+    let certs = ssl_stream
+        .ssl()
+        .peer_cert_chain()
+        .ok_or_else(|| anyhow::anyhow!("No peer certificates presented"))?;
+    if certs.is_empty() {
+        return Err(anyhow::anyhow!("Empty certificate chain"));
+    }
+
+    // Convert DER to concatenated PEM
+    let mut pem = String::new();
+    for cert in certs {
+        let pem_str = pem_rfc7468::encode_string(
+            "CERTIFICATE",
+            LineEnding::LF,
+            &cert
+                .to_der()
+                .map_err(|e| anyhow::anyhow!("DER conversion failed: {e}"))?,
+        )
+        .map_err(|e| anyhow::anyhow!("PEM encoding failed: {e}"))?;
+        pem.push_str(&pem_str);
+        if !pem.ends_with('\n') {
+            pem.push('\n');
+        }
+    }
+    Ok(pem)
+}
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum OutputFormat {
@@ -73,53 +120,51 @@ struct CertInfo {
 /// Parse all PEM certificate blocks from `pem_data` and return owned `CertInfo`
 /// for each certificate. We do not store `X509Certificate` to avoid lifetime issues.
 fn parse_cert_infos_from_pem(pem_data: &str, expired_only: bool) -> Result<Vec<CertInfo>> {
-    let mut reader = Cursor::new(pem_data.as_bytes());
+    let blocks = pem::parse_many(pem_data).map_err(|e| anyhow::anyhow!("Failed to parse PEM: {e}"))?; // blocks: Vec<pem::Pem>
     let mut infos = Vec::new();
+    for (idx, block) in blocks.iter().enumerate() {
+        // Access tag and contents fields on the Pem struct
+        if block.tag == "CERTIFICATE" {
+            let (_, cert) =
+                X509Certificate::from_der(&block.contents).map_err(|e| anyhow::anyhow!("Failed to parse DER: {e}"))?;
 
-    // rustls-pemfile 2.x returns an iterator of Result<CertificateDer<'static>, Error>
-    let iter = rustls_pemfile::certs(&mut reader);
-    for (idx, der_res) in iter.enumerate() {
-        let der = der_res.map_err(|e| anyhow::anyhow!("Failed reading PEM blocks: {e}"))?;
-        let (_, cert) =
-            X509Certificate::from_der(der.as_ref()).map_err(|e| anyhow::anyhow!("Failed to parse DER: {e}"))?;
+            // Build owned info
+            let subject = cert.subject().to_string();
+            let issuer = cert.issuer().to_string();
 
-        // Build owned info
-        let subject = cert.subject().to_string();
-        let issuer = cert.issuer().to_string();
+            // Serial as uppercase hex
+            let serial_bytes = cert.raw_serial();
+            let serial_number = serial_bytes.iter().map(|b| format!("{:02X}", b)).collect::<String>();
 
-        // Serial as uppercase hex
-        let serial_bytes = cert.raw_serial();
-        let serial_number = serial_bytes.iter().map(|b| format!("{:02X}", b)).collect::<String>();
+            // Validity converted to RFC3339 strings
+            let nb: OffsetDateTime = cert.validity().not_before.to_datetime();
+            let na: OffsetDateTime = cert.validity().not_after.to_datetime();
+            let now = OffsetDateTime::now_utc();
 
-        // Validity converted to RFC3339 strings
-        let nb: OffsetDateTime = cert.validity().not_before.to_datetime();
-        let na: OffsetDateTime = cert.validity().not_after.to_datetime();
-        let now = OffsetDateTime::now_utc();
+            let not_before = nb.format(&Rfc3339).unwrap_or_else(|_| nb.to_string());
+            let not_after = na.format(&Rfc3339).unwrap_or_else(|_| na.to_string());
+            let is_expired = na < now;
 
-        let not_before = nb.format(&Rfc3339).unwrap_or_else(|_| nb.to_string());
-        let not_after = na.format(&Rfc3339).unwrap_or_else(|_| na.to_string());
-        let is_expired = na < now;
+            if expired_only && !is_expired {
+                continue;
+            }
 
-        if expired_only && !is_expired {
-            continue;
+            let common_name = extract_common_name(&cert);
+            let subject_alternative_names = extract_sans(&cert);
+
+            infos.push(CertInfo {
+                index: idx,
+                subject,
+                issuer,
+                common_name,
+                subject_alternative_names,
+                serial_number,
+                not_before,
+                not_after,
+                is_expired,
+            });
         }
-
-        let common_name = extract_common_name(&cert);
-        let subject_alternative_names = extract_sans(&cert);
-
-        infos.push(CertInfo {
-            index: idx,
-            subject,
-            issuer,
-            common_name,
-            subject_alternative_names,
-            serial_number,
-            not_before,
-            not_after,
-            is_expired,
-        });
     }
-
     Ok(infos)
 }
 
@@ -163,7 +208,17 @@ fn extract_sans(cert: &X509Certificate<'_>) -> Vec<String> {
     out
 }
 
-fn print_pretty(infos: &[CertInfo]) {
+fn print_pretty(infos: &[CertInfo], hostname: Option<&str>) {
+    if let Some(host) = hostname {
+        if let Some(leaf) = infos.first() {
+            let matched = cert_matches_hostname(leaf, host);
+            let status = if matched { "true".green() } else { "false".red() };
+            println!();
+            println!("{}", "Debug".bold());
+            println!("  Hostname matches certificate SANs/CN: {}", status);
+            println!();
+        }
+    }
     for info in infos {
         println!("{}", "Certificate".bold());
         println!("  Index        : {}", info.index);
@@ -193,103 +248,67 @@ fn print_pretty(infos: &[CertInfo]) {
     }
 }
 
-/// Fetch the peer TLS certificate chain from an HTTPS endpoint and return it as a single PEM string.
-fn fetch_tls_chain_as_pem(endpoint: &str, method: &str) -> Result<String> {
-    let url = Url::parse(endpoint).map_err(|e| anyhow::anyhow!("Invalid URL: {e}"))?;
-    if url.scheme() != "https" {
-        return Err(anyhow::anyhow!("Only HTTPS scheme is supported"));
-    }
-    let host = url
-        .host_str()
-        .ok_or_else(|| anyhow::anyhow!("URL must include a host"))?
-        .to_owned();
-    let port = url.port().unwrap_or(443);
+fn cert_matches_hostname(cert: &CertInfo, host: &str) -> bool {
+    let host = host.trim().to_lowercase();
 
-    // DNS resolution check
-    let addr = format!("{}:{}", host, port);
-    if addr.to_socket_addrs().is_err() {
-        eprintln!("Could not resolve host: {}", host);
-        std::process::exit(6);
-    }
-
-    // Leak a clone for the TLS API, keep the original for other uses
-    let host_static: &'static str = Box::leak(host.clone().into_boxed_str());
-    let server_name = ServerName::try_from(host_static).map_err(|e| anyhow::anyhow!("invalid server name: {e}"))?;
-
-    // Connect TCP with a sensible timeout
-    let tcp = TcpStream::connect(addr).map_err(|e| {
-        anyhow::anyhow!("TCP connect failed: {e}")
-    })?;
-    tcp.set_read_timeout(Some(Duration::from_secs(10))).ok();
-    tcp.set_write_timeout(Some(Duration::from_secs(10))).ok();
-
-    // Build rustls client with native roots
-    let mut roots = RootCertStore::empty();
-    let native = native_certs::load_native_certs();
-    if !native.errors.is_empty() {
-        return Err(anyhow::anyhow!("loading native certs failed: {:?}", native.errors));
-    }
-    for cert in native.certs {
-        roots.add(cert).ok();
-    }
-    let config = ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    let conn = ClientConnection::new(Arc::new(config), server_name)
-        .map_err(|e| anyhow::anyhow!("TLS client setup failed: {e}"))?;
-    let mut tls = StreamOwned::new(conn, tcp);
-
-    // Use the provided method
-    write!(
-        tls,
-        "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
-        method,
-        url.path(),
-        host
-    )
-    .map_err(|e| anyhow::anyhow!("TLS write failed: {e}"))?;
-    let mut sink = Vec::new();
-    let _ = tls.read_to_end(&mut sink); // ignore errors
-
-    let conn_ref = tls.conn;
-    let certs: Vec<CertificateDer<'static>> = conn_ref
-        .peer_certificates()
-        .ok_or_else(|| anyhow::anyhow!("No peer certificates presented"))?
-        .to_vec();
-
-    if certs.is_empty() {
-        return Err(anyhow::anyhow!("Empty certificate chain"));
+    // Helper for wildcard matching
+    fn matches_wildcard(pattern: &str, hostname: &str) -> bool {
+        // Only allow wildcard at the start, e.g. *.example.com
+        if let Some(stripped) = pattern.strip_prefix("*.") {
+            // Host must have at least one subdomain
+            if let Some(rest) = hostname.strip_prefix('.') {
+                return rest.ends_with(stripped);
+            }
+            // Or, split and check
+            let host_labels: Vec<&str> = hostname.split('.').collect();
+            let pattern_labels: Vec<&str> = stripped.split('.').collect();
+            if host_labels.len() < pattern_labels.len() + 1 {
+                return false;
+            }
+            let host_suffix = host_labels[1..].join(".");
+            return host_suffix == stripped;
+        }
+        false
     }
 
-    // Convert DER to concatenated PEM
-    let mut pem = String::new();
-    for der in certs {
-        let one = encode_pem("CERTIFICATE", LineEnding::LF, der.as_ref())
-            .map_err(|e| anyhow::anyhow!("PEM encoding failed: {e}"))?;
-        pem.push_str(&one);
-        if !pem.ends_with('\n') {
-            pem.push('\n');
+    // Check Common Name
+    if let Some(cn) = &cert.common_name {
+        let cn = cn.trim().to_lowercase();
+        if cn == host {
+            return true;
+        }
+        if cn.starts_with("*.") && matches_wildcard(&cn, &host) {
+            return true;
         }
     }
-    Ok(pem)
+    // Check SANs
+    for san in &cert.subject_alternative_names {
+        if let Some(san_host) = san.strip_prefix("DNS:") {
+            let san_host = san_host.trim().to_lowercase();
+            if san_host == host {
+                return true;
+            }
+            if san_host.starts_with("*.") && matches_wildcard(&san_host, &host) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn run() -> Result<i32> {
     let args: Args = Args::parse();
 
     let pem_data = if args.target.starts_with("https://") {
-        let pem = fetch_tls_chain_as_pem(&args.target, &args.method).with_context(|| "Failed to fetch TLS chain")?;
+        let pem = fetch_tls_chain_openssl(&args.target, &args.method).with_context(|| "Failed to fetch TLS chain")?;
         if let Some(export_path) = &args.export_pem {
             fs::write(export_path, &pem).with_context(|| format!("Failed to write PEM to {}", export_path))?;
         } else if args.export_pem.is_some() {
-            // If --export-pem is present but empty, use default name
-            let domain = args.target.trim_start_matches("https://").replace(['/', ':', '.'], "");
-            let default_name = format!("{}-pem.txt", domain);
-            fs::write(&default_name, &pem).with_context(|| format!("Failed to write PEM to {}", default_name))?;
+            // Already handled
         }
         pem
     } else {
-        fs::read_to_string(&args.target).with_context(|| format!("Failed to read file: {}", args.target))?
+        fs::read_to_string(&args.target).with_context(|| format!("Failed to read PEM file: {}", &args.target))?
     };
 
     let infos =
@@ -301,7 +320,16 @@ fn run() -> Result<i32> {
     }
 
     match args.format {
-        OutputFormat::Pretty => print_pretty(&infos),
+        OutputFormat::Pretty => {
+            let hostname = if args.target.starts_with("https://") {
+                Url::parse(&args.target)
+                    .ok()
+                    .and_then(|u| u.host_str().map(|s| s.to_lowercase()))
+            } else {
+                None
+            };
+            print_pretty(&infos, hostname.as_deref());
+        }
         OutputFormat::Json => {
             println!("{}", serde_json::to_string_pretty(&infos)?);
         }
@@ -327,7 +355,7 @@ fn main() {
     if std::env::args().any(|a| a == "--version" || a == "-V") {
         println!("dcert {}", env!("CARGO_PKG_VERSION"));
         println!("Libraries:");
-        println!("  rustls {}", env!("CARGO_PKG_VERSION"));
+        println!("  openssl {}", openssl::version::version());
         println!("  x509-parser {}", env!("CARGO_PKG_VERSION"));
         println!("  clap {}", env!("CARGO_PKG_VERSION"));
         std::process::exit(0);
