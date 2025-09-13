@@ -12,6 +12,12 @@ name = "dcert"
 path = "src/main.rs"
 
 [dependencies]
+
+pem-rfc7468 = "0.7"
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "logging"] }
+rustls-native-certs = "0.7"
+url = "2"
+base64 = "0.22"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 colored = "2"

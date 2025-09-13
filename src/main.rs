@@ -2,14 +2,23 @@ use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use colored::*;
 use std::fs;
+use std::io::{Read, Write};
+use std::sync::Arc;
+use std::time::Duration;
 use std::io::Cursor;
-use std::net::IpAddr;
+use std::net::{IpAddr, TcpStream};
 use std::path::PathBuf;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use x509_parser::certificate::X509Certificate;
 use x509_parser::extensions::{GeneralName, ParsedExtension};
 use x509_parser::prelude::FromDer;
+use url::Url;
+use rustls::{ClientConnection, RootCertStore, ClientConfig, StreamOwned};
+use rustls::pki_types::{ServerName, CertificateDer};
+use rustls_native_certs as native_certs;
+use pem_rfc7468::{LineEnding, encode_string as encode_pem};
+
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum OutputFormat {
@@ -22,8 +31,8 @@ enum OutputFormat {
 #[command(about = "Decode and validate TLS certificates from a PEM file")]
 #[command(version = "0.1.2")]
 struct Args {
-    /// Path to the PEM file containing one or more certificates
-    file: PathBuf,
+    /// Path to a PEM file or an HTTPS URL like https://example.com
+    target: String,
 
     /// Output format
     #[arg(short, long, value_enum, default_value_t = OutputFormat::Pretty)]
@@ -172,17 +181,82 @@ fn print_pretty(infos: &[CertInfo]) {
     }
 }
 
+/// Fetch the peer TLS certificate chain from an HTTPS endpoint and return it as a single PEM string.
+fn fetch_tls_chain_as_pem(endpoint: &str) -> Result<String> {
+    let url = Url::parse(endpoint).map_err(|e| anyhow::anyhow!("Invalid URL: {e}"))?;
+    if url.scheme() != "https" {
+        return Err(anyhow::anyhow!("Only HTTPS scheme is supported"));
+    }
+    let host = url.host_str().ok_or_else(|| anyhow::anyhow!("URL must include a host"))?;
+    let port = url.port().unwrap_or(443);
+
+    // Connect TCP with a sensible timeout
+    let addr = format!("{}:{}", host, port);
+    let mut tcp = TcpStream::connect(addr).map_err(|e| anyhow::anyhow!("TCP connect failed: {e}"))?;
+    tcp.set_read_timeout(Some(Duration::from_secs(10))).ok();
+    tcp.set_write_timeout(Some(Duration::from_secs(10))).ok();
+
+    // Build rustls client with native roots
+    let mut roots = RootCertStore::empty();
+    for cert in native_certs::load_native_certs().map_err(|(_e)| anyhow::anyhow!("loading native certs failed"))? {
+        roots.add(cert).ok(); // ignore individual failures
+    }
+    let config = ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let server_name = ServerName::try_from(host).map_err(|e| anyhow::anyhow!("invalid server name: {e}"))?;
+    let mut conn = ClientConnection::new(Arc::new(config), server_name)
+        .map_err(|e| anyhow::anyhow!("TLS client setup failed: {e}"))?;
+    let mut tls = StreamOwned::new(conn, tcp);
+
+    // Perform handshake by doing a minimal HTTP request, which also ensures server sends the chain
+    // We do not care about the response, only the handshake completion.
+    // Write a HEAD request which is cheap.
+    write!(tls, "HEAD {} HTTP/1.1
+Host: {}
+Connection: close
+
+", url.path(), host)
+        .map_err(|e| anyhow::anyhow!("TLS write failed: {e}"))?;
+    let mut sink = Vec::new();
+    let _ = tls.read_to_end(&mut sink); // ignore errors after handshake
+
+    let conn_ref = tls.conn;
+    let certs: Vec<CertificateDer<'static>> = conn_ref
+        .peer_certificates()
+        .ok_or_else(|| anyhow::anyhow!("No peer certificates presented"))?
+        .into_iter()
+        .collect();
+
+    if certs.is_empty() {
+        return Err(anyhow::anyhow!("Empty certificate chain"));
+    }
+
+    // Convert DER to concatenated PEM
+    let mut pem = String::new();
+    for der in certs {
+        let one = encode_pem("CERTIFICATE", LineEnding::LF, der.as_ref())
+            .map_err(|e| anyhow::anyhow!("PEM encoding failed: {e}"))?;
+        pem.push_str(&one);
+if !pem.ends_with('\n') { pem.push('\n'); }
+    }
+    Ok(pem)
+}
+
 fn run() -> Result<i32> {
     let args = Args::parse();
 
-    let pem_data =
-        fs::read_to_string(&args.file).with_context(|| format!("Failed to read file: {}", args.file.display()))?;
+    let pem_data = if args.target.starts_with("https://") {
+        fetch_tls_chain_as_pem(&args.target).with_context(|| "Failed to fetch TLS chain")?
+    } else {
+        fs::read_to_string(&args.target).with_context(|| format!("Failed to read file: {}", args.target))?
+    };
 
     let infos =
         parse_cert_infos_from_pem(&pem_data, args.expired_only).with_context(|| "Failed to parse PEM certificates")?;
 
     if infos.is_empty() {
-        eprintln!("{}", "No valid certificates found in the file".red());
+        eprintln!("{}", "No valid certificates found in the input".red());
         return Ok(1);
     }
 
