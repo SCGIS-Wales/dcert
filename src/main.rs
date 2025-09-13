@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
+use clap::CommandFactory; // filepath: /Users/ssddgreg/dcert/src/main.rs
 use colored::*;
 use pem_rfc7468::{encode_string as encode_pem, LineEnding};
 use rustls::pki_types::{CertificateDer, ServerName};
@@ -308,13 +309,19 @@ fn run() -> Result<i32> {
 }
 
 fn main() {
+    // Print help if no arguments (other than program name) are provided
+    if std::env::args().len() == 1 {
+        Args::command().print_help().unwrap();
+        println!();
+        std::process::exit(0);
+    }
+
     if std::env::args().any(|a| a == "--version" || a == "-V") {
         println!("dcert {}", env!("CARGO_PKG_VERSION"));
         println!("Libraries:");
         println!("  rustls {}", env!("CARGO_PKG_VERSION"));
         println!("  x509-parser {}", env!("CARGO_PKG_VERSION"));
         println!("  clap {}", env!("CARGO_PKG_VERSION"));
-        // Add other libraries as needed
         std::process::exit(0);
     }
 
