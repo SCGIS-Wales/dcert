@@ -9,7 +9,6 @@ use std::fs;
 use std::io::Cursor;
 use std::io::{Read, Write};
 use std::net::{IpAddr, TcpStream};
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use time::format_description::well_known::Rfc3339;
@@ -188,25 +187,29 @@ fn fetch_tls_chain_as_pem(endpoint: &str) -> Result<String> {
     }
     let host = url
         .host_str()
-        .ok_or_else(|| anyhow::anyhow!("URL must include a host"))?;
+        .ok_or_else(|| anyhow::anyhow!("URL must include a host"))?
+        .to_owned();
     let port = url.port().unwrap_or(443);
 
-    // Connect TCP with a sensible timeout
+    // Leak a clone for the TLS API, keep the original for other uses
+    let host_static: &'static str = Box::leak(host.clone().into_boxed_str());
+    let server_name = ServerName::try_from(host_static).map_err(|e| anyhow::anyhow!("invalid server name: {e}"))?;
+
     let addr = format!("{}:{}", host, port);
-    let mut tcp = TcpStream::connect(addr).map_err(|e| anyhow::anyhow!("TCP connect failed: {e}"))?;
+    // Connect TCP with a sensible timeout
+    let tcp = TcpStream::connect(addr).map_err(|e| anyhow::anyhow!("TCP connect failed: {e}"))?;
     tcp.set_read_timeout(Some(Duration::from_secs(10))).ok();
     tcp.set_write_timeout(Some(Duration::from_secs(10))).ok();
 
     // Build rustls client with native roots
     let mut roots = RootCertStore::empty();
-    for cert in native_certs::load_native_certs().map_err(|(_e)| anyhow::anyhow!("loading native certs failed"))? {
+    for cert in native_certs::load_native_certs().map_err(|_e| anyhow::anyhow!("loading native certs failed"))? {
         roots.add(cert).ok(); // ignore individual failures
     }
     let config = ClientConfig::builder()
         .with_root_certificates(roots)
         .with_no_client_auth();
-    let server_name = ServerName::try_from(host).map_err(|e| anyhow::anyhow!("invalid server name: {e}"))?;
-    let mut conn = ClientConnection::new(Arc::new(config), server_name)
+    let conn = ClientConnection::new(Arc::new(config), server_name)
         .map_err(|e| anyhow::anyhow!("TLS client setup failed: {e}"))?;
     let mut tls = StreamOwned::new(conn, tcp);
 
@@ -231,9 +234,7 @@ Connection: close
     let certs: Vec<CertificateDer<'static>> = conn_ref
         .peer_certificates()
         .ok_or_else(|| anyhow::anyhow!("No peer certificates presented"))?
-        .iter()
-        .cloned()
-        .collect();
+        .to_vec();
 
     if certs.is_empty() {
         return Err(anyhow::anyhow!("Empty certificate chain"));
@@ -242,7 +243,7 @@ Connection: close
     // Convert DER to concatenated PEM
     let mut pem = String::new();
     for der in certs {
-        let one = encode_pem("CERTIFICATE", der.as_ref(), LineEnding::LF)
+        let one = encode_pem("CERTIFICATE", LineEnding::LF, der.as_ref())
             .map_err(|e| anyhow::anyhow!("PEM encoding failed: {e}"))?;
         pem.push_str(&one);
         if !pem.ends_with('\n') {
@@ -292,6 +293,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn test_empty_pem() {
