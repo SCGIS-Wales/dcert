@@ -13,7 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 
-pem-rfc7468 = "0.7"
+pem-rfc7468 = { version = "0.7", features = ["alloc"] }
 rustls = { version = "0.23", default-features = false, features = ["std", "ring", "logging"] }
 rustls-native-certs = "0.7"
 url = "2"
