@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
-use clap::{Parser, ValueEnum};
 use clap::CommandFactory; // filepath: /Users/ssddgreg/dcert/src/main.rs
+use clap::{Parser, ValueEnum};
 use colored::*;
 use pem_rfc7468::{encode_string as encode_pem, LineEnding};
 use rustls::pki_types::{CertificateDer, ServerName};
@@ -10,6 +10,7 @@ use std::fs;
 use std::io::Cursor;
 use std::io::{Read, Write};
 use std::net::{IpAddr, TcpStream};
+use std::net::ToSocketAddrs;
 use std::sync::Arc;
 use std::time::Duration;
 use time::format_description::well_known::Rfc3339;
@@ -48,6 +49,10 @@ struct Args {
     /// Export the fetched PEM chain to a file (only for HTTPS targets)
     #[arg(long)]
     export_pem: Option<String>,
+
+    /// HTTP method to use for HTTPS requests (default: GET)
+    #[arg(long, default_value = "GET")]
+    method: String,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -189,7 +194,7 @@ fn print_pretty(infos: &[CertInfo]) {
 }
 
 /// Fetch the peer TLS certificate chain from an HTTPS endpoint and return it as a single PEM string.
-fn fetch_tls_chain_as_pem(endpoint: &str) -> Result<String> {
+fn fetch_tls_chain_as_pem(endpoint: &str, method: &str) -> Result<String> {
     let url = Url::parse(endpoint).map_err(|e| anyhow::anyhow!("Invalid URL: {e}"))?;
     if url.scheme() != "https" {
         return Err(anyhow::anyhow!("Only HTTPS scheme is supported"));
@@ -200,13 +205,21 @@ fn fetch_tls_chain_as_pem(endpoint: &str) -> Result<String> {
         .to_owned();
     let port = url.port().unwrap_or(443);
 
+    // DNS resolution check
+    let addr = format!("{}:{}", host, port);
+    if addr.to_socket_addrs().is_err() {
+        eprintln!("Could not resolve host: {}", host);
+        std::process::exit(6);
+    }
+
     // Leak a clone for the TLS API, keep the original for other uses
     let host_static: &'static str = Box::leak(host.clone().into_boxed_str());
     let server_name = ServerName::try_from(host_static).map_err(|e| anyhow::anyhow!("invalid server name: {e}"))?;
 
-    let addr = format!("{}:{}", host, port);
     // Connect TCP with a sensible timeout
-    let tcp = TcpStream::connect(addr).map_err(|e| anyhow::anyhow!("TCP connect failed: {e}"))?;
+    let tcp = TcpStream::connect(addr).map_err(|e| {
+        anyhow::anyhow!("TCP connect failed: {e}")
+    })?;
     tcp.set_read_timeout(Some(Duration::from_secs(10))).ok();
     tcp.set_write_timeout(Some(Duration::from_secs(10))).ok();
 
@@ -226,16 +239,11 @@ fn fetch_tls_chain_as_pem(endpoint: &str) -> Result<String> {
         .map_err(|e| anyhow::anyhow!("TLS client setup failed: {e}"))?;
     let mut tls = StreamOwned::new(conn, tcp);
 
-    // Perform handshake by doing a minimal HTTP request, which also ensures server sends the chain
-    // We do not care about the response, only the handshake completion.
-    // Write a HEAD request which is cheap.
+    // Use the provided method
     write!(
         tls,
-        "HEAD {} HTTP/1.1
-Host: {}
-Connection: close
-
-",
+        "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+        method,
         url.path(),
         host
     )
@@ -270,7 +278,7 @@ fn run() -> Result<i32> {
     let args: Args = Args::parse();
 
     let pem_data = if args.target.starts_with("https://") {
-        let pem = fetch_tls_chain_as_pem(&args.target).with_context(|| "Failed to fetch TLS chain")?;
+        let pem = fetch_tls_chain_as_pem(&args.target, &args.method).with_context(|| "Failed to fetch TLS chain")?;
         if let Some(export_path) = &args.export_pem {
             fs::write(export_path, &pem).with_context(|| format!("Failed to write PEM to {}", export_path))?;
         } else if args.export_pem.is_some() {
