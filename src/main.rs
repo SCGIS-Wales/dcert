@@ -1,24 +1,23 @@
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use colored::*;
+use pem_rfc7468::{encode_string as encode_pem, LineEnding};
+use rustls::pki_types::{CertificateDer, ServerName};
+use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
+use rustls_native_certs as native_certs;
 use std::fs;
-use std::io::{Read, Write};
-use std::sync::Arc;
-use std::time::Duration;
 use std::io::Cursor;
+use std::io::{Read, Write};
 use std::net::{IpAddr, TcpStream};
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
+use url::Url;
 use x509_parser::certificate::X509Certificate;
 use x509_parser::extensions::{GeneralName, ParsedExtension};
 use x509_parser::prelude::FromDer;
-use url::Url;
-use rustls::{ClientConnection, RootCertStore, ClientConfig, StreamOwned};
-use rustls::pki_types::{ServerName, CertificateDer};
-use rustls_native_certs as native_certs;
-use pem_rfc7468::{LineEnding, encode_string as encode_pem};
-
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum OutputFormat {
@@ -187,7 +186,9 @@ fn fetch_tls_chain_as_pem(endpoint: &str) -> Result<String> {
     if url.scheme() != "https" {
         return Err(anyhow::anyhow!("Only HTTPS scheme is supported"));
     }
-    let host = url.host_str().ok_or_else(|| anyhow::anyhow!("URL must include a host"))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("URL must include a host"))?;
     let port = url.port().unwrap_or(443);
 
     // Connect TCP with a sensible timeout
@@ -212,20 +213,26 @@ fn fetch_tls_chain_as_pem(endpoint: &str) -> Result<String> {
     // Perform handshake by doing a minimal HTTP request, which also ensures server sends the chain
     // We do not care about the response, only the handshake completion.
     // Write a HEAD request which is cheap.
-    write!(tls, "HEAD {} HTTP/1.1
+    write!(
+        tls,
+        "HEAD {} HTTP/1.1
 Host: {}
 Connection: close
 
-", url.path(), host)
-        .map_err(|e| anyhow::anyhow!("TLS write failed: {e}"))?;
+",
+        url.path(),
+        host
+    )
+    .map_err(|e| anyhow::anyhow!("TLS write failed: {e}"))?;
     let mut sink = Vec::new();
-    let _ = tls.read_to_end(&mut sink); // ignore errors after handshake
+    let _ = tls.read_to_end(&mut sink); // ignore errors
 
     let conn_ref = tls.conn;
     let certs: Vec<CertificateDer<'static>> = conn_ref
         .peer_certificates()
         .ok_or_else(|| anyhow::anyhow!("No peer certificates presented"))?
-        .into_iter()
+        .iter()
+        .cloned()
         .collect();
 
     if certs.is_empty() {
@@ -235,10 +242,12 @@ Connection: close
     // Convert DER to concatenated PEM
     let mut pem = String::new();
     for der in certs {
-        let one = encode_pem("CERTIFICATE", LineEnding::LF, der.as_ref())
+        let one = encode_pem("CERTIFICATE", der.as_ref(), LineEnding::LF)
             .map_err(|e| anyhow::anyhow!("PEM encoding failed: {e}"))?;
         pem.push_str(&one);
-if !pem.ends_with('\n') { pem.push('\n'); }
+        if !pem.ends_with('\n') {
+            pem.push('\n');
+        }
     }
     Ok(pem)
 }
