@@ -5,6 +5,7 @@ use colored::*;
 use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
 use pem_rfc7468::LineEnding;
 use std::fs;
+use std::io::Write;
 use std::net::IpAddr;
 use std::net::TcpStream;
 use time::format_description::well_known::Rfc3339;
@@ -15,7 +16,11 @@ use x509_parser::extensions::{GeneralName, ParsedExtension};
 use x509_parser::prelude::FromDer;
 
 /// Fetch TLS certificate chain using OpenSSL, bypassing all validation.
-fn fetch_tls_chain_openssl(endpoint: &str, _method: &str) -> Result<(String, u128, u128)> {
+fn fetch_tls_chain_openssl(
+    endpoint: &str,
+    _method: &str,
+    headers: &[(String, String)],
+) -> Result<(String, u128, u128, String, String, Vec<String>)> {
     let url = url::Url::parse(endpoint).map_err(|e| anyhow::anyhow!("Invalid URL: {e}"))?;
     if url.scheme() != "https" {
         return Err(anyhow::anyhow!("Only HTTPS scheme is supported"));
@@ -42,13 +47,11 @@ fn fetch_tls_chain_openssl(endpoint: &str, _method: &str) -> Result<(String, u12
         .map_err(|e| anyhow::anyhow!("TLS handshake failed: {e}"))?;
 
     // Send HTTP request (layer 7)
-    let req = format!(
-        "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
-        _method,
-        url.path(),
-        host
-    );
-    use std::io::Write;
+    let mut req = format!("{} {} HTTP/1.1\r\nHost: {}\r\n", _method, url.path(), host);
+    for (key, value) in headers {
+        req.push_str(&format!("{}: {}\r\n", key, value));
+    }
+    req.push_str("Connection: close\r\n\r\n");
     ssl_stream.get_mut().write_all(req.as_bytes()).ok();
 
     let l7_latency = l7_start.elapsed().as_millis();
@@ -78,7 +81,15 @@ fn fetch_tls_chain_openssl(endpoint: &str, _method: &str) -> Result<(String, u12
             pem.push('\n');
         }
     }
-    Ok((pem, l4_latency, l7_latency))
+    let ssl = ssl_stream.ssl();
+    let tls_version = ssl.version_str().to_string();
+    let tls_cipher = ssl
+        .current_cipher()
+        .map(|c| c.name().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let offered_ciphers: Vec<String> = Vec::new();
+    Ok((pem, l4_latency, l7_latency, tls_version, tls_cipher, offered_ciphers))
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -114,6 +125,10 @@ struct Args {
     /// HTTP method to use for HTTPS requests (default: GET)
     #[arg(long, default_value = "GET")]
     method: String,
+
+    /// Custom HTTP headers (key:value), can be repeated
+    #[arg(long, value_parser = parse_header, num_args = 0.., value_name = "HEADER")]
+    header: Vec<(String, String)>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -222,7 +237,14 @@ fn extract_sans(cert: &X509Certificate<'_>) -> Vec<String> {
     out
 }
 
-fn print_pretty(infos: &[CertInfo], hostname: Option<&str>, l4_latency: u128, l7_latency: u128) {
+fn print_pretty(
+    infos: &[CertInfo],
+    hostname: Option<&str>,
+    l4_latency: u128,
+    l7_latency: u128,
+    tls_version: &str,
+    tls_cipher: &str,
+) {
     if let Some(host) = hostname {
         if let Some(leaf) = infos.first() {
             let matched = cert_matches_hostname(leaf, host);
@@ -268,6 +290,8 @@ DNS resolution and other delays are not included in these timings."
         println!("  Status       : {}", status);
         println!();
     }
+    println!("  TLS version used: {}", tls_version);
+    println!("  TLS ciphersuite agreed: {}", tls_cipher);
 }
 
 fn cert_matches_hostname(cert: &CertInfo, host: &str) -> bool {
@@ -321,18 +345,21 @@ fn cert_matches_hostname(cert: &CertInfo, host: &str) -> bool {
 fn run() -> Result<i32> {
     let args: Args = Args::parse();
 
-    let (pem_data, l4_latency, l7_latency) = if args.target.starts_with("https://") {
-        let (pem, l4, l7) =
-            fetch_tls_chain_openssl(&args.target, &args.method).with_context(|| "Failed to fetch TLS chain")?;
+    let (pem_data, l4_latency, l7_latency, tls_version, tls_cipher) = if args.target.starts_with("https://") {
+        let (pem, l4, l7, tls_version, tls_cipher, _) =
+            fetch_tls_chain_openssl(&args.target, &args.method, &args.header)
+                .with_context(|| "Failed to fetch TLS chain")?;
         if let Some(export_path) = &args.export_pem {
             fs::write(export_path, &pem).with_context(|| format!("Failed to write PEM to {}", export_path))?;
         }
-        (pem, l4, l7)
+        (pem, l4, l7, tls_version, tls_cipher)
     } else {
         (
             fs::read_to_string(&args.target).with_context(|| format!("Failed to read PEM file: {}", &args.target))?,
             0,
             0,
+            String::new(),
+            String::new(),
         )
     };
 
@@ -353,7 +380,14 @@ fn run() -> Result<i32> {
             } else {
                 None
             };
-            print_pretty(&infos, hostname.as_deref(), l4_latency, l7_latency);
+            print_pretty(
+                &infos,
+                hostname.as_deref(),
+                l4_latency,
+                l7_latency,
+                &tls_version,
+                &tls_cipher,
+            );
         }
         OutputFormat::Json => {
             println!("{}", serde_json::to_string_pretty(&infos)?);
@@ -393,6 +427,14 @@ fn main() {
             std::process::exit(2);
         }
     }
+}
+
+fn parse_header(s: &str) -> Result<(String, String), String> {
+    let parts: Vec<&str> = s.splitn(2, ':').collect();
+    if parts.len() != 2 {
+        return Err("Header must be in key:value format".to_string());
+    }
+    Ok((parts[0].trim().to_string(), parts[1].trim().to_string()))
 }
 
 #[cfg(test)]
