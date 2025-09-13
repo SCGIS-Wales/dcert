@@ -15,7 +15,7 @@ use x509_parser::extensions::{GeneralName, ParsedExtension};
 use x509_parser::prelude::FromDer;
 
 /// Fetch TLS certificate chain using OpenSSL, bypassing all validation.
-fn fetch_tls_chain_openssl(endpoint: &str, _method: &str) -> Result<String> {
+fn fetch_tls_chain_openssl(endpoint: &str, _method: &str) -> Result<(String, u128, u128)> {
     let url = url::Url::parse(endpoint).map_err(|e| anyhow::anyhow!("Invalid URL: {e}"))?;
     if url.scheme() != "https" {
         return Err(anyhow::anyhow!("Only HTTPS scheme is supported"));
@@ -25,19 +25,33 @@ fn fetch_tls_chain_openssl(endpoint: &str, _method: &str) -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("URL must include a host"))?;
     let port = url.port().unwrap_or(443);
 
-    // Setup OpenSSL connector
+    // Layer 4: TCP connect
+    let l4_start = std::time::Instant::now();
+    let stream = TcpStream::connect((host, port)).map_err(|e| anyhow::anyhow!("TCP connection failed: {e}"))?;
+    let l4_latency = l4_start.elapsed().as_millis();
+
+    // Layer 7: TLS handshake + HTTP request
+    let l7_start = std::time::Instant::now();
     let mut builder =
         SslConnector::builder(SslMethod::tls()).map_err(|e| anyhow::anyhow!("OpenSSL builder failed: {e}"))?;
     builder.set_verify(SslVerifyMode::NONE);
     let connector = builder.build();
 
-    // Connect TCP
-    let stream = TcpStream::connect((host, port)).map_err(|e| anyhow::anyhow!("TCP connection failed: {e}"))?;
-
-    // Connect SSL
-    let ssl_stream = connector
+    let mut ssl_stream = connector
         .connect(host, stream)
         .map_err(|e| anyhow::anyhow!("TLS handshake failed: {e}"))?;
+
+    // Send HTTP request (layer 7)
+    let req = format!(
+        "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+        _method,
+        url.path(),
+        host
+    );
+    use std::io::Write;
+    ssl_stream.get_mut().write_all(req.as_bytes()).ok();
+
+    let l7_latency = l7_start.elapsed().as_millis();
 
     // Get cert chain
     let certs = ssl_stream
@@ -64,7 +78,7 @@ fn fetch_tls_chain_openssl(endpoint: &str, _method: &str) -> Result<String> {
             pem.push('\n');
         }
     }
-    Ok(pem)
+    Ok((pem, l4_latency, l7_latency))
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -208,7 +222,7 @@ fn extract_sans(cert: &X509Certificate<'_>) -> Vec<String> {
     out
 }
 
-fn print_pretty(infos: &[CertInfo], hostname: Option<&str>) {
+fn print_pretty(infos: &[CertInfo], hostname: Option<&str>, l4_latency: u128, l7_latency: u128) {
     if let Some(host) = hostname {
         if let Some(leaf) = infos.first() {
             let matched = cert_matches_hostname(leaf, host);
@@ -216,6 +230,14 @@ fn print_pretty(infos: &[CertInfo], hostname: Option<&str>) {
             println!();
             println!("{}", "Debug".bold());
             println!("  Hostname matches certificate SANs/CN: {}", status);
+            println!("  Network latency (layer 4/TCP connect): {} ms", l4_latency);
+            println!("  Network latency (layer 7/TLS+HTTP):    {} ms", l7_latency);
+            println!();
+            println!(
+                "Note: Layer 4 and Layer 7 latencies are measured separately and should not be summed. \
+Layer 4 covers TCP connection only; Layer 7 covers TLS handshake and HTTP request. \
+DNS resolution and other delays are not included in these timings."
+            );
             println!();
         }
     }
@@ -299,16 +321,19 @@ fn cert_matches_hostname(cert: &CertInfo, host: &str) -> bool {
 fn run() -> Result<i32> {
     let args: Args = Args::parse();
 
-    let pem_data = if args.target.starts_with("https://") {
-        let pem = fetch_tls_chain_openssl(&args.target, &args.method).with_context(|| "Failed to fetch TLS chain")?;
+    let (pem_data, l4_latency, l7_latency) = if args.target.starts_with("https://") {
+        let (pem, l4, l7) =
+            fetch_tls_chain_openssl(&args.target, &args.method).with_context(|| "Failed to fetch TLS chain")?;
         if let Some(export_path) = &args.export_pem {
             fs::write(export_path, &pem).with_context(|| format!("Failed to write PEM to {}", export_path))?;
-        } else if args.export_pem.is_some() {
-            // Already handled
         }
-        pem
+        (pem, l4, l7)
     } else {
-        fs::read_to_string(&args.target).with_context(|| format!("Failed to read PEM file: {}", &args.target))?
+        (
+            fs::read_to_string(&args.target).with_context(|| format!("Failed to read PEM file: {}", &args.target))?,
+            0,
+            0,
+        )
     };
 
     let infos =
@@ -328,7 +353,7 @@ fn run() -> Result<i32> {
             } else {
                 None
             };
-            print_pretty(&infos, hostname.as_deref());
+            print_pretty(&infos, hostname.as_deref(), l4_latency, l7_latency);
         }
         OutputFormat::Json => {
             println!("{}", serde_json::to_string_pretty(&infos)?);
