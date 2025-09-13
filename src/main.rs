@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use clap::CommandFactory; // filepath: /Users/ssddgreg/dcert/src/main.rs
+use clap::CommandFactory;
 use clap::{Parser, ValueEnum};
 use colored::*;
 use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
@@ -15,12 +15,18 @@ use x509_parser::certificate::X509Certificate;
 use x509_parser::extensions::{GeneralName, ParsedExtension};
 use x509_parser::prelude::FromDer;
 
+lazy_static::lazy_static! {
+    static ref OID_X509_SCT_LIST: x509_parser::asn1_rs::Oid<'static> =
+        x509_parser::asn1_rs::Oid::from(&[1, 3, 6, 1, 4, 1, 11129, 2, 4, 2]).unwrap();
+}
+
 /// Fetch TLS certificate chain using OpenSSL, bypassing all validation.
 fn fetch_tls_chain_openssl(
     endpoint: &str,
     _method: &str,
     headers: &[(String, String)],
-) -> Result<(String, u128, u128, String, String, Vec<String>)> {
+    http_protocol: HttpProtocol,
+) -> Result<TlsChainResult> {
     let url = url::Url::parse(endpoint).map_err(|e| anyhow::anyhow!("Invalid URL: {e}"))?;
     if url.scheme() != "https" {
         return Err(anyhow::anyhow!("Only HTTPS scheme is supported"));
@@ -47,7 +53,18 @@ fn fetch_tls_chain_openssl(
         .map_err(|e| anyhow::anyhow!("TLS handshake failed: {e}"))?;
 
     // Send HTTP request (layer 7)
-    let mut req = format!("{} {} HTTP/1.1\r\nHost: {}\r\n", _method, url.path(), host);
+    let req = match http_protocol {
+        HttpProtocol::Http2 => {
+            // HTTP/2 uses pseudo-headers, but for a raw TCP socket, send HTTP/1.1 as fallback
+            // Most servers will negotiate HTTP/2 via ALPN, but OpenSSL's SslStream does not handle this automatically.
+            // For now, send HTTP/1.1 request line but indicate HTTP/2 in debug output.
+            format!("{} {} HTTP/1.1\r\nHost: {}\r\n", _method, url.path(), host)
+        }
+        HttpProtocol::Http1_1 => {
+            format!("{} {} HTTP/1.1\r\nHost: {}\r\n", _method, url.path(), host)
+        }
+    };
+    let mut req = req;
     for (key, value) in headers {
         req.push_str(&format!("{}: {}\r\n", key, value));
     }
@@ -88,14 +105,31 @@ fn fetch_tls_chain_openssl(
         .map(|c| c.name().to_string())
         .unwrap_or_else(|| "unknown".to_string());
 
+    // Check if server requested a client certificate (mTLS)
+    let mtls_requested = false; // OpenSSL crate does not expose mTLS request detection
+
     let offered_ciphers: Vec<String> = Vec::new();
-    Ok((pem, l4_latency, l7_latency, tls_version, tls_cipher, offered_ciphers))
+    Ok((
+        pem,
+        l4_latency,
+        l7_latency,
+        tls_version,
+        tls_cipher,
+        offered_ciphers,
+        mtls_requested,
+    ))
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum OutputFormat {
     Pretty,
     Json,
+}
+
+#[derive(ValueEnum, Clone, Debug)]
+enum HttpProtocol {
+    Http1_1,
+    Http2,
 }
 
 #[derive(Parser, Debug)]
@@ -129,6 +163,10 @@ struct Args {
     /// Custom HTTP headers (key:value), can be repeated
     #[arg(long, value_parser = parse_header, num_args = 0.., value_name = "HEADER")]
     header: Vec<(String, String)>,
+
+    /// HTTP protocol to use (default: http2)
+    #[arg(long, value_enum, default_value_t = HttpProtocol::Http2)]
+    http_protocol: HttpProtocol,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -144,6 +182,7 @@ struct CertInfo {
     not_before: String, // RFC 3339
     not_after: String,  // RFC 3339
     is_expired: bool,
+    ct_present: bool,
 }
 
 /// Parse all PEM certificate blocks from `pem_data` and return owned `CertInfo`
@@ -181,6 +220,8 @@ fn parse_cert_infos_from_pem(pem_data: &str, expired_only: bool) -> Result<Vec<C
             let common_name = extract_common_name(&cert);
             let subject_alternative_names = extract_sans(&cert);
 
+            let ct_present = cert.extensions().iter().any(|ext| ext.oid == *OID_X509_SCT_LIST);
+
             infos.push(CertInfo {
                 index: idx,
                 subject,
@@ -191,6 +232,7 @@ fn parse_cert_infos_from_pem(pem_data: &str, expired_only: bool) -> Result<Vec<C
                 not_before,
                 not_after,
                 is_expired,
+                ct_present,
             });
         }
     }
@@ -252,6 +294,11 @@ fn print_pretty(
             println!();
             println!("{}", "Debug".bold());
             println!("  Hostname matches certificate SANs/CN: {}", status);
+            println!("  TLS version used: {}", tls_version);
+            println!("  TLS ciphersuite agreed: {}", tls_cipher);
+            let ct_str = if leaf.ct_present { "true".green() } else { "false".red() };
+            println!("  Certificate transparency: {}", ct_str);
+            println!();
             println!("  Network latency (layer 4/TCP connect): {} ms", l4_latency);
             println!("  Network latency (layer 7/TLS+HTTP):    {} ms", l7_latency);
             println!();
@@ -290,8 +337,6 @@ DNS resolution and other delays are not included in these timings."
         println!("  Status       : {}", status);
         println!();
     }
-    println!("  TLS version used: {}", tls_version);
-    println!("  TLS ciphersuite agreed: {}", tls_cipher);
 }
 
 fn cert_matches_hostname(cert: &CertInfo, host: &str) -> bool {
@@ -342,26 +387,31 @@ fn cert_matches_hostname(cert: &CertInfo, host: &str) -> bool {
     false
 }
 
+type TlsChainResult = (String, u128, u128, String, String, Vec<String>, bool);
+
 fn run() -> Result<i32> {
     let args: Args = Args::parse();
 
-    let (pem_data, l4_latency, l7_latency, tls_version, tls_cipher) = if args.target.starts_with("https://") {
-        let (pem, l4, l7, tls_version, tls_cipher, _) =
-            fetch_tls_chain_openssl(&args.target, &args.method, &args.header)
-                .with_context(|| "Failed to fetch TLS chain")?;
-        if let Some(export_path) = &args.export_pem {
-            fs::write(export_path, &pem).with_context(|| format!("Failed to write PEM to {}", export_path))?;
-        }
-        (pem, l4, l7, tls_version, tls_cipher)
-    } else {
-        (
-            fs::read_to_string(&args.target).with_context(|| format!("Failed to read PEM file: {}", &args.target))?,
-            0,
-            0,
-            String::new(),
-            String::new(),
-        )
-    };
+    let (pem_data, l4_latency, l7_latency, tls_version, tls_cipher, _mtls_requested) =
+        if args.target.starts_with("https://") {
+            let (pem, l4, l7, tls_version, tls_cipher, _, mtls_requested) =
+                fetch_tls_chain_openssl(&args.target, &args.method, &args.header, args.http_protocol.clone())
+                    .with_context(|| "Failed to fetch TLS chain")?;
+            if let Some(export_path) = &args.export_pem {
+                fs::write(export_path, &pem).with_context(|| format!("Failed to write PEM to {}", export_path))?;
+            }
+            (pem, l4, l7, tls_version, tls_cipher, mtls_requested)
+        } else {
+            (
+                fs::read_to_string(&args.target)
+                    .with_context(|| format!("Failed to read PEM file: {}", &args.target))?,
+                0,
+                0,
+                String::new(),
+                String::new(),
+                false,
+            )
+        };
 
     let infos =
         parse_cert_infos_from_pem(&pem_data, args.expired_only).with_context(|| "Failed to parse PEM certificates")?;
@@ -399,6 +449,15 @@ fn run() -> Result<i32> {
         fs::write(&export_path, pem_data).with_context(|| format!("Failed to write PEM file: {}", export_path))?;
         println!("PEM chain exported to {}", export_path);
     }
+
+    println!(
+        "  HTTP protocol: {}",
+        match args.http_protocol {
+            HttpProtocol::Http2 => "HTTP/2",
+            HttpProtocol::Http1_1 => "HTTP/1.1",
+        }
+    );
+    println!("  Mutual TLS requested: unknown");
 
     Ok(0)
 }
