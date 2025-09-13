@@ -26,7 +26,11 @@ enum OutputFormat {
 
 #[derive(Parser, Debug)]
 #[command(name = "dcert")]
-#[command(about = "Decode and validate TLS certificates from a PEM file")]
+#[command(
+    about = "Decode and validate TLS certificates from a PEM file or fetch the TLS certificate chain from an HTTPS endpoint.\n\
+             If you specify an HTTPS URL, dcert will fetch and decode the server's TLS certificate chain.\n\
+             Optionally, you can export the chain as a PEM file."
+)]
 #[command(version = "0.1.2")]
 struct Args {
     /// Path to a PEM file or an HTTPS URL like https://example.com
@@ -39,6 +43,10 @@ struct Args {
     /// Show only expired certificates
     #[arg(long)]
     expired_only: bool,
+
+    /// Export the fetched PEM chain to a file (only for HTTPS targets)
+    #[arg(long)]
+    export_pem: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -203,8 +211,12 @@ fn fetch_tls_chain_as_pem(endpoint: &str) -> Result<String> {
 
     // Build rustls client with native roots
     let mut roots = RootCertStore::empty();
-    for cert in native_certs::load_native_certs().map_err(|_e| anyhow::anyhow!("loading native certs failed"))? {
-        roots.add(cert).ok(); // ignore individual failures
+    let native = native_certs::load_native_certs();
+    if !native.errors.is_empty() {
+        return Err(anyhow::anyhow!("loading native certs failed: {:?}", native.errors));
+    }
+    for cert in native.certs {
+        roots.add(cert).ok();
     }
     let config = ClientConfig::builder()
         .with_root_certificates(roots)
@@ -254,10 +266,19 @@ Connection: close
 }
 
 fn run() -> Result<i32> {
-    let args = Args::parse();
+    let args: Args = Args::parse();
 
     let pem_data = if args.target.starts_with("https://") {
-        fetch_tls_chain_as_pem(&args.target).with_context(|| "Failed to fetch TLS chain")?
+        let pem = fetch_tls_chain_as_pem(&args.target).with_context(|| "Failed to fetch TLS chain")?;
+        if let Some(export_path) = &args.export_pem {
+            fs::write(export_path, &pem).with_context(|| format!("Failed to write PEM to {}", export_path))?;
+        } else if args.export_pem.is_some() {
+            // If --export-pem is present but empty, use default name
+            let domain = args.target.trim_start_matches("https://").replace(['/', ':', '.'], "");
+            let default_name = format!("{}-pem.txt", domain);
+            fs::write(&default_name, &pem).with_context(|| format!("Failed to write PEM to {}", default_name))?;
+        }
+        pem
     } else {
         fs::read_to_string(&args.target).with_context(|| format!("Failed to read file: {}", args.target))?
     };
@@ -277,10 +298,26 @@ fn run() -> Result<i32> {
         }
     }
 
+    // Optionally export the PEM chain to a file
+    if let Some(export_path) = args.export_pem {
+        fs::write(&export_path, pem_data).with_context(|| format!("Failed to write PEM file: {}", export_path))?;
+        println!("PEM chain exported to {}", export_path);
+    }
+
     Ok(0)
 }
 
 fn main() {
+    if std::env::args().any(|a| a == "--version" || a == "-V") {
+        println!("dcert {}", env!("CARGO_PKG_VERSION"));
+        println!("Libraries:");
+        println!("  rustls {}", env!("CARGO_PKG_VERSION"));
+        println!("  x509-parser {}", env!("CARGO_PKG_VERSION"));
+        println!("  clap {}", env!("CARGO_PKG_VERSION"));
+        // Add other libraries as needed
+        std::process::exit(0);
+    }
+
     match run() {
         Ok(code) => std::process::exit(code),
         Err(e) => {

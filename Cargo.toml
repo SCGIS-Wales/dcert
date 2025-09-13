@@ -15,12 +15,12 @@ path = "src/main.rs"
 
 pem-rfc7468 = { version = "0.7", features = ["alloc"] }
 rustls = { version = "0.23", default-features = false, features = ["std", "ring", "logging"] }
-rustls-native-certs = "0.7"
+rustls-native-certs = "0.8"
 url = "2"
 base64 = "0.22"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
-colored = "2"
+colored = "3"
 rustls-pemfile = "2"
 time = { version = "0.3", features = ["formatting"] }
 serde = { version = "1", features = ["derive"] }
@@ -29,3 +29,5 @@ x509-parser = "0.18"
 
 [dev-dependencies]
 tempfile = "3"
+
+rustc_version_runtime = "0.3"
