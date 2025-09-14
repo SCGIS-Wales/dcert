@@ -1,6 +1,6 @@
 [package]
 name = "dcert"
-version = "0.1.1"
+version = "1.0.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/SCGIS-Wales/dcert"
@@ -12,14 +12,22 @@ name = "dcert"
 path = "src/main.rs"
 
 [dependencies]
+
+pem-rfc7468 = { version = "0.7", features = ["alloc"] }
+url = "2"
+base64 = "0.22"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
-colored = "2"
-rustls-pemfile = "2"
+colored = "3"
 time = { version = "0.3", features = ["formatting"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 x509-parser = "0.18"
+openssl = "0.10"
+pem = "1.1.1"
+lazy_static = "1.4"
 
 [dev-dependencies]
 tempfile = "3"
+
+rustc_version_runtime = "0.3"

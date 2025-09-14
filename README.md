@@ -1,15 +1,19 @@
-# dcert · TLS PEM base64 certificate decoder
+# dcert · TLS Certificate Decoder & Validator
 
-A small Rust CLI that reads one or more PEM encoded X.509 certificates from a file, extracts key fields, and prints them in a friendly table or as JSON.
+A powerful Rust CLI tool that reads X.509 certificates from PEM files or fetches them directly from HTTPS endpoints. It extracts key certificate information, validates TLS connections, and provides detailed debugging output.
 
 [![CI/CD Pipeline](https://github.com/SCGIS-Wales/dcert/actions/workflows/ci.yml/badge.svg)](https://github.com/SCGIS-Wales/dcert/actions/workflows/ci.yml)
 
 ## Features
 
-- Parse one or many certificates from a single PEM file
-- Show subject, issuer, serial number, validity window, and expiry status
-- Pretty console output or JSON
-- Filter to only expired certificates
+- **Dual Mode Operation**: Parse certificates from PEM files OR fetch live certificates from HTTPS endpoints
+- **Comprehensive Certificate Analysis**: Subject, issuer, serial number, validity window, expiry status, and SANs
+- **TLS Connection Debugging**: Protocol version, cipher suite, certificate transparency, mTLS detection
+- **Network Performance Metrics**: Layer 4 (TCP) and Layer 7 (TLS+HTTP) latency measurements
+- **Flexible Output**: Pretty console output or machine-readable JSON
+- **Advanced Filtering**: Show only expired certificates
+- **Certificate Export**: Save fetched certificate chains as PEM files
+- **Custom HTTP Options**: Configure HTTP method, headers, and protocol version
 
 ## Installation
 
@@ -42,43 +46,63 @@ cargo install --path .
 # Pull
 docker pull ghcr.io/scgis-wales/dcert:main
 
-# Run with a local PEM file (positional filename)
+# Run with a local PEM file
 docker run --rm -v "$PWD:/data" ghcr.io/scgis-wales/dcert:main /data/certificate.pem
+
+# Fetch from HTTPS endpoint
+docker run --rm ghcr.io/scgis-wales/dcert:main https://www.google.com
 ```
 
 ## Usage
 
-### Basic
+### Basic Examples
 
 ```bash
-# Validate a single certificate file
+# Analyze a local PEM file
 dcert certificate.pem
 
-# Only show expired certificates
+# Fetch and analyze certificates from an HTTPS endpoint
+dcert https://www.google.com
+
+# Only show expired certificates from a bundle
 dcert certificates.pem --expired-only
 
 # Output in JSON format
-dcert certificate.pem --format json
+dcert https://example.com --format json
+
+# Export fetched certificate chain to a file
+dcert https://www.google.com --export-pem google-certs.pem
+
+# Use HTTP/2 protocol
+dcert --http-protocol http2 https://www.google.com
+
+# Custom HTTP headers and method
+dcert https://api.example.com --method POST --header "Authorization:Bearer token" --header "Content-Type:application/json"
 ```
 
-### Options
+### Command Line Options
 
 ```
-dcert [OPTIONS] <FILE>
+dcert [OPTIONS] <TARGET>
 
 Arguments:
-  <FILE>  Path to a PEM file with one or more certificates
+  <TARGET>  Path to a PEM file or an HTTPS URL like https://example.com
 
 Options:
-  -F, --format <FORMAT>  Output format [default: pretty] [possible values: pretty, json]
-      --expired-only     Show only expired certificates
-  -h, --help             Print help
-  -V, --version          Print version
+  -f, --format <FORMAT>                Output format [default: pretty] [possible values: pretty, json]
+      --expired-only                   Show only expired certificates
+      --export-pem <EXPORT_PEM>        Export the fetched PEM chain to a file (only for HTTPS targets)
+      --method <METHOD>                HTTP method to use for HTTPS requests [default: GET]
+      --header [<HEADER>...]           Custom HTTP headers (key:value), can be repeated
+      --http-protocol <HTTP_PROTOCOL>  HTTP protocol to use [default: http1-1] [possible values: http1-1, http2]
+  -h, --help                           Print help
+  -V, --version                        Print version
 ```
 
-### Input format
+### Input Formats
 
-A single file can contain multiple certificates back to back:
+#### PEM File
+A single file can contain multiple certificates:
 
 ```pem
 -----BEGIN CERTIFICATE-----
@@ -89,112 +113,183 @@ A single file can contain multiple certificates back to back:
 -----END CERTIFICATE-----
 ```
 
-## Output examples
+#### HTTPS URL
+Any valid HTTPS URL:
+- `https://www.google.com`
+- `https://api.github.com:443`
+- `https://example.com/path?query=value`
 
-### Pretty
+## Output Examples
+
+### Pretty Format (Live HTTPS Endpoint)
 
 ```
+dcert https://www.google.com
+
+Debug
+  HTTP protocol: HTTP/1.1
+  HTTP response code: 200
+  Mutual TLS requested: unknown
+  Hostname matches certificate SANs/CN: true
+  TLS version used: TLSv1.3
+  TLS ciphersuite agreed: TLS_AES_256_GCM_SHA384
+  Certificate transparency: true
+
+  Network latency (layer 4/TCP connect): 27 ms
+  Network latency (layer 7/TLS+HTTP):    125 ms
+
+Note: Layer 4 and Layer 7 latencies are measured separately and should not be summed. Layer 4 covers TCP connection only; Layer 7 covers TLS handshake and HTTP request. DNS resolution and other delays are not included in these timings.
+
 Certificate
   Index        : 0
-  Subject      : C=US, ST=WA, L=Redmond, O=Microsoft Corporation, CN=portal.azure.com
-  Issuer       : C=US, O=Microsoft Corporation, CN=Microsoft Azure RSA TLS Issuing CA 07
-  Serial       : 3302491B72E6A86185CFC9711A000002491B72
-  Not Before   : 2025-08-26T06:32:23Z
-  Not After    : 2026-02-22T06:32:23Z
+  Subject      : CN=www.google.com
+  Issuer       : C=US, O=Google Trust Services, CN=WR2
+  Serial       : 00E7ABC9898ECE40981042627F3050E7BA
+  Not Before   : 2025-08-25T08:41:50Z
+  Not After    : 2025-11-17T08:41:49Z
   SANs         :
-    - DNS:portal.azure.com
-    - DNS:*.portal.azure.com
-    - DNS:*.portal.azure.net
-    - DNS:devicemanagement.microsoft.com
-    - DNS:endpoint.microsoft.com
-    - DNS:canary-endpoint.microsoft.com
-    - DNS:lighthouse.microsoft.com
-    - DNS:shell.azure.com
-    - DNS:*.reactblade.portal.azure.net
-    - DNS:*.reactblade-rc.portal.azure.net
-    - DNS:*.reactblade-ms.portal.azure.net
-    - DNS:vlcentral.microsoft.com
+    - DNS:www.google.com
   Status       : valid
 
 Certificate
   Index        : 1
-  Subject      : C=US, O=Microsoft Corporation, CN=Microsoft Azure RSA TLS Issuing CA 07
-  Issuer       : C=US, O=DigiCert Inc, OU=www.digicert.com, CN=DigiCert Global Root G2
-  Serial       : 0A43A9509B01352F899579EC7208BA50
-  Not Before   : 2023-06-08T00:00:00Z
-  Not After    : 2026-08-25T23:59:59Z
+  Subject      : C=US, O=Google Trust Services, CN=WR2
+  Issuer       : C=US, O=Google Trust Services LLC, CN=GTS Root R1
+  Serial       : 7FF005A07C4CDED100AD9D66A5107B98
+  Not Before   : 2023-12-13T09:00:00Z
+  Not After    : 2029-02-20T14:00:00Z
   Status       : valid
 
 Certificate
   Index        : 2
-  Subject      : C=US, O=DigiCert Inc, OU=www.digicert.com, CN=DigiCert Global Root G2
-  Issuer       : C=US, O=DigiCert Inc, OU=www.digicert.com, CN=DigiCert Global Root G2
-  Serial       : 033AF1E6A711A9A0BB2864B11D09FAE5
-  Not Before   : 2013-08-01T12:00:00Z
-  Not After    : 2038-01-15T12:00:00Z
+  Subject      : C=US, O=Google Trust Services LLC, CN=GTS Root R1
+  Issuer       : C=BE, O=GlobalSign nv-sa, OU=Root CA, CN=GlobalSign Root CA
+  Serial       : 77BD0D6CDB36F91AEA210FC4F058D30D
+  Not Before   : 2020-06-19T00:00:42Z
+  Not After    : 2028-01-28T00:00:42Z
   Status       : valid
 ```
 
-### JSON
+### JSON Format
+
+```bash
+dcert --http-protocol http2 https://www.google.com --format json
+```
 
 ```json
 [
   {
     "index": 0,
-    "subject": "C=US, ST=WA, L=Redmond, O=Microsoft Corporation, CN=portal.azure.com",
-    "issuer": "C=US, O=Microsoft Corporation, CN=Microsoft Azure RSA TLS Issuing CA 07",
+    "subject": "CN=www.google.com",
+    "issuer": "C=US, O=Google Trust Services, CN=WR2",
     "subject_alternative_names": [
-      "DNS:portal.azure.com",
-      "DNS:*.portal.azure.com",
-      "DNS:*.portal.azure.net",
-      "DNS:devicemanagement.microsoft.com",
-      "DNS:endpoint.microsoft.com",
-      "DNS:canary-endpoint.microsoft.com",
-      "DNS:lighthouse.microsoft.com",
-      "DNS:shell.azure.com",
-      "DNS:*.reactblade.portal.azure.net",
-      "DNS:*.reactblade-rc.portal.azure.net",
-      "DNS:*.reactblade-ms.portal.azure.net",
-      "DNS:vlcentral.microsoft.com"
+      "DNS:www.google.com"
     ],
-    "serial_number": "3302491B72E6A86185CFC9711A000002491B72",
-    "not_before": "2025-08-26T06:32:23Z",
-    "not_after": "2026-02-22T06:32:23Z",
-    "is_expired": false
+    "serial_number": "00E7ABC9898ECE40981042627F3050E7BA",
+    "not_before": "2025-08-25T08:41:50Z",
+    "not_after": "2025-11-17T08:41:49Z",
+    "is_expired": false,
+    "ct_present": true
   },
   {
     "index": 1,
-    "subject": "C=US, O=Microsoft Corporation, CN=Microsoft Azure RSA TLS Issuing CA 07",
-    "issuer": "C=US, O=DigiCert Inc, OU=www.digicert.com, CN=DigiCert Global Root G2",
-    "serial_number": "0A43A9509B01352F899579EC7208BA50",
-    "not_before": "2023-06-08T00:00:00Z",
-    "not_after": "2026-08-25T23:59:59Z",
-    "is_expired": false
+    "subject": "C=US, O=Google Trust Services, CN=WR2",
+    "issuer": "C=US, O=Google Trust Services LLC, CN=GTS Root R1",
+    "serial_number": "7FF005A07C4CDED100AD9D66A5107B98",
+    "not_before": "2023-12-13T09:00:00Z",
+    "not_after": "2029-02-20T14:00:00Z",
+    "is_expired": false,
+    "ct_present": false
   },
   {
     "index": 2,
-    "subject": "C=US, O=DigiCert Inc, OU=www.digicert.com, CN=DigiCert Global Root G2",
-    "issuer": "C=US, O=DigiCert Inc, OU=www.digicert.com, CN=DigiCert Global Root G2",
-    "serial_number": "033AF1E6A711A9A0BB2864B11D09FAE5",
-    "not_before": "2013-08-01T12:00:00Z",
-    "not_after": "2038-01-15T12:00:00Z",
-    "is_expired": false
+    "subject": "C=US, O=Google Trust Services LLC, CN=GTS Root R1",
+    "issuer": "C=BE, O=GlobalSign nv-sa, OU=Root CA, CN=GlobalSign Root CA",
+    "serial_number": "77BD0D6CDB36F91AEA210FC4F058D30D",
+    "not_before": "2020-06-19T00:00:42Z",
+    "not_after": "2028-01-28T00:00:42Z",
+    "is_expired": false,
+    "ct_present": false
   }
 ]
 ```
 
-## Tips
+## Advanced Usage
 
-### Inspect a live site quickly
+### TLS Debugging and Performance Analysis
+
+The debug output provides valuable insights for TLS troubleshooting:
+
+- **HTTP Protocol**: Shows whether HTTP/1.1 or HTTP/2 was used
+- **HTTP Response Code**: Actual response code from the server
+- **Mutual TLS**: Indicates if the server requested client certificates
+- **Hostname Validation**: Checks if the certificate matches the requested hostname
+- **TLS Version & Cipher**: Shows negotiated TLS version and cipher suite
+- **Certificate Transparency**: Indicates if CT logs are present
+- **Network Latency**: Separate measurements for TCP and TLS+HTTP layers
+
+### Certificate Chain Export
+
+Export certificate chains for offline analysis or compliance:
 
 ```bash
-echo | openssl s_client -connect example.com:443 2>/dev/null   | openssl crl2pkcs7 -nocrl -certfile /dev/stdin | openssl pkcs7 -print_certs   | dcert --format json -
+# Export Google's certificate chain
+dcert https://www.google.com --export-pem google-chain.pem
+
+# Analyze the exported chain later
+dcert google-chain.pem --format json
 ```
 
-### Filter only expired from a bundle
+### Custom HTTP Requests
+
+Test APIs and services with custom headers:
 
 ```bash
-dcert bundle.pem --expired-only
+# API testing with authentication
+dcert https://api.github.com --header "Authorization:token ghp_xxxx" --header "User-Agent:dcert/1.0"
+
+# Test with different HTTP methods
+dcert https://httpbin.org/post --method POST --header "Content-Type:application/json"
+```
+
+## Use Cases
+
+### DevOps & Site Reliability
+
+```bash
+# Quick certificate expiry check
+dcert https://your-api.com --format json | jq '.[0].not_after'
+
+# Monitor certificate transparency compliance
+dcert https://your-site.com | grep "Certificate transparency"
+
+# Performance monitoring
+dcert https://your-app.com | grep "Network latency"
+```
+
+### Security Auditing
+
+```bash
+# Check for weak TLS configurations
+dcert https://target.com | grep -E "(TLS version|ciphersuite)"
+
+# Verify proper hostname matching
+dcert https://example.com | grep "Hostname matches"
+
+# Audit certificate chains
+dcert https://site.com --format json | jq '.[] | {subject, issuer, not_after}'
+```
+
+### Certificate Management
+
+```bash
+# Find expiring certificates in a bundle
+dcert certificate-bundle.pem --format json | jq '.[] | select(.not_after < "2024-12-31")'
+
+# Export and backup certificate chains
+for domain in google.com github.com stackoverflow.com; do
+  dcert "https://$domain" --export-pem "${domain}-chain.pem"
+done
 ```
 
 ## Development
@@ -206,18 +301,23 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 # Tests
 cargo test
+
+# Build release
+cargo build --release
 ```
 
-## Licence
+## License
 
-MIT. See [LICENCE](LICENSE).
+MIT. See [LICENSE](LICENSE).
 
 ## Acknowledgements
 
-- Parsing by [x509-parser]
-- CLI by [clap]
-- Terminal colours by [colored]
+- X.509 parsing by [x509-parser]
+- CLI framework by [clap]
+- Terminal colors by [colored]
+- TLS connections by [openssl]
 
 [x509-parser]: https://crates.io/crates/x509-parser
 [clap]: https://crates.io/crates/clap
 [colored]: https://crates.io/crates/colored
+[openssl]: https://crates.io/crates/openssl
