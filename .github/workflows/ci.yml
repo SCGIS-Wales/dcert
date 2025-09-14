@@ -156,6 +156,13 @@ jobs:
           toolchain: stable
           targets: ${{ matrix.target }}
 
+      - name: Install OpenSSL
+        run: |
+          brew install openssl@3
+          echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> $GITHUB_ENV
+          echo "OPENSSL_LIB_DIR=$(brew --prefix openssl@3)/lib" >> $GITHUB_ENV
+          echo "OPENSSL_INCLUDE_DIR=$(brew --prefix openssl@3)/include" >> $GITHUB_ENV
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -167,7 +174,11 @@ jobs:
           restore-keys: ${{ runner.os }}-${{ matrix.target }}-cargo-
 
       - name: Build (release)
-        run: cargo build --release --target ${{ matrix.target }}
+        run: |
+          export OPENSSL_DIR=$(brew --prefix openssl@3)
+          export OPENSSL_LIB_DIR=$(brew --prefix openssl@3)/lib
+          export OPENSSL_INCLUDE_DIR=$(brew --prefix openssl@3)/include
+          cargo build --release --target ${{ matrix.target }}
 
       - name: Package artifact
         run: |
