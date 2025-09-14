@@ -103,6 +103,8 @@ jobs:
           sudo apt-get update
           if [ "${{ matrix.target }}" = "x86_64-unknown-linux-musl" ]; then
             sudo apt-get install -y musl-tools musl-dev
+            # Install musl-gcc wrapper
+            sudo ln -sf /usr/bin/musl-gcc /usr/local/bin/musl-gcc
           elif [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
             sudo apt-get install -y gcc-aarch64-linux-gnu
           else
@@ -121,12 +123,19 @@ jobs:
 
       - name: Build (release)
         env:
-          # Always use vendored OpenSSL for cross-compilation
-          OPENSSL_STATIC: ${{ (matrix.target == 'x86_64-unknown-linux-musl' || matrix.target == 'aarch64-unknown-linux-gnu') && '1' || '0' }}
-          OPENSSL_VENDORED: ${{ (matrix.target == 'x86_64-unknown-linux-musl' || matrix.target == 'aarch64-unknown-linux-gnu') && '1' || '0' }}
+          # Force vendored OpenSSL for all cross-compilation targets
+          OPENSSL_STATIC: 1
+          OPENSSL_VENDORED: 1
+          # Additional environment variables for cross-compilation
+          PKG_CONFIG_ALLOW_CROSS: 1
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: |
           if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
             export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+            export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
+            export AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar
+          elif [ "${{ matrix.target }}" = "x86_64-unknown-linux-musl" ]; then
+            export CC_x86_64_unknown_linux_musl=musl-gcc
           fi
           cargo build --release --target ${{ matrix.target }}
 
@@ -241,7 +250,6 @@ jobs:
       matrix:
         target:
           - x86_64-pc-windows-msvc
-          # Remove aarch64 for now as it's problematic without proper setup
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -251,6 +259,13 @@ jobs:
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
+
+      # Add this step to install OpenSSL
+      - name: Install OpenSSL
+        run: |
+          vcpkg install openssl:x64-windows-static
+          echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "OPENSSL_DIR=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -264,9 +279,11 @@ jobs:
 
       - name: Build (release)
         env:
-          # Use vendored OpenSSL for Windows
           OPENSSL_STATIC: 1
           OPENSSL_VENDORED: 1
+          # Fallback to system OpenSSL if vendored fails
+          OPENSSL_LIB_DIR: ${{ env.VCPKG_ROOT }}\installed\x64-windows-static\lib
+          OPENSSL_INCLUDE_DIR: ${{ env.VCPKG_ROOT }}\installed\x64-windows-static\include
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package artifact
