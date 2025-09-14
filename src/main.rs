@@ -3,7 +3,10 @@ use clap::CommandFactory;
 use clap::{Parser, ValueEnum};
 use colored::*;
 use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
+use openssl::x509::store::X509StoreBuilder;
+use openssl::x509::X509;
 use pem_rfc7468::LineEnding;
+use std::env;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -34,7 +37,170 @@ impl Drop for ConnectionGuard {
     }
 }
 
-/// Fetch TLS certificate chain using OpenSSL, bypassing all validation.
+/// Check if a host should bypass proxy based on no_proxy environment variables
+fn should_bypass_proxy(host: &str) -> bool {
+    let no_proxy = env::var("no_proxy")
+        .or_else(|_| env::var("NO_PROXY"))
+        .unwrap_or_default();
+
+    if no_proxy.is_empty() {
+        return false;
+    }
+
+    let host = host.to_lowercase();
+
+    for pattern in no_proxy.split(',') {
+        let pattern = pattern.trim().to_lowercase();
+        if pattern.is_empty() {
+            continue;
+        }
+
+        // Exact match
+        if pattern == host {
+            return true;
+        }
+
+        // Domain suffix match (e.g., .example.com matches subdomain.example.com)
+        if pattern.starts_with('.') && host.ends_with(&pattern) {
+            return true;
+        }
+
+        // Subdomain match (e.g., example.com matches subdomain.example.com)
+        if !pattern.starts_with('.') && host.ends_with(&format!(".{}", pattern)) {
+            return true;
+        }
+
+        // Special case for localhost
+        if pattern == "localhost" && (host == "localhost" || host == "127.0.0.1" || host == "::1") {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Get proxy URL from environment variables
+fn get_proxy_url(scheme: &str) -> Option<String> {
+    let env_vars = match scheme {
+        "https" => vec!["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"],
+        "http" => vec!["HTTP_PROXY", "http_proxy"],
+        _ => vec![],
+    };
+
+    for var in env_vars {
+        if let Ok(proxy) = env::var(var) {
+            if !proxy.is_empty() {
+                return Some(proxy);
+            }
+        }
+    }
+
+    None
+}
+
+/// Connect through HTTP proxy using CONNECT method
+fn connect_through_proxy(proxy_url: &str, target_host: &str, target_port: u16) -> Result<TcpStream> {
+    let proxy = Url::parse(proxy_url).map_err(|e| anyhow::anyhow!("Invalid proxy URL {}: {}", proxy_url, e))?;
+
+    let proxy_host = proxy
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("Proxy URL must include a host"))?;
+    let proxy_port = proxy.port().unwrap_or(8080);
+
+    // Connect to proxy
+    let proxy_addr = format!("{}:{}", proxy_host, proxy_port)
+        .to_socket_addrs()
+        .map_err(|e| anyhow::anyhow!("Failed to resolve proxy {}: {}", proxy_host, e))?
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("No valid address found for proxy {}", proxy_host))?;
+
+    let mut stream = TcpStream::connect_timeout(&proxy_addr, Duration::from_secs(CONNECTION_TIMEOUT_SECS))
+        .map_err(|e| anyhow::anyhow!("Failed to connect to proxy: {}", e))?;
+
+    // Send CONNECT request
+    let connect_request = format!(
+        "CONNECT {}:{} HTTP/1.1\r\nHost: {}:{}\r\nProxy-Connection: keep-alive\r\n\r\n",
+        target_host, target_port, target_host, target_port
+    );
+
+    stream
+        .write_all(connect_request.as_bytes())
+        .map_err(|e| anyhow::anyhow!("Failed to send CONNECT request: {}", e))?;
+
+    // Read proxy response
+    let mut response = Vec::new();
+    let mut buffer = [0u8; 1024];
+
+    // Read until we get the full HTTP response headers
+    loop {
+        let n = stream
+            .read(&mut buffer)
+            .map_err(|e| anyhow::anyhow!("Failed to read proxy response: {}", e))?;
+
+        if n == 0 {
+            break;
+        }
+
+        response.extend_from_slice(&buffer[..n]);
+
+        // Check if we have the complete headers (ending with \r\n\r\n)
+        if response.windows(4).any(|w| w == b"\r\n\r\n") {
+            break;
+        }
+    }
+
+    let response_str = String::from_utf8_lossy(&response);
+    let status_line = response_str
+        .lines()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("Empty proxy response"))?;
+
+    // Check if the CONNECT was successful (200 Connection established)
+    if !status_line.contains("200") {
+        return Err(anyhow::anyhow!("Proxy CONNECT failed: {}", status_line));
+    }
+
+    Ok(stream)
+}
+
+/// Load custom CA certificates from SSL_CERT_FILE environment variable
+fn load_custom_ca_certs(store_builder: &mut X509StoreBuilder) -> Result<()> {
+    if let Ok(cert_file) = env::var("SSL_CERT_FILE") {
+        if !cert_file.is_empty() {
+            let cert_data = fs::read_to_string(&cert_file)
+                .map_err(|e| anyhow::anyhow!("Failed to read SSL_CERT_FILE {}: {}", cert_file, e))?;
+
+            // Parse PEM certificates from the file
+            let pem_blocks = pem::parse_many(&cert_data)
+                .map_err(|e| anyhow::anyhow!("Failed to parse certificates from {}: {}", cert_file, e))?;
+
+            let mut added_count = 0;
+            for block in pem_blocks {
+                if block.tag == "CERTIFICATE" {
+                    match X509::from_der(&block.contents) {
+                        Ok(cert) => {
+                            store_builder
+                                .add_cert(cert)
+                                .map_err(|e| anyhow::anyhow!("Failed to add certificate to store: {}", e))?;
+                            added_count += 1;
+                        }
+                        Err(e) => {
+                            eprintln!("Warning: Failed to parse certificate from {}: {}", cert_file, e);
+                        }
+                    }
+                }
+            }
+
+            if added_count > 0 {
+                eprintln!("Loaded {} custom CA certificates from {}", added_count, cert_file);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Fetch TLS certificate chain using OpenSSL, with proxy support and custom CA certificates.
 fn fetch_tls_chain_openssl(
     endpoint: &str,
     method: &str,
@@ -67,18 +233,34 @@ fn fetch_tls_chain_openssl(
         return Err(anyhow::anyhow!("Invalid port number: {}", port));
     }
 
-    // Layer 4: TCP connect with timeout
+    // Layer 4: TCP connect with timeout (with proxy support)
     let l4_start = std::time::Instant::now();
 
-    // Resolve address first
-    let socket_addr = format!("{}:{}", host, port)
-        .to_socket_addrs()
-        .map_err(|e| anyhow::anyhow!("Failed to resolve host {}: {}", host, e))?
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("No valid address found for host {}", host))?;
+    let stream = if should_bypass_proxy(host) {
+        // Direct connection
+        let socket_addr = format!("{}:{}", host, port)
+            .to_socket_addrs()
+            .map_err(|e| anyhow::anyhow!("Failed to resolve host {}: {}", host, e))?
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("No valid address found for host {}", host))?;
 
-    let stream = TcpStream::connect_timeout(&socket_addr, Duration::from_secs(CONNECTION_TIMEOUT_SECS))
-        .map_err(|e| anyhow::anyhow!("TCP connection failed: {e}"))?;
+        TcpStream::connect_timeout(&socket_addr, Duration::from_secs(CONNECTION_TIMEOUT_SECS))
+            .map_err(|e| anyhow::anyhow!("TCP connection failed: {e}"))?
+    } else if let Some(proxy_url) = get_proxy_url("https") {
+        // Connect through proxy
+        eprintln!("Using proxy: {}", proxy_url);
+        connect_through_proxy(&proxy_url, host, port)?
+    } else {
+        // Direct connection (no proxy configured)
+        let socket_addr = format!("{}:{}", host, port)
+            .to_socket_addrs()
+            .map_err(|e| anyhow::anyhow!("Failed to resolve host {}: {}", host, e))?
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("No valid address found for host {}", host))?;
+
+        TcpStream::connect_timeout(&socket_addr, Duration::from_secs(CONNECTION_TIMEOUT_SECS))
+            .map_err(|e| anyhow::anyhow!("TCP connection failed: {e}"))?
+    };
 
     // Set read timeout
     stream
@@ -91,6 +273,16 @@ fn fetch_tls_chain_openssl(
     let l7_start = std::time::Instant::now();
     let mut builder =
         SslConnector::builder(SslMethod::tls()).map_err(|e| anyhow::anyhow!("OpenSSL builder failed: {e}"))?;
+
+    // Load custom CA certificates if SSL_CERT_FILE is set
+    let mut store_builder =
+        X509StoreBuilder::new().map_err(|e| anyhow::anyhow!("Failed to create X509 store builder: {}", e))?;
+
+    load_custom_ca_certs(&mut store_builder)?;
+
+    let store = store_builder.build();
+    builder.set_cert_store(store);
+
     builder.set_verify(SslVerifyMode::NONE);
     let connector = builder.build();
 
