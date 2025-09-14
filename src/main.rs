@@ -5,9 +5,11 @@ use colored::*;
 use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
 use pem_rfc7468::LineEnding;
 use std::fs;
-use std::io::Write;
-use std::net::IpAddr;
+use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::net::{IpAddr, ToSocketAddrs};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use url::Url;
@@ -20,25 +22,69 @@ lazy_static::lazy_static! {
         x509_parser::asn1_rs::Oid::from(&[1, 3, 6, 1, 4, 1, 11129, 2, 4, 2]).unwrap();
 }
 
+static ACTIVE_CONNECTIONS: AtomicUsize = AtomicUsize::new(0);
+const MAX_CONNECTIONS: usize = 10;
+const CONNECTION_TIMEOUT_SECS: u64 = 10;
+const READ_TIMEOUT_SECS: u64 = 5;
+
+struct ConnectionGuard;
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// Fetch TLS certificate chain using OpenSSL, bypassing all validation.
 fn fetch_tls_chain_openssl(
     endpoint: &str,
-    _method: &str,
+    method: &str,
     headers: &[(String, String)],
-    http_protocol: HttpProtocol,
+    _http_protocol: HttpProtocol,
 ) -> Result<TlsChainResult> {
+    // Guard against too many concurrent connections
+    let current = ACTIVE_CONNECTIONS.fetch_add(1, Ordering::SeqCst);
+    if current >= MAX_CONNECTIONS {
+        ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::SeqCst);
+        return Err(anyhow::anyhow!("Too many concurrent connections"));
+    }
+
+    // Ensure cleanup on all paths
+    let _guard = ConnectionGuard;
+
+    // Validate URL more thoroughly
     let url = url::Url::parse(endpoint).map_err(|e| anyhow::anyhow!("Invalid URL: {e}"))?;
     if url.scheme() != "https" {
         return Err(anyhow::anyhow!("Only HTTPS scheme is supported"));
     }
+
     let host = url
         .host_str()
         .ok_or_else(|| anyhow::anyhow!("URL must include a host"))?;
-    let port = url.port().unwrap_or(443);
 
-    // Layer 4: TCP connect
+    // Validate port range
+    let port = url.port().unwrap_or(443);
+    if port == 0 {
+        return Err(anyhow::anyhow!("Invalid port number: {}", port));
+    }
+
+    // Layer 4: TCP connect with timeout
     let l4_start = std::time::Instant::now();
-    let stream = TcpStream::connect((host, port)).map_err(|e| anyhow::anyhow!("TCP connection failed: {e}"))?;
+
+    // Resolve address first
+    let socket_addr = format!("{}:{}", host, port)
+        .to_socket_addrs()
+        .map_err(|e| anyhow::anyhow!("Failed to resolve host {}: {}", host, e))?
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("No valid address found for host {}", host))?;
+
+    let stream = TcpStream::connect_timeout(&socket_addr, Duration::from_secs(CONNECTION_TIMEOUT_SECS))
+        .map_err(|e| anyhow::anyhow!("TCP connection failed: {e}"))?;
+
+    // Set read timeout
+    stream
+        .set_read_timeout(Some(Duration::from_secs(READ_TIMEOUT_SECS)))
+        .map_err(|e| anyhow::anyhow!("Failed to set read timeout: {e}"))?;
+
     let l4_latency = l4_start.elapsed().as_millis();
 
     // Layer 7: TLS handshake + HTTP request
@@ -52,24 +98,101 @@ fn fetch_tls_chain_openssl(
         .connect(host, stream)
         .map_err(|e| anyhow::anyhow!("TLS handshake failed: {e}"))?;
 
-    // Send HTTP request (layer 7)
-    let req = match http_protocol {
-        HttpProtocol::Http2 => {
-            // HTTP/2 uses pseudo-headers, but for a raw TCP socket, send HTTP/1.1 as fallback
-            // Most servers will negotiate HTTP/2 via ALPN, but OpenSSL's SslStream does not handle this automatically.
-            // For now, send HTTP/1.1 request line but indicate HTTP/2 in debug output.
-            format!("{} {} HTTP/1.1\r\nHost: {}\r\n", _method, url.path(), host)
-        }
-        HttpProtocol::Http1_1 => {
-            format!("{} {} HTTP/1.1\r\nHost: {}\r\n", _method, url.path(), host)
-        }
-    };
+    // Build HTTP request
+    let path = if url.path().is_empty() { "/" } else { url.path() };
+
+    // Both HTTP/1.1 and HTTP/2 will use HTTP/1.1 format here
+    // OpenSSL doesn't handle HTTP/2 ALPN negotiation automatically
+    let req = format!("{} {} HTTP/1.1\r\nHost: {}\r\n", method, path, host);
+
     let mut req = req;
     for (key, value) in headers {
         req.push_str(&format!("{}: {}\r\n", key, value));
     }
     req.push_str("Connection: close\r\n\r\n");
-    ssl_stream.get_mut().write_all(req.as_bytes()).ok();
+
+    // Send HTTP request
+    ssl_stream
+        .write_all(req.as_bytes())
+        .map_err(|e| anyhow::anyhow!("Failed to send HTTP request: {e}"))?;
+
+    // Flush the stream to ensure the request is sent
+    ssl_stream
+        .flush()
+        .map_err(|e| anyhow::anyhow!("Failed to flush stream: {e}"))?;
+
+    // Read HTTP response to get status code
+    // We need to read the response in a loop to handle partial reads
+    let mut response_buffer = Vec::new();
+    let mut temp_buffer = [0u8; 1024];
+    let mut attempts = 0;
+    const MAX_ATTEMPTS: usize = 10;
+
+    // Keep reading until we have at least the status line
+    while attempts < MAX_ATTEMPTS && response_buffer.len() < 4096 {
+        match ssl_stream.read(&mut temp_buffer) {
+            Ok(0) => break, // EOF
+            Ok(n) => {
+                response_buffer.extend_from_slice(&temp_buffer[..n]);
+
+                // Check if we have a complete status line (HTTP/1.1 200 OK\r\n)
+                if let Some(end_pos) = response_buffer.windows(2).position(|w| w == b"\r\n") {
+                    // We found the end of the first line
+                    if end_pos >= 12 {
+                        // Minimum valid status line length
+                        break;
+                    }
+                }
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                // Timeout, but we might have partial data
+                if !response_buffer.is_empty() {
+                    break;
+                }
+            }
+            Err(e) => {
+                // Log the error but continue if we have some data
+                eprintln!("Warning: Error reading HTTP response: {}", e);
+                break;
+            }
+        }
+        attempts += 1;
+    }
+
+    // Parse HTTP status code
+    let http_response_code = if !response_buffer.is_empty() {
+        // Find the first line ending
+        let line_end = response_buffer
+            .windows(2)
+            .position(|w| w == b"\r\n")
+            .unwrap_or(response_buffer.len().min(100));
+
+        let status_line = &response_buffer[..line_end];
+
+        if let Ok(status_str) = std::str::from_utf8(status_line) {
+            // Parse "HTTP/1.1 200 OK" format
+            // Split by spaces and get the second element (status code)
+            let parts: Vec<&str> = status_str.split_whitespace().collect();
+            if parts.len() >= 2 {
+                // The second part should be the status code
+                if let Ok(code) = parts[1].parse::<u16>() {
+                    code
+                } else {
+                    eprintln!("Warning: Could not parse status code from: {}", status_str);
+                    0
+                }
+            } else {
+                eprintln!("Warning: Invalid status line format: {}", status_str);
+                0
+            }
+        } else {
+            eprintln!("Warning: Status line is not valid UTF-8");
+            0
+        }
+    } else {
+        eprintln!("Warning: No response data received");
+        0
+    };
 
     let l7_latency = l7_start.elapsed().as_millis();
 
@@ -98,6 +221,7 @@ fn fetch_tls_chain_openssl(
             pem.push('\n');
         }
     }
+
     let ssl = ssl_stream.ssl();
     let tls_version = ssl.version_str().to_string();
     let tls_cipher = ssl
@@ -106,7 +230,8 @@ fn fetch_tls_chain_openssl(
         .unwrap_or_else(|| "unknown".to_string());
 
     // Check if server requested a client certificate (mTLS)
-    let mtls_requested = false; // OpenSSL crate does not expose mTLS request detection
+    // Note: OpenSSL crate doesn't directly expose this, using false as default
+    let mtls_requested = false;
 
     let offered_ciphers: Vec<String> = Vec::new();
     Ok((
@@ -117,6 +242,7 @@ fn fetch_tls_chain_openssl(
         tls_cipher,
         offered_ciphers,
         mtls_requested,
+        http_response_code,
     ))
 }
 
@@ -165,7 +291,7 @@ struct Args {
     header: Vec<(String, String)>,
 
     /// HTTP protocol to use (default: http2)
-    #[arg(long, value_enum, default_value_t = HttpProtocol::Http2)]
+    #[arg(long, value_enum, default_value_t = HttpProtocol::Http1_1)]
     http_protocol: HttpProtocol,
 }
 
@@ -185,57 +311,91 @@ struct CertInfo {
     ct_present: bool,
 }
 
+/// Process a single certificate into CertInfo
+fn process_certificate(cert: X509Certificate<'_>, idx: usize, expired_only: bool) -> Result<Option<CertInfo>> {
+    // Build owned info
+    let subject = cert.subject().to_string();
+    let issuer = cert.issuer().to_string();
+
+    // Serial as uppercase hex
+    let serial_bytes = cert.raw_serial();
+    let serial_number = serial_bytes.iter().map(|b| format!("{:02X}", b)).collect::<String>();
+
+    // Validity converted to RFC3339 strings
+    let nb: OffsetDateTime = cert.validity().not_before.to_datetime();
+    let na: OffsetDateTime = cert.validity().not_after.to_datetime();
+    let now = OffsetDateTime::now_utc();
+
+    let not_before = nb.format(&Rfc3339).unwrap_or_else(|_| nb.to_string());
+    let not_after = na.format(&Rfc3339).unwrap_or_else(|_| na.to_string());
+    let is_expired = na < now;
+
+    if expired_only && !is_expired {
+        return Ok(None);
+    }
+
+    let common_name = extract_common_name(&cert);
+    let subject_alternative_names = extract_sans(&cert);
+
+    let ct_present = cert.extensions().iter().any(|ext| ext.oid == *OID_X509_SCT_LIST);
+
+    Ok(Some(CertInfo {
+        index: idx,
+        subject,
+        issuer,
+        common_name,
+        subject_alternative_names,
+        serial_number,
+        not_before,
+        not_after,
+        is_expired,
+        ct_present,
+    }))
+}
+
 /// Parse all PEM certificate blocks from `pem_data` and return owned `CertInfo`
 /// for each certificate. We do not store `X509Certificate` to avoid lifetime issues.
 fn parse_cert_infos_from_pem(pem_data: &str, expired_only: bool) -> Result<Vec<CertInfo>> {
-    let blocks = pem::parse_many(pem_data).map_err(|e| anyhow::anyhow!("Failed to parse PEM: {e}"))?; // blocks: Vec<pem::Pem>
+    let blocks = pem::parse_many(pem_data).map_err(|e| anyhow::anyhow!("Failed to parse PEM: {e}"))?;
+
     let mut infos = Vec::new();
+    let mut errors = Vec::new();
+
     for (idx, block) in blocks.iter().enumerate() {
-        // Access tag and contents fields on the Pem struct
-        if block.tag == "CERTIFICATE" {
-            let (_, cert) =
-                X509Certificate::from_der(&block.contents).map_err(|e| anyhow::anyhow!("Failed to parse DER: {e}"))?;
+        if block.tag != "CERTIFICATE" {
+            continue;
+        }
 
-            // Build owned info
-            let subject = cert.subject().to_string();
-            let issuer = cert.issuer().to_string();
-
-            // Serial as uppercase hex
-            let serial_bytes = cert.raw_serial();
-            let serial_number = serial_bytes.iter().map(|b| format!("{:02X}", b)).collect::<String>();
-
-            // Validity converted to RFC3339 strings
-            let nb: OffsetDateTime = cert.validity().not_before.to_datetime();
-            let na: OffsetDateTime = cert.validity().not_after.to_datetime();
-            let now = OffsetDateTime::now_utc();
-
-            let not_before = nb.format(&Rfc3339).unwrap_or_else(|_| nb.to_string());
-            let not_after = na.format(&Rfc3339).unwrap_or_else(|_| na.to_string());
-            let is_expired = na < now;
-
-            if expired_only && !is_expired {
+        match X509Certificate::from_der(&block.contents) {
+            Ok((_, cert)) => {
+                match process_certificate(cert, idx, expired_only) {
+                    Ok(Some(info)) => infos.push(info),
+                    Ok(None) => {} // Filtered out (e.g., not expired when expired_only is true)
+                    Err(e) => errors.push(format!("Certificate {}: {}", idx, e)),
+                }
+            }
+            Err(e) => {
+                errors.push(format!("Certificate {} parsing failed: {}", idx, e));
                 continue;
             }
-
-            let common_name = extract_common_name(&cert);
-            let subject_alternative_names = extract_sans(&cert);
-
-            let ct_present = cert.extensions().iter().any(|ext| ext.oid == *OID_X509_SCT_LIST);
-
-            infos.push(CertInfo {
-                index: idx,
-                subject,
-                issuer,
-                common_name,
-                subject_alternative_names,
-                serial_number,
-                not_before,
-                not_after,
-                is_expired,
-                ct_present,
-            });
         }
     }
+
+    // Return results even if some certs failed, but warn about errors
+    if !errors.is_empty() {
+        eprintln!("Warning: Some certificates had issues:");
+        for error in &errors {
+            eprintln!("  - {}", error);
+        }
+    }
+
+    if infos.is_empty() && !errors.is_empty() {
+        return Err(anyhow::anyhow!(
+            "All certificates failed to parse:\n{}",
+            errors.join("\n")
+        ));
+    }
+
     Ok(infos)
 }
 
@@ -279,6 +439,7 @@ fn extract_sans(cert: &X509Certificate<'_>) -> Vec<String> {
     out
 }
 
+#[allow(clippy::too_many_arguments)]
 fn print_pretty(
     infos: &[CertInfo],
     hostname: Option<&str>,
@@ -286,6 +447,8 @@ fn print_pretty(
     l7_latency: u128,
     tls_version: &str,
     tls_cipher: &str,
+    http_protocol: &HttpProtocol,
+    http_response_code: u16,
 ) {
     if let Some(host) = hostname {
         if let Some(leaf) = infos.first() {
@@ -293,6 +456,26 @@ fn print_pretty(
             let status = if matched { "true".green() } else { "false".red() };
             println!();
             println!("{}", "Debug".bold());
+            println!(
+                "  HTTP protocol: {}",
+                match http_protocol {
+                    HttpProtocol::Http2 => "HTTP/2",
+                    HttpProtocol::Http1_1 => "HTTP/1.1",
+                }
+            );
+            if http_response_code > 0 {
+                let code_color = match http_response_code {
+                    200..=299 => http_response_code.to_string().green(),
+                    300..=399 => http_response_code.to_string().yellow(),
+                    400..=499 => http_response_code.to_string().red(),
+                    500..=599 => http_response_code.to_string().red().bold(),
+                    _ => http_response_code.to_string().normal(),
+                };
+                println!("  HTTP response code: {}", code_color);
+            } else {
+                println!("  HTTP response code: not available");
+            }
+            println!("  Mutual TLS requested: unknown");
             println!("  Hostname matches certificate SANs/CN: {}", status);
             println!("  TLS version used: {}", tls_version);
             println!("  TLS ciphersuite agreed: {}", tls_cipher);
@@ -387,20 +570,20 @@ fn cert_matches_hostname(cert: &CertInfo, host: &str) -> bool {
     false
 }
 
-type TlsChainResult = (String, u128, u128, String, String, Vec<String>, bool);
+type TlsChainResult = (String, u128, u128, String, String, Vec<String>, bool, u16);
 
 fn run() -> Result<i32> {
     let args: Args = Args::parse();
 
-    let (pem_data, l4_latency, l7_latency, tls_version, tls_cipher, _mtls_requested) =
+    let (pem_data, l4_latency, l7_latency, tls_version, tls_cipher, _mtls_requested, http_response_code) =
         if args.target.starts_with("https://") {
-            let (pem, l4, l7, tls_version, tls_cipher, _, mtls_requested) =
+            let (pem, l4, l7, tls_version, tls_cipher, _, mtls_requested, http_response_code) =
                 fetch_tls_chain_openssl(&args.target, &args.method, &args.header, args.http_protocol.clone())
                     .with_context(|| "Failed to fetch TLS chain")?;
             if let Some(export_path) = &args.export_pem {
                 fs::write(export_path, &pem).with_context(|| format!("Failed to write PEM to {}", export_path))?;
             }
-            (pem, l4, l7, tls_version, tls_cipher, mtls_requested)
+            (pem, l4, l7, tls_version, tls_cipher, mtls_requested, http_response_code)
         } else {
             (
                 fs::read_to_string(&args.target)
@@ -410,6 +593,7 @@ fn run() -> Result<i32> {
                 String::new(),
                 String::new(),
                 false,
+                0,
             )
         };
 
@@ -437,6 +621,8 @@ fn run() -> Result<i32> {
                 l7_latency,
                 &tls_version,
                 &tls_cipher,
+                &args.http_protocol,
+                http_response_code,
             );
         }
         OutputFormat::Json => {
@@ -449,15 +635,6 @@ fn run() -> Result<i32> {
         fs::write(&export_path, pem_data).with_context(|| format!("Failed to write PEM file: {}", export_path))?;
         println!("PEM chain exported to {}", export_path);
     }
-
-    println!(
-        "  HTTP protocol: {}",
-        match args.http_protocol {
-            HttpProtocol::Http2 => "HTTP/2",
-            HttpProtocol::Http1_1 => "HTTP/1.1",
-        }
-    );
-    println!("  Mutual TLS requested: unknown");
 
     Ok(0)
 }
@@ -531,5 +708,18 @@ mod tests {
         assert!(!first.issuer.is_empty());
         assert!(!first.serial_number.is_empty());
         Ok(())
+    }
+
+    #[test]
+    fn test_parse_header() {
+        assert_eq!(
+            parse_header("Content-Type: application/json").unwrap(),
+            ("Content-Type".to_string(), "application/json".to_string())
+        );
+        assert_eq!(
+            parse_header("Authorization: Bearer token:with:colons").unwrap(),
+            ("Authorization".to_string(), "Bearer token:with:colons".to_string())
+        );
+        assert!(parse_header("InvalidHeader").is_err());
     }
 }
