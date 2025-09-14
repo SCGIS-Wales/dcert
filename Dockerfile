@@ -6,8 +6,12 @@
 FROM rust:1.89-alpine3.22 AS builder
 WORKDIR /app
 
-# Install build dependencies for musl targets
-RUN apk add --no-cache musl-dev
+# Install build dependencies for musl targets and OpenSSL
+RUN apk add --no-cache \
+    musl-dev \
+    openssl-dev \
+    openssl-libs-static \
+    pkgconfig
 
 # Copy manifest and ensure lockfile exists for reproducible builds
 COPY Cargo.toml ./
