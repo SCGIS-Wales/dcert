@@ -450,6 +450,14 @@ enum HttpProtocol {
     Http2,
 }
 
+#[derive(ValueEnum, Clone, Debug)]
+enum HttpMethod {
+    Get,
+    Post,
+    Head,
+    Options,
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "dcert")]
 #[command(
@@ -457,9 +465,10 @@ enum HttpProtocol {
              If you specify an HTTPS URL, dcert will fetch and decode the server's TLS certificate chain.\n\
              Optionally, you can export the chain as a PEM file."
 )]
-#[command(version = "0.1.2")]
+#[command(version = "1.0.0")]
 struct Args {
     /// Path to a PEM file or an HTTPS URL like https://example.com
+    #[arg(value_parser = validate_target)]
     target: String,
 
     /// Output format
@@ -475,8 +484,8 @@ struct Args {
     export_pem: Option<String>,
 
     /// HTTP method to use for HTTPS requests (default: GET)
-    #[arg(long, default_value = "GET")]
-    method: String,
+    #[arg(long, value_enum, default_value_t = HttpMethod::Get)]
+    method: HttpMethod,
 
     /// Custom HTTP headers (key:value), can be repeated
     #[arg(long, value_parser = parse_header, num_args = 0.., value_name = "HEADER")]
@@ -767,27 +776,32 @@ type TlsChainResult = (String, u128, u128, String, String, Vec<String>, bool, u1
 fn run() -> Result<i32> {
     let args: Args = Args::parse();
 
-    let (pem_data, l4_latency, l7_latency, tls_version, tls_cipher, _mtls_requested, http_response_code) =
-        if args.target.starts_with("https://") {
-            let (pem, l4, l7, tls_version, tls_cipher, _, mtls_requested, http_response_code) =
-                fetch_tls_chain_openssl(&args.target, &args.method, &args.header, args.http_protocol.clone())
-                    .with_context(|| "Failed to fetch TLS chain")?;
-            if let Some(export_path) = &args.export_pem {
-                fs::write(export_path, &pem).with_context(|| format!("Failed to write PEM to {}", export_path))?;
-            }
-            (pem, l4, l7, tls_version, tls_cipher, mtls_requested, http_response_code)
-        } else {
-            (
-                fs::read_to_string(&args.target)
-                    .with_context(|| format!("Failed to read PEM file: {}", &args.target))?,
-                0,
-                0,
-                String::new(),
-                String::new(),
-                false,
-                0,
-            )
-        };
+    let (pem_data, l4_latency, l7_latency, tls_version, tls_cipher, _mtls_requested, http_response_code) = if args
+        .target
+        .starts_with("https://")
+    {
+        let (pem, l4, l7, tls_version, tls_cipher, _, mtls_requested, http_response_code) = fetch_tls_chain_openssl(
+            &args.target,
+            &args.method.to_string(),
+            &args.header,
+            args.http_protocol.clone(),
+        )
+        .with_context(|| "Failed to fetch TLS chain")?;
+        if let Some(export_path) = &args.export_pem {
+            fs::write(export_path, &pem).with_context(|| format!("Failed to write PEM to {}", export_path))?;
+        }
+        (pem, l4, l7, tls_version, tls_cipher, mtls_requested, http_response_code)
+    } else {
+        (
+            fs::read_to_string(&args.target).with_context(|| format!("Failed to read PEM file: {}", &args.target))?,
+            0,
+            0,
+            String::new(),
+            String::new(),
+            false,
+            0,
+        )
+    };
 
     let infos =
         parse_cert_infos_from_pem(&pem_data, args.expired_only).with_context(|| "Failed to parse PEM certificates")?;
@@ -857,12 +871,31 @@ fn main() {
     }
 }
 
+fn validate_target(s: &str) -> Result<String, String> {
+    if s.starts_with("https://") || std::path::Path::new(s).exists() {
+        Ok(s.to_string())
+    } else {
+        Err("Target must be an HTTPS URL or existing PEM file path".to_string())
+    }
+}
+
 fn parse_header(s: &str) -> Result<(String, String), String> {
     let parts: Vec<&str> = s.splitn(2, ':').collect();
     if parts.len() != 2 {
         return Err("Header must be in key:value format".to_string());
     }
     Ok((parts[0].trim().to_string(), parts[1].trim().to_string()))
+}
+
+impl std::fmt::Display for HttpMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HttpMethod::Get => write!(f, "GET"),
+            HttpMethod::Post => write!(f, "POST"),
+            HttpMethod::Head => write!(f, "HEAD"),
+            HttpMethod::Options => write!(f, "OPTIONS"),
+        }
+    }
 }
 
 #[cfg(test)]
