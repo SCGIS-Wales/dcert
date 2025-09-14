@@ -102,9 +102,11 @@ jobs:
         run: |
           sudo apt-get update
           if [ "${{ matrix.target }}" = "x86_64-unknown-linux-musl" ]; then
-            sudo apt-get install -y musl-tools
+            sudo apt-get install -y musl-tools musl-dev
           elif [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
             sudo apt-get install -y gcc-aarch64-linux-gnu
+          else
+            sudo apt-get install -y pkg-config libssl-dev
           fi
 
       - name: Cache cargo
@@ -118,6 +120,10 @@ jobs:
           restore-keys: ${{ runner.os }}-${{ matrix.target }}-cargo-
 
       - name: Build (release)
+        env:
+          # Use vendored OpenSSL for musl and cross-compilation targets
+          OPENSSL_STATIC: ${{ matrix.target == 'x86_64-unknown-linux-musl' || matrix.target == 'aarch64-unknown-linux-gnu' && '1' || '0' }}
+          OPENSSL_VENDORED: ${{ matrix.target == 'x86_64-unknown-linux-musl' || matrix.target == 'aarch64-unknown-linux-gnu' && '1' || '0' }}
         run: |
           if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
             export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
@@ -156,13 +162,6 @@ jobs:
           toolchain: stable
           targets: ${{ matrix.target }}
 
-      - name: Install OpenSSL
-        run: |
-          brew install openssl@3
-          echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> $GITHUB_ENV
-          echo "OPENSSL_LIB_DIR=$(brew --prefix openssl@3)/lib" >> $GITHUB_ENV
-          echo "OPENSSL_INCLUDE_DIR=$(brew --prefix openssl@3)/include" >> $GITHUB_ENV
-
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -174,11 +173,11 @@ jobs:
           restore-keys: ${{ runner.os }}-${{ matrix.target }}-cargo-
 
       - name: Build (release)
-        run: |
-          export OPENSSL_DIR=$(brew --prefix openssl@3)
-          export OPENSSL_LIB_DIR=$(brew --prefix openssl@3)/lib
-          export OPENSSL_INCLUDE_DIR=$(brew --prefix openssl@3)/include
-          cargo build --release --target ${{ matrix.target }}
+        env:
+          # Use vendored OpenSSL for all macOS cross-compilation
+          OPENSSL_STATIC: 1
+          OPENSSL_VENDORED: 1
+        run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package artifact
         run: |
@@ -237,6 +236,74 @@ jobs:
           name: dcert-${{ matrix.target }}
           path: dist/dcert-${{ matrix.target }}.zip
           retention-days: 7
+
+  build-macos-intel:
+    name: Build macOS Intel
+    runs-on: macos-13  # Intel runner
+    needs: [ test ]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Install OpenSSL
+        run: brew install openssl@3
+
+      - name: Build (release)
+        env:
+          OPENSSL_DIR: /usr/local/opt/openssl@3
+          OPENSSL_LIB_DIR: /usr/local/opt/openssl@3/lib
+          OPENSSL_INCLUDE_DIR: /usr/local/opt/openssl@3/include
+        run: cargo build --release
+
+      - name: Package artifact
+        run: |
+          mkdir -p dist
+          tar czf dist/dcert-x86_64-apple-darwin.tar.gz -C target/release dcert
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dcert-x86_64-apple-darwin
+          path: dist/dcert-x86_64-apple-darwin.tar.gz
+
+  build-macos-arm:
+    name: Build macOS ARM64
+    runs-on: macos-latest  # ARM64 runner
+    needs: [ test ]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Install OpenSSL
+        run: brew install openssl@3
+
+      - name: Build (release)
+        env:
+          OPENSSL_DIR: /opt/homebrew/opt/openssl@3
+          OPENSSL_LIB_DIR: /opt/homebrew/opt/openssl@3/lib
+          OPENSSL_INCLUDE_DIR: /opt/homebrew/opt/openssl@3/include
+        run: cargo build --release
+
+      - name: Package artifact
+        run: |
+          mkdir -p dist
+          tar czf dist/dcert-aarch64-apple-darwin.tar.gz -C target/release dcert
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dcert-aarch64-apple-darwin
+          path: dist/dcert-aarch64-apple-darwin.tar.gz
 
   create-homebrew-formula:
     name: Create Homebrew Formula
