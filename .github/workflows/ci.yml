@@ -254,36 +254,83 @@ jobs:
           MACOS_X86_SHA256=$(sha256sum artifacts/dcert-x86_64-apple-darwin.tar.gz | cut -d' ' -f1)
           MACOS_ARM_SHA256=$(sha256sum artifacts/dcert-aarch64-apple-darwin.tar.gz | cut -d' ' -f1)
           
-          # Create Homebrew formula
-          cat > dcert.rb << EOF
+          # Create Homebrew formula with proper structure for tap
+          cat > dcert.rb << 'EOF'
           class Dcert < Formula
-            desc "TLS Certificate Decoder & Validator"
-            homepage "$REPO_URL"
-            version "$VERSION"
+            desc "CLI to decode and validate TLS certificates from PEM files"
+            homepage "https://github.com/SCGIS-Wales/dcert"
+            version "VERSION_PLACEHOLDER"
             license "MIT"
-          
-            if OS.mac?
-              if Hardware::CPU.arm?
-                url "$REPO_URL/releases/download/v$VERSION/dcert-aarch64-apple-darwin.tar.gz"
-                sha256 "$MACOS_ARM_SHA256"
-              else
-                url "$REPO_URL/releases/download/v$VERSION/dcert-x86_64-apple-darwin.tar.gz"
-                sha256 "$MACOS_X86_SHA256"
+
+            on_macos do
+              on_intel do
+                url "https://github.com/SCGIS-Wales/dcert/releases/download/vVERSION_PLACEHOLDER/dcert-x86_64-apple-darwin.tar.gz"
+                sha256 "MACOS_X86_SHA256_PLACEHOLDER"
+
+                def install
+                  bin.install "dcert"
+                end
               end
-            elsif OS.linux?
-              url "$REPO_URL/releases/download/v$VERSION/dcert-x86_64-unknown-linux-gnu.tar.gz"
-              sha256 "$LINUX_SHA256"
+
+              on_arm do
+                url "https://github.com/SCGIS-Wales/dcert/releases/download/vVERSION_PLACEHOLDER/dcert-aarch64-apple-darwin.tar.gz"
+                sha256 "MACOS_ARM_SHA256_PLACEHOLDER"
+
+                def install
+                  bin.install "dcert"
+                end
+              end
             end
-          
-            def install
-              bin.install "dcert"
+
+            on_linux do
+              on_intel do
+                url "https://github.com/SCGIS-Wales/dcert/releases/download/vVERSION_PLACEHOLDER/dcert-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "LINUX_X86_SHA256_PLACEHOLDER"
+
+                def install
+                  bin.install "dcert"
+                end
+              end
             end
-          
+
             test do
-              assert_match "dcert", shell_output("#{bin}/dcert --version")
+              assert_match version.to_s, shell_output("#{bin}/dcert --version")
             end
           end
           EOF
+          
+          # Replace placeholders with actual values
+          sed -i "s|VERSION_PLACEHOLDER|$VERSION|g" dcert.rb
+          sed -i "s|LINUX_X86_SHA256_PLACEHOLDER|$LINUX_SHA256|g" dcert.rb
+          sed -i "s|MACOS_X86_SHA256_PLACEHOLDER|$MACOS_X86_SHA256|g" dcert.rb
+          sed -i "s|MACOS_ARM_SHA256_PLACEHOLDER|$MACOS_ARM_SHA256|g" dcert.rb
+          
+          echo "Generated formula:"
+          cat dcert.rb
+
+      - name: Update Homebrew Tap (Optional)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Clone the homebrew-tap repository
+          git clone https://github.com/SCGIS-Wales/homebrew-tap.git
+          cd homebrew-tap
+          
+          # Copy the generated formula
+          cp ../dcert.rb Formula/dcert.rb
+          
+          # Commit and push if there are changes
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          if git diff --quiet; then
+            echo "No changes to formula"
+          else
+            git add Formula/dcert.rb
+            git commit -m "Update dcert formula to version ${GITHUB_REF#refs/tags/v}"
+            git push
+          fi
 
       - name: Upload Homebrew Formula
         uses: actions/upload-artifact@v4
@@ -326,9 +373,10 @@ jobs:
 
             ### Homebrew (macOS and Linux)
             
-            Download the `dcert.rb` formula from this release and install:
+            Add the tap and install:
             ```bash
-            brew install ./dcert.rb
+            brew tap SCGIS-Wales/tap
+            brew install dcert
             ```
             
             Or install directly from the binary:
@@ -345,57 +393,5 @@ jobs:
             curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/dcert-x86_64-unknown-linux-gnu.tar.gz | tar xz
             chmod +x dcert && sudo mv dcert /usr/local/bin/
             ```
-
-            ### Docker
-            ```bash
-            docker run --rm ghcr.io/${{ github.repository }}:${{ github.ref_name }} https://www.google.com
-            ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  docker:
-    name: Build and push Docker image
-    runs-on: ubuntu-latest
-    needs: [ test ]
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            ghcr.io/${{ github.repository }}
-          tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-
-      - name: Build and push
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
