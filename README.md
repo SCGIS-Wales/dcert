@@ -12,7 +12,8 @@ A powerful Rust CLI tool that reads X.509 certificates from PEM files or fetches
 - **Network Performance Metrics**: Layer 4 (TCP) and Layer 7 (TLS+HTTP) latency measurements
 - **Flexible Output**: Pretty console output or machine-readable JSON
 - **Advanced Filtering**: Show only expired certificates
-- **Certificate Export**: Save fetched certificate chains as PEM files
+- **Certificate Sorting**: Sort certificates by expiry date (ascending or descending)
+- **Certificate Export**: Save fetched certificate chains as PEM files with optional filtering of expired certificates
 - **Custom HTTP Options**: Configure HTTP method, headers, and protocol version
 
 ## Installation
@@ -73,6 +74,15 @@ dcert https://example.com --format json
 # Export fetched certificate chain to a file
 dcert https://www.google.com --export-pem google-certs.pem
 
+# Export certificate chain excluding expired certificates
+dcert https://www.google.com --export-pem google-certs.pem --exclude-expired
+
+# Sort certificates by expiry date (ascending - soonest expiry first)
+dcert certificates.pem --sort-expiry asc
+
+# Sort certificates by expiry date (descending - latest expiry first)
+dcert certificates.pem --sort-expiry desc
+
 # Use HTTP/2 protocol
 dcert --http-protocol http2 https://www.google.com
 
@@ -92,6 +102,8 @@ Options:
   -f, --format <FORMAT>                Output format [default: pretty] [possible values: pretty, json]
       --expired-only                   Show only expired certificates
       --export-pem <EXPORT_PEM>        Export the fetched PEM chain to a file (only for HTTPS targets)
+      --exclude-expired                Exclude expired or invalid certificates from export (only with --export-pem)
+      --sort-expiry <SORT_EXPIRY>      Sort certificates by expiry date (asc = soonest first, desc = latest first) [possible values: asc, desc]
       --method <METHOD>                HTTP method to use for HTTPS requests [default: GET]
       --header [<HEADER>...]           Custom HTTP headers (key:value), can be repeated
       --http-protocol <HTTP_PROTOCOL>  HTTP protocol to use [default: http1-1] [possible values: http1-1, http2]
@@ -286,10 +298,19 @@ dcert https://site.com --format json | jq '.[] | {subject, issuer, not_after}'
 # Find expiring certificates in a bundle
 dcert certificate-bundle.pem --format json | jq '.[] | select(.not_after < "2024-12-31")'
 
+# Sort certificates by expiry to find those expiring soonest
+dcert certificate-bundle.pem --sort-expiry asc
+
 # Export and backup certificate chains
 for domain in google.com github.com stackoverflow.com; do
   dcert "https://$domain" --export-pem "${domain}-chain.pem"
 done
+
+# Export only valid (non-expired) certificates from a bundle
+dcert certificate-bundle.pem --export-pem valid-certs.pem --exclude-expired
+
+# Combine sorting and filtering for certificate renewal planning
+dcert certificate-bundle.pem --sort-expiry asc --format json | jq '.[] | select(.not_after < "2025-06-01")'
 ```
 
 ## Development

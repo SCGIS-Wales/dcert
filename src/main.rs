@@ -176,8 +176,8 @@ fn load_custom_ca_certs(store_builder: &mut X509StoreBuilder) -> Result<()> {
 
             let mut added_count = 0;
             for block in pem_blocks {
-                if block.tag == "CERTIFICATE" {
-                    match X509::from_der(&block.contents) {
+                if block.tag() == "CERTIFICATE" {
+                    match X509::from_der(block.contents()) {
                         Ok(cert) => {
                             store_builder
                                 .add_cert(cert)
@@ -458,6 +458,12 @@ enum HttpMethod {
     Options,
 }
 
+#[derive(ValueEnum, Clone, Debug, Copy)]
+enum SortOrder {
+    Asc,
+    Desc,
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "dcert")]
 #[command(
@@ -465,7 +471,7 @@ enum HttpMethod {
              If you specify an HTTPS URL, dcert will fetch and decode the server's TLS certificate chain.\n\
              Optionally, you can export the chain as a PEM file."
 )]
-#[command(version = "1.0.1")]
+#[command(version = "1.1.0")]
 struct Args {
     /// Path to a PEM file or an HTTPS URL like https://example.com
     #[arg(value_parser = validate_target)]
@@ -482,6 +488,14 @@ struct Args {
     /// Export the fetched PEM chain to a file (only for HTTPS targets)
     #[arg(long)]
     export_pem: Option<String>,
+
+    /// Exclude expired or invalid certificates from export (only with --export-pem)
+    #[arg(long)]
+    exclude_expired: bool,
+
+    /// Sort certificates by expiry date (asc = soonest first, desc = latest first)
+    #[arg(long, value_enum)]
+    sort_expiry: Option<SortOrder>,
 
     /// HTTP method to use for HTTPS requests (default: GET)
     #[arg(long, value_enum, default_value_t = HttpMethod::Get)]
@@ -563,11 +577,11 @@ fn parse_cert_infos_from_pem(pem_data: &str, expired_only: bool) -> Result<Vec<C
     let mut errors = Vec::new();
 
     for (idx, block) in blocks.iter().enumerate() {
-        if block.tag != "CERTIFICATE" {
+        if block.tag() != "CERTIFICATE" {
             continue;
         }
 
-        match X509Certificate::from_der(&block.contents) {
+        match X509Certificate::from_der(block.contents()) {
             Ok((_, cert)) => {
                 match process_certificate(cert, idx, expired_only) {
                     Ok(Some(info)) => infos.push(info),
@@ -787,9 +801,6 @@ fn run() -> Result<i32> {
             args.http_protocol.clone(),
         )
         .with_context(|| "Failed to fetch TLS chain")?;
-        if let Some(export_path) = &args.export_pem {
-            fs::write(export_path, &pem).with_context(|| format!("Failed to write PEM to {}", export_path))?;
-        }
         (pem, l4, l7, tls_version, tls_cipher, mtls_requested, http_response_code)
     } else {
         (
@@ -803,12 +814,33 @@ fn run() -> Result<i32> {
         )
     };
 
-    let infos =
+    let mut infos =
         parse_cert_infos_from_pem(&pem_data, args.expired_only).with_context(|| "Failed to parse PEM certificates")?;
 
     if infos.is_empty() {
         eprintln!("{}", "No valid certificates found in the input".red());
         return Ok(1);
+    }
+
+    // Sort certificates by expiry if requested
+    if let Some(sort_order) = args.sort_expiry {
+        infos.sort_by(|a, b| {
+            // Parse RFC3339 dates for proper comparison
+            let parse_date =
+                |date_str: &str| -> Option<OffsetDateTime> { OffsetDateTime::parse(date_str, &Rfc3339).ok() };
+
+            let ordering = match (parse_date(&a.not_after), parse_date(&b.not_after)) {
+                (Some(date_a), Some(date_b)) => date_a.cmp(&date_b),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => a.not_after.cmp(&b.not_after), // Fallback to string comparison
+            };
+
+            match sort_order {
+                SortOrder::Asc => ordering,
+                SortOrder::Desc => ordering.reverse(),
+            }
+        });
     }
 
     match args.format {
@@ -838,7 +870,48 @@ fn run() -> Result<i32> {
 
     // Optionally export the PEM chain to a file
     if let Some(export_path) = args.export_pem {
-        fs::write(&export_path, pem_data).with_context(|| format!("Failed to write PEM file: {}", export_path))?;
+        let export_data = if args.exclude_expired {
+            // Filter out expired certificates from the PEM data
+            let blocks =
+                pem::parse_many(&pem_data).map_err(|e| anyhow::anyhow!("Failed to parse PEM for export: {e}"))?;
+            let now = OffsetDateTime::now_utc();
+            let mut filtered_pem = String::new();
+
+            for block in blocks {
+                if block.tag() != "CERTIFICATE" {
+                    continue;
+                }
+
+                // Parse certificate to check expiry
+                if let Ok((_, cert)) = X509Certificate::from_der(block.contents()) {
+                    let not_after: OffsetDateTime = cert.validity().not_after.to_datetime();
+
+                    // Only include non-expired certificates
+                    if not_after >= now {
+                        let pem_str = pem_rfc7468::encode_string("CERTIFICATE", LineEnding::LF, block.contents())
+                            .map_err(|e| anyhow::anyhow!("PEM encoding failed: {e}"))?;
+                        filtered_pem.push_str(&pem_str);
+                        if !filtered_pem.ends_with('\n') {
+                            filtered_pem.push('\n');
+                        }
+                    }
+                }
+            }
+
+            if filtered_pem.is_empty() {
+                eprintln!(
+                    "Warning: All certificates were expired. No certificates exported to {}",
+                    export_path
+                );
+                return Ok(0);
+            }
+
+            filtered_pem
+        } else {
+            pem_data
+        };
+
+        fs::write(&export_path, export_data).with_context(|| format!("Failed to write PEM file: {}", export_path))?;
         println!("PEM chain exported to {}", export_path);
     }
 
