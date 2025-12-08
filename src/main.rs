@@ -862,27 +862,24 @@ fn run() -> Result<i32> {
     if let Some(export_path) = args.export_pem {
         let export_data = if args.exclude_expired {
             // Filter out expired certificates from the PEM data
-            let blocks = pem::parse_many(&pem_data).map_err(|e| anyhow::anyhow!("Failed to parse PEM for export: {e}"))?;
+            let blocks =
+                pem::parse_many(&pem_data).map_err(|e| anyhow::anyhow!("Failed to parse PEM for export: {e}"))?;
             let now = OffsetDateTime::now_utc();
             let mut filtered_pem = String::new();
-            
+
             for block in blocks {
                 if block.tag() != "CERTIFICATE" {
                     continue;
                 }
-                
+
                 // Parse certificate to check expiry
                 if let Ok((_, cert)) = X509Certificate::from_der(block.contents()) {
                     let not_after: OffsetDateTime = cert.validity().not_after.to_datetime();
-                    
+
                     // Only include non-expired certificates
                     if not_after >= now {
-                        let pem_str = pem_rfc7468::encode_string(
-                            "CERTIFICATE",
-                            LineEnding::LF,
-                            block.contents(),
-                        )
-                        .map_err(|e| anyhow::anyhow!("PEM encoding failed: {e}"))?;
+                        let pem_str = pem_rfc7468::encode_string("CERTIFICATE", LineEnding::LF, block.contents())
+                            .map_err(|e| anyhow::anyhow!("PEM encoding failed: {e}"))?;
                         filtered_pem.push_str(&pem_str);
                         if !filtered_pem.ends_with('\n') {
                             filtered_pem.push('\n');
@@ -890,17 +887,17 @@ fn run() -> Result<i32> {
                     }
                 }
             }
-            
+
             if filtered_pem.is_empty() {
                 eprintln!("Warning: All certificates were expired, nothing exported");
                 return Ok(1);
             }
-            
+
             filtered_pem
         } else {
             pem_data
         };
-        
+
         fs::write(&export_path, export_data).with_context(|| format!("Failed to write PEM file: {}", export_path))?;
         println!("PEM chain exported to {}", export_path);
     }
