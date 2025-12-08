@@ -825,7 +825,17 @@ fn run() -> Result<i32> {
     // Sort certificates by expiry if requested
     if let Some(sort_order) = args.sort_expiry {
         infos.sort_by(|a, b| {
-            let ordering = a.not_after.cmp(&b.not_after);
+            // Parse RFC3339 dates for proper comparison
+            let parse_date =
+                |date_str: &str| -> Option<OffsetDateTime> { OffsetDateTime::parse(date_str, &Rfc3339).ok() };
+
+            let ordering = match (parse_date(&a.not_after), parse_date(&b.not_after)) {
+                (Some(date_a), Some(date_b)) => date_a.cmp(&date_b),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => a.not_after.cmp(&b.not_after), // Fallback to string comparison
+            };
+
             match sort_order {
                 SortOrder::Asc => ordering,
                 SortOrder::Desc => ordering.reverse(),
@@ -889,8 +899,11 @@ fn run() -> Result<i32> {
             }
 
             if filtered_pem.is_empty() {
-                eprintln!("Warning: All certificates were expired, nothing exported");
-                return Ok(1);
+                eprintln!(
+                    "Warning: All certificates were expired. No certificates exported to {}",
+                    export_path
+                );
+                return Ok(0);
             }
 
             filtered_pem
