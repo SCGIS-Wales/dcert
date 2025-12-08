@@ -3,7 +3,7 @@
 ############################
 # Builder
 ############################
-FROM rust:1.89-alpine3.22 AS builder
+FROM rust:1.91.1-alpine3.23 AS builder
 WORKDIR /app
 
 # Install build dependencies for musl targets and OpenSSL
@@ -29,7 +29,7 @@ RUN cargo build --release
 ############################
 # Runtime
 ############################
-FROM alpine:3.18 AS runtime
+FROM alpine:3.23 AS runtime
 RUN apk add --no-cache ca-certificates
 COPY --from=builder /app/target/release/dcert /usr/local/bin/dcert
 
