@@ -176,8 +176,8 @@ fn load_custom_ca_certs(store_builder: &mut X509StoreBuilder) -> Result<()> {
 
             let mut added_count = 0;
             for block in pem_blocks {
-                if block.tag == "CERTIFICATE" {
-                    match X509::from_der(&block.contents) {
+                if block.tag() == "CERTIFICATE" {
+                    match X509::from_der(block.contents()) {
                         Ok(cert) => {
                             store_builder
                                 .add_cert(cert)
@@ -563,11 +563,11 @@ fn parse_cert_infos_from_pem(pem_data: &str, expired_only: bool) -> Result<Vec<C
     let mut errors = Vec::new();
 
     for (idx, block) in blocks.iter().enumerate() {
-        if block.tag != "CERTIFICATE" {
+        if block.tag() != "CERTIFICATE" {
             continue;
         }
 
-        match X509Certificate::from_der(&block.contents) {
+        match X509Certificate::from_der(block.contents()) {
             Ok((_, cert)) => {
                 match process_certificate(cert, idx, expired_only) {
                     Ok(Some(info)) => infos.push(info),
