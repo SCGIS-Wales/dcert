@@ -129,7 +129,7 @@ jobs:
 
   build-macos-intel:
     name: Build macOS Intel
-    runs-on: macos-13  # Intel runner
+    runs-on: macos-14  # Intel runner
     needs: [ test ]
     steps:
       - name: Checkout
