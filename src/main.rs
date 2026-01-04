@@ -471,7 +471,7 @@ enum SortOrder {
              If you specify an HTTPS URL, dcert will fetch and decode the server's TLS certificate chain.\n\
              Optionally, you can export the chain as a PEM file."
 )]
-#[command(version = "1.1.0")]
+#[command(version = "1.2.0")]
 struct Args {
     /// Path to a PEM file or an HTTPS URL like https://example.com
     #[arg(value_parser = validate_target)]
