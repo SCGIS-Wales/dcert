@@ -308,19 +308,23 @@ jobs:
           echo "Generated formula:"
           cat dcert.rb
 
+      - name: Checkout homebrew-tap
+        uses: actions/checkout@v4
+        with:
+          repository: SCGIS-Wales/homebrew-tap
+          token: ${{ secrets.TAP_GITHUB_TOKEN }}
+          path: homebrew-tap
+
       - name: Update Homebrew Tap (Optional)
         if: startsWith(github.ref, 'refs/tags/v')
         env:
-          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
         run: |
-          # Clone the homebrew-tap repository with authentication
-          git clone https://x-access-token:${TAP_GITHUB_TOKEN}@github.com/SCGIS-Wales/homebrew-tap.git
-          cd homebrew-tap
-          
           # Copy the generated formula
-          cp ../dcert.rb Formula/dcert.rb
+          cp dcert.rb homebrew-tap/Formula/dcert.rb
           
           # Commit and push if there are changes
+          cd homebrew-tap
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           
@@ -329,6 +333,7 @@ jobs:
           else
             git add Formula/dcert.rb
             git commit -m "Update dcert formula to version ${GITHUB_REF#refs/tags/v}"
+            git remote set-url origin "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/SCGIS-Wales/homebrew-tap.git"
             git push
           fi
 
