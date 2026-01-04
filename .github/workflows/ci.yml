@@ -311,10 +311,10 @@ jobs:
       - name: Update Homebrew Tap (Optional)
         if: startsWith(github.ref, 'refs/tags/v')
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
         run: |
           # Clone the homebrew-tap repository with authentication
-          git clone https://x-access-token:${GITHUB_TOKEN}@github.com/SCGIS-Wales/homebrew-tap.git
+          git clone https://x-access-token:${TAP_GITHUB_TOKEN}@github.com/SCGIS-Wales/homebrew-tap.git
           cd homebrew-tap
           
           # Copy the generated formula
