@@ -976,6 +976,16 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    // A self-signed test certificate with CN=test.example.com and SANs
+    const VALID_PEM: &str = include_str!("../tests/data/valid.pem");
+
+    // The multi-cert chain from tests/data/test.pem (Microsoft Azure)
+    const CHAIN_PEM: &str = include_str!("../tests/data/test.pem");
+
+    // ---------------------------------------------------------------
+    // parse_cert_infos_from_pem tests
+    // ---------------------------------------------------------------
+
     #[test]
     fn test_empty_pem() {
         let result = parse_cert_infos_from_pem("", false);
@@ -985,28 +995,116 @@ mod tests {
 
     #[test]
     fn test_invalid_pem() {
-        // Not valid PEM headers, should yield zero certs not an error
         let result = parse_cert_infos_from_pem("invalid pem data", false);
         assert!(result.is_ok());
         assert_eq!(result.unwrap().len(), 0);
     }
 
-    /// Reads certificate data from tests/data/test.pem.
-    /// Add a valid PEM there and run with `cargo test -- --ignored`
     #[test]
-    #[ignore]
-    fn test_valid_from_external_file() -> Result<()> {
-        let path = PathBuf::from("tests/data/test.pem");
-        assert!(path.exists(), "tests/data/test.pem is missing");
-        let pem = std::fs::read_to_string(&path)?;
-        let infos = parse_cert_infos_from_pem(&pem, false)?;
-        assert!(!infos.is_empty(), "expected at least one certificate");
-        let first = &infos[0];
-        assert!(!first.subject.is_empty());
-        assert!(!first.issuer.is_empty());
-        assert!(!first.serial_number.is_empty());
-        Ok(())
+    fn test_valid_single_cert() {
+        let infos = parse_cert_infos_from_pem(VALID_PEM, false).unwrap();
+        assert_eq!(infos.len(), 1);
+        let cert = &infos[0];
+        assert!(cert.common_name.as_deref() == Some("test.example.com"));
+        assert!(!cert.subject.is_empty());
+        assert!(!cert.issuer.is_empty());
+        assert!(!cert.serial_number.is_empty());
+        assert!(!cert.not_before.is_empty());
+        assert!(!cert.not_after.is_empty());
     }
+
+    #[test]
+    fn test_valid_cert_sans() {
+        let infos = parse_cert_infos_from_pem(VALID_PEM, false).unwrap();
+        let cert = &infos[0];
+        assert!(
+            cert.subject_alternative_names
+                .iter()
+                .any(|s| s == "DNS:test.example.com"),
+            "expected DNS:test.example.com in SANs, got {:?}",
+            cert.subject_alternative_names
+        );
+        assert!(
+            cert.subject_alternative_names.iter().any(|s| s == "DNS:*.example.com"),
+            "expected DNS:*.example.com in SANs"
+        );
+        assert!(
+            cert.subject_alternative_names.iter().any(|s| s == "IP:127.0.0.1"),
+            "expected IP:127.0.0.1 in SANs"
+        );
+    }
+
+    #[test]
+    fn test_valid_cert_not_expired() {
+        let infos = parse_cert_infos_from_pem(VALID_PEM, false).unwrap();
+        assert!(!infos[0].is_expired, "test cert should not be expired yet");
+    }
+
+    #[test]
+    fn test_cert_chain_multiple_certs() {
+        let infos = parse_cert_infos_from_pem(CHAIN_PEM, false).unwrap();
+        assert_eq!(infos.len(), 3, "test.pem should contain 3 certificates");
+    }
+
+    #[test]
+    fn test_cert_chain_indices() {
+        let infos = parse_cert_infos_from_pem(CHAIN_PEM, false).unwrap();
+        assert_eq!(infos[0].index, 0);
+        assert_eq!(infos[1].index, 1);
+        assert_eq!(infos[2].index, 2);
+    }
+
+    #[test]
+    fn test_expired_only_filter() {
+        let all = parse_cert_infos_from_pem(CHAIN_PEM, false).unwrap();
+        let expired = parse_cert_infos_from_pem(CHAIN_PEM, true).unwrap();
+        let expired_count = all.iter().filter(|c| c.is_expired).count();
+        assert_eq!(expired.len(), expired_count);
+        for cert in &expired {
+            assert!(cert.is_expired, "expired_only should only return expired certs");
+        }
+    }
+
+    #[test]
+    fn test_cert_serial_is_hex() {
+        let infos = parse_cert_infos_from_pem(VALID_PEM, false).unwrap();
+        let serial = &infos[0].serial_number;
+        assert!(
+            serial.chars().all(|c| c.is_ascii_hexdigit()),
+            "serial should be hex, got: {}",
+            serial
+        );
+    }
+
+    #[test]
+    fn test_cert_dates_are_rfc3339() {
+        let infos = parse_cert_infos_from_pem(VALID_PEM, false).unwrap();
+        let cert = &infos[0];
+        assert!(
+            OffsetDateTime::parse(&cert.not_before, &Rfc3339).is_ok(),
+            "not_before should be RFC3339: {}",
+            cert.not_before
+        );
+        assert!(
+            OffsetDateTime::parse(&cert.not_after, &Rfc3339).is_ok(),
+            "not_after should be RFC3339: {}",
+            cert.not_after
+        );
+    }
+
+    #[test]
+    fn test_pem_with_non_certificate_blocks() {
+        let mixed = format!(
+            "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBg==\n-----END PRIVATE KEY-----\n{}",
+            VALID_PEM
+        );
+        let infos = parse_cert_infos_from_pem(&mixed, false).unwrap();
+        assert_eq!(infos.len(), 1, "should skip non-CERTIFICATE blocks");
+    }
+
+    // ---------------------------------------------------------------
+    // parse_header tests
+    // ---------------------------------------------------------------
 
     #[test]
     fn test_parse_header() {
@@ -1019,5 +1117,316 @@ mod tests {
             ("Authorization".to_string(), "Bearer token:with:colons".to_string())
         );
         assert!(parse_header("InvalidHeader").is_err());
+    }
+
+    #[test]
+    fn test_parse_header_whitespace_trimming() {
+        let (key, value) = parse_header("  X-Custom  :  some value  ").unwrap();
+        assert_eq!(key, "X-Custom");
+        assert_eq!(value, "some value");
+    }
+
+    #[test]
+    fn test_parse_header_empty_value() {
+        let (key, value) = parse_header("X-Empty:").unwrap();
+        assert_eq!(key, "X-Empty");
+        assert_eq!(value, "");
+    }
+
+    // ---------------------------------------------------------------
+    // validate_target tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_validate_target_https_url() {
+        assert!(validate_target("https://example.com").is_ok());
+        assert!(validate_target("https://example.com:8443/path").is_ok());
+    }
+
+    #[test]
+    fn test_validate_target_invalid() {
+        assert!(validate_target("http://example.com").is_err());
+        assert!(validate_target("ftp://example.com").is_err());
+        assert!(validate_target("/nonexistent/path.pem").is_err());
+    }
+
+    #[test]
+    fn test_validate_target_existing_file() {
+        let path = "tests/data/valid.pem";
+        assert!(validate_target(path).is_ok());
+    }
+
+    // ---------------------------------------------------------------
+    // cert_matches_hostname tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_hostname_exact_match_cn() {
+        let cert = CertInfo {
+            index: 0,
+            subject: "CN=test.example.com".to_string(),
+            issuer: "CN=Test CA".to_string(),
+            common_name: Some("test.example.com".to_string()),
+            subject_alternative_names: vec![],
+            serial_number: "AABB".to_string(),
+            not_before: "2026-01-01T00:00:00Z".to_string(),
+            not_after: "2027-01-01T00:00:00Z".to_string(),
+            is_expired: false,
+            ct_present: false,
+        };
+        assert!(cert_matches_hostname(&cert, "test.example.com"));
+        assert!(!cert_matches_hostname(&cert, "other.example.com"));
+    }
+
+    #[test]
+    fn test_hostname_case_insensitive() {
+        let cert = CertInfo {
+            index: 0,
+            subject: String::new(),
+            issuer: String::new(),
+            common_name: Some("Test.Example.COM".to_string()),
+            subject_alternative_names: vec![],
+            serial_number: String::new(),
+            not_before: String::new(),
+            not_after: String::new(),
+            is_expired: false,
+            ct_present: false,
+        };
+        assert!(cert_matches_hostname(&cert, "test.example.com"));
+        assert!(cert_matches_hostname(&cert, "TEST.EXAMPLE.COM"));
+    }
+
+    #[test]
+    fn test_hostname_wildcard_san() {
+        let cert = CertInfo {
+            index: 0,
+            subject: String::new(),
+            issuer: String::new(),
+            common_name: None,
+            subject_alternative_names: vec!["DNS:*.example.com".to_string()],
+            serial_number: String::new(),
+            not_before: String::new(),
+            not_after: String::new(),
+            is_expired: false,
+            ct_present: false,
+        };
+        assert!(cert_matches_hostname(&cert, "www.example.com"));
+        assert!(cert_matches_hostname(&cert, "mail.example.com"));
+        assert!(!cert_matches_hostname(&cert, "example.com"));
+        assert!(!cert_matches_hostname(&cert, "sub.sub.example.com"));
+    }
+
+    #[test]
+    fn test_hostname_san_exact_match() {
+        let cert = CertInfo {
+            index: 0,
+            subject: String::new(),
+            issuer: String::new(),
+            common_name: None,
+            subject_alternative_names: vec!["DNS:api.example.com".to_string(), "DNS:www.example.com".to_string()],
+            serial_number: String::new(),
+            not_before: String::new(),
+            not_after: String::new(),
+            is_expired: false,
+            ct_present: false,
+        };
+        assert!(cert_matches_hostname(&cert, "api.example.com"));
+        assert!(cert_matches_hostname(&cert, "www.example.com"));
+        assert!(!cert_matches_hostname(&cert, "other.example.com"));
+    }
+
+    #[test]
+    fn test_hostname_no_match() {
+        let cert = CertInfo {
+            index: 0,
+            subject: String::new(),
+            issuer: String::new(),
+            common_name: Some("other.example.com".to_string()),
+            subject_alternative_names: vec!["DNS:another.example.com".to_string()],
+            serial_number: String::new(),
+            not_before: String::new(),
+            not_after: String::new(),
+            is_expired: false,
+            ct_present: false,
+        };
+        assert!(!cert_matches_hostname(&cert, "test.example.com"));
+    }
+
+    // ---------------------------------------------------------------
+    // should_bypass_proxy tests (combined to avoid env var races)
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_bypass_proxy_logic() {
+        // Test the function's matching logic directly by controlling env
+        // All proxy env tests run in a single test to avoid thread races
+
+        // Save original env vars
+        let orig_no_proxy = env::var("no_proxy").ok();
+        let orig_no_proxy_upper = env::var("NO_PROXY").ok();
+
+        // Test: empty no_proxy
+        env::remove_var("no_proxy");
+        env::remove_var("NO_PROXY");
+        assert!(!should_bypass_proxy("example.com"), "empty no_proxy should not bypass");
+
+        // Test: exact match
+        env::set_var("no_proxy", "example.com,other.com");
+        assert!(should_bypass_proxy("example.com"), "exact match should bypass");
+        assert!(should_bypass_proxy("other.com"), "exact match should bypass");
+        assert!(!should_bypass_proxy("notmatched.com"), "non-matching should not bypass");
+
+        // Test: domain suffix (.example.com)
+        env::set_var("no_proxy", ".example.com");
+        assert!(should_bypass_proxy("sub.example.com"), "suffix should bypass subdomain");
+        assert!(
+            !should_bypass_proxy("example.com"),
+            "suffix should not bypass exact domain"
+        );
+
+        // Test: subdomain match (without leading dot)
+        env::set_var("no_proxy", "example.com");
+        assert!(should_bypass_proxy("sub.example.com"), "subdomain should bypass");
+
+        // Test: localhost special case
+        env::set_var("no_proxy", "localhost");
+        assert!(should_bypass_proxy("localhost"), "localhost should bypass");
+        assert!(
+            should_bypass_proxy("127.0.0.1"),
+            "127.0.0.1 should bypass for localhost"
+        );
+        assert!(should_bypass_proxy("::1"), "::1 should bypass for localhost");
+
+        // Restore
+        if let Some(v) = orig_no_proxy {
+            env::set_var("no_proxy", v);
+        } else {
+            env::remove_var("no_proxy");
+        }
+        if let Some(v) = orig_no_proxy_upper {
+            env::set_var("NO_PROXY", v);
+        } else {
+            env::remove_var("NO_PROXY");
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // get_proxy_url tests (combined to avoid env var races)
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_get_proxy_url_logic() {
+        // Save original env vars
+        let orig_https = env::var("HTTPS_PROXY").ok();
+        let orig_http = env::var("HTTP_PROXY").ok();
+        let orig_https_l = env::var("https_proxy").ok();
+        let orig_http_l = env::var("http_proxy").ok();
+
+        // Clear all proxy vars
+        env::remove_var("HTTPS_PROXY");
+        env::remove_var("HTTP_PROXY");
+        env::remove_var("https_proxy");
+        env::remove_var("http_proxy");
+
+        assert_eq!(get_proxy_url("https"), None, "no proxy vars should return None");
+        assert_eq!(get_proxy_url("http"), None, "no proxy vars should return None");
+        assert_eq!(get_proxy_url("ftp"), None, "unknown scheme should return None");
+
+        // Restore
+        if let Some(v) = orig_https {
+            env::set_var("HTTPS_PROXY", v);
+        }
+        if let Some(v) = orig_http {
+            env::set_var("HTTP_PROXY", v);
+        }
+        if let Some(v) = orig_https_l {
+            env::set_var("https_proxy", v);
+        }
+        if let Some(v) = orig_http_l {
+            env::set_var("http_proxy", v);
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // HttpMethod Display tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_http_method_display() {
+        assert_eq!(HttpMethod::Get.to_string(), "GET");
+        assert_eq!(HttpMethod::Post.to_string(), "POST");
+        assert_eq!(HttpMethod::Head.to_string(), "HEAD");
+        assert_eq!(HttpMethod::Options.to_string(), "OPTIONS");
+    }
+
+    // ---------------------------------------------------------------
+    // CertInfo serialization tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_cert_info_json_serialization() {
+        let info = CertInfo {
+            index: 0,
+            subject: "CN=test".to_string(),
+            issuer: "CN=issuer".to_string(),
+            common_name: Some("test".to_string()),
+            subject_alternative_names: vec!["DNS:test.com".to_string()],
+            serial_number: "AABB".to_string(),
+            not_before: "2026-01-01T00:00:00Z".to_string(),
+            not_after: "2027-01-01T00:00:00Z".to_string(),
+            is_expired: false,
+            ct_present: true,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"common_name\":\"test\""));
+        assert!(json.contains("\"ct_present\":true"));
+        assert!(json.contains("\"is_expired\":false"));
+    }
+
+    #[test]
+    fn test_cert_info_json_omits_empty_sans() {
+        let info = CertInfo {
+            index: 0,
+            subject: "CN=test".to_string(),
+            issuer: "CN=issuer".to_string(),
+            common_name: None,
+            subject_alternative_names: vec![],
+            serial_number: "AABB".to_string(),
+            not_before: "2026-01-01T00:00:00Z".to_string(),
+            not_after: "2027-01-01T00:00:00Z".to_string(),
+            is_expired: false,
+            ct_present: false,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(!json.contains("common_name"), "None common_name should be omitted");
+        assert!(
+            !json.contains("subject_alternative_names"),
+            "empty SANs should be omitted"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // External file tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_valid_cert_from_file() -> Result<()> {
+        let path = PathBuf::from("tests/data/valid.pem");
+        assert!(path.exists(), "tests/data/valid.pem is missing");
+        let pem = std::fs::read_to_string(&path)?;
+        let infos = parse_cert_infos_from_pem(&pem, false)?;
+        assert_eq!(infos.len(), 1);
+        assert_eq!(infos[0].common_name.as_deref(), Some("test.example.com"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_chain_from_external_file() -> Result<()> {
+        let path = PathBuf::from("tests/data/test.pem");
+        assert!(path.exists(), "tests/data/test.pem is missing");
+        let pem = std::fs::read_to_string(&path)?;
+        let infos = parse_cert_infos_from_pem(&pem, false)?;
+        assert!(infos.len() >= 2, "expected at least 2 certificates in chain");
+        Ok(())
     }
 }
