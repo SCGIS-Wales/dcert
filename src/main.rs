@@ -118,6 +118,10 @@ fn connect_through_proxy(proxy_url: &str, target_host: &str, target_port: u16) -
     let mut stream = TcpStream::connect_timeout(&proxy_addr, Duration::from_secs(CONNECTION_TIMEOUT_SECS))
         .map_err(|e| anyhow::anyhow!("Failed to connect to proxy: {}", e))?;
 
+    stream
+        .set_read_timeout(Some(Duration::from_secs(READ_TIMEOUT_SECS)))
+        .map_err(|e| anyhow::anyhow!("Failed to set proxy read timeout: {}", e))?;
+
     // Send CONNECT request
     let connect_request = format!(
         "CONNECT {}:{} HTTP/1.1\r\nHost: {}:{}\r\nProxy-Connection: keep-alive\r\n\r\n",
@@ -452,7 +456,7 @@ enum OutputFormat {
     Yaml,
 }
 
-#[derive(ValueEnum, Clone, Debug)]
+#[derive(ValueEnum, Clone, Copy, Debug)]
 enum HttpProtocol {
     Http1_1,
     Http2,
@@ -1086,9 +1090,9 @@ fn print_pretty(infos: &[CertInfo], debug: &PrettyDebugInfo<'_>) {
             println!("  Network latency (layer 7/TLS+HTTP):    {} ms", conn.l7_latency);
             println!();
             println!(
-                "Note: Layer 4 and Layer 7 latencies are measured separately and should not be summed. \
-Layer 4 covers TCP connection only; Layer 7 covers TLS handshake and HTTP request. \
-DNS resolution and other delays are not included in these timings."
+                "Note: DNS, Layer 4, and Layer 7 latencies are measured separately and should not be summed. \
+DNS covers name resolution only; Layer 4 covers TCP connection only; \
+Layer 7 covers TLS handshake and HTTP request."
             );
             println!();
         }
