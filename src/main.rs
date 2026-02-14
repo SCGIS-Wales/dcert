@@ -289,16 +289,38 @@ fn load_ca_certs(builder: &mut openssl::ssl::SslConnectorBuilder) -> Result<()> 
     Ok(())
 }
 
+/// Resolve a hostname to a socket address.
+fn resolve_host(host: &str, port: u16) -> Result<std::net::SocketAddr> {
+    format!("{}:{}", host, port)
+        .to_socket_addrs()
+        .map_err(|e| anyhow::anyhow!("DNS resolution failed for '{}': {}", host, e))?
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("DNS resolution failed for '{}': no addresses returned", host))
+}
+
 /// Establish a direct TCP connection with timeout and DNS resolution.
 fn direct_tcp_connect(host: &str, port: u16, timeout: Duration) -> Result<TcpStream> {
-    let socket_addr = format!("{}:{}", host, port)
-        .to_socket_addrs()
-        .map_err(|e| anyhow::anyhow!("Failed to resolve host {}: {}", host, e))?
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("No valid address found for host {}", host))?;
+    let socket_addr = resolve_host(host, port)?;
 
-    TcpStream::connect_timeout(&socket_addr, timeout)
-        .map_err(|e| anyhow::anyhow!("TCP connection to {}:{} failed: {e}", host, port))
+    TcpStream::connect_timeout(&socket_addr, timeout).map_err(|e| {
+        let kind = e.kind();
+        match kind {
+            std::io::ErrorKind::TimedOut => {
+                anyhow::anyhow!(
+                    "TCP connection to {}:{} timed out after {}s",
+                    host,
+                    port,
+                    timeout.as_secs()
+                )
+            }
+            std::io::ErrorKind::ConnectionRefused => {
+                anyhow::anyhow!("TCP connection refused by {}:{} (port may not be open)", host, port)
+            }
+            _ => {
+                anyhow::anyhow!("TCP connection to {}:{} failed: {}", host, port, e)
+            }
+        }
+    })
 }
 
 /// Fetch TLS certificate chain using OpenSSL, with proxy support and custom CA certificates.
@@ -1522,8 +1544,7 @@ fn process_target(target: &str, args: &Args, proxy_config: &ProxyConfig) -> Resu
             args.read_timeout,
             args.sni.as_deref(),
             proxy_config,
-        )
-        .with_context(|| format!("Failed to fetch TLS chain from {}", target))?;
+        )?;
         let pem = conn.pem_data.clone();
         (pem, Some(conn))
     } else {
