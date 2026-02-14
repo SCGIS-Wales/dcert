@@ -3,7 +3,7 @@ use clap::CommandFactory;
 use clap::{Parser, ValueEnum};
 use colored::*;
 use openssl::hash::MessageDigest;
-use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
+use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode, SslVersion};
 use openssl::x509::X509;
 use pem_rfc7468::LineEnding;
 use std::env;
@@ -329,12 +329,14 @@ fn fetch_tls_chain_openssl(
     endpoint: &str,
     method: &str,
     headers: &[(String, String)],
-    _http_protocol: HttpProtocol,
+    http_protocol: HttpProtocol,
     no_verify: bool,
     timeout_secs: u64,
     read_timeout_secs: u64,
     sni_override: Option<&str>,
     proxy_config: &ProxyConfig,
+    min_tls: Option<TlsVersionArg>,
+    max_tls: Option<TlsVersionArg>,
 ) -> Result<TlsConnectionInfo> {
     // Guard against too many concurrent connections
     let current = ACTIVE_CONNECTIONS.fetch_add(1, Ordering::SeqCst);
@@ -389,6 +391,33 @@ fn fetch_tls_chain_openssl(
 
     // Load CA certificates (system defaults, or custom via SSL_CERT_FILE/SSL_CERT_DIR)
     load_ca_certs(&mut builder)?;
+
+    // Apply TLS version constraints
+    if let Some(min) = min_tls {
+        builder
+            .set_min_proto_version(Some(min.to_ssl_version()))
+            .map_err(|e| anyhow::anyhow!("Failed to set minimum TLS version to {}: {}", min, e))?;
+    }
+    if let Some(max) = max_tls {
+        builder
+            .set_max_proto_version(Some(max.to_ssl_version()))
+            .map_err(|e| anyhow::anyhow!("Failed to set maximum TLS version to {}: {}", max, e))?;
+    }
+
+    // Set ALPN protocols for HTTP/2 or HTTP/1.1 negotiation
+    match http_protocol {
+        HttpProtocol::Http2 => {
+            // Prefer h2 but fall back to http/1.1
+            builder
+                .set_alpn_protos(b"\x02h2\x08http/1.1")
+                .map_err(|e| anyhow::anyhow!("Failed to set ALPN protocols: {}", e))?;
+        }
+        HttpProtocol::Http1_1 => {
+            builder
+                .set_alpn_protos(b"\x08http/1.1")
+                .map_err(|e| anyhow::anyhow!("Failed to set ALPN protocols: {}", e))?;
+        }
+    }
 
     // Collect per-certificate verification errors for chain validation detail
     let verify_errors: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -467,8 +496,9 @@ fn fetch_tls_chain_openssl(
     // Build HTTP request
     let path = if url.path().is_empty() { "/" } else { url.path() };
 
-    // OpenSSL doesn't handle HTTP/2 framing; always use HTTP/1.1 on the wire.
-    // The warning is printed in process_target() before calling this function.
+    // Always send HTTP/1.1 on the wire — we use ALPN to signal HTTP/2 preference
+    // to the server, but the actual framing is HTTP/1.1 (full HTTP/2 binary
+    // framing would require a dedicated library like h2 or hyper).
     let req = format!("{} {} HTTP/1.1\r\nHost: {}\r\n", method, path, host);
 
     let mut req = req;
@@ -596,6 +626,12 @@ fn fetch_tls_chain_openssl(
         .unwrap_or_else(|| "unknown".to_string());
     let tls_cipher_iana = current_cipher.and_then(|c| c.standard_name().map(|s| s.to_string()));
 
+    // Get ALPN negotiated protocol
+    let negotiated_protocol = ssl
+        .selected_alpn_protocol()
+        .and_then(|p| std::str::from_utf8(p).ok())
+        .map(|s| s.to_string());
+
     // Get verification result
     let verify_result = {
         let result = ssl_stream.ssl().verify_result();
@@ -616,6 +652,7 @@ fn fetch_tls_chain_openssl(
         tls_version,
         tls_cipher,
         tls_cipher_iana,
+        negotiated_protocol,
         http_response_code,
         verify_result,
         chain_validation_errors,
@@ -633,6 +670,44 @@ enum OutputFormat {
 enum HttpProtocol {
     Http1_1,
     Http2,
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug)]
+enum TlsVersionArg {
+    #[value(name = "1.0")]
+    Tls1_0,
+    #[value(name = "1.1")]
+    Tls1_1,
+    #[value(name = "1.2")]
+    Tls1_2,
+    #[value(name = "1.3")]
+    Tls1_3,
+}
+
+impl TlsVersionArg {
+    fn to_ssl_version(self) -> SslVersion {
+        match self {
+            TlsVersionArg::Tls1_0 => SslVersion::TLS1,
+            TlsVersionArg::Tls1_1 => SslVersion::TLS1_1,
+            TlsVersionArg::Tls1_2 => SslVersion::TLS1_2,
+            TlsVersionArg::Tls1_3 => SslVersion::TLS1_3,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            TlsVersionArg::Tls1_0 => "TLS 1.0",
+            TlsVersionArg::Tls1_1 => "TLS 1.1",
+            TlsVersionArg::Tls1_2 => "TLS 1.2",
+            TlsVersionArg::Tls1_3 => "TLS 1.3",
+        }
+    }
+}
+
+impl std::fmt::Display for TlsVersionArg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
 }
 
 #[derive(ValueEnum, Clone, Debug)]
@@ -701,6 +776,14 @@ struct Args {
     /// HTTP protocol to use (default: http1-1)
     #[arg(long, value_enum, default_value_t = HttpProtocol::Http1_1)]
     http_protocol: HttpProtocol,
+
+    /// Minimum TLS version to accept (e.g. 1.2, 1.3)
+    #[arg(long, value_enum, value_name = "VERSION")]
+    min_tls: Option<TlsVersionArg>,
+
+    /// Maximum TLS version to accept (e.g. 1.2, 1.3)
+    #[arg(long, value_enum, value_name = "VERSION")]
+    max_tls: Option<TlsVersionArg>,
 
     /// Disable TLS certificate verification (insecure)
     #[arg(long)]
@@ -1298,13 +1381,19 @@ fn print_pretty(infos: &[CertInfo], debug: &PrettyDebugInfo<'_>) {
             let status = if matched { "true".green() } else { "false".red() };
             println!();
             println!("{}", "Debug".bold());
-            println!(
-                "  HTTP protocol: {}",
-                match debug.http_protocol {
-                    HttpProtocol::Http2 => "HTTP/2",
-                    HttpProtocol::Http1_1 => "HTTP/1.1",
-                }
-            );
+            // Show the negotiated ALPN protocol if available, otherwise the requested protocol
+            let proto_display = match &conn.negotiated_protocol {
+                Some(proto) => match proto.as_str() {
+                    "h2" => "HTTP/2 (h2)".to_string(),
+                    "http/1.1" => "HTTP/1.1".to_string(),
+                    other => other.to_string(),
+                },
+                None => match debug.http_protocol {
+                    HttpProtocol::Http2 => "HTTP/2 (requested, ALPN not supported by server)".to_string(),
+                    HttpProtocol::Http1_1 => "HTTP/1.1".to_string(),
+                },
+            };
+            println!("  HTTP protocol: {}", proto_display);
             if conn.http_response_code > 0 {
                 let code_color = match conn.http_response_code {
                     200..=299 => conn.http_response_code.to_string().green(),
@@ -1497,6 +1586,8 @@ struct TlsConnectionInfo {
     tls_cipher: String,
     /// IANA/RFC cipher name (e.g. "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384")
     tls_cipher_iana: Option<String>,
+    /// ALPN negotiated protocol (e.g. "h2", "http/1.1")
+    negotiated_protocol: Option<String>,
     http_response_code: u16,
     verify_result: Option<String>,
     /// Per-certificate chain validation errors (depth, error, subject).
@@ -1520,13 +1611,6 @@ fn process_target(target: &str, args: &Args, proxy_config: &ProxyConfig) -> Resu
     };
 
     let (pem_data, conn_info) = if target.starts_with("https://") {
-        if matches!(args.http_protocol, HttpProtocol::Http2) {
-            eprintln!(
-                "{} --http-protocol http2 has no effect; dcert always uses HTTP/1.1 on the wire \
-                 (OpenSSL does not support HTTP/2 framing)",
-                "Warning:".yellow().bold()
-            );
-        }
         if args.no_verify {
             eprintln!(
                 "{} TLS certificate verification is disabled (--no-verify). \
@@ -1544,6 +1628,8 @@ fn process_target(target: &str, args: &Args, proxy_config: &ProxyConfig) -> Resu
             args.read_timeout,
             args.sni.as_deref(),
             proxy_config,
+            args.min_tls,
+            args.max_tls,
         )?;
         let pem = conn.pem_data.clone();
         (pem, Some(conn))

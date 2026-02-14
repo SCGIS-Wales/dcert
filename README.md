@@ -21,6 +21,8 @@ A powerful Rust CLI tool that reads X.509 certificates from PEM files or fetches
 - **Advanced Filtering**: Show only expired certificates
 - **Certificate Sorting**: Sort certificates by expiry date (ascending or descending)
 - **Certificate Export**: Save fetched certificate chains as PEM files with optional filtering of expired certificates
+- **TLS Version Control**: Constrain negotiated TLS version with `--min-tls` and `--max-tls` (supports 1.0, 1.1, 1.2, 1.3)
+- **HTTP/2 ALPN Negotiation**: Request HTTP/2 via ALPN with `--http-protocol http2` and see the server's negotiated protocol
 - **Custom HTTP Options**: Configure HTTP method, headers, protocol version, SNI override, and connection timeout
 - **TLS Verification Control**: Disable verification with `--no-verify` for testing environments (with visible warning)
 - **Machine-Readable Exit Codes**: Distinct exit codes for success, expiry warnings, errors, verification failures, expired certs, and revoked certs
@@ -148,8 +150,14 @@ dcert https://www.google.com --export-pem google-certs.pem --exclude-expired
 # Sort certificates by expiry date (ascending - soonest expiry first)
 dcert certificates.pem --sort-expiry asc
 
-# Use HTTP/2 protocol
+# Use HTTP/2 ALPN negotiation (shows negotiated protocol in debug output)
 dcert --http-protocol http2 https://www.google.com
+
+# Constrain TLS version (e.g. force TLS 1.2 only)
+dcert --min-tls 1.2 --max-tls 1.2 https://www.google.com
+
+# Require TLS 1.3 minimum
+dcert --min-tls 1.3 https://www.google.com
 
 # Custom HTTP headers and method
 dcert https://api.example.com --method POST --header "Authorization:Bearer token" --header "Content-Type:application/json"
@@ -172,6 +180,8 @@ Options:
       --method <METHOD>                HTTP method to use for HTTPS requests [default: get] [possible values: get, post, head, options]
       --header [<HEADER>...]           Custom HTTP headers (key:value), can be repeated
       --http-protocol <HTTP_PROTOCOL>  HTTP protocol to use [default: http1-1] [possible values: http1-1, http2]
+      --min-tls <VERSION>              Minimum TLS version to accept [possible values: 1.0, 1.1, 1.2, 1.3]
+      --max-tls <VERSION>              Maximum TLS version to accept [possible values: 1.0, 1.1, 1.2, 1.3]
       --no-verify                      Disable TLS certificate verification (insecure)
       --timeout <TIMEOUT>              Connection timeout in seconds [default: 10]
       --read-timeout <READ_TIMEOUT>   Read timeout in seconds (time to wait for server response) [default: 5]
@@ -316,10 +326,10 @@ esac
 
 The debug output provides valuable insights for TLS troubleshooting:
 
-- **HTTP Protocol**: Shows whether HTTP/1.1 or HTTP/2 was used
+- **HTTP Protocol**: Shows the ALPN-negotiated protocol (e.g. HTTP/2 (h2), HTTP/1.1)
 - **HTTP Response Code**: Actual response code from the server
 - **Hostname Validation**: Checks if the certificate matches the requested hostname
-- **TLS Version & Cipher**: Shows negotiated TLS version and cipher suite
+- **TLS Version & Cipher**: Shows negotiated TLS version and cipher suite (controllable via `--min-tls`/`--max-tls`)
 - **TLS Verification Result**: Shows the OpenSSL verification outcome with per-certificate detail on failure
 - **Certificate Transparency**: Indicates if CT logs are present (with SCT count when `--extensions` is used)
 - **Network Latency**: Separate measurements for TCP and TLS+HTTP layers
@@ -457,6 +467,12 @@ dcert https://your-app.com --format json | jq '{l4: .debug.l4_latency_ms, l7: .d
 ```bash
 # Check for weak TLS configurations
 dcert https://target.com | grep -E "(TLS version|ciphersuite)"
+
+# Verify server rejects old TLS versions
+dcert https://target.com --max-tls 1.1  # should fail if server enforces TLS 1.2+
+
+# Check HTTP/2 support via ALPN
+dcert https://target.com --http-protocol http2  # shows negotiated protocol
 
 # Verify revocation status
 dcert https://example.com --check-revocation
