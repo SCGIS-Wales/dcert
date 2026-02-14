@@ -5,6 +5,7 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 use url::Url;
 
+use crate::debug::debug_log;
 use crate::tls::{CONNECTION_TIMEOUT_SECS, READ_TIMEOUT_SECS};
 
 /// Cached proxy configuration, read once at startup.
@@ -68,7 +69,7 @@ impl ProxyConfig {
 }
 
 /// Connect through HTTP proxy using CONNECT method
-pub fn connect_through_proxy(proxy_url: &str, target_host: &str, target_port: u16) -> Result<TcpStream> {
+pub fn connect_through_proxy(proxy_url: &str, target_host: &str, target_port: u16, debug: bool) -> Result<TcpStream> {
     let proxy = Url::parse(proxy_url).map_err(|e| anyhow::anyhow!("Invalid proxy URL {}: {}", proxy_url, e))?;
 
     let proxy_host = proxy
@@ -83,6 +84,8 @@ pub fn connect_through_proxy(proxy_url: &str, target_host: &str, target_port: u1
         .next()
         .ok_or_else(|| anyhow::anyhow!("No valid address found for proxy {}", proxy_host))?;
 
+    debug_log!(debug, "Proxy resolved: {} -> {}", proxy_host, proxy_addr);
+
     let mut stream = TcpStream::connect_timeout(&proxy_addr, Duration::from_secs(CONNECTION_TIMEOUT_SECS))
         .map_err(|e| anyhow::anyhow!("Failed to connect to proxy: {}", e))?;
 
@@ -95,6 +98,8 @@ pub fn connect_through_proxy(proxy_url: &str, target_host: &str, target_port: u1
         "CONNECT {}:{} HTTP/1.1\r\nHost: {}:{}\r\nProxy-Connection: keep-alive\r\n\r\n",
         target_host, target_port, target_host, target_port
     );
+
+    debug_log!(debug, "CONNECT {}:{} HTTP/1.1 sent to proxy", target_host, target_port);
 
     stream
         .write_all(connect_request.as_bytes())
@@ -145,6 +150,8 @@ pub fn connect_through_proxy(proxy_url: &str, target_host: &str, target_port: u1
     if !status_ok {
         return Err(anyhow::anyhow!("Proxy CONNECT failed: {}", status_line));
     }
+
+    debug_log!(debug, "Proxy CONNECT tunnel established");
 
     Ok(stream)
 }

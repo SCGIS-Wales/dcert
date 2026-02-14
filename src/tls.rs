@@ -2,13 +2,13 @@ use anyhow::Result;
 use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
 use pem_rfc7468::LineEnding;
 use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use url::Url;
 
 use crate::cli::{HttpProtocol, TlsVersionArg};
+use crate::debug::{dbg_section, debug_log, sanitize_header_value, sanitize_url};
 use crate::proxy::{connect_through_proxy, ProxyConfig};
 
 pub static ACTIVE_CONNECTIONS: AtomicUsize = AtomicUsize::new(0);
@@ -52,7 +52,7 @@ pub fn load_ca_certs(builder: &mut openssl::ssl::SslConnectorBuilder) -> Result<
 }
 
 /// Resolve a hostname to a socket address, returning the address and DNS resolution time.
-pub fn resolve_host(host: &str, port: u16) -> Result<(std::net::SocketAddr, u128)> {
+pub fn resolve_host(host: &str, port: u16) -> Result<(SocketAddr, u128)> {
     let dns_start = std::time::Instant::now();
     let addr = format!("{}:{}", host, port)
         .to_socket_addrs()
@@ -64,8 +64,8 @@ pub fn resolve_host(host: &str, port: u16) -> Result<(std::net::SocketAddr, u128
 }
 
 /// Establish a direct TCP connection with timeout and DNS resolution.
-/// Returns the stream and DNS latency in milliseconds.
-pub fn direct_tcp_connect(host: &str, port: u16, timeout: Duration) -> Result<(TcpStream, u128)> {
+/// Returns the stream, DNS latency in milliseconds, and the resolved socket address.
+pub fn direct_tcp_connect(host: &str, port: u16, timeout: Duration) -> Result<(TcpStream, u128, SocketAddr)> {
     let (socket_addr, dns_ms) = resolve_host(host, port)?;
 
     let stream = TcpStream::connect_timeout(&socket_addr, timeout).map_err(|e| {
@@ -87,7 +87,7 @@ pub fn direct_tcp_connect(host: &str, port: u16, timeout: Duration) -> Result<(T
             }
         }
     })?;
-    Ok((stream, dns_ms))
+    Ok((stream, dns_ms, socket_addr))
 }
 
 /// Result of a TLS connection, containing the certificate chain and connection metadata.
@@ -126,6 +126,7 @@ pub fn fetch_tls_chain_openssl(
     max_tls: Option<TlsVersionArg>,
     cipher_list: Option<&str>,
     cipher_suites: Option<&str>,
+    debug: bool,
 ) -> Result<TlsConnectionInfo> {
     // Guard against too many concurrent connections
     let current = ACTIVE_CONNECTIONS.fetch_add(1, Ordering::SeqCst);
@@ -153,27 +154,33 @@ pub fn fetch_tls_chain_openssl(
         return Err(anyhow::anyhow!("Invalid port number: {}", port));
     }
 
+    debug_log!(debug, "Target URL: {}", endpoint);
+    debug_log!(debug, "Host: {}, Port: {}", host, port);
+    if let Some(sni) = sni_override {
+        debug_log!(debug, "SNI override: {}", sni);
+    }
+
     // Layer 4: TCP connect with timeout (with proxy support)
     let connect_timeout = Duration::from_secs(timeout_secs);
     let l4_start = std::time::Instant::now();
 
     let (stream, dns_latency) = if proxy_config.should_bypass(host) {
-        direct_tcp_connect(host, port, connect_timeout)?
+        let (s, dns, addr) = direct_tcp_connect(host, port, connect_timeout)?;
+        dbg_section(debug, "Layer 3 (Network)");
+        debug_log!(debug, "Resolved {} -> {} ({} ms)", host, addr.ip(), dns);
+        (s, dns)
     } else if let Some(proxy_url) = proxy_config.get_proxy_url("https") {
-        // Sanitize proxy URL before logging to avoid leaking credentials
-        let safe_proxy = Url::parse(proxy_url)
-            .map(|mut u| {
-                if u.password().is_some() {
-                    let _ = u.set_password(Some("****"));
-                }
-                u.to_string()
-            })
-            .unwrap_or_else(|_| proxy_url.to_string());
-        eprintln!("Using proxy: {}", safe_proxy);
+        debug_log!(debug, "Using proxy: {}", sanitize_url(proxy_url));
         // Proxy connections resolve the proxy host, not the target
-        (connect_through_proxy(proxy_url, host, port)?, 0)
+        let stream = connect_through_proxy(proxy_url, host, port, debug)?;
+        dbg_section(debug, "Layer 3 (Network)");
+        debug_log!(debug, "DNS resolution handled by proxy");
+        (stream, 0)
     } else {
-        direct_tcp_connect(host, port, connect_timeout)?
+        let (s, dns, addr) = direct_tcp_connect(host, port, connect_timeout)?;
+        dbg_section(debug, "Layer 3 (Network)");
+        debug_log!(debug, "Resolved {} -> {} ({} ms)", host, addr.ip(), dns);
+        (s, dns)
     };
 
     // Set read timeout
@@ -182,6 +189,9 @@ pub fn fetch_tls_chain_openssl(
         .map_err(|e| anyhow::anyhow!("Failed to set read timeout: {e}"))?;
 
     let l4_latency = l4_start.elapsed().as_millis();
+
+    dbg_section(debug, "Layer 4 (Transport)");
+    debug_log!(debug, "TCP connection established ({} ms)", l4_latency);
 
     // Layer 7: TLS handshake + HTTP request
     let l7_start = std::time::Instant::now();
@@ -304,6 +314,31 @@ pub fn fetch_tls_chain_openssl(
         }
     })?;
 
+    // Debug: Layer 5/6 - TLS session details
+    if debug {
+        dbg_section(true, "Layer 5/6 (Session/Presentation - TLS)");
+        let ssl_ref = ssl_stream.ssl();
+        debug_log!(true, "TLS version: {}", ssl_ref.version_str());
+        if let Some(cipher) = ssl_ref.current_cipher() {
+            debug_log!(true, "Cipher (OpenSSL): {}", cipher.name());
+            if let Some(std_name) = cipher.standard_name() {
+                debug_log!(true, "Cipher (IANA): {}", std_name);
+            }
+        }
+        if let Some(proto) = ssl_ref.selected_alpn_protocol() {
+            if let Ok(proto_str) = std::str::from_utf8(proto) {
+                debug_log!(true, "ALPN negotiated: {}", proto_str);
+            }
+        }
+        debug_log!(true, "SNI sent: {}", sni_host);
+        if no_verify {
+            debug_log!(true, "Certificate verification: DISABLED (--no-verify)");
+        }
+        if let Some(chain) = ssl_ref.peer_cert_chain() {
+            debug_log!(true, "Certificate chain depth: {}", chain.len());
+        }
+    }
+
     // Build HTTP request
     let path = if url.path().is_empty() { "/" } else { url.path() };
 
@@ -336,6 +371,24 @@ pub fn fetch_tls_chain_openssl(
     }
 
     req.push_str("Connection: close\r\n\r\n");
+
+    // Debug: Layer 7 - HTTP request details
+    if debug {
+        dbg_section(true, "Layer 7 (Application - HTTP)");
+        debug_log!(true, "> {} {} HTTP/1.1", method, path);
+        debug_log!(true, "> Host: {}", host);
+        for (key, value) in headers {
+            debug_log!(true, "> {}: {}", key, sanitize_header_value(key, value));
+        }
+        if let Some(body_bytes) = body {
+            debug_log!(true, "> Content-Length: {}", body_bytes.len());
+            let has_content_type = headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("content-type"));
+            if !has_content_type {
+                debug_log!(true, "> Content-Type: application/x-www-form-urlencoded");
+            }
+        }
+        debug_log!(true, "> Connection: close");
+    }
 
     // Send HTTP headers
     ssl_stream
@@ -429,6 +482,9 @@ pub fn fetch_tls_chain_openssl(
 
     let l7_latency = l7_start.elapsed().as_millis();
 
+    debug_log!(debug, "< HTTP response: {}", http_response_code);
+    debug_log!(debug, "Layer 7 complete ({} ms)", l7_latency);
+
     // Get cert chain
     let certs = ssl_stream
         .ssl()
@@ -481,6 +537,17 @@ pub fn fetch_tls_chain_openssl(
 
     // Collect chain validation errors
     let chain_validation_errors = verify_errors.lock().map(|errs| errs.clone()).unwrap_or_default();
+
+    if debug {
+        if let Some(ref result) = verify_result {
+            debug_log!(true, "Verification: {}", result);
+            for err in &chain_validation_errors {
+                debug_log!(true, "  Chain error: {}", err);
+            }
+        } else {
+            debug_log!(true, "Verification: OK");
+        }
+    }
 
     Ok(TlsConnectionInfo {
         pem_data: pem,
