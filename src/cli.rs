@@ -235,6 +235,10 @@ pub struct Args {
     /// Show the negotiated (agreed) TLS cipher suite in the given notation
     #[arg(long, value_enum, value_name = "NOTATION")]
     pub ciphers: Option<CipherNotation>,
+
+    /// Show verbose debug output with OSI layer diagnostics on stderr
+    #[arg(long)]
+    pub debug: bool,
 }
 
 pub fn validate_target(s: &str) -> Result<String, String> {

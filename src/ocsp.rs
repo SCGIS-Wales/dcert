@@ -4,11 +4,12 @@ use std::io::{Read, Write};
 use std::time::Duration;
 use url::Url;
 
+use crate::debug::debug_log;
 use crate::tls::direct_tcp_connect;
 
 /// Check OCSP revocation status for a certificate.
 /// Returns "good", "revoked", "unknown", or an error description.
-pub fn check_ocsp_status(cert_der: &[u8], issuer_der: Option<&[u8]>, ocsp_url: &str) -> String {
+pub fn check_ocsp_status(cert_der: &[u8], issuer_der: Option<&[u8]>, ocsp_url: &str, debug: bool) -> String {
     let cert = match X509::from_der(cert_der) {
         Ok(c) => c,
         Err(e) => return format!("error: failed to parse cert: {}", e),
@@ -59,8 +60,13 @@ pub fn check_ocsp_status(cert_der: &[u8], issuer_der: Option<&[u8]>, ocsp_url: &
     let port = url.port().unwrap_or(default_port);
     let path = if url.path().is_empty() { "/" } else { url.path() };
 
+    debug_log!(debug, "OCSP check: {}:{}{}", host, port, path);
+
     let tcp_stream = match direct_tcp_connect(&host, port, Duration::from_secs(5)) {
-        Ok((s, _dns_ms)) => s,
+        Ok((s, _dns_ms, _addr)) => {
+            debug_log!(debug, "OCSP responder connected: {}:{}", host, port);
+            s
+        }
         Err(e) => return format!("error: connect to OCSP responder failed: {}", e),
     };
     if let Err(e) = tcp_stream.set_read_timeout(Some(Duration::from_secs(5))) {
@@ -155,7 +161,7 @@ pub fn check_ocsp_status(cert_der: &[u8], issuer_der: Option<&[u8]>, ocsp_url: &
         Err(_) => return "error: cert ID re-creation failed".to_string(),
     };
 
-    match basic.find_status(&cert_id2) {
+    let result = match basic.find_status(&cert_id2) {
         Some(status) => {
             let revoked = status.revocation_time.is_some();
             if revoked {
@@ -165,5 +171,8 @@ pub fn check_ocsp_status(cert_der: &[u8], issuer_der: Option<&[u8]>, ocsp_url: &
             }
         }
         None => "unknown (no status in response)".to_string(),
-    }
+    };
+
+    debug_log!(debug, "OCSP status: {}", result);
+    result
 }
