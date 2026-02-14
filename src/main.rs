@@ -30,13 +30,14 @@ lazy_static::lazy_static! {
 ///
 /// Prefers the git tag set by build.rs (e.g. "2.0.2" from tag "v2.0.2"),
 /// falling back to CARGO_PKG_VERSION from Cargo.toml for non-git builds
-/// (e.g. `cargo install` from crates.io).
+/// (e.g. `cargo install` from crates.io) or shallow clones without tags.
 fn dcert_version() -> &'static str {
     // DCERT_GIT_VERSION is set by build.rs from `git describe --tags --always`.
-    // Strip leading 'v' if present (e.g. "v2.0.2" -> "2.0.2").
+    // When no tags are reachable (shallow clone), git describe --always returns
+    // just a commit hash (e.g. "42e938d") — fall back to CARGO_PKG_VERSION.
     match option_env!("DCERT_GIT_VERSION") {
-        Some(git_ver) => git_ver.strip_prefix('v').unwrap_or(git_ver),
-        None => env!("CARGO_PKG_VERSION"),
+        Some(git_ver) if git_ver.contains('.') => git_ver.strip_prefix('v').unwrap_or(git_ver),
+        _ => env!("CARGO_PKG_VERSION"),
     }
 }
 
