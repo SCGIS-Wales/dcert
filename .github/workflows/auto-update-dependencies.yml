@@ -1,6 +1,3 @@
-# File: .github/workflows/auto-update-dependencies.yml
-# Copy to: dcert repository .github/workflows/ folder
-
 name: Automated Dependency Updates and Release
 
 on:
@@ -35,7 +32,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-    
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
@@ -62,7 +59,6 @@ jobs:
     - name: Install cargo utilities
       run: |
         cargo install cargo-edit cargo-audit || true
-        cargo install toml-cli || echo "toml-cli install failed, will use sed fallback"
 
     - name: Get current version
       id: current_version
@@ -74,52 +70,46 @@ jobs:
     - name: Update dependencies
       id: update_deps
       run: |
-        echo "📦 Updating Cargo dependencies..."
-        
+        echo "Updating Cargo dependencies..."
+
         # Backup original files
         cp Cargo.toml Cargo.toml.backup
         cp Cargo.lock Cargo.lock.backup 2>/dev/null || true
-        
+
         # Update all dependencies to latest compatible versions
         cargo update --verbose
-        
+
         # Try to upgrade to latest versions (may cause breaking changes)
         cargo upgrade || echo "cargo upgrade not available, using cargo update"
-        
+
         # Check if dependencies actually changed
         if ! cmp -s Cargo.lock Cargo.lock.backup 2>/dev/null; then
           echo "dependencies_changed=true" >> $GITHUB_OUTPUT
-          echo "✅ Dependencies have been updated"
-          
-          # Show what changed
-          echo "📋 Dependency changes:"
-          if command -v diff >/dev/null 2>&1 && [ -f Cargo.lock.backup ]; then
-            diff Cargo.lock.backup Cargo.lock || true
-          fi
+          echo "Dependencies have been updated"
         else
           echo "dependencies_changed=false" >> $GITHUB_OUTPUT
-          echo "ℹ️ No dependency changes detected"
+          echo "No dependency changes detected"
         fi
 
     - name: Run security audit
       run: |
-        echo "🔍 Running security audit..."
+        echo "Running security audit..."
         cargo audit || {
-          echo "⚠️ Security audit found issues!"
+          echo "Security audit found issues!"
           echo "security_issues=true" >> $GITHUB_OUTPUT
         }
 
     - name: Run tests with updated dependencies
       run: |
-        echo "🧪 Running tests with updated dependencies..."
+        echo "Running tests with updated dependencies..."
         cargo test --verbose --all-features
 
     - name: Check formatting and linting
       run: |
-        echo "🎨 Checking code formatting..."
+        echo "Checking code formatting..."
         cargo fmt -- --check
-        
-        echo "🔍 Running clippy..."
+
+        echo "Running clippy..."
         cargo clippy -- -D warnings
 
     - name: Determine new version
@@ -129,14 +119,14 @@ jobs:
         RELEASE_TYPE="${{ github.event.inputs.release_type || 'patch' }}"
         DEPENDENCIES_CHANGED="${{ steps.update_deps.outputs.dependencies_changed }}"
         FORCE_RELEASE="${{ github.event.inputs.force_release || 'false' }}"
-        
+
         if [ "$DEPENDENCIES_CHANGED" = "true" ] || [ "$FORCE_RELEASE" = "true" ]; then
           # Parse version components
           IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
-          
+
           # Remove any pre-release or build metadata
           PATCH=$(echo $PATCH | cut -d'-' -f1 | cut -d'+' -f1)
-          
+
           case "$RELEASE_TYPE" in
             "major")
               NEW_MAJOR=$((MAJOR + 1))
@@ -154,61 +144,43 @@ jobs:
               NEW_PATCH=$((PATCH + 1))
               ;;
           esac
-          
+
           NEW_VERSION="${NEW_MAJOR}.${NEW_MINOR}.${NEW_PATCH}"
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
           echo "should_release=true" >> $GITHUB_OUTPUT
-          echo "🚀 Will create new release: $CURRENT_VERSION → $NEW_VERSION"
+          echo "Will create new release: $CURRENT_VERSION -> $NEW_VERSION"
         else
           echo "should_release=false" >> $GITHUB_OUTPUT
-          echo "ℹ️ No release needed - no dependency changes"
+          echo "No release needed - no dependency changes"
         fi
 
-    - name: Update version in files
+    - name: Update version in Cargo.toml
       if: steps.new_version.outputs.should_release == 'true'
       run: |
         NEW_VERSION="${{ steps.new_version.outputs.new_version }}"
-        
-        echo "📝 Updating version to $NEW_VERSION..."
-        
-        # Update Cargo.toml
-        if command -v toml >/dev/null 2>&1; then
-          toml set Cargo.toml package.version "$NEW_VERSION"
-        else
-          sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" Cargo.toml
-        fi
-        
-        # Update version in main.rs
-        sed -i "s/#\[command(version = \".*\")\]/#[command(version = \"$NEW_VERSION\")]/" src/main.rs
-        
-        echo "✅ Version updated in all files"
+        echo "Updating Cargo.toml version to $NEW_VERSION..."
+        sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" Cargo.toml
+        echo "Version updated in Cargo.toml"
 
-    - name: Commit changes1
+    - name: Commit, tag, and push
       if: steps.new_version.outputs.should_release == 'true'
       run: |
         NEW_VERSION="${{ steps.new_version.outputs.new_version }}"
-        
+
         # Configure git
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
-        
+
         # Add all changes
         git add .
-        
+
         # Commit changes
         git commit -m "chore: update dependencies and bump version to v$NEW_VERSION
 
         - Updated all Cargo dependencies to latest compatible versions
         - Ran security audit and tests
-        - Automated dependency maintenance release
-        
-        [skip ci]"
+        - Automated dependency maintenance release"
 
-    - name: Create and push tag
-      if: steps.new_version.outputs.should_release == 'true'
-      run: |
-        NEW_VERSION="${{ steps.new_version.outputs.new_version }}"
-        
         # Create annotated tag
         git tag -a "v$NEW_VERSION" -m "Release v$NEW_VERSION - Automated dependency update
 
@@ -218,49 +190,40 @@ jobs:
         - Automated testing verification
 
         Generated by automated dependency update workflow."
-        
-        # Push changes and tag
+
+        # Push changes and tag (tag push triggers CI/CD release pipeline)
         git push origin main
         git push origin "v$NEW_VERSION"
-
-    - name: Wait for release workflow
-      if: steps.new_version.outputs.should_release == 'true'
-      run: |
-        echo "⏳ Waiting for release workflow to complete..."
-        sleep 30
-        
-        # The tag push will trigger the main CI/CD workflow
-        # which creates the GitHub release and builds binaries
 
     - name: Create issue if update fails
       if: failure() && steps.update_deps.outputs.dependencies_changed == 'true'
       uses: actions/github-script@v7
       with:
         script: |
-          const title = '🚨 Automated Dependency Update Failed'
+          const title = 'Automated Dependency Update Failed'
           const body = `
           The automated dependency update workflow failed during the scheduled run.
-          
+
           **Failure Details:**
           - Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           - Scheduled time: ${new Date().toISOString()}
           - Current version: ${{ steps.current_version.outputs.current_version }}
-          
+
           **Possible Issues:**
           - Breaking changes in dependency updates
           - Test failures with new dependency versions
           - Security audit failures
           - Build or compilation errors
-          
+
           **Action Required:**
           1. Review the workflow logs
           2. Manually test dependency updates
           3. Fix any compatibility issues
           4. Consider pinning problematic dependencies
-          
+
           This issue was automatically created by the dependency update workflow.
           `
-          
+
           github.rest.issues.create({
             owner: context.repo.owner,
             repo: context.repo.repo,
@@ -272,198 +235,15 @@ jobs:
     - name: Summary
       if: always()
       run: |
-        echo "## 📊 Automated Dependency Update Summary"
+        echo "## Automated Dependency Update Summary"
         echo "========================================"
         echo "Current Version: ${{ steps.current_version.outputs.current_version }}"
         echo "Dependencies Changed: ${{ steps.update_deps.outputs.dependencies_changed }}"
         echo "Should Release: ${{ steps.new_version.outputs.should_release }}"
         if [ "${{ steps.new_version.outputs.should_release }}" = "true" ]; then
           echo "New Version: ${{ steps.new_version.outputs.new_version }}"
-          echo "🚀 New release created!"
+          echo "New release created!"
         else
-          echo "ℹ️ No release created - no changes needed"
-        fi
-        echo "Workflow completed at: $(date)"ml package.version "$NEW_VERSION"
-        else
-          sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" Cargo.toml
-        fi
-        
-        # Update version in main.rs
-        sed -i "s/#\[command(version = \".*\")\]/#[command(version = \"$NEW_VERSION\")]/" src/main.rs
-        
-        echo "✅ Version updated in all files"
-
-    - name: Generate changelog entry
-      if: steps.new_version.outputs.should_release == 'true'
-      id: changelog
-      run: |
-        NEW_VERSION="${{ steps.new_version.outputs.new_version }}"
-        DATE=$(date +%Y-%m-%d)
-        
-        # Create changelog entry
-        cat > changelog_entry.md << EOF
-        ## [$NEW_VERSION] - $DATE
-        
-        ### Changed
-        - 📦 Updated dependencies to latest versions
-        - 🔒 Applied security updates
-        - 🧪 Verified compatibility with updated dependencies
-        
-        ### Dependencies Updated
-        EOF
-        
-        # Add dependency changes if available
-        if [ -f Cargo.lock.backup ]; then
-          echo "- See commit diff for detailed dependency changes" >> changelog_entry.md
-        fi
-        
-        # Read changelog entry for GitHub release
-        CHANGELOG_CONTENT=$(cat changelog_entry.md)
-        echo "changelog_content<<EOF" >> $GITHUB_OUTPUT
-        echo "$CHANGELOG_CONTENT" >> $GITHUB_OUTPUT
-        echo "EOF" >> $GITHUB_OUTPUT
-
-    - name: Commit changes2
-      if: steps.new_version.outputs.should_release == 'true'
-      run: |
-        NEW_VERSION="${{ steps.new_version.outputs.new_version }}"
-        
-        # Configure git
-        git config user.name "github-actions[bot]"
-        git config user.email "github-actions[bot]@users.noreply.github.com"
-        
-        # Add all changes
-        git add .
-        
-        # Commit changes
-        git commit -m "chore: update dependencies and bump version to v$NEW_VERSION
-
-        - Updated all Cargo dependencies to latest compatible versions
-        - Ran security audit and tests
-        - Automated dependency maintenance release
-        
-        [skip ci]"
-
-    - name: Create and push tag
-      if: steps.new_version.outputs.should_release == 'true'
-      run: |
-        NEW_VERSION="${{ steps.new_version.outputs.new_version }}"
-        
-        # Create annotated tag
-        git tag -a "v$NEW_VERSION" -m "Release v$NEW_VERSION - Automated dependency update
-
-        This release includes:
-        - Updated dependencies to latest versions
-        - Security patches and compatibility improvements
-        - Automated testing verification
-
-        Generated by automated dependency update workflow."
-        
-        # Push changes and tag
-        git push origin main
-        git push origin "v$NEW_VERSION"
-
-    - name: Wait for release workflow
-      if: steps.new_version.outputs.should_release == 'true'
-      run: |
-        echo "⏳ Waiting for release workflow to complete..."
-        sleep 30
-        
-        # The tag push will trigger the main CI/CD workflow
-        # which creates the GitHub release and builds binaries
-
-    - name: Update GitHub release with detailed changelog
-      if: steps.new_version.outputs.should_release == 'true'
-      uses: softprops/action-gh-release@v1
-      with:
-        tag_name: v${{ steps.new_version.outputs.new_version }}
-        name: "dcert v${{ steps.new_version.outputs.new_version }} - Dependency Update"
-        body: |
-          # 🤖 Automated Dependency Update Release
-          
-          This is an automated release that updates all dependencies to their latest compatible versions.
-          
-          ${{ steps.changelog.outputs.changelog_content }}
-          
-          ## 🔄 Automation Details
-          
-          - **Trigger**: Scheduled every 2 weeks
-          - **Dependencies**: Updated via `cargo update` and `cargo upgrade`
-          - **Testing**: Full test suite passed
-          - **Security**: Security audit completed
-          - **Verification**: All checks passed automatically
-          
-          ## 📦 Installation
-          
-          ```bash
-          # Homebrew (Linux)
-          brew upgrade dcert  # or brew install yourusername/tap/dcert
-          
-          # Direct download
-          curl -L https://github.com/${{ github.repository }}/releases/download/v${{ steps.new_version.outputs.new_version }}/dcert-x86_64-unknown-linux-gnu.tar.gz | tar xz
-          ```
-          
-          ## 🔍 What's Changed
-          
-          - All Rust dependencies updated to latest compatible versions
-          - Security vulnerabilities addressed (if any)
-          - Compatibility verified through automated testing
-          
-          **Full Changelog**: https://github.com/${{ github.repository }}/compare/v${{ steps.current_version.outputs.current_version }}...v${{ steps.new_version.outputs.new_version }}
-        draft: false
-        prerelease: false
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: Create issue if update fails
-      if: failure() && steps.update_deps.outputs.dependencies_changed == 'true'
-      uses: actions/github-script@v7
-      with:
-        script: |
-          const title = '🚨 Automated Dependency Update Failed'
-          const body = `
-          The automated dependency update workflow failed during the scheduled run.
-          
-          **Failure Details:**
-          - Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          - Scheduled time: ${new Date().toISOString()}
-          - Current version: ${{ steps.current_version.outputs.current_version }}
-          
-          **Possible Issues:**
-          - Breaking changes in dependency updates
-          - Test failures with new dependency versions
-          - Security audit failures
-          - Build or compilation errors
-          
-          **Action Required:**
-          1. Review the workflow logs
-          2. Manually test dependency updates
-          3. Fix any compatibility issues
-          4. Consider pinning problematic dependencies
-          
-          This issue was automatically created by the dependency update workflow.
-          `
-          
-          github.rest.issues.create({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            title: title,
-            body: body,
-            labels: ['automated', 'dependencies', 'maintenance']
-          })
-
-    - name: Summary
-      if: always()
-      run: |
-        echo "## 📊 Automated Dependency Update Summary"
-        echo "========================================"
-        echo "Current Version: ${{ steps.current_version.outputs.current_version }}"
-        echo "Dependencies Changed: ${{ steps.update_deps.outputs.dependencies_changed }}"
-        echo "Should Release: ${{ steps.new_version.outputs.should_release }}"
-        if [ "${{ steps.new_version.outputs.should_release }}" = "true" ]; then
-          echo "New Version: ${{ steps.new_version.outputs.new_version }}"
-          echo "🚀 New release created!"
-        else
-          echo "ℹ️ No release created - no changes needed"
+          echo "No release created - no changes needed"
         fi
         echo "Workflow completed at: $(date)"

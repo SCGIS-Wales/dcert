@@ -227,12 +227,13 @@ if [ "$DEPENDENCIES_CHANGED" = true ] || [ "$FORCE_UPDATE" = true ]; then
     echo -e "${BLUE}📝 New version will be: $CURRENT_VERSION → $NEW_VERSION${NC}"
     
     if [ "$DRY_RUN" = false ]; then
-        # Update version in files
+        # Update version in Cargo.toml (main.rs reads version automatically via build.rs)
         echo "Updating version in Cargo.toml..."
-        sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" Cargo.toml
-        
-        echo "Updating version in main.rs..."
-        sed -i "s/#\[command(version = \".*\")\]/#[command(version = \"$NEW_VERSION\")]/" src/main.rs
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+          sed -i '' "s/^version = \".*\"/version = \"$NEW_VERSION\"/" Cargo.toml
+        else
+          sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" Cargo.toml
+        fi
         
         # Create commit and tag
         echo -e "${BLUE}📝 Creating commit and tag...${NC}"
