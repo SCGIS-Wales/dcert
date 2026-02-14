@@ -1819,16 +1819,15 @@ mod tests {
     #[test]
     fn test_cert_dates_are_rfc3339() {
         let infos = parse_cert_infos_from_pem(VALID_PEM, &default_opts()).unwrap();
-        let cert = &infos[0];
+        let not_before = &infos[0].not_before;
+        let not_after = &infos[0].not_after;
         assert!(
-            OffsetDateTime::parse(&cert.not_before, &Rfc3339).is_ok(),
-            "not_before should be RFC3339: {}",
-            cert.not_before
+            OffsetDateTime::parse(not_before, &Rfc3339).is_ok(),
+            "not_before should be RFC3339: {not_before}",
         );
         assert!(
-            OffsetDateTime::parse(&cert.not_after, &Rfc3339).is_ok(),
-            "not_after should be RFC3339: {}",
-            cert.not_after
+            OffsetDateTime::parse(not_after, &Rfc3339).is_ok(),
+            "not_after should be RFC3339: {not_after}",
         );
     }
 
