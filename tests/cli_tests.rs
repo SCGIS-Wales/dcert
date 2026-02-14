@@ -57,6 +57,7 @@ fn test_help_flag() {
     assert!(stdout.contains("--watch"));
     assert!(stdout.contains("--sni"));
     assert!(stdout.contains("--check-revocation"));
+    assert!(stdout.contains("--read-timeout"));
 }
 
 // ---------------------------------------------------------------
@@ -295,6 +296,7 @@ fn test_extensions_pretty() {
         stdout.contains("Basic Constr"),
         "extensions should show basic constraints for self-signed cert"
     );
+    assert!(stdout.contains("Public Key"), "extensions should show public key info");
 }
 
 #[test]
@@ -314,6 +316,17 @@ fn test_extensions_json() {
     // At least one cert should have extended_key_usage
     let has_eku = arr.iter().any(|c| c.get("extended_key_usage").is_some());
     assert!(has_eku, "at least one cert in chain should have EKU in JSON");
+    // Every cert should have public key info when extensions are enabled
+    for cert in arr {
+        assert!(
+            cert.get("public_key_algorithm").is_some(),
+            "public_key_algorithm should be present with --extensions"
+        );
+        assert!(
+            cert.get("public_key_size_bits").is_some(),
+            "public_key_size_bits should be present with --extensions"
+        );
+    }
 }
 
 // ---------------------------------------------------------------
