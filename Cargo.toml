@@ -1,6 +1,6 @@
 [package]
 name = "dcert"
-version = "1.2.0"
+version = "2.0.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/SCGIS-Wales/dcert"
@@ -26,6 +26,8 @@ x509-parser = "0.18"
 openssl = "0.10"
 pem = "3.0"
 lazy_static = "1.5"
+serde_yml = "0.0.12"
+ctrlc = "3.4"
 
 [dev-dependencies]
 tempfile = "3.25"
