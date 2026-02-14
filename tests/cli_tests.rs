@@ -31,7 +31,13 @@ fn test_version_flag() {
     let output = dcert_bin().arg("--version").output().expect("failed to run dcert");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("dcert"), "version output should contain 'dcert'");
-    assert!(stdout.contains("2.0.0"), "version should be 2.0.0");
+    // Version comes from git tag (via build.rs) or Cargo.toml — just verify it's a semver-like string
+    let version_line = stdout.lines().next().expect("should have a version line");
+    let version_part = version_line.strip_prefix("dcert ").expect("should start with 'dcert '");
+    assert!(
+        version_part.contains('.'),
+        "version should be a dotted version string, got: {version_part}"
+    );
 }
 
 #[test]
