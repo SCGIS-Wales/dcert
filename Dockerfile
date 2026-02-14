@@ -13,8 +13,9 @@ RUN apk add --no-cache \
     openssl-libs-static \
     pkgconfig
 
-# Copy manifest and lockfile for reproducible builds
-COPY Cargo.toml Cargo.lock ./
+# Copy manifest and generate lockfile for dependency caching
+COPY Cargo.toml ./
+RUN cargo generate-lockfile
 
 # Create dummy main.rs to prebuild dependencies
 RUN mkdir -p src && echo 'fn main() {}' > src/main.rs
