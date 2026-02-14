@@ -185,11 +185,6 @@ pub fn cert_matches_hostname(cert: &CertInfo, host: &str) -> bool {
     fn matches_wildcard(pattern: &str, hostname: &str) -> bool {
         // Only allow wildcard at the start, e.g. *.example.com
         if let Some(stripped) = pattern.strip_prefix("*.") {
-            // Host must have at least one subdomain
-            if let Some(rest) = hostname.strip_prefix('.') {
-                return rest.ends_with(stripped);
-            }
-            // Or, split and check
             let host_labels: Vec<&str> = hostname.split('.').collect();
             let pattern_labels: Vec<&str> = stripped.split('.').collect();
             if host_labels.len() < pattern_labels.len() + 1 {
@@ -411,7 +406,7 @@ pub fn print_diff(target_a: &str, infos_a: &[CertInfo], target_b: &str, infos_b:
                 println!();
             }
             (Some(ca), None) => {
-                println!("{} Only in A: index={} subject={}", "+".green(), ca.index, ca.subject);
+                println!("{} Only in A: index={} subject={}", "-".red(), ca.index, ca.subject);
             }
             (None, Some(cb)) => {
                 println!("{} Only in B: index={} subject={}", "+".green(), cb.index, cb.subject);

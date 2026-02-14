@@ -100,7 +100,8 @@ pub fn connect_through_proxy(proxy_url: &str, target_host: &str, target_port: u1
         .write_all(connect_request.as_bytes())
         .map_err(|e| anyhow::anyhow!("Failed to send CONNECT request: {}", e))?;
 
-    // Read proxy response
+    // Read proxy response with size limit to prevent unbounded allocation
+    const MAX_PROXY_HEADER_SIZE: usize = 64 * 1024; // 64 KB
     let mut response = Vec::new();
     let mut buffer = [0u8; 1024];
 
@@ -116,6 +117,13 @@ pub fn connect_through_proxy(proxy_url: &str, target_host: &str, target_port: u1
 
         response.extend_from_slice(&buffer[..n]);
 
+        if response.len() > MAX_PROXY_HEADER_SIZE {
+            return Err(anyhow::anyhow!(
+                "Proxy response headers too large (>{} KB)",
+                MAX_PROXY_HEADER_SIZE / 1024
+            ));
+        }
+
         // Check if we have the complete headers (ending with \r\n\r\n)
         if response.windows(4).any(|w| w == b"\r\n\r\n") {
             break;
@@ -128,8 +136,13 @@ pub fn connect_through_proxy(proxy_url: &str, target_host: &str, target_port: u1
         .next()
         .ok_or_else(|| anyhow::anyhow!("Empty proxy response"))?;
 
-    // Check if the CONNECT was successful (200 Connection established)
-    if !status_line.contains("200") {
+    // Check if the CONNECT was successful (HTTP/x.x 200 ...)
+    let status_ok = status_line
+        .split_whitespace()
+        .nth(1)
+        .map(|code| code == "200")
+        .unwrap_or(false);
+    if !status_ok {
         return Err(anyhow::anyhow!("Proxy CONNECT failed: {}", status_line));
     }
 
