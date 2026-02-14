@@ -26,6 +26,21 @@ lazy_static::lazy_static! {
         x509_parser::asn1_rs::Oid::from(&[1, 3, 6, 1, 4, 1, 11129, 2, 4, 2]).unwrap();
 }
 
+/// Return the version string for `--version` output.
+///
+/// Prefers the git tag set by build.rs (e.g. "2.0.2" from tag "v2.0.2"),
+/// falling back to CARGO_PKG_VERSION from Cargo.toml for non-git builds
+/// (e.g. `cargo install` from crates.io) or shallow clones without tags.
+fn dcert_version() -> &'static str {
+    // DCERT_GIT_VERSION is set by build.rs from `git describe --tags --always`.
+    // When no tags are reachable (shallow clone), git describe --always returns
+    // just a commit hash (e.g. "42e938d") — fall back to CARGO_PKG_VERSION.
+    match option_env!("DCERT_GIT_VERSION") {
+        Some(git_ver) if git_ver.contains('.') => git_ver.strip_prefix('v').unwrap_or(git_ver),
+        _ => env!("CARGO_PKG_VERSION"),
+    }
+}
+
 static ACTIVE_CONNECTIONS: AtomicUsize = AtomicUsize::new(0);
 const MAX_CONNECTIONS: usize = 10;
 const CONNECTION_TIMEOUT_SECS: u64 = 10;
@@ -491,7 +506,7 @@ enum CipherNotation {
              If you specify an HTTPS URL, dcert will fetch and decode the server's TLS certificate chain.\n\
              Optionally, you can export the chain as a PEM file."
 )]
-#[command(version)]
+#[command(version = dcert_version())]
 struct Args {
     /// Path(s) to PEM file(s) or HTTPS URL(s). Use '-' to read targets from stdin (one per line)
     #[arg(value_parser = validate_target, num_args = 1..)]
@@ -1250,7 +1265,7 @@ fn process_target(target: &str, args: &Args) -> Result<TargetResult> {
             target,
             &args.method.to_string(),
             &args.header,
-            args.http_protocol.clone(),
+            args.http_protocol,
             args.no_verify,
             args.timeout,
             args.sni.as_deref(),
