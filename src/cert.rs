@@ -323,25 +323,26 @@ pub fn parse_cert_infos_from_pem(pem_data: &str, opts: &CertProcessOpts) -> Resu
 
     let mut infos = Vec::new();
     let mut errors = Vec::new();
+    let mut cert_idx = 0usize;
 
-    for (idx, block) in blocks.iter().enumerate() {
+    for block in &blocks {
         if block.tag() != "CERTIFICATE" {
             continue;
         }
 
         match X509Certificate::from_der(block.contents()) {
             Ok((_, cert)) => {
-                match process_certificate(cert, block.contents(), idx, opts) {
+                match process_certificate(cert, block.contents(), cert_idx, opts) {
                     Ok(Some(info)) => infos.push(info),
                     Ok(None) => {} // Filtered out (e.g., not expired when expired_only is true)
-                    Err(e) => errors.push(format!("Certificate {}: {}", idx, e)),
+                    Err(e) => errors.push(format!("Certificate {}: {}", cert_idx, e)),
                 }
             }
             Err(e) => {
-                errors.push(format!("Certificate {} parsing failed: {}", idx, e));
-                continue;
+                errors.push(format!("Certificate {} parsing failed: {}", cert_idx, e));
             }
         }
+        cert_idx += 1;
     }
 
     // Return results even if some certs failed, but warn about errors

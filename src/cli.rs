@@ -287,7 +287,11 @@ pub fn parse_header(s: &str) -> Result<(String, String), String> {
     if parts.len() != 2 {
         return Err("Header must be in key:value format".to_string());
     }
-    Ok((parts[0].trim().to_string(), parts[1].trim().to_string()))
+    let key = parts[0].trim();
+    if key.is_empty() {
+        return Err("Header key must not be empty".to_string());
+    }
+    Ok((key.to_string(), parts[1].trim().to_string()))
 }
 
 #[cfg(test)]
@@ -323,6 +327,12 @@ mod tests {
         let (key, value) = parse_header("X-Empty:").unwrap();
         assert_eq!(key, "X-Empty");
         assert_eq!(value, "");
+    }
+
+    #[test]
+    fn test_parse_header_empty_key_rejected() {
+        assert!(parse_header(":value").is_err());
+        assert!(parse_header("  :value").is_err());
     }
 
     // ---------------------------------------------------------------

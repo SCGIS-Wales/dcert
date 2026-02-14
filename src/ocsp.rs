@@ -98,6 +98,23 @@ pub fn check_ocsp_status(cert_der: &[u8], issuer_der: Option<&[u8]>, ocsp_url: &
         None => return "error: malformed OCSP HTTP response".to_string(),
     };
 
+    // Validate HTTP status code before parsing body
+    let header_bytes = &response[..header_end];
+    let status_ok = String::from_utf8_lossy(header_bytes)
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .map(|code| code == "200")
+        .unwrap_or(false);
+    if !status_ok {
+        let status_line = String::from_utf8_lossy(header_bytes)
+            .lines()
+            .next()
+            .unwrap_or("(empty)")
+            .to_string();
+        return format!("error: OCSP responder returned non-200: {}", status_line);
+    }
+
     let ocsp_bytes = &response[header_end..];
     if ocsp_bytes.is_empty() {
         return "error: empty OCSP response body".to_string();

@@ -128,8 +128,13 @@ pub fn connect_through_proxy(proxy_url: &str, target_host: &str, target_port: u1
         .next()
         .ok_or_else(|| anyhow::anyhow!("Empty proxy response"))?;
 
-    // Check if the CONNECT was successful (200 Connection established)
-    if !status_line.contains("200") {
+    // Check if the CONNECT was successful (HTTP/x.x 200 ...)
+    let status_ok = status_line
+        .split_whitespace()
+        .nth(1)
+        .map(|code| code == "200")
+        .unwrap_or(false);
+    if !status_ok {
         return Err(anyhow::anyhow!("Proxy CONNECT failed: {}", status_line));
     }
 
