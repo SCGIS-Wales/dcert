@@ -505,3 +505,44 @@ fn test_invalid_url_scheme() {
         .expect("failed to run dcert");
     assert!(!output.status.success(), "should fail with http:// (not https://)");
 }
+
+// ---------------------------------------------------------------
+// Request body flags (--data / --data-file)
+// ---------------------------------------------------------------
+
+#[test]
+fn test_help_shows_data_flags() {
+    let output = dcert_bin().arg("--help").output().expect("failed to run dcert");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--data"), "help should mention --data");
+    assert!(stdout.contains("--data-file"), "help should mention --data-file");
+    assert!(stdout.contains("-d"), "help should mention -d short flag");
+}
+
+#[test]
+fn test_data_and_data_file_conflict() {
+    let pem_path = test_data("test.pem");
+    let output = dcert_bin()
+        .arg(pem_path.to_str().unwrap())
+        .arg("--data")
+        .arg("foo=bar")
+        .arg("--data-file")
+        .arg("somefile.txt")
+        .output()
+        .expect("failed to run dcert");
+    assert!(
+        !output.status.success(),
+        "should fail when both --data and --data-file are given"
+    );
+}
+
+#[test]
+fn test_data_file_nonexistent() {
+    let output = dcert_bin()
+        .arg("https://example.com")
+        .arg("--data-file")
+        .arg("/nonexistent/path/body.txt")
+        .output()
+        .expect("failed to run dcert");
+    assert!(!output.status.success(), "should fail with nonexistent data file");
+}

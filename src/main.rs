@@ -272,6 +272,7 @@ fn fetch_tls_chain_openssl(
     endpoint: &str,
     method: &str,
     headers: &[(String, String)],
+    body: Option<&[u8]>,
     http_protocol: HttpProtocol,
     no_verify: bool,
     timeout_secs: u64,
@@ -472,12 +473,30 @@ fn fetch_tls_chain_openssl(
     for (key, value) in headers {
         req.push_str(&format!("{}: {}\r\n", key, value));
     }
+
+    // When a body is present, add Content-Length and default Content-Type
+    if let Some(body_bytes) = body {
+        req.push_str(&format!("Content-Length: {}\r\n", body_bytes.len()));
+
+        let has_content_type = headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("content-type"));
+        if !has_content_type {
+            req.push_str("Content-Type: application/x-www-form-urlencoded\r\n");
+        }
+    }
+
     req.push_str("Connection: close\r\n\r\n");
 
-    // Send HTTP request
+    // Send HTTP headers
     ssl_stream
         .write_all(req.as_bytes())
         .map_err(|e| anyhow::anyhow!("Failed to send HTTP request: {e}"))?;
+
+    // Send body after headers if present
+    if let Some(body_bytes) = body {
+        ssl_stream
+            .write_all(body_bytes)
+            .map_err(|e| anyhow::anyhow!("Failed to send request body: {e}"))?;
+    }
 
     // Flush the stream to ensure the request is sent
     ssl_stream
@@ -740,6 +759,16 @@ struct Args {
     /// Custom HTTP headers (key:value), can be repeated
     #[arg(long, value_parser = parse_header, num_args = 0.., value_name = "HEADER")]
     header: Vec<(String, String)>,
+
+    /// Send data as the request body (implies POST if --method is not explicitly set).
+    /// Similar to curl's -d flag.
+    #[arg(short = 'd', long = "data", value_name = "DATA")]
+    data: Option<String>,
+
+    /// Read request body from a file (implies POST if --method is not explicitly set).
+    /// Similar to curl's --data-binary @file.
+    #[arg(long = "data-file", value_name = "FILE", conflicts_with = "data")]
+    data_file: Option<String>,
 
     /// HTTP protocol to use (default: http1-1)
     #[arg(long, value_enum, default_value_t = HttpProtocol::Http1_1)]
@@ -1589,7 +1618,7 @@ struct TargetResult {
 }
 
 /// Process a single target (PEM file or HTTPS URL) and return results.
-fn process_target(target: &str, args: &Args, proxy_config: &ProxyConfig) -> Result<TargetResult> {
+fn process_target(target: &str, args: &Args, proxy_config: &ProxyConfig, body: Option<&[u8]>) -> Result<TargetResult> {
     let opts = CertProcessOpts {
         expired_only: args.expired_only,
         fingerprint: args.fingerprint,
@@ -1608,6 +1637,7 @@ fn process_target(target: &str, args: &Args, proxy_config: &ProxyConfig) -> Resu
             target,
             &args.method.to_string(),
             &args.header,
+            body,
             args.http_protocol,
             args.no_verify,
             args.timeout,
@@ -1861,6 +1891,20 @@ fn output_results(
 fn run() -> Result<i32> {
     let mut args: Args = Args::parse();
 
+    // Resolve request body from --data or --data-file
+    let body_data: Option<Vec<u8>> = if let Some(ref data) = args.data {
+        Some(data.as_bytes().to_vec())
+    } else if let Some(ref path) = args.data_file {
+        Some(std::fs::read(path).with_context(|| format!("Failed to read data file: {}", path))?)
+    } else {
+        None
+    };
+
+    // Auto-promote method to POST when body is provided and method is at default (GET)
+    if body_data.is_some() && matches!(args.method, HttpMethod::Get) {
+        args.method = HttpMethod::Post;
+    }
+
     // Cache proxy configuration from environment at startup
     let proxy_config = ProxyConfig::from_env();
 
@@ -1930,7 +1974,7 @@ fn run() -> Result<i32> {
             );
 
             for target in &targets {
-                match process_target(target, &args, &proxy_config) {
+                match process_target(target, &args, &proxy_config, body_data.as_deref()) {
                     Ok(result) => {
                         // Check for changes
                         let current_fps: Vec<Option<String>> =
@@ -1967,7 +2011,7 @@ fn run() -> Result<i32> {
     let mut all_results: Vec<TargetResult> = Vec::new();
 
     for target in &targets {
-        match process_target(target, &args, &proxy_config) {
+        match process_target(target, &args, &proxy_config, body_data.as_deref()) {
             Ok(result) => {
                 // Check for verification failure
                 if let Some(ref conn) = result.conn_info {
