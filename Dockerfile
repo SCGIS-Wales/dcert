@@ -3,7 +3,7 @@
 ############################
 # Builder
 ############################
-FROM rust:1.92-alpine AS builder
+FROM rust:1-alpine AS builder
 WORKDIR /app
 
 # Install build dependencies for musl targets and OpenSSL
@@ -13,7 +13,7 @@ RUN apk add --no-cache \
     openssl-libs-static \
     pkgconfig
 
-# Copy manifest and ensure lockfile exists for reproducible builds
+# Copy manifest and generate lockfile for dependency caching
 COPY Cargo.toml ./
 RUN cargo generate-lockfile
 
