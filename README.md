@@ -21,7 +21,7 @@ A powerful Rust CLI tool that reads X.509 certificates from PEM files or fetches
 - **Advanced Filtering**: Show only expired certificates
 - **Certificate Sorting**: Sort certificates by expiry date (ascending or descending)
 - **Certificate Export**: Save fetched certificate chains as PEM files with optional filtering of expired certificates
-- **TLS Version Control**: Constrain negotiated TLS version with `--min-tls` and `--max-tls` (supports 1.0, 1.1, 1.2, 1.3)
+- **TLS Version Control**: Constrain negotiated TLS version with `--min-tls` and `--max-tls` (supports 1.2, 1.3; TLS 1.0/1.1 rejected per RFC 8996)
 - **Cipher Suite Configuration**: Specify allowed TLS 1.2 ciphers (`--cipher-list`) and TLS 1.3 cipher suites (`--cipher-suites`) using OpenSSL cipher string format
 - **HTTP/2 ALPN Negotiation**: Request HTTP/2 via ALPN with `--http-protocol http2` and see the server's negotiated protocol
 - **Request Body Support**: Send data with `-d` / `--data` (inline) or `--data-file` (from file), with auto-POST promotion like curl
@@ -199,8 +199,8 @@ Options:
   -d, --data <DATA>                    Send data as the request body (implies POST)
       --data-file <FILE>               Read request body from a file (implies POST)
       --http-protocol <HTTP_PROTOCOL>  HTTP protocol to use [default: http1-1] [possible values: http1-1, http2]
-      --min-tls <VERSION>              Minimum TLS version to accept [possible values: 1.0, 1.1, 1.2, 1.3]
-      --max-tls <VERSION>              Maximum TLS version to accept [possible values: 1.0, 1.1, 1.2, 1.3]
+      --min-tls <VERSION>              Minimum TLS version to accept [possible values: 1.2, 1.3]
+      --max-tls <VERSION>              Maximum TLS version to accept [possible values: 1.2, 1.3]
       --cipher-list <CIPHER_STRING>    Allowed TLS 1.2 cipher suites (OpenSSL cipher string format)
       --cipher-suites <CIPHERSUITES>   Allowed TLS 1.3 cipher suites (colon-separated IANA names)
       --no-verify                      Disable TLS certificate verification (insecure)
@@ -493,8 +493,8 @@ dcert https://your-app.com --format json | jq '{l4: .debug.l4_latency_ms, l7: .d
 # Check for weak TLS configurations
 dcert https://target.com | grep -E "(TLS version|ciphersuite)"
 
-# Verify server rejects old TLS versions
-dcert https://target.com --max-tls 1.1  # should fail if server enforces TLS 1.2+
+# Require TLS 1.3 only (reject TLS 1.2)
+dcert https://target.com --min-tls 1.3  # fails if server doesn't support TLS 1.3
 
 # Check HTTP/2 support via ALPN
 dcert https://target.com --http-protocol http2  # shows negotiated protocol
