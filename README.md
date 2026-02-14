@@ -246,6 +246,9 @@ Debug
   Network latency (layer 7/TLS+HTTP):    125 ms
 
 Note: DNS, Layer 4, and Layer 7 latencies are measured separately and should not be summed.
+DNS covers name resolution only; Layer 4 covers DNS + TCP connection;
+Layer 7 covers TLS handshake, sending the HTTP request, and reading the
+HTTP status line (not the full response body).
 
 Certificate
   Index        : 0
@@ -342,7 +345,7 @@ The debug output provides valuable insights for TLS troubleshooting:
 - **TLS Version & Cipher**: Shows negotiated TLS version and cipher suite (controllable via `--min-tls`/`--max-tls` and `--cipher-list`/`--cipher-suites`)
 - **TLS Verification Result**: Shows the OpenSSL verification outcome with per-certificate detail on failure
 - **Certificate Transparency**: Indicates if CT logs are present (with SCT count when `--extensions` is used)
-- **Network Latency**: Separate measurements for DNS resolution, TCP connect, and TLS+HTTP layers
+- **Network Latency**: Separate measurements for DNS resolution, TCP connect, and TLS+HTTP layers (Layer 7 includes TLS handshake, sending the HTTP request, and reading the status line — not the full response body)
 
 ### Certificate Extensions and Fingerprints
 

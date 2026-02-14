@@ -1480,7 +1480,8 @@ fn print_pretty(infos: &[CertInfo], debug: &PrettyDebugInfo<'_>) {
             println!(
                 "Note: DNS, Layer 4, and Layer 7 latencies are measured separately and should not be summed. \
 DNS covers name resolution only; Layer 4 covers DNS + TCP connection; \
-Layer 7 covers TLS handshake and HTTP request."
+Layer 7 covers TLS handshake, sending the HTTP request, and reading the \
+HTTP status line (not the full response body)."
             );
             println!();
         }
