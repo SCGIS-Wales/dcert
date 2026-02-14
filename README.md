@@ -9,8 +9,9 @@ A powerful Rust CLI tool that reads X.509 certificates from PEM files or fetches
 - **Dual Mode Operation**: Parse certificates from PEM files OR fetch live certificates from HTTPS endpoints
 - **Multiple Targets**: Process multiple PEM files and URLs in a single invocation, or pipe targets via stdin
 - **Comprehensive Certificate Analysis**: Subject, issuer, serial number, validity window, expiry status, SANs, and fingerprints
-- **Certificate Extensions**: Key usage, extended key usage, basic constraints, authority info access, and signature algorithm
-- **TLS Connection Debugging**: Protocol version, cipher suite, certificate transparency, and verification result
+- **Certificate Extensions**: Key usage, extended key usage, basic constraints, authority info access, signature algorithm, and public key info (algorithm & key size)
+- **Certificate Transparency**: SCT presence detection and SCT count (with `--extensions`)
+- **TLS Connection Debugging**: Protocol version, cipher suite, certificate transparency, chain validation detail, and verification result
 - **OCSP Revocation Checking**: Verify certificate revocation status via OCSP responders
 - **Expiry Warnings**: Alert when certificates are approaching expiry with configurable threshold and exit codes
 - **Certificate Comparison**: Side-by-side diff of certificates between two targets
@@ -21,7 +22,11 @@ A powerful Rust CLI tool that reads X.509 certificates from PEM files or fetches
 - **Certificate Sorting**: Sort certificates by expiry date (ascending or descending)
 - **Certificate Export**: Save fetched certificate chains as PEM files with optional filtering of expired certificates
 - **Custom HTTP Options**: Configure HTTP method, headers, protocol version, SNI override, and connection timeout
-- **TLS Verification Control**: Disable verification with `--no-verify` for testing environments
+- **TLS Verification Control**: Disable verification with `--no-verify` for testing environments (with visible warning)
+- **Machine-Readable Exit Codes**: Distinct exit codes for success, expiry warnings, errors, verification failures, expired certs, and revoked certs
+- **Separate Read Timeout**: Configure read timeout independently from connection timeout with `--read-timeout`
+- **Smart Watch Mode**: Automatically enables fingerprinting for change detection in `--watch` mode
+- **Interactive Stdin Detection**: Prints a helpful prompt when reading from a terminal stdin
 
 ## Installation
 
@@ -169,6 +174,7 @@ Options:
       --http-protocol <HTTP_PROTOCOL>  HTTP protocol to use [default: http1-1] [possible values: http1-1, http2]
       --no-verify                      Disable TLS certificate verification (insecure)
       --timeout <TIMEOUT>              Connection timeout in seconds [default: 10]
+      --read-timeout <READ_TIMEOUT>   Read timeout in seconds (time to wait for server response) [default: 5]
       --sni <SNI>                      Override SNI hostname for TLS handshake
       --fingerprint                    Show SHA-256 fingerprint for each certificate
       --extensions                     Show certificate extensions (key usage, basic constraints, etc.)
@@ -276,7 +282,33 @@ dcert --http-protocol http2 https://www.google.com --format json
 ]
 ```
 
-> **Note:** When `--fingerprint`, `--extensions`, or `--check-revocation` flags are used, additional fields appear in the output (e.g. `sha256_fingerprint`, `key_usage`, `extended_key_usage`, `basic_constraints`, `authority_info_access`, `signature_algorithm`, `revocation_status`).
+> **Note:** When `--fingerprint`, `--extensions`, or `--check-revocation` flags are used, additional fields appear in the output (e.g. `sha256_fingerprint`, `public_key_algorithm`, `public_key_size_bits`, `key_usage`, `extended_key_usage`, `basic_constraints`, `authority_info_access`, `signature_algorithm`, `sct_count`, `revocation_status`).
+
+### Exit Codes
+
+dcert uses distinct exit codes for scripting and CI/CD integration:
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success - all certificates are valid |
+| 1 | Expiry warning - certificate(s) expiring within `--expiry-warn` threshold |
+| 2 | Error - connection failure, file not found, or processing error |
+| 3 | TLS verification failed - certificate chain could not be verified |
+| 4 | Certificate expired - at least one certificate in the chain has expired |
+| 5 | Certificate revoked - OCSP reports at least one certificate as revoked |
+
+```bash
+# Use in CI/CD scripts
+dcert https://your-api.com --expiry-warn 30
+case $? in
+  0) echo "All good" ;;
+  1) echo "Certificate expiring soon" ;;
+  3) echo "TLS verification failed" ;;
+  4) echo "Certificate expired!" ;;
+  5) echo "Certificate revoked!" ;;
+  *) echo "Error occurred" ;;
+esac
+```
 
 ## Advanced Usage
 
@@ -288,8 +320,8 @@ The debug output provides valuable insights for TLS troubleshooting:
 - **HTTP Response Code**: Actual response code from the server
 - **Hostname Validation**: Checks if the certificate matches the requested hostname
 - **TLS Version & Cipher**: Shows negotiated TLS version and cipher suite
-- **TLS Verification Result**: Shows the OpenSSL verification outcome
-- **Certificate Transparency**: Indicates if CT logs are present
+- **TLS Verification Result**: Shows the OpenSSL verification outcome with per-certificate detail on failure
+- **Certificate Transparency**: Indicates if CT logs are present (with SCT count when `--extensions` is used)
 - **Network Latency**: Separate measurements for TCP and TLS+HTTP layers
 
 ### Certificate Extensions and Fingerprints
@@ -302,10 +334,12 @@ dcert https://example.com --fingerprint --extensions
 
 # Extensions include:
 #   - Signature algorithm (e.g. SHA256-RSA)
+#   - Public key algorithm and key size (e.g. RSA 2048 bits, EC 256 bits)
 #   - Key usage (e.g. Digital Signature, Key Encipherment)
 #   - Extended key usage (e.g. TLS Web Server Authentication)
 #   - Basic constraints (CA status and path length)
 #   - Authority info access (OCSP and CA issuer URLs)
+#   - SCT count (number of Signed Certificate Timestamps)
 ```
 
 ### OCSP Revocation Checking
@@ -395,6 +429,9 @@ dcert https://httpbin.org/post --method POST --header "Content-Type:application/
 
 # Set a longer timeout for slow servers
 dcert https://slow-server.example.com --timeout 30
+
+# Set separate read timeout for slow responses
+dcert https://slow-server.example.com --timeout 30 --read-timeout 15
 ```
 
 ## Use Cases
