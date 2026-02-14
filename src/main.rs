@@ -289,20 +289,24 @@ fn load_ca_certs(builder: &mut openssl::ssl::SslConnectorBuilder) -> Result<()> 
     Ok(())
 }
 
-/// Resolve a hostname to a socket address.
-fn resolve_host(host: &str, port: u16) -> Result<std::net::SocketAddr> {
-    format!("{}:{}", host, port)
+/// Resolve a hostname to a socket address, returning the address and DNS resolution time.
+fn resolve_host(host: &str, port: u16) -> Result<(std::net::SocketAddr, u128)> {
+    let dns_start = std::time::Instant::now();
+    let addr = format!("{}:{}", host, port)
         .to_socket_addrs()
         .map_err(|e| anyhow::anyhow!("DNS resolution failed for '{}': {}", host, e))?
         .next()
-        .ok_or_else(|| anyhow::anyhow!("DNS resolution failed for '{}': no addresses returned", host))
+        .ok_or_else(|| anyhow::anyhow!("DNS resolution failed for '{}': no addresses returned", host))?;
+    let dns_ms = dns_start.elapsed().as_millis();
+    Ok((addr, dns_ms))
 }
 
 /// Establish a direct TCP connection with timeout and DNS resolution.
-fn direct_tcp_connect(host: &str, port: u16, timeout: Duration) -> Result<TcpStream> {
-    let socket_addr = resolve_host(host, port)?;
+/// Returns the stream and DNS latency in milliseconds.
+fn direct_tcp_connect(host: &str, port: u16, timeout: Duration) -> Result<(TcpStream, u128)> {
+    let (socket_addr, dns_ms) = resolve_host(host, port)?;
 
-    TcpStream::connect_timeout(&socket_addr, timeout).map_err(|e| {
+    let stream = TcpStream::connect_timeout(&socket_addr, timeout).map_err(|e| {
         let kind = e.kind();
         match kind {
             std::io::ErrorKind::TimedOut => {
@@ -320,7 +324,8 @@ fn direct_tcp_connect(host: &str, port: u16, timeout: Duration) -> Result<TcpStr
                 anyhow::anyhow!("TCP connection to {}:{} failed: {}", host, port, e)
             }
         }
-    })
+    })?;
+    Ok((stream, dns_ms))
 }
 
 /// Fetch TLS certificate chain using OpenSSL, with proxy support and custom CA certificates.
@@ -337,6 +342,8 @@ fn fetch_tls_chain_openssl(
     proxy_config: &ProxyConfig,
     min_tls: Option<TlsVersionArg>,
     max_tls: Option<TlsVersionArg>,
+    cipher_list: Option<&str>,
+    cipher_suites: Option<&str>,
 ) -> Result<TlsConnectionInfo> {
     // Guard against too many concurrent connections
     let current = ACTIVE_CONNECTIONS.fetch_add(1, Ordering::SeqCst);
@@ -368,11 +375,12 @@ fn fetch_tls_chain_openssl(
     let connect_timeout = Duration::from_secs(timeout_secs);
     let l4_start = std::time::Instant::now();
 
-    let stream = if proxy_config.should_bypass(host) {
+    let (stream, dns_latency) = if proxy_config.should_bypass(host) {
         direct_tcp_connect(host, port, connect_timeout)?
     } else if let Some(proxy_url) = proxy_config.get_proxy_url("https") {
         eprintln!("Using proxy: {}", proxy_url);
-        connect_through_proxy(proxy_url, host, port)?
+        // Proxy connections resolve the proxy host, not the target
+        (connect_through_proxy(proxy_url, host, port)?, 0)
     } else {
         direct_tcp_connect(host, port, connect_timeout)?
     };
@@ -402,6 +410,18 @@ fn fetch_tls_chain_openssl(
         builder
             .set_max_proto_version(Some(max.to_ssl_version()))
             .map_err(|e| anyhow::anyhow!("Failed to set maximum TLS version to {}: {}", max, e))?;
+    }
+
+    // Apply cipher suite configuration
+    if let Some(ciphers) = cipher_list {
+        builder
+            .set_cipher_list(ciphers)
+            .map_err(|e| anyhow::anyhow!("Invalid cipher list '{}': {}", ciphers, e))?;
+    }
+    if let Some(suites) = cipher_suites {
+        builder
+            .set_ciphersuites(suites)
+            .map_err(|e| anyhow::anyhow!("Invalid TLS 1.3 cipher suites '{}': {}", suites, e))?;
     }
 
     // Set ALPN protocols for HTTP/2 or HTTP/1.1 negotiation
@@ -647,6 +667,7 @@ fn fetch_tls_chain_openssl(
 
     Ok(TlsConnectionInfo {
         pem_data: pem,
+        dns_latency,
         l4_latency,
         l7_latency,
         tls_version,
@@ -784,6 +805,19 @@ struct Args {
     /// Maximum TLS version to accept (e.g. 1.2, 1.3)
     #[arg(long, value_enum, value_name = "VERSION")]
     max_tls: Option<TlsVersionArg>,
+
+    /// Set allowed TLS cipher suites using an OpenSSL cipher string (e.g. "ECDHE+AESGCM:CHACHA20")
+    ///
+    /// Controls TLS 1.2 and below ciphers. Uses OpenSSL cipher string format.
+    /// See: https://www.openssl.org/docs/man1.1.1/man1/ciphers.html
+    #[arg(long, value_name = "CIPHER_STRING")]
+    cipher_list: Option<String>,
+
+    /// Set allowed TLS 1.3 cipher suites (e.g. "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256")
+    ///
+    /// Controls TLS 1.3 ciphers only. Uses colon-separated IANA cipher names.
+    #[arg(long, value_name = "CIPHERSUITES")]
+    cipher_suites: Option<String>,
 
     /// Disable TLS certificate verification (insecure)
     #[arg(long)]
@@ -1290,7 +1324,7 @@ fn check_ocsp_status(cert_der: &[u8], issuer_der: Option<&[u8]>, ocsp_url: &str)
     let path = if url.path().is_empty() { "/" } else { url.path() };
 
     let tcp_stream = match direct_tcp_connect(&host, port, Duration::from_secs(5)) {
-        Ok(s) => s,
+        Ok((s, _dns_ms)) => s,
         Err(e) => return format!("error: connect to OCSP responder failed: {}", e),
     };
     let _ = tcp_stream.set_read_timeout(Some(Duration::from_secs(5)));
@@ -1439,12 +1473,13 @@ fn print_pretty(infos: &[CertInfo], debug: &PrettyDebugInfo<'_>) {
             }
 
             println!();
+            println!("  Network latency (DNS resolution):      {} ms", conn.dns_latency);
             println!("  Network latency (layer 4/TCP connect): {} ms", conn.l4_latency);
             println!("  Network latency (layer 7/TLS+HTTP):    {} ms", conn.l7_latency);
             println!();
             println!(
                 "Note: DNS, Layer 4, and Layer 7 latencies are measured separately and should not be summed. \
-DNS covers name resolution only; Layer 4 covers TCP connection only; \
+DNS covers name resolution only; Layer 4 covers DNS + TCP connection; \
 Layer 7 covers TLS handshake and HTTP request."
             );
             println!();
@@ -1579,6 +1614,7 @@ fn cert_matches_hostname(cert: &CertInfo, host: &str) -> bool {
 /// Result of a TLS connection, containing the certificate chain and connection metadata.
 struct TlsConnectionInfo {
     pem_data: String,
+    dns_latency: u128,
     l4_latency: u128,
     l7_latency: u128,
     tls_version: String,
@@ -1630,6 +1666,8 @@ fn process_target(target: &str, args: &Args, proxy_config: &ProxyConfig) -> Resu
             proxy_config,
             args.min_tls,
             args.max_tls,
+            args.cipher_list.as_deref(),
+            args.cipher_suites.as_deref(),
         )?;
         let pem = conn.pem_data.clone();
         (pem, Some(conn))

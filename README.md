@@ -16,12 +16,13 @@ A powerful Rust CLI tool that reads X.509 certificates from PEM files or fetches
 - **Expiry Warnings**: Alert when certificates are approaching expiry with configurable threshold and exit codes
 - **Certificate Comparison**: Side-by-side diff of certificates between two targets
 - **Monitoring Mode**: Periodically re-check targets and detect certificate changes
-- **Network Performance Metrics**: Layer 4 (TCP) and Layer 7 (TLS+HTTP) latency measurements
+- **Network Performance Metrics**: DNS resolution, Layer 4 (TCP), and Layer 7 (TLS+HTTP) latency measurements
 - **Flexible Output**: Pretty console output, JSON, or YAML
 - **Advanced Filtering**: Show only expired certificates
 - **Certificate Sorting**: Sort certificates by expiry date (ascending or descending)
 - **Certificate Export**: Save fetched certificate chains as PEM files with optional filtering of expired certificates
 - **TLS Version Control**: Constrain negotiated TLS version with `--min-tls` and `--max-tls` (supports 1.0, 1.1, 1.2, 1.3)
+- **Cipher Suite Configuration**: Specify allowed TLS 1.2 ciphers (`--cipher-list`) and TLS 1.3 cipher suites (`--cipher-suites`) using OpenSSL cipher string format
 - **HTTP/2 ALPN Negotiation**: Request HTTP/2 via ALPN with `--http-protocol http2` and see the server's negotiated protocol
 - **Custom HTTP Options**: Configure HTTP method, headers, protocol version, SNI override, and connection timeout
 - **TLS Verification Control**: Disable verification with `--no-verify` for testing environments (with visible warning)
@@ -159,6 +160,12 @@ dcert --min-tls 1.2 --max-tls 1.2 https://www.google.com
 # Require TLS 1.3 minimum
 dcert --min-tls 1.3 https://www.google.com
 
+# Specify allowed TLS 1.2 ciphers (OpenSSL cipher string format)
+dcert --cipher-list "ECDHE+AESGCM:CHACHA20" --max-tls 1.2 https://www.google.com
+
+# Specify TLS 1.3 cipher suites
+dcert --cipher-suites "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256" https://www.google.com
+
 # Custom HTTP headers and method
 dcert https://api.example.com --method POST --header "Authorization:Bearer token" --header "Content-Type:application/json"
 ```
@@ -182,6 +189,8 @@ Options:
       --http-protocol <HTTP_PROTOCOL>  HTTP protocol to use [default: http1-1] [possible values: http1-1, http2]
       --min-tls <VERSION>              Minimum TLS version to accept [possible values: 1.0, 1.1, 1.2, 1.3]
       --max-tls <VERSION>              Maximum TLS version to accept [possible values: 1.0, 1.1, 1.2, 1.3]
+      --cipher-list <CIPHER_STRING>    Allowed TLS 1.2 cipher suites (OpenSSL cipher string format)
+      --cipher-suites <CIPHERSUITES>   Allowed TLS 1.3 cipher suites (colon-separated IANA names)
       --no-verify                      Disable TLS certificate verification (insecure)
       --timeout <TIMEOUT>              Connection timeout in seconds [default: 10]
       --read-timeout <READ_TIMEOUT>   Read timeout in seconds (time to wait for server response) [default: 5]
@@ -232,10 +241,11 @@ Debug
   TLS verification result: ok
   Certificate transparency: true
 
+  Network latency (DNS resolution):      12 ms
   Network latency (layer 4/TCP connect): 27 ms
   Network latency (layer 7/TLS+HTTP):    125 ms
 
-Note: Layer 4 and Layer 7 latencies are measured separately and should not be summed.
+Note: DNS, Layer 4, and Layer 7 latencies are measured separately and should not be summed.
 
 Certificate
   Index        : 0
@@ -329,10 +339,10 @@ The debug output provides valuable insights for TLS troubleshooting:
 - **HTTP Protocol**: Shows the ALPN-negotiated protocol (e.g. HTTP/2 (h2), HTTP/1.1)
 - **HTTP Response Code**: Actual response code from the server
 - **Hostname Validation**: Checks if the certificate matches the requested hostname
-- **TLS Version & Cipher**: Shows negotiated TLS version and cipher suite (controllable via `--min-tls`/`--max-tls`)
+- **TLS Version & Cipher**: Shows negotiated TLS version and cipher suite (controllable via `--min-tls`/`--max-tls` and `--cipher-list`/`--cipher-suites`)
 - **TLS Verification Result**: Shows the OpenSSL verification outcome with per-certificate detail on failure
 - **Certificate Transparency**: Indicates if CT logs are present (with SCT count when `--extensions` is used)
-- **Network Latency**: Separate measurements for TCP and TLS+HTTP layers
+- **Network Latency**: Separate measurements for DNS resolution, TCP connect, and TLS+HTTP layers
 
 ### Certificate Extensions and Fingerprints
 
@@ -473,6 +483,9 @@ dcert https://target.com --max-tls 1.1  # should fail if server enforces TLS 1.2
 
 # Check HTTP/2 support via ALPN
 dcert https://target.com --http-protocol http2  # shows negotiated protocol
+
+# Test specific cipher suites
+dcert https://target.com --cipher-list "ECDHE+AESGCM" --max-tls 1.2
 
 # Verify revocation status
 dcert https://example.com --check-revocation
