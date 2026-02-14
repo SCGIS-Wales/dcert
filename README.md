@@ -24,6 +24,7 @@ A powerful Rust CLI tool that reads X.509 certificates from PEM files or fetches
 - **TLS Version Control**: Constrain negotiated TLS version with `--min-tls` and `--max-tls` (supports 1.0, 1.1, 1.2, 1.3)
 - **Cipher Suite Configuration**: Specify allowed TLS 1.2 ciphers (`--cipher-list`) and TLS 1.3 cipher suites (`--cipher-suites`) using OpenSSL cipher string format
 - **HTTP/2 ALPN Negotiation**: Request HTTP/2 via ALPN with `--http-protocol http2` and see the server's negotiated protocol
+- **Request Body Support**: Send data with `-d` / `--data` (inline) or `--data-file` (from file), with auto-POST promotion like curl
 - **Custom HTTP Options**: Configure HTTP method, headers, protocol version, SNI override, and connection timeout
 - **TLS Verification Control**: Disable verification with `--no-verify` for testing environments (with visible warning)
 - **Machine-Readable Exit Codes**: Distinct exit codes for success, expiry warnings, errors, verification failures, expired certs, and revoked certs
@@ -168,6 +169,15 @@ dcert --cipher-suites "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256" http
 
 # Custom HTTP headers and method
 dcert https://api.example.com --method POST --header "Authorization:Bearer token" --header "Content-Type:application/json"
+
+# POST with inline data (auto-sets method to POST, like curl -d)
+dcert https://api.example.com -d '{"key":"value"}' --header "Content-Type:application/json"
+
+# POST with data from a file
+dcert https://api.example.com --data-file body.json --header "Content-Type:application/json"
+
+# Send body with explicit method
+dcert https://api.example.com --method post -d 'param=value'
 ```
 
 ### Command Line Options
@@ -186,6 +196,8 @@ Options:
       --sort-expiry <SORT_EXPIRY>      Sort certificates by expiry date (asc = soonest first, desc = latest first) [possible values: asc, desc]
       --method <METHOD>                HTTP method to use for HTTPS requests [default: get] [possible values: get, post, head, options]
       --header [<HEADER>...]           Custom HTTP headers (key:value), can be repeated
+  -d, --data <DATA>                    Send data as the request body (implies POST)
+      --data-file <FILE>               Read request body from a file (implies POST)
       --http-protocol <HTTP_PROTOCOL>  HTTP protocol to use [default: http1-1] [possible values: http1-1, http2]
       --min-tls <VERSION>              Minimum TLS version to accept [possible values: 1.0, 1.1, 1.2, 1.3]
       --max-tls <VERSION>              Maximum TLS version to accept [possible values: 1.0, 1.1, 1.2, 1.3]
