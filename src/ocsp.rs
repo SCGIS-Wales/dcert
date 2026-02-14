@@ -87,9 +87,22 @@ pub fn check_ocsp_status(cert_der: &[u8], issuer_der: Option<&[u8]>, ocsp_url: &
         Err(_) => return "error: failed to flush stream".to_string(),
     };
 
+    // Read response with a size limit to prevent OOM from malicious responders
+    const MAX_OCSP_RESPONSE_SIZE: usize = 1024 * 1024; // 1 MB
     let mut response = Vec::new();
-    if tcp_stream.read_to_end(&mut response).is_err() {
-        return "error: failed to read OCSP response".to_string();
+    let mut chunk = [0u8; 8192];
+    loop {
+        match tcp_stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                response.extend_from_slice(&chunk[..n]);
+                if response.len() > MAX_OCSP_RESPONSE_SIZE {
+                    return "error: OCSP response too large (>1 MB)".to_string();
+                }
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(_) => return "error: failed to read OCSP response".to_string(),
+        }
     }
 
     // Find end of HTTP headers
