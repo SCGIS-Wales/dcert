@@ -23,7 +23,8 @@ use x509_parser::prelude::FromDer;
 
 lazy_static::lazy_static! {
     static ref OID_X509_SCT_LIST: x509_parser::asn1_rs::Oid<'static> =
-        x509_parser::asn1_rs::Oid::from(&[1, 3, 6, 1, 4, 1, 11129, 2, 4, 2]).unwrap();
+        x509_parser::asn1_rs::Oid::from(&[1, 3, 6, 1, 4, 1, 11129, 2, 4, 2])
+            .expect("hardcoded SCT list OID is valid");
 }
 
 /// Return the version string for `--version` output.
@@ -67,49 +68,6 @@ impl Drop for ConnectionGuard {
     fn drop(&mut self) {
         ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::SeqCst);
     }
-}
-
-/// Check if a host should bypass proxy based on no_proxy environment variables
-#[cfg(test)]
-fn should_bypass_proxy(host: &str) -> bool {
-    let no_proxy = env::var("no_proxy")
-        .or_else(|_| env::var("NO_PROXY"))
-        .unwrap_or_default();
-
-    if no_proxy.is_empty() {
-        return false;
-    }
-
-    let host = host.to_lowercase();
-
-    for pattern in no_proxy.split(',') {
-        let pattern = pattern.trim().to_lowercase();
-        if pattern.is_empty() {
-            continue;
-        }
-
-        // Exact match
-        if pattern == host {
-            return true;
-        }
-
-        // Domain suffix match (e.g., .example.com matches subdomain.example.com)
-        if pattern.starts_with('.') && host.ends_with(&pattern) {
-            return true;
-        }
-
-        // Subdomain match (e.g., example.com matches subdomain.example.com)
-        if !pattern.starts_with('.') && host.ends_with(&format!(".{}", pattern)) {
-            return true;
-        }
-
-        // Special case for localhost
-        if pattern == "localhost" && (host == "localhost" || host == "127.0.0.1" || host == "::1") {
-            return true;
-        }
-    }
-
-    false
 }
 
 /// Cached proxy configuration, read once at startup.
@@ -170,26 +128,6 @@ impl ProxyConfig {
         }
         false
     }
-}
-
-/// Get proxy URL from environment variables (legacy, used by tests)
-#[cfg(test)]
-fn get_proxy_url(scheme: &str) -> Option<String> {
-    let env_vars = match scheme {
-        "https" => vec!["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"],
-        "http" => vec!["HTTP_PROXY", "http_proxy"],
-        _ => vec![],
-    };
-
-    for var in env_vars {
-        if let Ok(proxy) = env::var(var) {
-            if !proxy.is_empty() {
-                return Some(proxy);
-            }
-        }
-    }
-
-    None
 }
 
 /// Connect through HTTP proxy using CONNECT method
@@ -378,7 +316,16 @@ fn fetch_tls_chain_openssl(
     let (stream, dns_latency) = if proxy_config.should_bypass(host) {
         direct_tcp_connect(host, port, connect_timeout)?
     } else if let Some(proxy_url) = proxy_config.get_proxy_url("https") {
-        eprintln!("Using proxy: {}", proxy_url);
+        // Sanitize proxy URL before logging to avoid leaking credentials
+        let safe_proxy = Url::parse(proxy_url)
+            .map(|mut u| {
+                if u.password().is_some() {
+                    let _ = u.set_password(Some("****"));
+                }
+                u.to_string()
+            })
+            .unwrap_or_else(|_| proxy_url.to_string());
+        eprintln!("Using proxy: {}", safe_proxy);
         // Proxy connections resolve the proxy host, not the target
         (connect_through_proxy(proxy_url, host, port)?, 0)
     } else {
@@ -1327,7 +1274,9 @@ fn check_ocsp_status(cert_der: &[u8], issuer_der: Option<&[u8]>, ocsp_url: &str)
         Ok((s, _dns_ms)) => s,
         Err(e) => return format!("error: connect to OCSP responder failed: {}", e),
     };
-    let _ = tcp_stream.set_read_timeout(Some(Duration::from_secs(5)));
+    if let Err(e) = tcp_stream.set_read_timeout(Some(Duration::from_secs(5))) {
+        eprintln!("Warning: failed to set OCSP read timeout: {}", e);
+    }
 
     let http_req = format!(
         "POST {} HTTP/1.0\r\nHost: {}\r\nContent-Type: application/ocsp-request\r\nContent-Length: {}\r\n\r\n",
@@ -1945,6 +1894,11 @@ fn run() -> Result<i32> {
         return Err(anyhow::anyhow!("--diff requires exactly 2 targets"));
     }
 
+    // Auto-enable fingerprint in diff mode so comparisons include fingerprints
+    if args.diff && !args.fingerprint {
+        args.fingerprint = true;
+    }
+
     // Watch mode
     if let Some(interval) = args.watch {
         // Auto-enable fingerprint in watch mode so change detection works
@@ -2025,7 +1979,9 @@ fn run() -> Result<i32> {
             }
             Err(e) => {
                 eprintln!("{} {}: {}", "Error:".red().bold(), target, e);
-                exit_code = exit_code::ERROR;
+                if exit_code < exit_code::ERROR {
+                    exit_code = exit_code::ERROR;
+                }
             }
         }
     }
@@ -2104,9 +2060,9 @@ fn run() -> Result<i32> {
     }
 
     // Check for empty results
-    if all_results.iter().all(|r| r.infos.is_empty()) && exit_code == exit_code::SUCCESS {
+    if all_results.iter().all(|r| r.infos.is_empty()) && exit_code < exit_code::ERROR {
         eprintln!("{}", "No valid certificates found in the input".red());
-        return Ok(exit_code::EXPIRY_WARNING);
+        return Ok(exit_code::ERROR);
     }
 
     Ok(exit_code)
@@ -2636,85 +2592,102 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // should_bypass_proxy tests (combined to avoid env var races)
+    // ProxyConfig::should_bypass tests
     // ---------------------------------------------------------------
 
     #[test]
     fn test_bypass_proxy_logic() {
-        let orig_no_proxy = env::var("no_proxy").ok();
-        let orig_no_proxy_upper = env::var("NO_PROXY").ok();
+        let empty = ProxyConfig {
+            https_proxy: None,
+            http_proxy: None,
+            no_proxy: String::new(),
+        };
+        assert!(!empty.should_bypass("example.com"), "empty no_proxy should not bypass");
 
-        env::remove_var("no_proxy");
-        env::remove_var("NO_PROXY");
-        assert!(!should_bypass_proxy("example.com"), "empty no_proxy should not bypass");
+        let exact = ProxyConfig {
+            https_proxy: None,
+            http_proxy: None,
+            no_proxy: "example.com,other.com".to_string(),
+        };
+        assert!(exact.should_bypass("example.com"), "exact match should bypass");
+        assert!(exact.should_bypass("other.com"), "exact match should bypass");
+        assert!(!exact.should_bypass("notmatched.com"), "non-matching should not bypass");
 
-        env::set_var("no_proxy", "example.com,other.com");
-        assert!(should_bypass_proxy("example.com"), "exact match should bypass");
-        assert!(should_bypass_proxy("other.com"), "exact match should bypass");
-        assert!(!should_bypass_proxy("notmatched.com"), "non-matching should not bypass");
-
-        env::set_var("no_proxy", ".example.com");
-        assert!(should_bypass_proxy("sub.example.com"), "suffix should bypass subdomain");
+        let suffix = ProxyConfig {
+            https_proxy: None,
+            http_proxy: None,
+            no_proxy: ".example.com".to_string(),
+        };
         assert!(
-            !should_bypass_proxy("example.com"),
+            suffix.should_bypass("sub.example.com"),
+            "suffix should bypass subdomain"
+        );
+        assert!(
+            !suffix.should_bypass("example.com"),
             "suffix should not bypass exact domain"
         );
 
-        env::set_var("no_proxy", "example.com");
-        assert!(should_bypass_proxy("sub.example.com"), "subdomain should bypass");
+        let subdomain = ProxyConfig {
+            https_proxy: None,
+            http_proxy: None,
+            no_proxy: "example.com".to_string(),
+        };
+        assert!(subdomain.should_bypass("sub.example.com"), "subdomain should bypass");
 
-        env::set_var("no_proxy", "localhost");
-        assert!(should_bypass_proxy("localhost"), "localhost should bypass");
+        let localhost = ProxyConfig {
+            https_proxy: None,
+            http_proxy: None,
+            no_proxy: "localhost".to_string(),
+        };
+        assert!(localhost.should_bypass("localhost"), "localhost should bypass");
         assert!(
-            should_bypass_proxy("127.0.0.1"),
+            localhost.should_bypass("127.0.0.1"),
             "127.0.0.1 should bypass for localhost"
         );
-        assert!(should_bypass_proxy("::1"), "::1 should bypass for localhost");
-
-        if let Some(v) = orig_no_proxy {
-            env::set_var("no_proxy", v);
-        } else {
-            env::remove_var("no_proxy");
-        }
-        if let Some(v) = orig_no_proxy_upper {
-            env::set_var("NO_PROXY", v);
-        } else {
-            env::remove_var("NO_PROXY");
-        }
+        assert!(localhost.should_bypass("::1"), "::1 should bypass for localhost");
     }
 
     // ---------------------------------------------------------------
-    // get_proxy_url tests (combined to avoid env var races)
+    // ProxyConfig::get_proxy_url tests
     // ---------------------------------------------------------------
 
     #[test]
     fn test_get_proxy_url_logic() {
-        let orig_https = env::var("HTTPS_PROXY").ok();
-        let orig_http = env::var("HTTP_PROXY").ok();
-        let orig_https_l = env::var("https_proxy").ok();
-        let orig_http_l = env::var("http_proxy").ok();
+        let empty = ProxyConfig {
+            https_proxy: None,
+            http_proxy: None,
+            no_proxy: String::new(),
+        };
+        assert_eq!(empty.get_proxy_url("https"), None, "no proxy should return None");
+        assert_eq!(empty.get_proxy_url("http"), None, "no proxy should return None");
+        assert_eq!(empty.get_proxy_url("ftp"), None, "unknown scheme should return None");
 
-        env::remove_var("HTTPS_PROXY");
-        env::remove_var("HTTP_PROXY");
-        env::remove_var("https_proxy");
-        env::remove_var("http_proxy");
+        let with_https = ProxyConfig {
+            https_proxy: Some("http://proxy:8080".to_string()),
+            http_proxy: None,
+            no_proxy: String::new(),
+        };
+        assert_eq!(
+            with_https.get_proxy_url("https"),
+            Some("http://proxy:8080"),
+            "https should use https_proxy"
+        );
+        assert_eq!(
+            with_https.get_proxy_url("http"),
+            None,
+            "http should not use https_proxy"
+        );
 
-        assert_eq!(get_proxy_url("https"), None, "no proxy vars should return None");
-        assert_eq!(get_proxy_url("http"), None, "no proxy vars should return None");
-        assert_eq!(get_proxy_url("ftp"), None, "unknown scheme should return None");
-
-        if let Some(v) = orig_https {
-            env::set_var("HTTPS_PROXY", v);
-        }
-        if let Some(v) = orig_http {
-            env::set_var("HTTP_PROXY", v);
-        }
-        if let Some(v) = orig_https_l {
-            env::set_var("https_proxy", v);
-        }
-        if let Some(v) = orig_http_l {
-            env::set_var("http_proxy", v);
-        }
+        let with_http = ProxyConfig {
+            https_proxy: None,
+            http_proxy: Some("http://httpproxy:3128".to_string()),
+            no_proxy: String::new(),
+        };
+        assert_eq!(
+            with_http.get_proxy_url("http"),
+            Some("http://httpproxy:3128"),
+            "http should use http_proxy"
+        );
     }
 
     // ---------------------------------------------------------------
