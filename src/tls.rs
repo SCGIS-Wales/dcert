@@ -314,6 +314,14 @@ pub fn fetch_tls_chain_openssl(
 
     let mut req = req;
     for (key, value) in headers {
+        // Reject headers containing CR/LF to prevent header injection
+        if key.contains('\r') || key.contains('\n') || value.contains('\r') || value.contains('\n') {
+            return Err(anyhow::anyhow!(
+                "HTTP header contains invalid characters (CR/LF): {}:{}",
+                key,
+                value
+            ));
+        }
         req.push_str(&format!("{}: {}\r\n", key, value));
     }
 
