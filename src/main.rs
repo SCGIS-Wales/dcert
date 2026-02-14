@@ -166,14 +166,25 @@ fn connect_through_proxy(proxy_url: &str, target_host: &str, target_port: u16) -
 
 /// Load CA certificates into the SSL connector builder.
 ///
-/// Uses OpenSSL's `set_default_verify_paths()` which loads certificates from:
-/// - `SSL_CERT_FILE` environment variable (if set)
-/// - `SSL_CERT_DIR` environment variable (if set)
-/// - OpenSSL's compiled-in default paths (system CA store)
-///
-/// This ensures dcert works out of the box on macOS, Linux, and in environments
-/// where custom CA bundles are required (e.g. corporate proxies).
+/// Uses `openssl-probe` to discover system CA certificate locations, then falls
+/// back to OpenSSL's `set_default_verify_paths()`. This ensures dcert works on:
+/// - macOS (Homebrew OpenSSL, which lacks Keychain access)
+/// - Linux (distro-specific cert paths)
+/// - Environments with custom CA bundles (SSL_CERT_FILE / SSL_CERT_DIR)
 fn load_ca_certs(builder: &mut openssl::ssl::SslConnectorBuilder) -> Result<()> {
+    // Use openssl-probe to find system CA certs and set the environment variables
+    // that OpenSSL uses. This is critical on macOS where Homebrew OpenSSL's
+    // compiled-in paths may not contain any certificates.
+    if !openssl_probe::has_ssl_cert_env_vars() {
+        let probe = openssl_probe::probe();
+        if let Some(ref cert_file) = probe.cert_file {
+            env::set_var("SSL_CERT_FILE", cert_file);
+        }
+        if let Some(cert_dir) = probe.cert_dir.first() {
+            env::set_var("SSL_CERT_DIR", cert_dir);
+        }
+    }
+
     builder
         .set_default_verify_paths()
         .map_err(|e| anyhow::anyhow!("Failed to load CA certificates: {}", e))?;
@@ -406,10 +417,11 @@ fn fetch_tls_chain_openssl(
 
     let ssl = ssl_stream.ssl();
     let tls_version = ssl.version_str().to_string();
-    let tls_cipher = ssl
-        .current_cipher()
+    let current_cipher = ssl.current_cipher();
+    let tls_cipher = current_cipher
         .map(|c| c.name().to_string())
         .unwrap_or_else(|| "unknown".to_string());
+    let tls_cipher_iana = current_cipher.and_then(|c| c.standard_name().map(|s| s.to_string()));
 
     // Get verification result
     let verify_result = {
@@ -427,6 +439,7 @@ fn fetch_tls_chain_openssl(
         l7_latency,
         tls_version,
         tls_cipher,
+        tls_cipher_iana,
         http_response_code,
         verify_result,
     })
@@ -457,6 +470,14 @@ enum HttpMethod {
 enum SortOrder {
     Asc,
     Desc,
+}
+
+#[derive(ValueEnum, Clone, Debug, Copy)]
+enum CipherNotation {
+    /// IANA/RFC standard names (e.g. TLS_AES_256_GCM_SHA384)
+    Iana,
+    /// OpenSSL names (e.g. TLS_AES_256_GCM_SHA384) — same for TLS 1.3, differs for TLS 1.2
+    Openssl,
 }
 
 #[derive(Parser, Debug)]
@@ -539,6 +560,10 @@ struct Args {
     /// Check certificate revocation status via OCSP
     #[arg(long)]
     check_revocation: bool,
+
+    /// Show the negotiated (agreed) TLS cipher suite in the given notation
+    #[arg(long, value_enum, value_name = "NOTATION")]
+    ciphers: Option<CipherNotation>,
 }
 
 #[derive(Debug, serde::Serialize, Clone)]
@@ -998,6 +1023,7 @@ struct PrettyDebugInfo<'a> {
     hostname: Option<&'a str>,
     conn: Option<&'a TlsConnectionInfo>,
     http_protocol: &'a HttpProtocol,
+    cipher_notation: Option<CipherNotation>,
 }
 
 fn print_pretty(infos: &[CertInfo], debug: &PrettyDebugInfo<'_>) {
@@ -1028,7 +1054,23 @@ fn print_pretty(infos: &[CertInfo], debug: &PrettyDebugInfo<'_>) {
             }
             println!("  Hostname matches certificate SANs/CN: {}", status);
             println!("  TLS version used: {}", conn.tls_version);
-            println!("  TLS ciphersuite agreed: {}", conn.tls_cipher);
+            // Cipher display: always show OpenSSL name in the default line,
+            // but when --ciphers is used, show the requested notation prominently
+            match debug.cipher_notation {
+                Some(CipherNotation::Iana) => {
+                    let iana_name = conn
+                        .tls_cipher_iana
+                        .as_deref()
+                        .unwrap_or("unknown (IANA name not available)");
+                    println!("  TLS ciphersuite agreed (IANA): {}", iana_name);
+                }
+                Some(CipherNotation::Openssl) => {
+                    println!("  TLS ciphersuite agreed (OpenSSL): {}", conn.tls_cipher);
+                }
+                None => {
+                    println!("  TLS ciphersuite agreed: {}", conn.tls_cipher);
+                }
+            }
             let ct_str = if leaf.ct_present { "true".green() } else { "false".red() };
             println!("  Certificate transparency: {}", ct_str);
 
@@ -1175,7 +1217,10 @@ struct TlsConnectionInfo {
     l4_latency: u128,
     l7_latency: u128,
     tls_version: String,
+    /// OpenSSL cipher name (e.g. "ECDHE-RSA-AES256-GCM-SHA384" for TLS 1.2)
     tls_cipher: String,
+    /// IANA/RFC cipher name (e.g. "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384")
+    tls_cipher_iana: Option<String>,
     http_response_code: u16,
     verify_result: Option<String>,
 }
@@ -1412,6 +1457,7 @@ fn output_results(
     format: OutputFormat,
     http_protocol: &HttpProtocol,
     multi_target: bool,
+    args: &Args,
 ) -> Result<()> {
     if multi_target {
         println!("{}", format!("--- {} ---", result.target).bold().cyan());
@@ -1431,6 +1477,7 @@ fn output_results(
                 hostname: hostname.as_deref(),
                 conn: result.conn_info.as_ref(),
                 http_protocol,
+                cipher_notation: args.ciphers,
             };
             print_pretty(&result.infos, &debug);
         }
@@ -1512,7 +1559,7 @@ fn run() -> Result<i32> {
                         }
                         prev_fingerprints.insert(target.clone(), current_fps);
 
-                        output_results(&result, args.format, &args.http_protocol, targets.len() > 1)?;
+                        output_results(&result, args.format, &args.http_protocol, targets.len() > 1, &args)?;
                     }
                     Err(e) => {
                         eprintln!("{} {}: {}", "Error:".red().bold(), target, e);
@@ -1578,7 +1625,7 @@ fn run() -> Result<i32> {
         println!("{}", serde_yml::to_string(&map)?);
     } else {
         for result in &all_results {
-            output_results(result, args.format, &args.http_protocol, multi_target)?;
+            output_results(result, args.format, &args.http_protocol, multi_target, &args)?;
         }
     }
 
@@ -1633,8 +1680,45 @@ fn main() {
 fn validate_target(s: &str) -> Result<String, String> {
     if s == "-" || s.starts_with("https://") || std::path::Path::new(s).exists() {
         Ok(s.to_string())
+    } else if let Some(rest) = s.strip_prefix("http://") {
+        Err(format!("HTTP is not supported. Did you mean https://{rest}?"))
+    } else if looks_like_hostname(s) {
+        // Bare hostname like "www.google.com" or "10.0.0.1:8443"
+        Ok(format!("https://{s}"))
     } else {
-        Err("Target must be an HTTPS URL, existing PEM file path, or '-' for stdin".to_string())
+        Err(format!(
+            "'{s}' is not a valid target. Provide an HTTPS URL, hostname, PEM file path, or '-' for stdin"
+        ))
+    }
+}
+
+/// Check if a string looks like a hostname (with optional port) rather than a file path.
+fn looks_like_hostname(s: &str) -> bool {
+    // Must not be empty
+    if s.is_empty() {
+        return false;
+    }
+    // Strip optional port suffix (e.g. "example.com:8443")
+    let host_part = if let Some(idx) = s.rfind(':') {
+        let port_part = &s[idx + 1..];
+        // If what follows ':' is all digits, treat it as host:port
+        if port_part.chars().all(|c| c.is_ascii_digit()) && !port_part.is_empty() {
+            &s[..idx]
+        } else {
+            s
+        }
+    } else {
+        s
+    };
+    // Must contain a dot (domain) or be a valid IP address
+    if host_part.contains('.') {
+        // Hostname chars: alphanumeric, hyphens, dots
+        host_part
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
+    } else {
+        // Could be a single-label hostname like "localhost"
+        host_part.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') && host_part.len() > 1
     }
 }
 
@@ -2013,6 +2097,46 @@ mod tests {
     #[test]
     fn test_validate_target_stdin() {
         assert!(validate_target("-").is_ok());
+    }
+
+    #[test]
+    fn test_validate_target_bare_hostname() {
+        // Bare hostnames should auto-prepend https://
+        let result = validate_target("www.google.com");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "https://www.google.com");
+
+        let result = validate_target("example.com");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "https://example.com");
+
+        let result = validate_target("api.example.com:8443");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "https://api.example.com:8443");
+    }
+
+    #[test]
+    fn test_validate_target_http_rejected_with_hint() {
+        let result = validate_target("http://example.com");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("https://example.com"), "Should suggest HTTPS: {err}");
+    }
+
+    #[test]
+    fn test_looks_like_hostname() {
+        assert!(looks_like_hostname("www.google.com"));
+        assert!(looks_like_hostname("example.com"));
+        assert!(looks_like_hostname("example.com:443"));
+        assert!(looks_like_hostname("10.0.0.1"));
+        assert!(looks_like_hostname("sub-domain.example.co.uk"));
+        assert!(looks_like_hostname("localhost"));
+
+        // Should NOT look like hostnames
+        assert!(!looks_like_hostname(""));
+        assert!(!looks_like_hostname("a")); // too short single-label
+        assert!(!looks_like_hostname("/etc/ssl/certs"));
+        assert!(!looks_like_hostname("file with spaces.pem"));
     }
 
     // ---------------------------------------------------------------
