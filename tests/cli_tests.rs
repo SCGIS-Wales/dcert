@@ -548,6 +548,92 @@ fn test_data_file_nonexistent() {
 }
 
 // ---------------------------------------------------------------
+// TLS version rejection (TLS 1.0 and 1.1 are insecure)
+// ---------------------------------------------------------------
+
+#[test]
+fn test_min_tls_rejects_1_0() {
+    let pem_path = test_data("valid.pem");
+    let output = dcert_bin()
+        .arg(pem_path.to_str().unwrap())
+        .arg("--min-tls")
+        .arg("1.0")
+        .output()
+        .expect("failed to run dcert");
+    assert!(!output.status.success(), "--min-tls 1.0 should be rejected as insecure");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid value '1.0'"),
+        "error should indicate 1.0 is not a valid value: {stderr}"
+    );
+}
+
+#[test]
+fn test_min_tls_rejects_1_1() {
+    let pem_path = test_data("valid.pem");
+    let output = dcert_bin()
+        .arg(pem_path.to_str().unwrap())
+        .arg("--min-tls")
+        .arg("1.1")
+        .output()
+        .expect("failed to run dcert");
+    assert!(!output.status.success(), "--min-tls 1.1 should be rejected as insecure");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid value '1.1'"),
+        "error should indicate 1.1 is not a valid value: {stderr}"
+    );
+}
+
+#[test]
+fn test_max_tls_rejects_1_0() {
+    let pem_path = test_data("valid.pem");
+    let output = dcert_bin()
+        .arg(pem_path.to_str().unwrap())
+        .arg("--max-tls")
+        .arg("1.0")
+        .output()
+        .expect("failed to run dcert");
+    assert!(!output.status.success(), "--max-tls 1.0 should be rejected as insecure");
+}
+
+#[test]
+fn test_max_tls_rejects_1_1() {
+    let pem_path = test_data("valid.pem");
+    let output = dcert_bin()
+        .arg(pem_path.to_str().unwrap())
+        .arg("--max-tls")
+        .arg("1.1")
+        .output()
+        .expect("failed to run dcert");
+    assert!(!output.status.success(), "--max-tls 1.1 should be rejected as insecure");
+}
+
+#[test]
+fn test_min_tls_accepts_1_2() {
+    let pem_path = test_data("valid.pem");
+    let output = dcert_bin()
+        .arg(pem_path.to_str().unwrap())
+        .arg("--min-tls")
+        .arg("1.2")
+        .output()
+        .expect("failed to run dcert");
+    assert!(output.status.success(), "--min-tls 1.2 should be accepted");
+}
+
+#[test]
+fn test_min_tls_accepts_1_3() {
+    let pem_path = test_data("valid.pem");
+    let output = dcert_bin()
+        .arg(pem_path.to_str().unwrap())
+        .arg("--min-tls")
+        .arg("1.3")
+        .output()
+        .expect("failed to run dcert");
+    assert!(output.status.success(), "--min-tls 1.3 should be accepted");
+}
+
+// ---------------------------------------------------------------
 // Debug flag
 // ---------------------------------------------------------------
 

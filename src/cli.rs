@@ -47,10 +47,6 @@ pub enum HttpProtocol {
 
 #[derive(ValueEnum, Clone, Copy, Debug)]
 pub enum TlsVersionArg {
-    #[value(name = "1.0")]
-    Tls1_0,
-    #[value(name = "1.1")]
-    Tls1_1,
     #[value(name = "1.2")]
     Tls1_2,
     #[value(name = "1.3")]
@@ -60,8 +56,6 @@ pub enum TlsVersionArg {
 impl TlsVersionArg {
     pub fn to_ssl_version(self) -> SslVersion {
         match self {
-            TlsVersionArg::Tls1_0 => SslVersion::TLS1,
-            TlsVersionArg::Tls1_1 => SslVersion::TLS1_1,
             TlsVersionArg::Tls1_2 => SslVersion::TLS1_2,
             TlsVersionArg::Tls1_3 => SslVersion::TLS1_3,
         }
@@ -69,8 +63,6 @@ impl TlsVersionArg {
 
     pub fn label(self) -> &'static str {
         match self {
-            TlsVersionArg::Tls1_0 => "TLS 1.0",
-            TlsVersionArg::Tls1_1 => "TLS 1.1",
             TlsVersionArg::Tls1_2 => "TLS 1.2",
             TlsVersionArg::Tls1_3 => "TLS 1.3",
         }
@@ -171,11 +163,11 @@ pub struct Args {
     #[arg(long, value_enum, default_value_t = HttpProtocol::Http1_1)]
     pub http_protocol: HttpProtocol,
 
-    /// Minimum TLS version to accept (e.g. 1.2, 1.3)
+    /// Minimum TLS version to accept [possible values: 1.2, 1.3]
     #[arg(long, value_enum, value_name = "VERSION")]
     pub min_tls: Option<TlsVersionArg>,
 
-    /// Maximum TLS version to accept (e.g. 1.2, 1.3)
+    /// Maximum TLS version to accept [possible values: 1.2, 1.3]
     #[arg(long, value_enum, value_name = "VERSION")]
     pub max_tls: Option<TlsVersionArg>,
 
