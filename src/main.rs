@@ -117,6 +117,10 @@ fn connect_through_proxy(proxy_url: &str, target_host: &str, target_port: u16) -
     let mut stream = TcpStream::connect_timeout(&proxy_addr, Duration::from_secs(CONNECTION_TIMEOUT_SECS))
         .map_err(|e| anyhow::anyhow!("Failed to connect to proxy: {}", e))?;
 
+    stream
+        .set_read_timeout(Some(Duration::from_secs(READ_TIMEOUT_SECS)))
+        .map_err(|e| anyhow::anyhow!("Failed to set proxy read timeout: {}", e))?;
+
     // Send CONNECT request
     let connect_request = format!(
         "CONNECT {}:{} HTTP/1.1\r\nHost: {}:{}\r\nProxy-Connection: keep-alive\r\n\r\n",
@@ -233,33 +237,33 @@ fn fetch_tls_chain_openssl(
         return Err(anyhow::anyhow!("Invalid port number: {}", port));
     }
 
-    // Layer 4: TCP connect with timeout (with proxy support)
+    // DNS resolution (measured separately, only for direct connections)
+    let use_proxy = !should_bypass_proxy(host) && get_proxy_url("https").is_some();
+
+    let dns_start = std::time::Instant::now();
+    let resolved_addr = if !use_proxy {
+        Some(
+            format!("{}:{}", host, port)
+                .to_socket_addrs()
+                .map_err(|e| anyhow::anyhow!("Failed to resolve host {}: {}", host, e))?
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("No valid address found for host {}", host))?,
+        )
+    } else {
+        None
+    };
+    let dns_latency = dns_start.elapsed().as_millis();
+
+    // Layer 4: TCP connect with timeout (DNS already resolved for direct connections)
     let l4_start = std::time::Instant::now();
 
-    let stream = if should_bypass_proxy(host) {
-        // Direct connection
-        let socket_addr = format!("{}:{}", host, port)
-            .to_socket_addrs()
-            .map_err(|e| anyhow::anyhow!("Failed to resolve host {}: {}", host, e))?
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("No valid address found for host {}", host))?;
-
-        TcpStream::connect_timeout(&socket_addr, Duration::from_secs(CONNECTION_TIMEOUT_SECS))
+    let stream = if let Some(addr) = resolved_addr {
+        TcpStream::connect_timeout(&addr, Duration::from_secs(CONNECTION_TIMEOUT_SECS))
             .map_err(|e| anyhow::anyhow!("TCP connection failed: {e}"))?
-    } else if let Some(proxy_url) = get_proxy_url("https") {
-        // Connect through proxy
+    } else {
+        let proxy_url = get_proxy_url("https").unwrap();
         eprintln!("Using proxy: {}", proxy_url);
         connect_through_proxy(&proxy_url, host, port)?
-    } else {
-        // Direct connection (no proxy configured)
-        let socket_addr = format!("{}:{}", host, port)
-            .to_socket_addrs()
-            .map_err(|e| anyhow::anyhow!("Failed to resolve host {}: {}", host, e))?
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("No valid address found for host {}", host))?;
-
-        TcpStream::connect_timeout(&socket_addr, Duration::from_secs(CONNECTION_TIMEOUT_SECS))
-            .map_err(|e| anyhow::anyhow!("TCP connection failed: {e}"))?
     };
 
     // Set read timeout
@@ -421,21 +425,15 @@ fn fetch_tls_chain_openssl(
         .map(|c| c.name().to_string())
         .unwrap_or_else(|| "unknown".to_string());
 
-    // Check if server requested a client certificate (mTLS)
-    // Note: OpenSSL crate doesn't directly expose this, using false as default
-    let mtls_requested = false;
-
-    let offered_ciphers: Vec<String> = Vec::new();
-    Ok((
+    Ok(TlsChainResult {
         pem,
-        l4_latency,
-        l7_latency,
+        dns_latency_ms: dns_latency,
+        l4_latency_ms: l4_latency,
+        l7_latency_ms: l7_latency,
         tls_version,
         tls_cipher,
-        offered_ciphers,
-        mtls_requested,
         http_response_code,
-    ))
+    })
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -444,7 +442,7 @@ enum OutputFormat {
     Json,
 }
 
-#[derive(ValueEnum, Clone, Debug)]
+#[derive(ValueEnum, Clone, Copy, Debug)]
 enum HttpProtocol {
     Http1_1,
     Http2,
@@ -654,16 +652,10 @@ fn extract_sans(cert: &X509Certificate<'_>) -> Vec<String> {
     out
 }
 
-#[allow(clippy::too_many_arguments)]
 fn print_pretty(
     infos: &[CertInfo],
     hostname: Option<&str>,
-    l4_latency: u128,
-    l7_latency: u128,
-    tls_version: &str,
-    tls_cipher: &str,
-    http_protocol: &HttpProtocol,
-    http_response_code: u16,
+    debug: &ConnectionDebugInfo,
 ) {
     if let Some(host) = hostname {
         if let Some(leaf) = infos.first() {
@@ -671,39 +663,33 @@ fn print_pretty(
             let status = if matched { "true".green() } else { "false".red() };
             println!();
             println!("{}", "Debug".bold());
-            println!(
-                "  HTTP protocol: {}",
-                match http_protocol {
-                    HttpProtocol::Http2 => "HTTP/2",
-                    HttpProtocol::Http1_1 => "HTTP/1.1",
-                }
-            );
-            if http_response_code > 0 {
-                let code_color = match http_response_code {
-                    200..=299 => http_response_code.to_string().green(),
-                    300..=399 => http_response_code.to_string().yellow(),
-                    400..=499 => http_response_code.to_string().red(),
-                    500..=599 => http_response_code.to_string().red().bold(),
-                    _ => http_response_code.to_string().normal(),
+            println!("  HTTP protocol: {}", debug.http_protocol);
+            if debug.http_response_code > 0 {
+                let code_color = match debug.http_response_code {
+                    200..=299 => debug.http_response_code.to_string().green(),
+                    300..=399 => debug.http_response_code.to_string().yellow(),
+                    400..=499 => debug.http_response_code.to_string().red(),
+                    500..=599 => debug.http_response_code.to_string().red().bold(),
+                    _ => debug.http_response_code.to_string().normal(),
                 };
                 println!("  HTTP response code: {}", code_color);
             } else {
                 println!("  HTTP response code: not available");
             }
-            println!("  Mutual TLS requested: unknown");
             println!("  Hostname matches certificate SANs/CN: {}", status);
-            println!("  TLS version used: {}", tls_version);
-            println!("  TLS ciphersuite agreed: {}", tls_cipher);
+            println!("  TLS version used: {}", debug.tls_version);
+            println!("  TLS ciphersuite agreed: {}", debug.tls_cipher);
             let ct_str = if leaf.ct_present { "true".green() } else { "false".red() };
             println!("  Certificate transparency: {}", ct_str);
             println!();
-            println!("  Network latency (layer 4/TCP connect): {} ms", l4_latency);
-            println!("  Network latency (layer 7/TLS+HTTP):    {} ms", l7_latency);
+            println!("  DNS resolution:                        {} ms", debug.dns_latency_ms);
+            println!("  Network latency (layer 4/TCP connect): {} ms", debug.l4_latency_ms);
+            println!("  Network latency (layer 7/TLS+HTTP):    {} ms", debug.l7_latency_ms);
             println!();
             println!(
-                "Note: Layer 4 and Layer 7 latencies are measured separately and should not be summed. \
-Layer 4 covers TCP connection only; Layer 7 covers TLS handshake and HTTP request. \
-DNS resolution and other delays are not included in these timings."
+                "Note: DNS, Layer 4, and Layer 7 latencies are measured separately and should not be summed. \
+DNS covers name resolution only; Layer 4 covers TCP connection only; \
+Layer 7 covers TLS handshake and HTTP request."
             );
             println!();
         }
@@ -785,32 +771,57 @@ fn cert_matches_hostname(cert: &CertInfo, host: &str) -> bool {
     false
 }
 
-type TlsChainResult = (String, u128, u128, String, String, Vec<String>, bool, u16);
+struct TlsChainResult {
+    pem: String,
+    dns_latency_ms: u128,
+    l4_latency_ms: u128,
+    l7_latency_ms: u128,
+    tls_version: String,
+    tls_cipher: String,
+    http_response_code: u16,
+}
+
+#[derive(serde::Serialize)]
+struct ConnectionDebugInfo {
+    dns_latency_ms: u128,
+    l4_latency_ms: u128,
+    l7_latency_ms: u128,
+    tls_version: String,
+    tls_cipher: String,
+    http_protocol: String,
+    http_response_code: u16,
+}
 
 fn run() -> Result<i32> {
     let args: Args = Args::parse();
 
-    let (pem_data, l4_latency, l7_latency, tls_version, tls_cipher, _mtls_requested, http_response_code) = if args
-        .target
-        .starts_with("https://")
-    {
-        let (pem, l4, l7, tls_version, tls_cipher, _, mtls_requested, http_response_code) = fetch_tls_chain_openssl(
+    let http_protocol_str = match args.http_protocol {
+        HttpProtocol::Http2 => "HTTP/2",
+        HttpProtocol::Http1_1 => "HTTP/1.1",
+    };
+
+    let (pem_data, debug) = if args.target.starts_with("https://") {
+        let result = fetch_tls_chain_openssl(
             &args.target,
             &args.method.to_string(),
             &args.header,
-            args.http_protocol.clone(),
+            args.http_protocol,
         )
         .with_context(|| "Failed to fetch TLS chain")?;
-        (pem, l4, l7, tls_version, tls_cipher, mtls_requested, http_response_code)
+        let debug = ConnectionDebugInfo {
+            dns_latency_ms: result.dns_latency_ms,
+            l4_latency_ms: result.l4_latency_ms,
+            l7_latency_ms: result.l7_latency_ms,
+            tls_version: result.tls_version,
+            tls_cipher: result.tls_cipher,
+            http_protocol: http_protocol_str.to_string(),
+            http_response_code: result.http_response_code,
+        };
+        (result.pem, Some(debug))
     } else {
         (
             fs::read_to_string(&args.target).with_context(|| format!("Failed to read PEM file: {}", &args.target))?,
-            0,
-            0,
-            String::new(),
-            String::new(),
-            false,
-            0,
+            None,
         )
     };
 
@@ -852,19 +863,33 @@ fn run() -> Result<i32> {
             } else {
                 None
             };
+            let empty_debug = ConnectionDebugInfo {
+                dns_latency_ms: 0,
+                l4_latency_ms: 0,
+                l7_latency_ms: 0,
+                tls_version: String::new(),
+                tls_cipher: String::new(),
+                http_protocol: String::new(),
+                http_response_code: 0,
+            };
             print_pretty(
                 &infos,
                 hostname.as_deref(),
-                l4_latency,
-                l7_latency,
-                &tls_version,
-                &tls_cipher,
-                &args.http_protocol,
-                http_response_code,
+                debug.as_ref().unwrap_or(&empty_debug),
             );
         }
         OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&infos)?);
+            let output = if let Some(debug) = &debug {
+                serde_json::json!({
+                    "certificates": infos,
+                    "connection": debug,
+                })
+            } else {
+                serde_json::json!({
+                    "certificates": infos,
+                })
+            };
+            println!("{}", serde_json::to_string_pretty(&output)?);
         }
     }
 
@@ -930,8 +955,6 @@ fn main() {
         println!("dcert {}", env!("CARGO_PKG_VERSION"));
         println!("Libraries:");
         println!("  openssl {}", openssl::version::version());
-        println!("  x509-parser {}", env!("CARGO_PKG_VERSION"));
-        println!("  clap {}", env!("CARGO_PKG_VERSION"));
         std::process::exit(0);
     }
 
