@@ -4,7 +4,6 @@ use clap::{Parser, ValueEnum};
 use colored::*;
 use openssl::hash::MessageDigest;
 use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
-use openssl::x509::store::X509StoreBuilder;
 use openssl::x509::X509;
 use pem_rfc7468::LineEnding;
 use std::env;
@@ -165,39 +164,19 @@ fn connect_through_proxy(proxy_url: &str, target_host: &str, target_port: u16) -
     Ok(stream)
 }
 
-/// Load custom CA certificates from SSL_CERT_FILE environment variable
-fn load_custom_ca_certs(store_builder: &mut X509StoreBuilder) -> Result<()> {
-    if let Ok(cert_file) = env::var("SSL_CERT_FILE") {
-        if !cert_file.is_empty() {
-            let cert_data = fs::read_to_string(&cert_file)
-                .map_err(|e| anyhow::anyhow!("Failed to read SSL_CERT_FILE {}: {}", cert_file, e))?;
-
-            // Parse PEM certificates from the file
-            let pem_blocks = pem::parse_many(&cert_data)
-                .map_err(|e| anyhow::anyhow!("Failed to parse certificates from {}: {}", cert_file, e))?;
-
-            let mut added_count = 0;
-            for block in pem_blocks {
-                if block.tag() == "CERTIFICATE" {
-                    match X509::from_der(block.contents()) {
-                        Ok(cert) => {
-                            store_builder
-                                .add_cert(cert)
-                                .map_err(|e| anyhow::anyhow!("Failed to add certificate to store: {}", e))?;
-                            added_count += 1;
-                        }
-                        Err(e) => {
-                            eprintln!("Warning: Failed to parse certificate from {}: {}", cert_file, e);
-                        }
-                    }
-                }
-            }
-
-            if added_count > 0 {
-                eprintln!("Loaded {} custom CA certificates from {}", added_count, cert_file);
-            }
-        }
-    }
+/// Load CA certificates into the SSL connector builder.
+///
+/// Uses OpenSSL's `set_default_verify_paths()` which loads certificates from:
+/// - `SSL_CERT_FILE` environment variable (if set)
+/// - `SSL_CERT_DIR` environment variable (if set)
+/// - OpenSSL's compiled-in default paths (system CA store)
+///
+/// This ensures dcert works out of the box on macOS, Linux, and in environments
+/// where custom CA bundles are required (e.g. corporate proxies).
+fn load_ca_certs(builder: &mut openssl::ssl::SslConnectorBuilder) -> Result<()> {
+    builder
+        .set_default_verify_paths()
+        .map_err(|e| anyhow::anyhow!("Failed to load CA certificates: {}", e))?;
 
     Ok(())
 }
@@ -274,14 +253,8 @@ fn fetch_tls_chain_openssl(
     let mut builder =
         SslConnector::builder(SslMethod::tls()).map_err(|e| anyhow::anyhow!("OpenSSL builder failed: {e}"))?;
 
-    // Load custom CA certificates if SSL_CERT_FILE is set
-    let mut store_builder =
-        X509StoreBuilder::new().map_err(|e| anyhow::anyhow!("Failed to create X509 store builder: {}", e))?;
-
-    load_custom_ca_certs(&mut store_builder)?;
-
-    let store = store_builder.build();
-    builder.set_cert_store(store);
+    // Load CA certificates (system defaults, or custom via SSL_CERT_FILE/SSL_CERT_DIR)
+    load_ca_certs(&mut builder)?;
 
     if no_verify {
         // Collect chain but don't abort on verification failure
@@ -292,9 +265,20 @@ fn fetch_tls_chain_openssl(
     let connector = builder.build();
 
     let sni_host = sni_override.unwrap_or(host);
-    let mut ssl_stream = connector
-        .connect(sni_host, stream)
-        .map_err(|e| anyhow::anyhow!("TLS handshake failed: {e}"))?;
+    let mut ssl_stream = connector.connect(sni_host, stream).map_err(|e| {
+        let err_str = e.to_string();
+        if err_str.contains("certificate verify failed") || err_str.contains("unable to get local issuer") {
+            anyhow::anyhow!(
+                "TLS handshake failed: {e}\n\
+                 Hint: OpenSSL could not find CA certificates. Try one of:\n  \
+                 - Set SSL_CERT_FILE to point to your CA bundle (e.g. /etc/ssl/certs/ca-certificates.crt)\n  \
+                 - Set SSL_CERT_DIR to your certificates directory\n  \
+                 - Use --no-verify to skip certificate verification"
+            )
+        } else {
+            anyhow::anyhow!("TLS handshake failed: {e}")
+        }
+    })?;
 
     // Build HTTP request
     let path = if url.path().is_empty() { "/" } else { url.path() };
@@ -1835,16 +1819,15 @@ mod tests {
     #[test]
     fn test_cert_dates_are_rfc3339() {
         let infos = parse_cert_infos_from_pem(VALID_PEM, &default_opts()).unwrap();
-        let cert = &infos[0];
+        let not_before = &infos[0].not_before;
+        let not_after = &infos[0].not_after;
         assert!(
-            OffsetDateTime::parse(&cert.not_before, &Rfc3339).is_ok(),
-            "not_before should be RFC3339: {}",
-            cert.not_before
+            OffsetDateTime::parse(not_before, &Rfc3339).is_ok(),
+            "not_before should be RFC3339: {not_before}",
         );
         assert!(
-            OffsetDateTime::parse(&cert.not_after, &Rfc3339).is_ok(),
-            "not_after should be RFC3339: {}",
-            cert.not_after
+            OffsetDateTime::parse(not_after, &Rfc3339).is_ok(),
+            "not_after should be RFC3339: {not_after}",
         );
     }
 
