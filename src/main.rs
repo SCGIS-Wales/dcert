@@ -46,6 +46,22 @@ const MAX_CONNECTIONS: usize = 10;
 const CONNECTION_TIMEOUT_SECS: u64 = 10;
 const READ_TIMEOUT_SECS: u64 = 5;
 
+/// Exit codes for machine-readable scripting.
+mod exit_code {
+    /// All certificates are valid and no warnings triggered.
+    pub const SUCCESS: i32 = 0;
+    /// At least one certificate is expiring soon (--expiry-warn threshold).
+    pub const EXPIRY_WARNING: i32 = 1;
+    /// A connection or processing error occurred.
+    pub const ERROR: i32 = 2;
+    /// TLS certificate verification failed.
+    pub const VERIFY_FAILED: i32 = 3;
+    /// At least one certificate in the chain is already expired.
+    pub const CERT_EXPIRED: i32 = 4;
+    /// At least one certificate has been revoked (OCSP).
+    pub const CERT_REVOKED: i32 = 5;
+}
+
 struct ConnectionGuard;
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {
@@ -54,6 +70,7 @@ impl Drop for ConnectionGuard {
 }
 
 /// Check if a host should bypass proxy based on no_proxy environment variables
+#[cfg(test)]
 fn should_bypass_proxy(host: &str) -> bool {
     let no_proxy = env::var("no_proxy")
         .or_else(|_| env::var("NO_PROXY"))
@@ -95,7 +112,68 @@ fn should_bypass_proxy(host: &str) -> bool {
     false
 }
 
-/// Get proxy URL from environment variables
+/// Cached proxy configuration, read once at startup.
+struct ProxyConfig {
+    https_proxy: Option<String>,
+    http_proxy: Option<String>,
+    no_proxy: String,
+}
+
+impl ProxyConfig {
+    fn from_env() -> Self {
+        let https_proxy = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]
+            .iter()
+            .find_map(|var| env::var(var).ok().filter(|v| !v.is_empty()));
+        let http_proxy = ["HTTP_PROXY", "http_proxy"]
+            .iter()
+            .find_map(|var| env::var(var).ok().filter(|v| !v.is_empty()));
+        let no_proxy = env::var("no_proxy")
+            .or_else(|_| env::var("NO_PROXY"))
+            .unwrap_or_default();
+        Self {
+            https_proxy,
+            http_proxy,
+            no_proxy,
+        }
+    }
+
+    fn get_proxy_url(&self, scheme: &str) -> Option<&str> {
+        match scheme {
+            "https" => self.https_proxy.as_deref(),
+            "http" => self.http_proxy.as_deref(),
+            _ => None,
+        }
+    }
+
+    fn should_bypass(&self, host: &str) -> bool {
+        if self.no_proxy.is_empty() {
+            return false;
+        }
+        let host = host.to_lowercase();
+        for pattern in self.no_proxy.split(',') {
+            let pattern = pattern.trim().to_lowercase();
+            if pattern.is_empty() {
+                continue;
+            }
+            if pattern == host {
+                return true;
+            }
+            if pattern.starts_with('.') && host.ends_with(&pattern) {
+                return true;
+            }
+            if !pattern.starts_with('.') && host.ends_with(&format!(".{}", pattern)) {
+                return true;
+            }
+            if pattern == "localhost" && (host == "localhost" || host == "127.0.0.1" || host == "::1") {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+/// Get proxy URL from environment variables (legacy, used by tests)
+#[cfg(test)]
 fn get_proxy_url(scheme: &str) -> Option<String> {
     let env_vars = match scheme {
         "https" => vec!["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"],
@@ -219,10 +297,12 @@ fn direct_tcp_connect(host: &str, port: u16, timeout: Duration) -> Result<TcpStr
         .next()
         .ok_or_else(|| anyhow::anyhow!("No valid address found for host {}", host))?;
 
-    TcpStream::connect_timeout(&socket_addr, timeout).map_err(|e| anyhow::anyhow!("TCP connection failed: {e}"))
+    TcpStream::connect_timeout(&socket_addr, timeout)
+        .map_err(|e| anyhow::anyhow!("TCP connection to {}:{} failed: {e}", host, port))
 }
 
 /// Fetch TLS certificate chain using OpenSSL, with proxy support and custom CA certificates.
+#[allow(clippy::too_many_arguments)]
 fn fetch_tls_chain_openssl(
     endpoint: &str,
     method: &str,
@@ -230,7 +310,9 @@ fn fetch_tls_chain_openssl(
     _http_protocol: HttpProtocol,
     no_verify: bool,
     timeout_secs: u64,
+    read_timeout_secs: u64,
     sni_override: Option<&str>,
+    proxy_config: &ProxyConfig,
 ) -> Result<TlsConnectionInfo> {
     // Guard against too many concurrent connections
     let current = ACTIVE_CONNECTIONS.fetch_add(1, Ordering::SeqCst);
@@ -262,18 +344,18 @@ fn fetch_tls_chain_openssl(
     let connect_timeout = Duration::from_secs(timeout_secs);
     let l4_start = std::time::Instant::now();
 
-    let stream = if should_bypass_proxy(host) {
+    let stream = if proxy_config.should_bypass(host) {
         direct_tcp_connect(host, port, connect_timeout)?
-    } else if let Some(proxy_url) = get_proxy_url("https") {
+    } else if let Some(proxy_url) = proxy_config.get_proxy_url("https") {
         eprintln!("Using proxy: {}", proxy_url);
-        connect_through_proxy(&proxy_url, host, port)?
+        connect_through_proxy(proxy_url, host, port)?
     } else {
         direct_tcp_connect(host, port, connect_timeout)?
     };
 
     // Set read timeout
     stream
-        .set_read_timeout(Some(Duration::from_secs(timeout_secs.min(READ_TIMEOUT_SECS))))
+        .set_read_timeout(Some(Duration::from_secs(read_timeout_secs)))
         .map_err(|e| anyhow::anyhow!("Failed to set read timeout: {e}"))?;
 
     let l4_latency = l4_start.elapsed().as_millis();
@@ -286,11 +368,61 @@ fn fetch_tls_chain_openssl(
     // Load CA certificates (system defaults, or custom via SSL_CERT_FILE/SSL_CERT_DIR)
     load_ca_certs(&mut builder)?;
 
+    // Collect per-certificate verification errors for chain validation detail
+    let verify_errors: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let errors_clone = verify_errors.clone();
+
     if no_verify {
-        // Collect chain but don't abort on verification failure
-        builder.set_verify_callback(SslVerifyMode::PEER, |_preverify, _ctx| true);
+        // Collect chain but don't abort on verification failure; still record errors
+        builder.set_verify_callback(SslVerifyMode::PEER, move |preverify, ctx| {
+            if !preverify {
+                let depth = ctx.error_depth();
+                let err = ctx.error();
+                let subject = ctx
+                    .current_cert()
+                    .map(|c| {
+                        c.subject_name().entries().fold(String::new(), |mut acc, e| {
+                            if !acc.is_empty() {
+                                acc.push_str(", ");
+                            }
+                            if let Ok(data) = e.data().as_utf8() {
+                                acc.push_str(data.as_ref());
+                            }
+                            acc
+                        })
+                    })
+                    .unwrap_or_else(|| "unknown".to_string());
+                if let Ok(mut errs) = errors_clone.lock() {
+                    errs.push(format!("depth {}: {} ({})", depth, err, subject));
+                }
+            }
+            true // always continue
+        });
     } else {
-        builder.set_verify(SslVerifyMode::PEER);
+        builder.set_verify_callback(SslVerifyMode::PEER, move |preverify, ctx| {
+            if !preverify {
+                let depth = ctx.error_depth();
+                let err = ctx.error();
+                let subject = ctx
+                    .current_cert()
+                    .map(|c| {
+                        c.subject_name().entries().fold(String::new(), |mut acc, e| {
+                            if !acc.is_empty() {
+                                acc.push_str(", ");
+                            }
+                            if let Ok(data) = e.data().as_utf8() {
+                                acc.push_str(data.as_ref());
+                            }
+                            acc
+                        })
+                    })
+                    .unwrap_or_else(|| "unknown".to_string());
+                if let Ok(mut errs) = errors_clone.lock() {
+                    errs.push(format!("depth {}: {} ({})", depth, err, subject));
+                }
+            }
+            preverify // respect the original verification result
+        });
     }
     let connector = builder.build();
 
@@ -313,8 +445,8 @@ fn fetch_tls_chain_openssl(
     // Build HTTP request
     let path = if url.path().is_empty() { "/" } else { url.path() };
 
-    // Both HTTP/1.1 and HTTP/2 will use HTTP/1.1 format here
-    // OpenSSL doesn't handle HTTP/2 ALPN negotiation automatically
+    // OpenSSL doesn't handle HTTP/2 framing; always use HTTP/1.1 on the wire.
+    // The warning is printed in process_target() before calling this function.
     let req = format!("{} {} HTTP/1.1\r\nHost: {}\r\n", method, path, host);
 
     let mut req = req;
@@ -452,6 +584,9 @@ fn fetch_tls_chain_openssl(
         }
     };
 
+    // Collect chain validation errors
+    let chain_validation_errors = verify_errors.lock().map(|errs| errs.clone()).unwrap_or_default();
+
     Ok(TlsConnectionInfo {
         pem_data: pem,
         l4_latency,
@@ -461,6 +596,7 @@ fn fetch_tls_chain_openssl(
         tls_cipher_iana,
         http_response_code,
         verify_result,
+        chain_validation_errors,
     })
 }
 
@@ -552,6 +688,10 @@ struct Args {
     #[arg(long, default_value_t = 10)]
     timeout: u64,
 
+    /// Read timeout in seconds (time to wait for server response after connection)
+    #[arg(long, default_value_t = 5)]
+    read_timeout: u64,
+
     /// Override SNI hostname for TLS handshake
     #[arg(long)]
     sni: Option<String>,
@@ -600,9 +740,15 @@ struct CertInfo {
     is_expired: bool,
     ct_present: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    sct_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     sha256_fingerprint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     signature_algorithm: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    public_key_algorithm: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    public_key_size_bits: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     key_usage: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -660,7 +806,60 @@ fn process_certificate(
     let common_name = extract_common_name(&cert);
     let subject_alternative_names = extract_sans(&cert);
 
-    let ct_present = cert.extensions().iter().any(|ext| ext.oid == *OID_X509_SCT_LIST);
+    let sct_ext = cert.extensions().iter().find(|ext| ext.oid == *OID_X509_SCT_LIST);
+    let ct_present = sct_ext.is_some();
+
+    // Try to count individual SCTs in the extension.
+    // The SCT list is an ASN.1 OCTET STRING wrapping a TLS-encoded SignedCertificateTimestampList:
+    //   - 2 bytes: total list length
+    //   - each SCT: 2 bytes length + SCT data
+    let sct_count: Option<usize> = if opts.extensions {
+        sct_ext.and_then(|ext| {
+            let data = ext.value;
+            // The outer layer is an ASN.1 OCTET STRING; parse it to get inner bytes
+            let inner = if data.len() > 2 && data[0] == 0x04 {
+                // Simple DER OCTET STRING: tag=0x04, length, value
+                let len_byte = data[1] as usize;
+                if len_byte < 0x80 && data.len() >= 2 + len_byte {
+                    &data[2..2 + len_byte]
+                } else if len_byte == 0x81 && data.len() > 3 {
+                    let len = data[2] as usize;
+                    if data.len() >= 3 + len {
+                        &data[3..3 + len]
+                    } else {
+                        data
+                    }
+                } else if len_byte == 0x82 && data.len() > 4 {
+                    let len = ((data[2] as usize) << 8) | (data[3] as usize);
+                    if data.len() >= 4 + len {
+                        &data[4..4 + len]
+                    } else {
+                        data
+                    }
+                } else {
+                    data
+                }
+            } else {
+                data
+            };
+            // Now inner is the TLS-encoded list: 2-byte total length, then SCTs
+            if inner.len() < 2 {
+                return None;
+            }
+            let total_len = ((inner[0] as usize) << 8) | (inner[1] as usize);
+            let mut offset = 2;
+            let end = (2 + total_len).min(inner.len());
+            let mut count = 0usize;
+            while offset + 2 <= end {
+                let sct_len = ((inner[offset] as usize) << 8) | (inner[offset + 1] as usize);
+                offset += 2 + sct_len;
+                count += 1;
+            }
+            Some(count)
+        })
+    } else {
+        None
+    };
 
     // SHA-256 fingerprint
     let sha256_fingerprint = if opts.fingerprint {
@@ -682,6 +881,24 @@ fn process_certificate(
         Some(cert.signature_algorithm.algorithm.to_id_string())
     } else {
         None
+    };
+
+    // Public key info (always shown in extensions mode)
+    let (public_key_algorithm, public_key_size_bits) = if opts.extensions {
+        let spki = cert.public_key();
+        let alg_oid = spki.algorithm.algorithm.to_id_string();
+        let alg_name = match alg_oid.as_str() {
+            "1.2.840.113549.1.1.1" => "RSA".to_string(),
+            "1.2.840.10045.2.1" => "EC".to_string(),
+            "1.3.101.110" => "X25519".to_string(),
+            "1.3.101.112" => "Ed25519".to_string(),
+            "1.3.101.113" => "Ed448".to_string(),
+            other => other.to_string(),
+        };
+        let key_bits = (spki.subject_public_key.data.len() * 8) as u32;
+        (Some(alg_name), Some(key_bits))
+    } else {
+        (None, None)
     };
 
     // Extensions
@@ -798,8 +1015,11 @@ fn process_certificate(
         not_after,
         is_expired,
         ct_present,
+        sct_count,
         sha256_fingerprint,
         signature_algorithm,
+        public_key_algorithm,
+        public_key_size_bits,
         key_usage,
         extended_key_usage,
         basic_constraints,
@@ -957,7 +1177,11 @@ fn check_ocsp_status(cert_der: &[u8], issuer_der: Option<&[u8]>, ocsp_url: &str)
         Some(h) => h.to_string(),
         None => return "error: OCSP URL has no host".to_string(),
     };
-    let port = url.port().unwrap_or(80);
+    let default_port = match url.scheme() {
+        "https" => 443,
+        _ => 80,
+    };
+    let port = url.port().unwrap_or(default_port);
     let path = if url.path().is_empty() { "/" } else { url.path() };
 
     let tcp_stream = match direct_tcp_connect(&host, port, Duration::from_secs(5)) {
@@ -1096,6 +1320,9 @@ fn print_pretty(infos: &[CertInfo], debug: &PrettyDebugInfo<'_>) {
             // Verification result
             if let Some(ref err) = conn.verify_result {
                 println!("  Chain verification: {}", err.red());
+                for detail in &conn.chain_validation_errors {
+                    println!("    {}", detail.red());
+                }
             } else {
                 println!("  Chain verification: {}", "ok".green());
             }
@@ -1137,6 +1364,14 @@ Layer 7 covers TLS handshake and HTTP request."
 
         if let Some(ref alg) = info.signature_algorithm {
             println!("  Sig Algorithm: {}", alg);
+        }
+
+        if let Some(ref alg) = info.public_key_algorithm {
+            let size_str = info
+                .public_key_size_bits
+                .map(|s| format!(" ({} bits)", s))
+                .unwrap_or_default();
+            println!("  Public Key   : {}{}", alg, size_str);
         }
 
         if let Some(ref ku) = info.key_usage {
@@ -1242,6 +1477,8 @@ struct TlsConnectionInfo {
     tls_cipher_iana: Option<String>,
     http_response_code: u16,
     verify_result: Option<String>,
+    /// Per-certificate chain validation errors (depth, error, subject).
+    chain_validation_errors: Vec<String>,
 }
 
 /// Result of processing a single target.
@@ -1253,7 +1490,7 @@ struct TargetResult {
 }
 
 /// Process a single target (PEM file or HTTPS URL) and return results.
-fn process_target(target: &str, args: &Args) -> Result<TargetResult> {
+fn process_target(target: &str, args: &Args, proxy_config: &ProxyConfig) -> Result<TargetResult> {
     let opts = CertProcessOpts {
         expired_only: args.expired_only,
         fingerprint: args.fingerprint,
@@ -1261,6 +1498,20 @@ fn process_target(target: &str, args: &Args) -> Result<TargetResult> {
     };
 
     let (pem_data, conn_info) = if target.starts_with("https://") {
+        if matches!(args.http_protocol, HttpProtocol::Http2) {
+            eprintln!(
+                "{} --http-protocol http2 has no effect; dcert always uses HTTP/1.1 on the wire \
+                 (OpenSSL does not support HTTP/2 framing)",
+                "Warning:".yellow().bold()
+            );
+        }
+        if args.no_verify {
+            eprintln!(
+                "{} TLS certificate verification is disabled (--no-verify). \
+                 Chain validation errors will be suppressed.",
+                "Warning:".yellow().bold()
+            );
+        }
         let conn = fetch_tls_chain_openssl(
             target,
             &args.method.to_string(),
@@ -1268,7 +1519,9 @@ fn process_target(target: &str, args: &Args) -> Result<TargetResult> {
             args.http_protocol,
             args.no_verify,
             args.timeout,
+            args.read_timeout,
             args.sni.as_deref(),
+            proxy_config,
         )
         .with_context(|| format!("Failed to fetch TLS chain from {}", target))?;
         let pem = conn.pem_data.clone();
@@ -1511,12 +1764,19 @@ fn output_results(
 }
 
 fn run() -> Result<i32> {
-    let args: Args = Args::parse();
+    let mut args: Args = Args::parse();
+
+    // Cache proxy configuration from environment at startup
+    let proxy_config = ProxyConfig::from_env();
 
     // Resolve targets (support stdin via '-')
     let mut targets: Vec<String> = Vec::new();
     for t in &args.targets {
         if t == "-" {
+            use std::io::IsTerminal;
+            if std::io::stdin().is_terminal() {
+                eprintln!("Reading targets from stdin (one per line, Ctrl-D to finish)...");
+            }
             let stdin = std::io::stdin();
             for line in stdin.lock().lines() {
                 let line = line.with_context(|| "Failed to read from stdin")?;
@@ -1541,6 +1801,11 @@ fn run() -> Result<i32> {
 
     // Watch mode
     if let Some(interval) = args.watch {
+        // Auto-enable fingerprint in watch mode so change detection works
+        if !args.fingerprint {
+            args.fingerprint = true;
+        }
+
         let running = Arc::new(AtomicBool::new(true));
         let r = running.clone();
 
@@ -1565,7 +1830,7 @@ fn run() -> Result<i32> {
             );
 
             for target in &targets {
-                match process_target(target, &args) {
+                match process_target(target, &args, &proxy_config) {
                     Ok(result) => {
                         // Check for changes
                         let current_fps: Vec<Option<String>> =
@@ -1598,17 +1863,23 @@ fn run() -> Result<i32> {
 
     // Normal (non-watch) mode
     let multi_target = targets.len() > 1;
-    let mut exit_code = 0;
+    let mut exit_code = exit_code::SUCCESS;
     let mut all_results: Vec<TargetResult> = Vec::new();
 
     for target in &targets {
-        match process_target(target, &args) {
+        match process_target(target, &args, &proxy_config) {
             Ok(result) => {
+                // Check for verification failure
+                if let Some(ref conn) = result.conn_info {
+                    if conn.verify_result.is_some() && exit_code < exit_code::VERIFY_FAILED {
+                        exit_code = exit_code::VERIFY_FAILED;
+                    }
+                }
                 all_results.push(result);
             }
             Err(e) => {
                 eprintln!("{} {}: {}", "Error:".red().bold(), target, e);
-                exit_code = 2;
+                exit_code = exit_code::ERROR;
             }
         }
     }
@@ -1648,15 +1919,31 @@ fn run() -> Result<i32> {
         }
     }
 
-    // Check expiry warnings
+    // Check for expired certificates
+    for result in &all_results {
+        if result.infos.iter().any(|c| c.is_expired) && exit_code < exit_code::CERT_EXPIRED {
+            exit_code = exit_code::CERT_EXPIRED;
+        }
+        // Check for revoked certificates
+        if result
+            .infos
+            .iter()
+            .any(|c| c.revocation_status.as_deref() == Some("revoked"))
+            && exit_code < exit_code::CERT_REVOKED
+        {
+            exit_code = exit_code::CERT_REVOKED;
+        }
+    }
+
+    // Check expiry warnings (overrides lower exit codes)
     if let Some(warn_days) = args.expiry_warn {
         for result in &all_results {
             if multi_target {
                 eprintln!("--- Expiry check: {} ---", result.target);
             }
             let warn_code = check_expiry_warnings(&result.infos, warn_days);
-            if warn_code > exit_code {
-                exit_code = warn_code;
+            if warn_code > 0 && exit_code < exit_code::EXPIRY_WARNING {
+                exit_code = exit_code::EXPIRY_WARNING;
             }
         }
     }
@@ -1671,9 +1958,9 @@ fn run() -> Result<i32> {
     }
 
     // Check for empty results
-    if all_results.iter().all(|r| r.infos.is_empty()) && exit_code == 0 {
+    if all_results.iter().all(|r| r.infos.is_empty()) && exit_code == exit_code::SUCCESS {
         eprintln!("{}", "No valid certificates found in the input".red());
-        return Ok(1);
+        return Ok(exit_code::EXPIRY_WARNING);
     }
 
     Ok(exit_code)
@@ -1691,7 +1978,7 @@ fn main() {
         Ok(code) => std::process::exit(code),
         Err(e) => {
             eprintln!("{} {}", "Error:".red().bold(), e);
-            std::process::exit(2);
+            std::process::exit(exit_code::ERROR);
         }
     }
 }
@@ -1815,8 +2102,11 @@ mod tests {
             not_after: "2027-01-01T00:00:00Z".to_string(),
             is_expired: false,
             ct_present: false,
+            sct_count: None,
             sha256_fingerprint: None,
             signature_algorithm: None,
+            public_key_algorithm: None,
+            public_key_size_bits: None,
             key_usage: None,
             extended_key_usage: None,
             basic_constraints: None,
