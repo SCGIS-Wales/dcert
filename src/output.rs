@@ -10,6 +10,7 @@ use x509_parser::prelude::FromDer;
 
 use crate::cert::{extract_ocsp_url, parse_cert_infos_from_pem, CertInfo, CertProcessOpts};
 use crate::cli::{Args, CipherNotation, HttpProtocol, OutputFormat, SortOrder};
+use crate::debug::debug_log;
 use crate::ocsp::check_ocsp_status;
 use crate::proxy::ProxyConfig;
 use crate::tls::{fetch_tls_chain_openssl, TlsConnectionInfo};
@@ -237,6 +238,8 @@ pub fn process_target(
     proxy_config: &ProxyConfig,
     body: Option<&[u8]>,
 ) -> Result<TargetResult> {
+    debug_log!(args.debug, "Processing target: {}", target);
+
     let opts = CertProcessOpts {
         expired_only: args.expired_only,
         fingerprint: args.fingerprint,
@@ -266,6 +269,7 @@ pub fn process_target(
             args.max_tls,
             args.cipher_list.as_deref(),
             args.cipher_suites.as_deref(),
+            args.debug,
         )?;
         let pem = conn.pem_data.clone();
         (pem, Some(conn))
@@ -291,7 +295,7 @@ pub fn process_target(
                 if let Ok((_, cert)) = X509Certificate::from_der(der) {
                     if let Some(ocsp_url) = extract_ocsp_url(&cert) {
                         let issuer_der = cert_ders.get(i + 1).copied();
-                        info.revocation_status = Some(check_ocsp_status(der, issuer_der, &ocsp_url));
+                        info.revocation_status = Some(check_ocsp_status(der, issuer_der, &ocsp_url, args.debug));
                     } else {
                         info.revocation_status = Some("unknown (no OCSP responder)".to_string());
                     }
