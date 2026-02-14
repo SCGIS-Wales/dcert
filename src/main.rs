@@ -1,5 +1,6 @@
 mod cert;
 mod cli;
+mod debug;
 mod ocsp;
 mod output;
 mod proxy;

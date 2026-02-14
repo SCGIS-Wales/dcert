@@ -546,3 +546,68 @@ fn test_data_file_nonexistent() {
         .expect("failed to run dcert");
     assert!(!output.status.success(), "should fail with nonexistent data file");
 }
+
+// ---------------------------------------------------------------
+// Debug flag
+// ---------------------------------------------------------------
+
+#[test]
+fn test_help_shows_debug_flag() {
+    let output = dcert_bin().arg("--help").output().expect("failed to run dcert");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--debug"), "help should mention --debug");
+}
+
+#[test]
+fn test_debug_with_pem_file() {
+    let pem_path = test_data("valid.pem");
+    let output = dcert_bin()
+        .arg(pem_path.to_str().unwrap())
+        .arg("--debug")
+        .output()
+        .expect("failed to run dcert");
+    assert!(output.status.success(), "dcert --debug should succeed with valid PEM");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Processing target"),
+        "debug should show target processing on stderr"
+    );
+}
+
+#[test]
+fn test_debug_does_not_contaminate_json() {
+    let pem_path = test_data("valid.pem");
+    let output = dcert_bin()
+        .arg(pem_path.to_str().unwrap())
+        .arg("--format")
+        .arg("json")
+        .arg("--debug")
+        .output()
+        .expect("failed to run dcert");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // stdout must be valid JSON (no debug contamination)
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).expect("JSON stdout must not be contaminated by debug output");
+    assert!(parsed.is_array());
+}
+
+#[test]
+fn test_debug_does_not_contaminate_yaml() {
+    let pem_path = test_data("valid.pem");
+    let output = dcert_bin()
+        .arg(pem_path.to_str().unwrap())
+        .arg("--format")
+        .arg("yaml")
+        .arg("--debug")
+        .output()
+        .expect("failed to run dcert");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("common_name"),
+        "YAML output should still work with --debug"
+    );
+    // No debug prefix in stdout
+    assert!(!stdout.contains("* ---"), "debug markers should not appear in stdout");
+}
