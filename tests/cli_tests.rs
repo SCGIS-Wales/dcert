@@ -671,6 +671,48 @@ fn test_min_tls_accepts_1_3() {
 }
 
 // ---------------------------------------------------------------
+// TLS version ordering (min <= max)
+// ---------------------------------------------------------------
+
+#[test]
+fn test_min_tls_greater_than_max_tls_rejected() {
+    let pem_path = test_data("valid.pem");
+    let output = dcert_bin()
+        .arg(pem_path.to_str().unwrap())
+        .arg("--min-tls")
+        .arg("1.3")
+        .arg("--max-tls")
+        .arg("1.2")
+        .output()
+        .expect("failed to run dcert");
+    assert!(
+        !output.status.success(),
+        "--min-tls 1.3 --max-tls 1.2 should be rejected"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("must not be greater than"),
+        "error should mention version ordering: {stderr}"
+    );
+}
+
+#[test]
+fn test_no_verify_shows_warning() {
+    let pem_path = test_data("valid.pem");
+    let output = dcert_bin()
+        .arg(pem_path.to_str().unwrap())
+        .arg("--no-verify")
+        .output()
+        .expect("failed to run dcert");
+    assert!(output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("WARNING") && stderr.contains("--no-verify"),
+        "should warn about --no-verify on stderr: {stderr}"
+    );
+}
+
+// ---------------------------------------------------------------
 // Debug flag
 // ---------------------------------------------------------------
 
