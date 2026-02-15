@@ -33,7 +33,7 @@ lazy_static = "1.5"
 serde_yml = "0.0.12"
 ctrlc = "3.4"
 openssl-probe = "0.2"
-rmcp = { version = "0.15", features = ["server", "transport-io"] }
+rmcp = { version = "0.15", features = ["server", "transport-io", "client"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-std"] }
 schemars = "1.0"
 
