@@ -81,8 +81,64 @@ jobs:
       - name: Run cargo audit
         run: cargo audit
 
+  # Auto-tag on merge to main: reads version from Cargo.toml and creates
+  # a git tag if one doesn't already exist. This triggers the tag-based
+  # build/release pipeline below.
+  auto-tag:
+    name: Auto-tag release
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: [ test, security-audit ]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read version from Cargo.toml
+        id: version
+        run: |
+          VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Detected version: ${VERSION} (tag: v${VERSION})"
+
+      - name: Check if tag already exists
+        id: check_tag
+        run: |
+          if git rev-parse "refs/tags/${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag ${{ steps.version.outputs.tag }} already exists, skipping"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Tag ${{ steps.version.outputs.tag }} does not exist, will create"
+          fi
+
+      - name: Validate semver
+        if: steps.check_tag.outputs.exists == 'false'
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?(\+[a-zA-Z0-9.]+)?$'; then
+            echo "::error::Version '$VERSION' in Cargo.toml is not valid semver"
+            echo "Tags must follow semver: MAJOR.MINOR.PATCH (e.g., 3.0.3)"
+            exit 1
+          fi
+
+      - name: Create and push tag
+        if: steps.check_tag.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          git tag "$TAG"
+          git push origin "$TAG"
+          echo "::notice::Created and pushed tag $TAG"
+
   build-linux:
     name: Build Linux binaries
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'pull_request' || (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/'))
     runs-on: ubuntu-latest
     needs: [ test ]
     strategy:
@@ -99,6 +155,11 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           VERSION=${GITHUB_REF#refs/tags/v}
+          # Validate version is valid semver before writing to Cargo.toml
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?(\+[a-zA-Z0-9.]+)?$'; then
+            echo "::error::Tag version '$VERSION' is not valid semver (expected: MAJOR.MINOR.PATCH)"
+            exit 1
+          fi
           sed -i "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
           echo "Set Cargo.toml version to $VERSION"
 
@@ -140,6 +201,7 @@ jobs:
 
   build-macos-intel:
     name: Build macOS Intel
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'pull_request' || (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/'))
     runs-on: macos-15-intel  # Intel runner
     needs: [ test ]
     steps:
@@ -152,6 +214,10 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           VERSION=${GITHUB_REF#refs/tags/v}
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?(\+[a-zA-Z0-9.]+)?$'; then
+            echo "::error::Tag version '$VERSION' is not valid semver (expected: MAJOR.MINOR.PATCH)"
+            exit 1
+          fi
           sed -i '' "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
           echo "Set Cargo.toml version to $VERSION"
 
@@ -194,6 +260,7 @@ jobs:
 
   build-macos-arm:
     name: Build macOS ARM64
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'pull_request' || (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/'))
     runs-on: macos-latest  # ARM64 runner
     needs: [ test ]
     steps:
@@ -206,6 +273,10 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           VERSION=${GITHUB_REF#refs/tags/v}
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?(\+[a-zA-Z0-9.]+)?$'; then
+            echo "::error::Tag version '$VERSION' is not valid semver (expected: MAJOR.MINOR.PATCH)"
+            exit 1
+          fi
           sed -i '' "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
           echo "Set Cargo.toml version to $VERSION"
 
@@ -324,16 +395,16 @@ jobs:
         run: |
           VERSION=${GITHUB_REF#refs/tags/v}
           REPO_URL="https://github.com/${{ github.repository }}"
-          
+
           # Calculate SHA256 checksums
           LINUX_SHA256=$(sha256sum artifacts/dcert-x86_64-unknown-linux-gnu.tar.gz | cut -d' ' -f1)
           MACOS_X86_SHA256=$(sha256sum artifacts/dcert-x86_64-apple-darwin.tar.gz | cut -d' ' -f1)
           MACOS_ARM_SHA256=$(sha256sum artifacts/dcert-aarch64-apple-darwin.tar.gz | cut -d' ' -f1)
-          
+
           # Create Homebrew formula with proper structure for tap
           cat > dcert.rb << 'EOF'
           class Dcert < Formula
-            desc "CLI to decode and validate TLS certificates from PEM files"
+            desc "TLS certificate decoder, validator, and MCP server"
             homepage "https://github.com/SCGIS-Wales/dcert"
             version "VERSION_PLACEHOLDER"
             license "MIT"
@@ -377,13 +448,13 @@ jobs:
             end
           end
           EOF
-          
+
           # Replace placeholders with actual values
           sed -i "s|VERSION_PLACEHOLDER|$VERSION|g" dcert.rb
           sed -i "s|LINUX_X86_SHA256_PLACEHOLDER|$LINUX_SHA256|g" dcert.rb
           sed -i "s|MACOS_X86_SHA256_PLACEHOLDER|$MACOS_X86_SHA256|g" dcert.rb
           sed -i "s|MACOS_ARM_SHA256_PLACEHOLDER|$MACOS_ARM_SHA256|g" dcert.rb
-          
+
           echo "Generated formula:"
           cat dcert.rb
 
@@ -394,19 +465,18 @@ jobs:
           token: ${{ secrets.TAP_GITHUB_TOKEN }}
           path: homebrew-tap
 
-      - name: Update Homebrew Tap (Optional)
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Update Homebrew Tap
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
         run: |
           # Copy the generated formula
           cp dcert.rb homebrew-tap/Formula/dcert.rb
-          
+
           # Commit and push if there are changes
           cd homebrew-tap
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          
+
           if git diff --quiet; then
             echo "No changes to formula"
           else
@@ -475,7 +545,7 @@ jobs:
 
           ### Homebrew (macOS and Linux)
 
-          Add the tap and install:
+          Add the tap and install (includes both \`dcert\` CLI and \`dcert-mcp\` MCP server):
           \`\`\`bash
           brew tap SCGIS-Wales/tap
           brew install dcert
@@ -485,15 +555,15 @@ jobs:
           \`\`\`bash
           # macOS (Intel)
           curl -L https://github.com/${REPO}/releases/download/${TAG}/dcert-x86_64-apple-darwin.tar.gz | tar xz
-          chmod +x dcert && sudo mv dcert /usr/local/bin/
+          chmod +x dcert dcert-mcp && sudo mv dcert dcert-mcp /usr/local/bin/
 
           # macOS (Apple Silicon)
           curl -L https://github.com/${REPO}/releases/download/${TAG}/dcert-aarch64-apple-darwin.tar.gz | tar xz
-          chmod +x dcert && sudo mv dcert /usr/local/bin/
+          chmod +x dcert dcert-mcp && sudo mv dcert dcert-mcp /usr/local/bin/
 
           # Linux (x86_64)
           curl -L https://github.com/${REPO}/releases/download/${TAG}/dcert-x86_64-unknown-linux-gnu.tar.gz | tar xz
-          chmod +x dcert && sudo mv dcert /usr/local/bin/
+          chmod +x dcert dcert-mcp && sudo mv dcert dcert-mcp /usr/local/bin/
           \`\`\`
 
           ### Docker
