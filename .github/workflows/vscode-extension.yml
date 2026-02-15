@@ -1,0 +1,56 @@
+name: VS Code Extension
+
+on:
+  # Publish when a new GitHub release is created (by the CI/CD pipeline)
+  release:
+    types: [ published ]
+  # Allow manual publishing
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g. 3.0.8)'
+        required: true
+
+defaults:
+  run:
+    working-directory: vscode-extension
+
+jobs:
+  publish:
+    name: Publish Extension
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Set version from release tag
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            VERSION="${{ github.event.release.tag_name }}"
+            VERSION="${VERSION#v}"
+          else
+            VERSION="${{ github.event.inputs.version }}"
+          fi
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          npm version "$VERSION" --no-git-tag-version
+
+      - name: Compile extension
+        run: npm run compile
+
+      - name: Publish to VS Code Marketplace
+        run: npx @vscode/vsce publish --no-git-tag-version
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+
+      - name: Publish to OpenVSX (Kiro, Eclipse, etc.)
+        run: npx ovsx publish --no-dependencies
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}

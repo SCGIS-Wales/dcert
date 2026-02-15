@@ -1,0 +1,71 @@
+{
+  "name": "dcert-mcp",
+  "displayName": "dcert — TLS Certificate MCP Server",
+  "description": "MCP server for TLS certificate analysis, format conversion, and key verification — for AI-powered IDEs",
+  "version": "0.0.0",
+  "publisher": "SCGIS-Wales",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SCGIS-Wales/dcert"
+  },
+  "bugs": {
+    "url": "https://github.com/SCGIS-Wales/dcert/issues"
+  },
+  "homepage": "https://github.com/SCGIS-Wales/dcert",
+  "engines": {
+    "vscode": "^1.99.0"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "keywords": [
+    "mcp",
+    "tls",
+    "ssl",
+    "certificate",
+    "x509",
+    "pem",
+    "security",
+    "model-context-protocol",
+    "copilot"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "dcert-mcp",
+        "label": "dcert MCP Server"
+      }
+    ],
+    "configuration": {
+      "title": "dcert MCP Server",
+      "properties": {
+        "dcert.mcp.path": {
+          "type": "string",
+          "default": "",
+          "description": "Path to dcert-mcp binary. Leave empty to use the binary from PATH or the bundled version."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "lint": "eslint src/",
+    "package": "vsce package",
+    "publish:vscode": "vsce publish",
+    "publish:openvsx": "ovsx publish"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.99.0",
+    "@vscode/vsce": "^3.0.0",
+    "esbuild": "^0.24.0",
+    "ovsx": "^0.10.0",
+    "typescript": "^5.7.0"
+  }
+}
