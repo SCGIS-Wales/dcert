@@ -403,6 +403,131 @@ pub fn extract_sans(cert: &X509Certificate<'_>) -> Vec<String> {
     out
 }
 
+/// Result of verifying that a private key matches a certificate.
+#[derive(Debug, serde::Serialize)]
+pub struct KeyMatchResult {
+    pub matches: bool,
+    pub key_type: String,
+    pub key_size_bits: u32,
+    pub cert_subject: String,
+    pub cert_public_key_algorithm: String,
+    pub cert_public_key_size_bits: u32,
+    pub details: String,
+}
+
+/// Verify that a private key matches a certificate's public key.
+///
+/// The `key_path` is a PEM file containing the private key.
+/// The `target` is either a PEM file or HTTPS URL. For HTTPS, we fetch the leaf cert.
+pub fn verify_key_matches_cert(key_path: &str, target: &str, debug: bool) -> Result<KeyMatchResult> {
+    use crate::debug::debug_log;
+    use openssl::pkey::PKey;
+
+    // Load private key
+    debug_log!(debug, "Loading private key from: {}", key_path);
+    let key_data =
+        std::fs::read(key_path).map_err(|e| anyhow::anyhow!("Failed to read private key '{}': {}", key_path, e))?;
+    let private_key = PKey::private_key_from_pem(&key_data)
+        .map_err(|e| anyhow::anyhow!("Failed to parse private key '{}': {}", key_path, e))?;
+
+    let key_type = if private_key.rsa().is_ok() {
+        "RSA".to_string()
+    } else if private_key.ec_key().is_ok() {
+        "EC".to_string()
+    } else {
+        "Unknown".to_string()
+    };
+    let key_size_bits = private_key.bits();
+    debug_log!(debug, "Key type: {} ({} bits)", key_type, key_size_bits);
+
+    // Load certificate PEM data
+    let cert_pem = if target.starts_with("https://") {
+        debug_log!(debug, "Fetching certificate from: {}", target);
+        // Fetch TLS chain from the target
+        let proxy_config = crate::proxy::ProxyConfig::from_env();
+        let conn = crate::tls::fetch_tls_chain_openssl(
+            target,
+            "GET",
+            &[],
+            None,
+            crate::cli::HttpProtocol::Http1_1,
+            false,
+            10,
+            5,
+            None,
+            &proxy_config,
+            None,
+            None,
+            None,
+            None,
+            debug,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
+        conn.pem_data
+    } else {
+        std::fs::read_to_string(target)
+            .map_err(|e| anyhow::anyhow!("Failed to read certificate '{}': {}", target, e))?
+    };
+
+    // Parse the first certificate
+    let cert = openssl::x509::X509::from_pem(cert_pem.as_bytes())
+        .map_err(|e| anyhow::anyhow!("Failed to parse PEM certificate: {}", e))?;
+
+    let cert_subject = cert.subject_name().entries().fold(String::new(), |mut acc, e| {
+        if !acc.is_empty() {
+            acc.push_str(", ");
+        }
+        if let Ok(data) = e.data().as_utf8() {
+            acc.push_str(data.as_ref());
+        }
+        acc
+    });
+    debug_log!(debug, "Certificate subject: {}", cert_subject);
+
+    let cert_pubkey = cert
+        .public_key()
+        .map_err(|e| anyhow::anyhow!("Failed to extract public key from certificate: {}", e))?;
+
+    let cert_key_alg = if cert_pubkey.rsa().is_ok() {
+        "RSA".to_string()
+    } else if cert_pubkey.ec_key().is_ok() {
+        "EC".to_string()
+    } else {
+        "Unknown".to_string()
+    };
+    let cert_key_size = cert_pubkey.bits();
+
+    // Compare public keys
+    let matches = private_key.public_eq(&cert_pubkey);
+
+    let details = if matches {
+        "Public key from private key matches certificate's public key".to_string()
+    } else if key_type != cert_key_alg {
+        format!(
+            "Key type mismatch: private key is {} but certificate uses {}",
+            key_type, cert_key_alg
+        )
+    } else {
+        "Public key from private key does not match certificate's public key".to_string()
+    };
+
+    debug_log!(debug, "Match result: {}", matches);
+
+    Ok(KeyMatchResult {
+        matches,
+        key_type,
+        key_size_bits,
+        cert_subject,
+        cert_public_key_algorithm: cert_key_alg,
+        cert_public_key_size_bits: cert_key_size,
+        details,
+    })
+}
+
 /// Extract OCSP responder URL from a certificate's Authority Information Access extension.
 pub fn extract_ocsp_url(cert: &X509Certificate<'_>) -> Option<String> {
     for ext in cert.extensions() {

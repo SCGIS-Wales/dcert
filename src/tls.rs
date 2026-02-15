@@ -111,7 +111,7 @@ pub struct TlsConnectionInfo {
     pub chain_validation_errors: Vec<String>,
 }
 
-/// Fetch TLS certificate chain using OpenSSL, with proxy support and custom CA certificates.
+/// Fetch TLS certificate chain using OpenSSL, with proxy support, custom CA certificates, and mTLS.
 #[allow(clippy::too_many_arguments)]
 pub fn fetch_tls_chain_openssl(
     endpoint: &str,
@@ -129,6 +129,11 @@ pub fn fetch_tls_chain_openssl(
     cipher_list: Option<&str>,
     cipher_suites: Option<&str>,
     debug: bool,
+    client_cert_path: Option<&str>,
+    client_key_path: Option<&str>,
+    pkcs12_path: Option<&str>,
+    cert_password: Option<&str>,
+    ca_cert_path: Option<&str>,
 ) -> Result<TlsConnectionInfo> {
     // Guard against too many concurrent connections
     let current = ACTIVE_CONNECTIONS.fetch_add(1, Ordering::SeqCst);
@@ -200,8 +205,67 @@ pub fn fetch_tls_chain_openssl(
     let mut builder =
         SslConnector::builder(SslMethod::tls()).map_err(|e| anyhow::anyhow!("OpenSSL builder failed: {e}"))?;
 
-    // Load CA certificates (system defaults, or custom via SSL_CERT_FILE/SSL_CERT_DIR)
-    load_ca_certs(&mut builder)?;
+    // Load CA certificates: custom CA bundle or system defaults
+    if let Some(ca_path) = ca_cert_path {
+        debug_log!(debug, "Using custom CA bundle: {}", ca_path);
+        builder
+            .set_ca_file(ca_path)
+            .map_err(|e| anyhow::anyhow!("Failed to load custom CA certificate '{}': {}", ca_path, e))?;
+    } else {
+        load_ca_certs(&mut builder)?;
+    }
+
+    // Load client certificate for mTLS
+    if let Some(cert_path) = client_cert_path {
+        debug_log!(debug, "Loading client certificate: {}", cert_path);
+        builder
+            .set_certificate_file(cert_path, openssl::ssl::SslFiletype::PEM)
+            .map_err(|e| anyhow::anyhow!("Failed to load client certificate '{}': {}", cert_path, e))?;
+
+        if let Some(key_path) = client_key_path {
+            debug_log!(debug, "Loading client private key: {}", key_path);
+            builder
+                .set_private_key_file(key_path, openssl::ssl::SslFiletype::PEM)
+                .map_err(|e| anyhow::anyhow!("Failed to load client private key '{}': {}", key_path, e))?;
+        }
+
+        builder
+            .check_private_key()
+            .map_err(|e| anyhow::anyhow!("Client certificate and private key do not match: {}", e))?;
+        debug_log!(debug, "Client certificate and key verified");
+    } else if let Some(p12_path) = pkcs12_path {
+        debug_log!(debug, "Loading PKCS12 client identity: {}", p12_path);
+        let p12_data =
+            std::fs::read(p12_path).map_err(|e| anyhow::anyhow!("Failed to read PKCS12 file '{}': {}", p12_path, e))?;
+        let password = cert_password.unwrap_or("");
+        let pkcs12 = openssl::pkcs12::Pkcs12::from_der(&p12_data)
+            .map_err(|e| anyhow::anyhow!("Failed to parse PKCS12 file '{}': {}", p12_path, e))?;
+        let parsed = pkcs12
+            .parse2(password)
+            .map_err(|e| anyhow::anyhow!("Failed to decrypt PKCS12 '{}' (wrong password?): {}", p12_path, e))?;
+
+        if let Some(ref cert) = parsed.cert {
+            builder
+                .set_certificate(cert)
+                .map_err(|e| anyhow::anyhow!("Failed to set PKCS12 certificate: {}", e))?;
+        }
+        if let Some(ref pkey) = parsed.pkey {
+            builder
+                .set_private_key(pkey)
+                .map_err(|e| anyhow::anyhow!("Failed to set PKCS12 private key: {}", e))?;
+        }
+        if let Some(ref ca_chain) = parsed.ca {
+            for ca_cert in ca_chain {
+                builder
+                    .add_extra_chain_cert(ca_cert.to_owned())
+                    .map_err(|e| anyhow::anyhow!("Failed to add PKCS12 CA cert to chain: {}", e))?;
+            }
+        }
+        builder
+            .check_private_key()
+            .map_err(|e| anyhow::anyhow!("PKCS12 certificate and private key do not match: {}", e))?;
+        debug_log!(debug, "PKCS12 client identity loaded and verified");
+    }
 
     // Apply TLS version constraints
     if let Some(min) = min_tls {
