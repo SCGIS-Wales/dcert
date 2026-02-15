@@ -15,12 +15,9 @@ use tokio::sync::Semaphore;
 const MCP_DESCRIPTION: &str =
     "MCP server for TLS certificate analysis, format conversion, and key verification — for AI-powered IDEs";
 
-/// Return the version string, preferring the git tag set by build.rs.
+/// Return the version string from Cargo.toml.
 fn dcert_mcp_version() -> &'static str {
-    match option_env!("DCERT_GIT_VERSION") {
-        Some(git_ver) if git_ver.contains('.') => git_ver.strip_prefix('v').unwrap_or(git_ver),
-        _ => env!("CARGO_PKG_VERSION"),
-    }
+    env!("CARGO_PKG_VERSION")
 }
 
 /// Long version string: version + description, for `dcert-mcp --version`.
