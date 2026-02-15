@@ -84,6 +84,8 @@ jobs:
   # Auto-tag on merge to main: auto-bumps the patch version, commits
   # the change, creates a git tag, and pushes both. This triggers
   # the tag-based build/release pipeline below.
+  # NOTE: Uses TAP_GITHUB_TOKEN (a PAT) instead of GITHUB_TOKEN because
+  # pushes made with GITHUB_TOKEN do not trigger subsequent workflows.
   auto-tag:
     name: Auto-tag release
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
@@ -96,7 +98,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.TAP_GITHUB_TOKEN }}
 
       - name: Determine next version
         id: version
