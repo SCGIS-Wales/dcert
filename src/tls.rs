@@ -91,7 +91,9 @@ pub fn direct_tcp_connect(host: &str, port: u16, timeout: Duration) -> Result<(T
 }
 
 /// Result of a TLS connection, containing the certificate chain and connection metadata.
+#[derive(Debug, serde::Serialize, Clone)]
 pub struct TlsConnectionInfo {
+    #[serde(skip)]
     pub pem_data: String,
     pub dns_latency: u128,
     pub l4_latency: u128,

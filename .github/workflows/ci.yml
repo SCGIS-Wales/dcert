@@ -129,8 +129,7 @@ jobs:
       - name: Package artifact
         run: |
           mkdir -p dist
-          BIN_NAME="dcert"
-          tar czf dist/${BIN_NAME}-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release ${BIN_NAME}
+          tar czf dist/dcert-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release dcert dcert-mcp
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -184,7 +183,7 @@ jobs:
       - name: Package artifact
         run: |
           mkdir -p dist
-          tar czf dist/dcert-x86_64-apple-darwin.tar.gz -C target/release dcert
+          tar czf dist/dcert-x86_64-apple-darwin.tar.gz -C target/release dcert dcert-mcp
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -238,7 +237,7 @@ jobs:
       - name: Package artifact
         run: |
           mkdir -p dist
-          tar czf dist/dcert-aarch64-apple-darwin.tar.gz -C target/release dcert
+          tar czf dist/dcert-aarch64-apple-darwin.tar.gz -C target/release dcert dcert-mcp
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -346,6 +345,7 @@ jobs:
 
                 def install
                   bin.install "dcert"
+                  bin.install "dcert-mcp"
                 end
               end
 
@@ -355,6 +355,7 @@ jobs:
 
                 def install
                   bin.install "dcert"
+                  bin.install "dcert-mcp"
                 end
               end
             end
@@ -366,6 +367,7 @@ jobs:
 
                 def install
                   bin.install "dcert"
+                  bin.install "dcert-mcp"
                 end
               end
             end
