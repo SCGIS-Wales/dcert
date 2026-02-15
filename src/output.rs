@@ -9,7 +9,7 @@ use x509_parser::certificate::X509Certificate;
 use x509_parser::prelude::FromDer;
 
 use crate::cert::{extract_ocsp_url, parse_cert_infos_from_pem, CertInfo, CertProcessOpts};
-use crate::cli::{Args, CipherNotation, HttpProtocol, OutputFormat, SortOrder};
+use crate::cli::{CheckArgs, CipherNotation, HttpProtocol, OutputFormat, SortOrder};
 use crate::debug::debug_log;
 use crate::ocsp::check_ocsp_status;
 use crate::proxy::ProxyConfig;
@@ -242,7 +242,7 @@ pub struct StructuredOutput {
 #[allow(clippy::too_many_arguments)]
 pub fn process_target(
     target: &str,
-    args: &Args,
+    args: &CheckArgs,
     proxy_config: &ProxyConfig,
     body: Option<&[u8]>,
 ) -> Result<TargetResult> {
@@ -278,6 +278,11 @@ pub fn process_target(
             args.cipher_list.as_deref(),
             args.cipher_suites.as_deref(),
             args.debug,
+            args.client_cert.as_deref(),
+            args.client_key.as_deref(),
+            args.pkcs12.as_deref(),
+            args.cert_password.as_deref(),
+            args.ca_cert.as_deref(),
         )?;
         let pem = conn.pem_data.clone();
         (pem, Some(conn))
@@ -484,7 +489,7 @@ pub fn output_results(
     format: OutputFormat,
     http_protocol: &HttpProtocol,
     multi_target: bool,
-    args: &Args,
+    args: &CheckArgs,
 ) -> Result<()> {
     if multi_target {
         println!("{}", format!("--- {} ---", result.target).bold().cyan());

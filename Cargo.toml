@@ -21,7 +21,7 @@ pem-rfc7468 = { version = "1.0", features = ["alloc"] }
 url = "2.5"
 base64 = "0.22"
 anyhow = "1.0"
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.5", features = ["derive", "env"] }
 colored = "3.1"
 time = { version = "0.3", features = ["formatting"] }
 serde = { version = "1.0", features = ["derive"] }

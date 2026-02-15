@@ -42,12 +42,28 @@ fn test_version_flag() {
 
 #[test]
 fn test_help_flag() {
+    // Top-level help shows subcommands
     let output = dcert_bin().arg("--help").output().expect("failed to run dcert");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("check"), "top-level help should list check subcommand");
+    assert!(
+        stdout.contains("convert"),
+        "top-level help should list convert subcommand"
+    );
+    assert!(
+        stdout.contains("verify-key"),
+        "top-level help should list verify-key subcommand"
+    );
+
+    // Check subcommand help shows all check-specific flags
+    let output = dcert_bin()
+        .args(["check", "--help"])
+        .output()
+        .expect("failed to run dcert");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("--format"));
     assert!(stdout.contains("--export-pem"));
     assert!(stdout.contains("--expired-only"));
-    // Check new flags are in help
     assert!(stdout.contains("--no-verify"));
     assert!(stdout.contains("--timeout"));
     assert!(stdout.contains("--fingerprint"));
@@ -58,6 +74,11 @@ fn test_help_flag() {
     assert!(stdout.contains("--sni"));
     assert!(stdout.contains("--check-revocation"));
     assert!(stdout.contains("--read-timeout"));
+    // New mTLS flags
+    assert!(stdout.contains("--client-cert"));
+    assert!(stdout.contains("--client-key"));
+    assert!(stdout.contains("--pkcs12"));
+    assert!(stdout.contains("--ca-cert"));
 }
 
 // ---------------------------------------------------------------
@@ -525,7 +546,10 @@ fn test_invalid_url_scheme() {
 
 #[test]
 fn test_help_shows_data_flags() {
-    let output = dcert_bin().arg("--help").output().expect("failed to run dcert");
+    let output = dcert_bin()
+        .args(["check", "--help"])
+        .output()
+        .expect("failed to run dcert");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("--data"), "help should mention --data");
     assert!(stdout.contains("--data-file"), "help should mention --data-file");
@@ -652,7 +676,10 @@ fn test_min_tls_accepts_1_3() {
 
 #[test]
 fn test_help_shows_debug_flag() {
-    let output = dcert_bin().arg("--help").output().expect("failed to run dcert");
+    let output = dcert_bin()
+        .args(["check", "--help"])
+        .output()
+        .expect("failed to run dcert");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("--debug"), "help should mention --debug");
 }
