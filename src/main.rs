@@ -18,7 +18,9 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
 use cli::{exit_code, Args, HttpMethod, OutputFormat};
-use output::{check_expiry_warnings, export_pem_chain, output_results, print_diff, process_target, TargetResult};
+use output::{
+    check_expiry_warnings, export_pem_chain, output_results, print_diff, process_target, StructuredOutput, TargetResult,
+};
 use proxy::ProxyConfig;
 
 fn run() -> Result<i32> {
@@ -183,13 +185,21 @@ fn run() -> Result<i32> {
     if multi_target && matches!(args.format, OutputFormat::Json) {
         let mut map = serde_json::Map::new();
         for result in &all_results {
-            map.insert(result.target.clone(), serde_json::to_value(&result.infos)?);
+            let output = StructuredOutput {
+                certificates: result.infos.clone(),
+                connection: result.conn_info.clone(),
+            };
+            map.insert(result.target.clone(), serde_json::to_value(&output)?);
         }
         println!("{}", serde_json::to_string_pretty(&map)?);
     } else if multi_target && matches!(args.format, OutputFormat::Yaml) {
         let mut map = std::collections::BTreeMap::new();
         for result in &all_results {
-            map.insert(result.target.clone(), result.infos.clone());
+            let output = StructuredOutput {
+                certificates: result.infos.clone(),
+                connection: result.conn_info.clone(),
+            };
+            map.insert(result.target.clone(), output);
         }
         println!("{}", serde_yml::to_string(&map)?);
     } else {
