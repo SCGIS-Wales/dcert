@@ -7,7 +7,6 @@ permissions:
 on:
   push:
     branches: [ main, develop ]
-    tags: [ 'v*' ]
   pull_request:
     branches: [ main, develop ]
 
@@ -81,11 +80,10 @@ jobs:
       - name: Run cargo audit
         run: cargo audit
 
-  # Auto-tag on merge to main: auto-bumps the patch version, commits
-  # the change, creates a git tag, and pushes both. This triggers
-  # the tag-based build/release pipeline below.
-  # NOTE: Uses TAP_GITHUB_TOKEN (a PAT) instead of GITHUB_TOKEN because
-  # pushes made with GITHUB_TOKEN do not trigger subsequent workflows.
+  # Auto-tag on merge to main: determines the next semver patch version,
+  # updates Cargo.toml, commits, creates a git tag, and pushes.
+  # Outputs the tag/version so downstream jobs in THIS run can use them
+  # (we do NOT rely on a tag push triggering a second workflow run).
   auto-tag:
     name: Auto-tag release
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
@@ -93,6 +91,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+      created: ${{ steps.create_tag.outputs.created }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -130,6 +132,7 @@ jobs:
           fi
 
       - name: Update Cargo.toml version and create tag
+        id: create_tag
         if: steps.check_tag.outputs.exists == 'false'
         run: |
           VERSION="${{ steps.version.outputs.version }}"
@@ -149,11 +152,13 @@ jobs:
           git tag "$TAG"
           git push origin "$TAG"
           echo "::notice::Created tag $TAG"
+          echo "created=true" >> "$GITHUB_OUTPUT"
 
   build-linux:
     name: Build Linux binaries
     runs-on: ubuntu-latest
-    needs: [ test ]
+    needs: [ test, auto-tag ]
+    if: always() && needs.test.result == 'success' && (needs.auto-tag.result == 'success' || needs.auto-tag.result == 'skipped')
     strategy:
       matrix:
         target:
@@ -164,14 +169,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Sync version from git tag
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Set version from auto-tag
+        if: needs.auto-tag.outputs.version != ''
         run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
-          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?(\+[a-zA-Z0-9.]+)?$'; then
-            echo "::error::Tag version '$VERSION' is not valid semver (expected: MAJOR.MINOR.PATCH)"
-            exit 1
-          fi
+          VERSION="${{ needs.auto-tag.outputs.version }}"
           sed -i "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
           echo "Set Cargo.toml version to $VERSION"
 
@@ -213,21 +214,18 @@ jobs:
   build-macos-intel:
     name: Build macOS Intel
     runs-on: macos-15-intel
-    needs: [ test ]
+    needs: [ test, auto-tag ]
+    if: always() && needs.test.result == 'success' && (needs.auto-tag.result == 'success' || needs.auto-tag.result == 'skipped')
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Sync version from git tag
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Set version from auto-tag
+        if: needs.auto-tag.outputs.version != ''
         run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
-          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?(\+[a-zA-Z0-9.]+)?$'; then
-            echo "::error::Tag version '$VERSION' is not valid semver (expected: MAJOR.MINOR.PATCH)"
-            exit 1
-          fi
+          VERSION="${{ needs.auto-tag.outputs.version }}"
           sed -i '' "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
           echo "Set Cargo.toml version to $VERSION"
 
@@ -267,21 +265,18 @@ jobs:
   build-macos-arm:
     name: Build macOS ARM64
     runs-on: macos-latest
-    needs: [ test ]
+    needs: [ test, auto-tag ]
+    if: always() && needs.test.result == 'success' && (needs.auto-tag.result == 'success' || needs.auto-tag.result == 'skipped')
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Sync version from git tag
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Set version from auto-tag
+        if: needs.auto-tag.outputs.version != ''
         run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
-          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?(\+[a-zA-Z0-9.]+)?$'; then
-            echo "::error::Tag version '$VERSION' is not valid semver (expected: MAJOR.MINOR.PATCH)"
-            exit 1
-          fi
+          VERSION="${{ needs.auto-tag.outputs.version }}"
           sed -i '' "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
           echo "Set Cargo.toml version to $VERSION"
 
@@ -322,9 +317,9 @@ jobs:
   # of recompiling from source, cutting build time from ~30min to ~30sec.
   docker:
     name: Build & Push Docker Image
-    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    needs: [ build-linux ]
+    needs: [ auto-tag, build-linux ]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -348,10 +343,9 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
+            type=raw,value=${{ needs.auto-tag.outputs.version }},enable=${{ needs.auto-tag.outputs.created == 'true' }}
+            type=raw,value=latest,enable=${{ needs.auto-tag.outputs.created == 'true' }}
             type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -373,8 +367,8 @@ jobs:
 
   create-homebrew-formula:
     name: Create Homebrew Formula
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [ build-linux, build-macos-intel, build-macos-arm ]
+    if: needs.auto-tag.outputs.created == 'true'
+    needs: [ auto-tag, build-linux, build-macos-intel, build-macos-arm ]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -400,7 +394,8 @@ jobs:
 
       - name: Generate Homebrew Formula
         run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
+          VERSION="${{ needs.auto-tag.outputs.version }}"
+          TAG="${{ needs.auto-tag.outputs.tag }}"
           REPO_URL="https://github.com/${{ github.repository }}"
 
           # Calculate SHA256 checksums
@@ -488,7 +483,7 @@ jobs:
             echo "No changes to formula"
           else
             git add Formula/dcert.rb
-            git commit -m "Update dcert formula to version ${GITHUB_REF#refs/tags/v}"
+            git commit -m "Update dcert formula to version ${{ needs.auto-tag.outputs.version }}"
             git remote set-url origin "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/SCGIS-Wales/homebrew-tap.git"
             git push
           fi
@@ -501,8 +496,8 @@ jobs:
 
   release:
     name: Create GitHub Release
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [ test, security-audit, build-linux, build-macos-intel, build-macos-arm, create-homebrew-formula ]
+    if: needs.auto-tag.outputs.created == 'true'
+    needs: [ auto-tag, test, security-audit, build-linux, build-macos-intel, build-macos-arm, create-homebrew-formula ]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -544,7 +539,7 @@ jobs:
 
       - name: Generate release notes
         run: |
-          TAG="${{ github.ref_name }}"
+          TAG="${{ needs.auto-tag.outputs.tag }}"
           REPO="${{ github.repository }}"
           cat > release-notes.md <<EOF
           ## Installation
@@ -575,7 +570,7 @@ jobs:
           ### Docker
 
           \`\`\`bash
-          docker pull ghcr.io/${REPO}:${TAG}
+          docker pull ghcr.io/${REPO}:${TAG#v}
           docker run --rm -i ghcr.io/${REPO}:latest
           \`\`\`
           EOF
@@ -584,7 +579,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${{ github.ref_name }}"
+          TAG="${{ needs.auto-tag.outputs.tag }}"
           # Delete any stale draft releases for this tag to avoid conflicts
           gh api "repos/${{ github.repository }}/releases" --jq \
             ".[] | select(.tag_name==\"${TAG}\" and .draft==true) | .id" \
@@ -597,7 +592,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${{ github.ref_name }}"
+          TAG="${{ needs.auto-tag.outputs.tag }}"
           if gh release view "${TAG}" > /dev/null 2>&1; then
             echo "Release ${TAG} already exists, updating..."
             gh release edit "${TAG}" \
