@@ -1,3 +1,4 @@
+use clap::Parser;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo};
@@ -7,6 +8,34 @@ use serde::Deserialize;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::process::Command;
+
+/// Canonical description for dcert-mcp, consistent with the CLI.
+const MCP_DESCRIPTION: &str =
+    "MCP server for TLS certificate analysis, format conversion, and key verification — for AI-powered IDEs";
+
+/// Return the version string, preferring the git tag set by build.rs.
+fn dcert_mcp_version() -> &'static str {
+    match option_env!("DCERT_GIT_VERSION") {
+        Some(git_ver) if git_ver.contains('.') => git_ver.strip_prefix('v').unwrap_or(git_ver),
+        _ => env!("CARGO_PKG_VERSION"),
+    }
+}
+
+/// Long version string: version + description, for `dcert-mcp --version`.
+fn dcert_mcp_long_version() -> &'static str {
+    use std::sync::OnceLock;
+    static LONG_VER: OnceLock<String> = OnceLock::new();
+    let s = LONG_VER.get_or_init(|| format!("{}\n{}", dcert_mcp_version(), MCP_DESCRIPTION));
+    s.as_str()
+}
+
+/// dcert-mcp: MCP server for TLS certificate analysis.
+#[derive(Parser, Debug)]
+#[command(name = "dcert-mcp")]
+#[command(about = MCP_DESCRIPTION)]
+#[command(version = dcert_mcp_version())]
+#[command(long_version = dcert_mcp_long_version())]
+struct McpCli {}
 
 /// Maximum time allowed for a single dcert subprocess invocation.
 const SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(60);
@@ -257,6 +286,22 @@ struct TlsConnectionInfoParams {
     min_tls: Option<String>,
     /// Maximum TLS version: "1.2" or "1.3"
     max_tls: Option<String>,
+    /// mTLS and CA configuration
+    #[serde(flatten, default)]
+    mtls: MtlsParams,
+}
+
+/// Parameters for the export_pem tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct ExportPemParams {
+    /// HTTPS URL or hostname to fetch the TLS certificate chain from
+    target: String,
+    /// Output file path to write the PEM chain (default: writes to stdout in response)
+    #[serde(default)]
+    output_path: Option<String>,
+    /// Exclude expired certificates from the exported chain (default: false)
+    #[serde(default)]
+    exclude_expired: bool,
     /// mTLS and CA configuration
     #[serde(flatten, default)]
     mtls: MtlsParams,
@@ -624,6 +669,64 @@ impl DcertMcpServer {
         }
     }
 
+    /// Export the PEM certificate chain from an HTTPS endpoint.
+    #[tool(
+        description = "Export the TLS certificate chain from an HTTPS endpoint as PEM text. Optionally saves to a file and can exclude expired certificates. Returns the PEM chain text. Supports mTLS and custom CA bundles."
+    )]
+    pub async fn export_pem(
+        &self,
+        Parameters(params): Parameters<ExportPemParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if let Err(e) = validate_target(&params.target) {
+            return ok_error(e);
+        }
+        if let Err(e) = params.mtls.validate() {
+            return ok_error(e);
+        }
+        if let Some(ref p) = params.output_path {
+            if let Err(e) = validate_path(p, "output_path") {
+                return ok_error(e);
+            }
+        }
+
+        let mut args = vec![params.target.clone(), "--format".to_string(), "json".to_string()];
+        if let Some(ref output) = params.output_path {
+            args.push("--export-pem".to_string());
+            args.push(output.clone());
+        }
+        if params.exclude_expired {
+            args.push("--exclude-expired".to_string());
+        }
+        args.extend(params.mtls.to_args());
+
+        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        match run_dcert(&args_refs).await {
+            Ok((stdout, stderr, code)) => {
+                let mut output = String::new();
+
+                // If no output_path, extract PEM data from stderr debug output
+                // or just return JSON with cert info. The user can also specify
+                // an output_path to write to file.
+                if params.output_path.is_some() {
+                    output.push_str(&format!(
+                        "PEM chain exported to: {}\n\n",
+                        params.output_path.as_ref().unwrap()
+                    ));
+                }
+                output.push_str(&stdout);
+                if !stderr.is_empty() {
+                    output.push_str("\n--- debug/stderr ---\n");
+                    output.push_str(&stderr);
+                }
+                if code != 0 {
+                    output.push_str(&format!("\n--- exit code: {} ---", code));
+                }
+                ok_text(output)
+            }
+            Err(e) => ok_error(e),
+        }
+    }
+
     /// Verify that a private key matches a certificate.
     #[tool(
         description = "Verify that a private key PEM file matches a certificate (PEM file or HTTPS endpoint). Returns match status, key type/size, and certificate subject. Useful for validating key-cert pairs before deployment."
@@ -844,12 +947,9 @@ impl ServerHandler for DcertMcpServer {
         ServerInfo {
             server_info: Implementation {
                 name: "dcert-mcp".to_string(),
-                version: env!("CARGO_PKG_VERSION").to_string(),
+                version: dcert_mcp_version().to_string(),
                 title: Some("dcert MCP Server".to_string()),
-                description: Some(
-                    "TLS certificate analysis, validation, conversion, and key verification tools for AI-powered IDEs"
-                        .to_string(),
-                ),
+                description: Some(MCP_DESCRIPTION.to_string()),
                 icons: None,
                 website_url: Some("https://github.com/SCGIS-Wales/dcert".to_string()),
             },
@@ -861,6 +961,9 @@ impl ServerHandler for DcertMcpServer {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Parse CLI args so --version and --help work
+    let _cli = McpCli::parse();
+
     let server = DcertMcpServer::new();
     let service = server.serve(rmcp::transport::io::stdio()).await?;
     service.waiting().await?;
@@ -1010,32 +1113,38 @@ mod tests {
     // find_dcert_binary unit tests
     // ---------------------------------------------------------------
 
+    /// Mutex to serialize tests that modify the DCERT_PATH env var,
+    /// preventing race conditions when tests run in parallel.
+    static DCERT_PATH_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn test_find_dcert_binary_respects_env() {
+        let _guard = DCERT_PATH_MUTEX.lock().unwrap();
         // Save and restore existing env
         let original = std::env::var("DCERT_PATH").ok();
-        std::env::set_var("DCERT_PATH", "/custom/path/dcert");
+        unsafe { std::env::set_var("DCERT_PATH", "/custom/path/dcert") };
         let path = find_dcert_binary();
         assert_eq!(path, PathBuf::from("/custom/path/dcert"));
         // Restore
         if let Some(orig) = original {
-            std::env::set_var("DCERT_PATH", orig);
+            unsafe { std::env::set_var("DCERT_PATH", orig) };
         } else {
-            std::env::remove_var("DCERT_PATH");
+            unsafe { std::env::remove_var("DCERT_PATH") };
         }
     }
 
     #[test]
     fn test_find_dcert_binary_fallback() {
+        let _guard = DCERT_PATH_MUTEX.lock().unwrap();
         // Save and restore existing env
         let original = std::env::var("DCERT_PATH").ok();
-        std::env::remove_var("DCERT_PATH");
+        unsafe { std::env::remove_var("DCERT_PATH") };
         let path = find_dcert_binary();
         // Should either find a sibling binary or fall back to "dcert"
         assert!(path.file_name().unwrap().to_str().unwrap().starts_with("dcert"));
         // Restore
         if let Some(orig) = original {
-            std::env::set_var("DCERT_PATH", orig);
+            unsafe { std::env::set_var("DCERT_PATH", orig) };
         }
     }
 
@@ -1050,6 +1159,7 @@ mod tests {
         assert_eq!(info.server_info.name, "dcert-mcp");
         assert!(!info.server_info.version.is_empty());
         assert_eq!(info.server_info.title.as_deref(), Some("dcert MCP Server"));
+        assert_eq!(info.server_info.description.as_deref(), Some(MCP_DESCRIPTION));
     }
 
     #[test]
