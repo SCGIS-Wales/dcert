@@ -306,62 +306,41 @@ pub fn fetch_tls_chain_openssl(
         }
     }
 
-    // Collect per-certificate verification errors for chain validation detail
+    // Collect per-certificate verification errors for chain validation detail.
+    // Uses unwrap_or_else(|e| e.into_inner()) for panic safety — if a prior
+    // callback panicked and poisoned the Mutex, we recover the inner data
+    // rather than panicking again inside the OpenSSL callback.
     let verify_errors: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
     let errors_clone = verify_errors.clone();
+    let force_accept = no_verify;
 
-    if no_verify {
-        // Collect chain but don't abort on verification failure; still record errors
-        builder.set_verify_callback(SslVerifyMode::PEER, move |preverify, ctx| {
-            if !preverify {
-                let depth = ctx.error_depth();
-                let err = ctx.error();
-                let subject = ctx
-                    .current_cert()
-                    .map(|c| {
-                        c.subject_name().entries().fold(String::new(), |mut acc, e| {
-                            if !acc.is_empty() {
-                                acc.push_str(", ");
-                            }
-                            if let Ok(data) = e.data().as_utf8() {
-                                acc.push_str(data.as_ref());
-                            }
-                            acc
-                        })
+    builder.set_verify_callback(SslVerifyMode::PEER, move |preverify, ctx| {
+        if !preverify {
+            let depth = ctx.error_depth();
+            let err = ctx.error();
+            let subject = ctx
+                .current_cert()
+                .map(|c| {
+                    c.subject_name().entries().fold(String::new(), |mut acc, e| {
+                        if !acc.is_empty() {
+                            acc.push_str(", ");
+                        }
+                        if let Ok(data) = e.data().as_utf8() {
+                            acc.push_str(data.as_ref());
+                        }
+                        acc
                     })
-                    .unwrap_or_else(|| "unknown".to_string());
-                if let Ok(mut errs) = errors_clone.lock() {
-                    errs.push(format!("depth {}: {} ({})", depth, err, subject));
-                }
-            }
-            true // always continue
-        });
-    } else {
-        builder.set_verify_callback(SslVerifyMode::PEER, move |preverify, ctx| {
-            if !preverify {
-                let depth = ctx.error_depth();
-                let err = ctx.error();
-                let subject = ctx
-                    .current_cert()
-                    .map(|c| {
-                        c.subject_name().entries().fold(String::new(), |mut acc, e| {
-                            if !acc.is_empty() {
-                                acc.push_str(", ");
-                            }
-                            if let Ok(data) = e.data().as_utf8() {
-                                acc.push_str(data.as_ref());
-                            }
-                            acc
-                        })
-                    })
-                    .unwrap_or_else(|| "unknown".to_string());
-                if let Ok(mut errs) = errors_clone.lock() {
-                    errs.push(format!("depth {}: {} ({})", depth, err, subject));
-                }
-            }
-            preverify // respect the original verification result
-        });
-    }
+                })
+                .unwrap_or_else(|| "unknown".to_string());
+            let mut errs = errors_clone.lock().unwrap_or_else(|e| e.into_inner());
+            errs.push(format!("depth {}: {} ({})", depth, err, subject));
+        }
+        if force_accept {
+            true
+        } else {
+            preverify
+        }
+    });
     let connector = builder.build();
 
     let sni_host = sni_override.unwrap_or(host);
@@ -474,14 +453,16 @@ pub fn fetch_tls_chain_openssl(
         .map_err(|e| anyhow::anyhow!("Failed to flush stream: {e}"))?;
 
     // Read HTTP response to get status code
-    // We need to read the response in a loop to handle partial reads
+    // We need to read the response in a loop to handle partial reads.
+    // Hard cap prevents memory exhaustion from a malicious server sending endless data.
+    const MAX_RESPONSE_SIZE: usize = 64 * 1024; // 64 KB — we only need the status line
     let mut response_buffer = Vec::new();
     let mut temp_buffer = [0u8; 1024];
     let mut attempts = 0;
     const MAX_ATTEMPTS: usize = 10;
 
     // Keep reading until we have at least the status line
-    while attempts < MAX_ATTEMPTS && response_buffer.len() < 4096 {
+    while attempts < MAX_ATTEMPTS && response_buffer.len() < MAX_RESPONSE_SIZE {
         match ssl_stream.read(&mut temp_buffer) {
             Ok(0) => break, // EOF
             Ok(n) => {
@@ -601,8 +582,8 @@ pub fn fetch_tls_chain_openssl(
         }
     };
 
-    // Collect chain validation errors
-    let chain_validation_errors = verify_errors.lock().map(|errs| errs.clone()).unwrap_or_default();
+    // Collect chain validation errors (panic-safe Mutex access)
+    let chain_validation_errors = verify_errors.lock().unwrap_or_else(|e| e.into_inner()).clone();
 
     if debug {
         if let Some(ref result) = verify_result {
