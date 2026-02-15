@@ -1,5 +1,6 @@
 mod cert;
 mod cli;
+mod convert;
 mod debug;
 mod ocsp;
 mod output;
@@ -17,15 +18,13 @@ use std::time::Duration;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
-use cli::{exit_code, Args, HttpMethod, OutputFormat};
+use cli::{exit_code, CheckArgs, Cli, Command, HttpMethod, OutputFormat, KNOWN_SUBCOMMANDS};
 use output::{
     check_expiry_warnings, export_pem_chain, output_results, print_diff, process_target, StructuredOutput, TargetResult,
 };
 use proxy::ProxyConfig;
 
-fn run() -> Result<i32> {
-    let mut args: Args = Args::parse();
-
+fn run_check(mut args: CheckArgs) -> Result<i32> {
     // Resolve request body from --data or --data-file
     let body_data: Option<Vec<u8>> = if let Some(ref data) = args.data {
         Some(data.as_bytes().to_vec())
@@ -255,10 +254,114 @@ fn run() -> Result<i32> {
     Ok(exit_code)
 }
 
+fn run_convert(args: cli::ConvertArgs) -> Result<i32> {
+    match args.mode {
+        cli::ConvertMode::PfxToPem {
+            input,
+            password,
+            output_dir,
+        } => {
+            let result = convert::pfx_to_pem(&input, &password, &output_dir)?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            Ok(exit_code::SUCCESS)
+        }
+        cli::ConvertMode::PemToPfx {
+            cert,
+            key,
+            output,
+            password,
+            ca,
+        } => {
+            let result = convert::pem_to_pfx(&cert, &key, &password, &output, ca.as_deref())?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            Ok(exit_code::SUCCESS)
+        }
+        cli::ConvertMode::CreateKeystore {
+            cert,
+            key,
+            output,
+            password,
+            alias,
+        } => {
+            let result = convert::create_keystore(&cert, &key, &password, &output, &alias)?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            Ok(exit_code::SUCCESS)
+        }
+        cli::ConvertMode::CreateTruststore {
+            certs,
+            output,
+            password,
+        } => {
+            let result = convert::create_truststore(&certs, &password, &output)?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            Ok(exit_code::SUCCESS)
+        }
+    }
+}
+
+fn run_verify_key(args: cli::VerifyKeyArgs) -> Result<i32> {
+    let result = cert::verify_key_matches_cert(&args.key, &args.target, args.debug)?;
+
+    match args.format {
+        OutputFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        OutputFormat::Yaml => {
+            println!("{}", serde_yml::to_string(&result)?);
+        }
+        OutputFormat::Pretty => {
+            if result.matches {
+                println!("{}", "Key matches certificate".green().bold());
+            } else {
+                println!("{}", "Key does NOT match certificate".red().bold());
+            }
+            println!("  Key type       : {}", result.key_type);
+            println!("  Key size       : {} bits", result.key_size_bits);
+            println!("  Cert subject   : {}", result.cert_subject);
+            println!("  Cert key algo  : {}", result.cert_public_key_algorithm);
+            println!("  Cert key size  : {} bits", result.cert_public_key_size_bits);
+            if !result.details.is_empty() {
+                println!("  Details        : {}", result.details);
+            }
+        }
+    }
+
+    if result.matches {
+        Ok(exit_code::SUCCESS)
+    } else {
+        Ok(exit_code::KEY_MISMATCH)
+    }
+}
+
+fn run() -> Result<i32> {
+    let os_args: Vec<String> = std::env::args().collect();
+
+    // Backward-compatible default: inject "check" when first arg isn't a known subcommand
+    let cli = if os_args.len() > 1 {
+        let first_arg = &os_args[1];
+        if KNOWN_SUBCOMMANDS.contains(&first_arg.as_str()) {
+            Cli::parse()
+        } else {
+            // Insert "check" after program name
+            let mut new_args = vec![os_args[0].clone(), "check".to_string()];
+            new_args.extend(os_args[1..].iter().cloned());
+            Cli::parse_from(new_args)
+        }
+    } else {
+        Cli::parse()
+    };
+
+    match cli.command {
+        Command::Check(args) => run_check(*args),
+        Command::Convert(args) => run_convert(args),
+        Command::VerifyKey(args) => run_verify_key(args),
+    }
+}
+
 fn main() {
     // Print help if no arguments (other than program name) are provided
     if std::env::args().len() == 1 {
-        Args::command().print_help().unwrap();
+        Cli::command().print_help().unwrap();
         println!();
         std::process::exit(0);
     }

@@ -1,46 +1,50 @@
-# dcert · TLS Certificate Decoder & Validator
+# dcert - TLS Certificate Decoder & Validator
 
-A powerful Rust CLI and MCP server for X.509 certificate analysis. Reads certificates from PEM files or fetches them from HTTPS endpoints. Extracts key certificate details, validates TLS connections, checks revocation status, and integrates with AI-powered IDEs via the Model Context Protocol (MCP).
+A Rust CLI and MCP server for X.509 certificate analysis, format conversion, and key verification. Reads certificates from PEM files or HTTPS endpoints. Validates TLS connections, checks revocation status, converts between PFX and PEM formats, and integrates with AI-powered IDEs via the Model Context Protocol (MCP).
 
 [![CI/CD Pipeline](https://github.com/SCGIS-Wales/dcert/actions/workflows/ci.yml/badge.svg)](https://github.com/SCGIS-Wales/dcert/actions/workflows/ci.yml)
 
-## Features
+## Table of Contents
 
-- **Dual Mode Operation**: Parse certificates from PEM files OR fetch live certificates from HTTPS endpoints
-- **MCP Server**: Integrate with AI-powered IDEs (Claude Code, Kiro, Kiro CLI, VS Code, JetBrains) via the Model Context Protocol
-- **Multiple Targets**: Process multiple PEM files and URLs in a single invocation, or pipe targets via stdin
-- **Comprehensive Certificate Analysis**: Subject, issuer, serial number, validity window, expiry status, SANs, and fingerprints
-- **Certificate Extensions**: Key usage, extended key usage, basic constraints, authority info access, signature algorithm, and public key info (algorithm & key size)
-- **Certificate Transparency**: SCT presence detection and SCT count (with `--extensions`)
-- **TLS Connection Debugging**: Protocol version, cipher suite, certificate transparency, chain validation detail, and verification result
-- **OCSP Revocation Checking**: Verify certificate revocation status via OCSP responders
-- **Expiry Warnings**: Alert when certificates are approaching expiry with configurable threshold and exit codes
-- **Certificate Comparison**: Side-by-side diff of certificates between two targets
-- **Monitoring Mode**: Periodically re-check targets and detect certificate changes
-- **Network Performance Metrics**: DNS resolution, Layer 4 (TCP), and Layer 7 (TLS+HTTP) latency measurements
-- **Flexible Output**: Pretty console output, JSON, or YAML
-- **Advanced Filtering**: Show only expired certificates
-- **Certificate Sorting**: Sort certificates by expiry date (ascending or descending)
-- **Certificate Export**: Save fetched certificate chains as PEM files with optional filtering of expired certificates
-- **TLS Version Control**: Constrain negotiated TLS version with `--min-tls` and `--max-tls` (supports 1.2, 1.3; TLS 1.0/1.1 rejected per RFC 8996)
-- **Cipher Suite Configuration**: Specify allowed TLS 1.2 ciphers (`--cipher-list`) and TLS 1.3 cipher suites (`--cipher-suites`) using OpenSSL cipher string format
-- **HTTP/2 ALPN Negotiation**: Request HTTP/2 via ALPN with `--http-protocol http2` and see the server's negotiated protocol
-- **Request Body Support**: Send data with `-d` / `--data` (inline) or `--data-file` (from file), with auto-POST promotion like curl
-- **Custom HTTP Options**: Configure HTTP method, headers, protocol version, SNI override, and connection timeout
-- **TLS Verification Control**: Disable verification with `--no-verify` for testing environments (with visible warning)
-- **Machine-Readable Exit Codes**: Distinct exit codes for success, expiry warnings, errors, verification failures, expired certs, and revoked certs
-- **Separate Read Timeout**: Configure read timeout independently from connection timeout with `--read-timeout`
-- **Smart Watch Mode**: Automatically enables fingerprinting for change detection in `--watch` mode
-- **Interactive Stdin Detection**: Prints a helpful prompt when reading from a terminal stdin
+- [Quick Start](#quick-start)
+- [Installation](#installation)
+- [Commands](#commands)
+  - [dcert [check] -- Certificate Analysis](#dcert-check--certificate-analysis-default)
+  - [dcert convert -- Format Conversion](#dcert-convert--format-conversion)
+  - [dcert verify-key -- Key Matching](#dcert-verify-key--key-matching)
+- [MCP Server (AI IDE Integration)](#mcp-server-ai-ide-integration)
+- [Features by Topic](#features-by-topic)
+- [Use Cases](#use-cases)
+- [Development](#development)
+- [License](#license)
+
+## Quick Start
+
+```bash
+# Install via Homebrew
+brew tap SCGIS-Wales/homebrew-tap https://github.com/SCGIS-Wales/homebrew-tap.git
+brew install dcert
+
+# Analyze a live HTTPS endpoint
+dcert https://www.google.com
+
+# Check certificate expiry (CI/CD gate)
+dcert https://your-api.com --expiry-warn 30
+
+# Convert PFX to PEM
+dcert convert pfx-to-pem client.pfx --password secret --output-dir ./certs
+
+# Verify a private key matches a certificate
+dcert verify-key cert.pem --key private.key
+```
 
 ## Installation
 
 ### Prebuilt binaries
 
-Download the latest release from the **Releases** page. Each release includes both `dcert` (CLI) and `dcert-mcp` (MCP server).
+Download from the [Releases](https://github.com/SCGIS-Wales/dcert/releases) page. Each release includes `dcert` (CLI) and `dcert-mcp` (MCP server).
 
 ```bash
-# Example for x86_64 glibc
 curl -L https://github.com/SCGIS-Wales/dcert/releases/latest/download/dcert-x86_64-unknown-linux-gnu.tar.gz | tar xz
 chmod +x dcert dcert-mcp
 sudo mv dcert dcert-mcp /usr/local/bin/
@@ -48,79 +52,308 @@ sudo mv dcert dcert-mcp /usr/local/bin/
 
 ### Homebrew
 
-Install via the SCGIS-Wales tap:
-
 ```bash
-# Add the tap
 brew tap SCGIS-Wales/homebrew-tap https://github.com/SCGIS-Wales/homebrew-tap.git
-
-# Install dcert (includes both dcert and dcert-mcp)
 brew install dcert
-
-# Verify installation
-dcert --version
-```
-
-To update to the latest version:
-
-```bash
-brew update
-brew upgrade dcert
 ```
 
 ### Build from source
-
-Prerequisites: Rust and Cargo.
 
 ```bash
 git clone https://github.com/SCGIS-Wales/dcert.git
 cd dcert
 cargo build --release
-# Binaries are at target/release/dcert and target/release/dcert-mcp
-
-# Optional install to ~/.cargo/bin
-cargo install --path .
+# Binaries: target/release/dcert and target/release/dcert-mcp
 ```
 
 ### Docker
 
-The Docker image includes both `dcert` (CLI) and `dcert-mcp` (MCP server).
-
 ```bash
-# Pull
 docker pull ghcr.io/scgis-wales/dcert:main
 
-# Run CLI with a local PEM file
-docker run --rm -v "$PWD:/data" ghcr.io/scgis-wales/dcert:main /data/certificate.pem
-
-# Fetch from HTTPS endpoint
+# CLI
 docker run --rm ghcr.io/scgis-wales/dcert:main https://www.google.com
 
-# Run MCP server (for IDE integration via Docker)
+# Local PEM file
+docker run --rm -v "$PWD:/data" ghcr.io/scgis-wales/dcert:main /data/cert.pem
+
+# MCP server
 docker run --rm -i --entrypoint dcert-mcp ghcr.io/scgis-wales/dcert:main
 ```
 
 ---
 
-## MCP Server (IDE Integration)
+## Commands
 
-`dcert-mcp` is a Model Context Protocol (MCP) server that exposes dcert's TLS certificate analysis capabilities as tools for AI-powered IDEs. It communicates over stdio using the MCP protocol, allowing AI assistants to analyze certificates, check expiry, verify revocation status, and inspect TLS connections.
+dcert uses subcommands to organize its features. The `check` subcommand is the default and can be omitted:
 
-### MCP Tools
+```
+dcert <targets> [OPTIONS]              # Certificate analysis (default, same as 'dcert check')
+dcert convert <MODE> [OPTIONS]         # Format conversion (PFX/PEM/keystore/truststore)
+dcert verify-key <target> --key <KEY>  # Key-certificate matching
+```
+
+### dcert [check] -- Certificate Analysis (default)
+
+Analyze TLS certificates from PEM files or HTTPS endpoints. The `check` keyword is optional -- `dcert https://example.com` and `dcert check https://example.com` are equivalent.
+
+```bash
+# Fetch and analyze certificates from HTTPS
+dcert https://www.google.com
+
+# Analyze a local PEM file
+dcert certificate.pem
+
+# Multiple targets
+dcert https://www.google.com https://github.com cert.pem
+
+# Pipe targets from stdin
+echo -e "https://google.com\nhttps://github.com" | dcert -
+
+# JSON or YAML output
+dcert https://example.com --format json
+dcert https://example.com --format yaml
+
+# SHA-256 fingerprints and certificate extensions
+dcert https://example.com --fingerprint --extensions
+
+# Expiry warning (exit code 1 if expiring within 30 days)
+dcert https://example.com --expiry-warn 30
+
+# OCSP revocation check
+dcert https://example.com --check-revocation
+
+# Compare certificates between two targets
+dcert --diff https://staging.example.com https://prod.example.com
+
+# Monitor certificates every 60 seconds
+dcert --watch 60 https://example.com
+
+# Export certificate chain to PEM file
+dcert https://www.google.com --export-pem chain.pem
+
+# Export excluding expired certificates
+dcert https://www.google.com --export-pem chain.pem --exclude-expired
+
+# Sort by expiry date
+dcert certificates.pem --sort-expiry asc
+
+# Only show expired certificates
+dcert certificates.pem --expired-only
+```
+
+#### TLS Options
+
+```bash
+# Require TLS 1.3
+dcert --min-tls 1.3 https://example.com
+
+# Force TLS 1.2 only
+dcert --min-tls 1.2 --max-tls 1.2 https://example.com
+
+# Specific TLS 1.2 ciphers
+dcert --cipher-list "ECDHE+AESGCM:CHACHA20" --max-tls 1.2 https://example.com
+
+# TLS 1.3 cipher suites
+dcert --cipher-suites "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256" https://example.com
+
+# HTTP/2 ALPN negotiation
+dcert --http-protocol http2 https://example.com
+
+# SNI override
+dcert https://10.0.0.1 --sni api.example.com
+
+# Skip TLS verification (self-signed certs)
+dcert https://localhost:8443 --no-verify
+```
+
+#### mTLS (Mutual TLS)
+
+```bash
+# Client certificate with PEM files
+dcert https://api.internal.com --client-cert client.pem --client-key client-key.pem
+
+# Client certificate with PKCS12/PFX
+dcert https://api.internal.com --pkcs12 client.pfx --cert-password secret
+
+# Custom CA bundle (overrides system CAs)
+dcert https://internal.server --ca-cert corporate-ca.pem
+
+# Combine mTLS with custom CA
+dcert https://api.internal.com --client-cert client.pem --client-key client-key.pem --ca-cert corporate-ca.pem
+```
+
+#### HTTP Options
+
+```bash
+# Custom headers and method
+dcert https://api.example.com --method POST --header "Authorization:Bearer token"
+
+# POST with inline data
+dcert https://api.example.com -d '{"key":"value"}' --header "Content-Type:application/json"
+
+# POST with data from file
+dcert https://api.example.com --data-file body.json
+
+# Custom timeout
+dcert https://slow-server.example.com --timeout 30 --read-timeout 15
+```
+
+#### Full Options Reference
+
+```
+dcert [check] [OPTIONS] [TARGETS]...
+
+Arguments:
+  [TARGETS]...                         PEM file(s), HTTPS URL(s), or '-' for stdin
+
+Options:
+  -f, --format <FORMAT>                Output format [pretty, json, yaml] (default: pretty)
+      --expired-only                   Show only expired certificates
+      --export-pem <FILE>              Export fetched PEM chain to a file
+      --exclude-expired                Exclude expired certs from export
+      --sort-expiry <ORDER>            Sort by expiry [asc, desc]
+      --method <METHOD>                HTTP method [get, post, head, options] (default: get)
+      --header <KEY:VALUE>             Custom HTTP headers (repeatable)
+  -d, --data <DATA>                    Request body (implies POST)
+      --data-file <FILE>               Request body from file (implies POST)
+      --http-protocol <PROTO>          HTTP protocol [http1-1, http2] (default: http1-1)
+      --min-tls <VERSION>              Minimum TLS version [1.2, 1.3]
+      --max-tls <VERSION>              Maximum TLS version [1.2, 1.3]
+      --cipher-list <STRING>           Allowed TLS 1.2 ciphers (OpenSSL format)
+      --cipher-suites <SUITES>         Allowed TLS 1.3 cipher suites (colon-separated)
+      --no-verify                      Disable TLS verification (insecure)
+      --timeout <SECONDS>              Connection timeout (default: 10)
+      --read-timeout <SECONDS>         Read timeout (default: 5)
+      --sni <HOSTNAME>                 Override SNI hostname
+      --fingerprint                    Show SHA-256 fingerprints
+      --extensions                     Show certificate extensions
+      --expiry-warn <DAYS>             Warn if expiring within N days (exit code 1)
+      --diff                           Compare certificates between two targets
+      --watch <SECONDS>                Re-check at interval
+      --check-revocation               Check OCSP revocation status
+      --debug                          Verbose OSI-layer diagnostics on stderr
+      --client-cert <PATH>             Client certificate PEM for mTLS
+      --client-key <PATH>              Client private key PEM for mTLS
+      --pkcs12 <PATH>                  PKCS12/PFX file for mTLS (alternative to --client-cert/--client-key)
+      --cert-password <PASS>           PKCS12 password (env: DCERT_CERT_PASSWORD)
+      --ca-cert <PATH>                 Custom CA bundle PEM (overrides system CAs)
+  -h, --help                           Print help
+  -V, --version                        Print version
+```
+
+#### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success -- all certificates valid |
+| 1 | Expiry warning -- certificate(s) expiring within `--expiry-warn` threshold |
+| 2 | Error -- connection failure, file not found, or processing error |
+| 3 | TLS verification failed |
+| 4 | Certificate expired |
+| 5 | Certificate revoked (OCSP) |
+| 6 | Client certificate error (invalid, unreadable, wrong password) |
+| 7 | Key mismatch (private key doesn't match certificate) |
+
+---
+
+### dcert convert -- Format Conversion
+
+Convert between certificate formats. Four modes are available:
+
+#### pfx-to-pem
+
+Extract certificate, key, and CA chain from a PKCS12/PFX file into separate PEM files.
+
+```bash
+dcert convert pfx-to-pem server.pfx --password secret --output-dir ./certs
+# Produces: ./certs/cert.pem, ./certs/key.pem, ./certs/ca.pem (if CA certs present)
+```
+
+#### pem-to-pfx
+
+Bundle PEM certificate and private key into a PKCS12/PFX file.
+
+```bash
+dcert convert pem-to-pfx --cert server.pem --key server-key.pem --output server.pfx --password secret
+
+# Include CA chain
+dcert convert pem-to-pfx --cert server.pem --key server-key.pem --ca ca-chain.pem --output server.pfx --password secret
+```
+
+#### create-keystore
+
+Create a PKCS12 keystore from PEM certificate and key (Java-compatible since JDK 9, where PKCS12 is the default keystore type).
+
+```bash
+dcert convert create-keystore --cert server.pem --key server-key.pem --output keystore.p12 --password changeit --alias myserver
+```
+
+To convert to JKS format if needed:
+
+```bash
+keytool -importkeystore -srckeystore keystore.p12 -srcstoretype PKCS12 -destkeystore keystore.jks -deststoretype JKS
+```
+
+#### create-truststore
+
+Create a PKCS12 truststore from CA certificate PEM files.
+
+```bash
+dcert convert create-truststore ca1.pem ca2.pem --output truststore.p12 --password changeit
+```
+
+---
+
+### dcert verify-key -- Key Matching
+
+Verify that a private key matches a certificate. Works with PEM files and HTTPS endpoints.
+
+```bash
+# Verify against a PEM file
+dcert verify-key cert.pem --key private.key
+
+# Verify against an HTTPS endpoint
+dcert verify-key https://example.com --key private.key
+
+# JSON output
+dcert verify-key cert.pem --key private.key --format json
+```
+
+Returns key type, key size, certificate subject, and whether the key matches. Exit code 7 on mismatch.
+
+---
+
+## MCP Server (AI IDE Integration)
+
+`dcert-mcp` is a Model Context Protocol server that exposes dcert's capabilities as tools for AI-powered IDEs. It communicates over stdio using the MCP protocol.
+
+### Tools
 
 | Tool | Description |
 |------|-------------|
-| `analyze_certificate` | Decode and analyze TLS certificates from an HTTPS endpoint or PEM file. Returns certificate details including subject, issuer, SANs, validity dates, fingerprints, extensions, and TLS connection info. |
-| `check_expiry` | Check if certificates expire within a specified number of days. Returns expiry status: `ALL_VALID`, `EXPIRING_SOON`, or `ALREADY_EXPIRED`. |
-| `check_revocation` | Check OCSP revocation status. Queries the certificate's OCSP responder to determine if it has been revoked. |
-| `compare_certificates` | Compare TLS certificates between two targets. Useful for verifying certificate rotations or comparing staging vs production. |
-| `tls_connection_info` | Get TLS connection details including protocol version, cipher suite, ALPN negotiation, DNS/TCP/TLS latency, and verification status. |
+| `analyze_certificate` | Decode and analyze TLS certificates. Returns subject, issuer, SANs, validity, fingerprints, extensions, TLS connection info, and OSI-layer diagnostics. Supports mTLS. |
+| `check_expiry` | Check if certificates expire within N days. Returns `ALL_VALID`, `EXPIRING_SOON`, or `ALREADY_EXPIRED`. Supports mTLS. |
+| `check_revocation` | Check OCSP revocation status via the certificate's OCSP responder. Supports mTLS. |
+| `compare_certificates` | Compare certificates between two targets side-by-side. |
+| `tls_connection_info` | Get TLS connection details: protocol, cipher, ALPN, latency, verification, diagnostics. Supports mTLS. |
+| `verify_key_match` | Verify that a private key matches a certificate (PEM file or HTTPS endpoint). |
+| `convert_pfx_to_pem` | Convert PKCS12/PFX to separate PEM files (cert, key, CA chain). |
+| `convert_pem_to_pfx` | Convert PEM certificate + key to PKCS12/PFX file. |
+| `create_keystore` | Create a PKCS12 keystore from PEM cert + key (Java-compatible). |
+| `create_truststore` | Create a PKCS12 truststore from CA certificate PEM files. |
 
-### IDE Configuration
+### Configuration
 
-#### Claude Code
+#### Claude Code / Kiro / Kiro CLI
 
-Create `.mcp.json` at the project root:
+These tools use the same `mcpServers` configuration format. Create the config file at the appropriate location:
+
+| Tool | Project config | Global config |
+|------|---------------|---------------|
+| Claude Code | `.mcp.json` | `~/.claude/settings/mcp.json` |
+| Kiro (IDE) | `.kiro/settings/mcp.json` | `~/.kiro/settings/mcp.json` |
+| Kiro CLI | `.kiro/settings/mcp.json` | `~/.kiro/settings/mcp.json` |
 
 ```json
 {
@@ -133,42 +366,10 @@ Create `.mcp.json` at the project root:
 }
 ```
 
-Or add it via the CLI:
+Or add via Claude Code CLI:
 
 ```bash
 claude mcp add dcert -- dcert-mcp
-```
-
-#### Kiro (IDE)
-
-Create `.kiro/settings/mcp.json` in your workspace:
-
-```json
-{
-  "mcpServers": {
-    "dcert": {
-      "command": "dcert-mcp",
-      "args": []
-    }
-  }
-}
-```
-
-For global access across all projects, place the same file at `~/.kiro/settings/mcp.json`.
-
-#### Kiro CLI
-
-Kiro CLI uses the same configuration format and file locations as Kiro IDE. Create `.kiro/settings/mcp.json` in your workspace or `~/.kiro/settings/mcp.json` for global access:
-
-```json
-{
-  "mcpServers": {
-    "dcert": {
-      "command": "dcert-mcp",
-      "args": []
-    }
-  }
-}
 ```
 
 #### VS Code (GitHub Copilot)
@@ -186,13 +387,9 @@ Create `.vscode/mcp.json` in your workspace:
 }
 ```
 
-#### JetBrains IDEs (IntelliJ IDEA, WebStorm, PyCharm, etc.)
+#### JetBrains IDEs
 
-For JetBrains IDEs **2025.2+** (with built-in MCP support):
-
-1. Go to **Settings > Tools > AI Assistant > Model Context Protocol (MCP)**
-2. Click **+** and choose **"As JSON"**
-3. Paste:
+For JetBrains IDEs **2025.2+**: Go to **Settings > Tools > AI Assistant > Model Context Protocol (MCP)**, click **+**, choose **"As JSON"**, and paste:
 
 ```json
 {
@@ -209,7 +406,7 @@ For earlier versions, install the [MCP Server plugin](https://plugins.jetbrains.
 
 #### Docker-based MCP
 
-If you cannot install the binary directly, use the Docker image as the MCP server:
+Use the Docker image if `dcert-mcp` is not installed locally:
 
 ```json
 {
@@ -225,29 +422,16 @@ If you cannot install the binary directly, use the Docker image as the MCP serve
 
 #### Custom binary path
 
-If `dcert-mcp` is not on your `PATH`, specify the full path:
+If `dcert-mcp` is not on your `PATH`, specify the full path. You can also set `DCERT_PATH` to tell the MCP server where to find the `dcert` CLI:
 
 ```json
 {
   "mcpServers": {
     "dcert": {
       "type": "stdio",
-      "command": "/usr/local/bin/dcert-mcp"
-    }
-  }
-}
-```
-
-You can also set the `DCERT_PATH` environment variable to tell `dcert-mcp` where to find the `dcert` CLI binary:
-
-```json
-{
-  "mcpServers": {
-    "dcert": {
-      "type": "stdio",
-      "command": "dcert-mcp",
+      "command": "/usr/local/bin/dcert-mcp",
       "env": {
-        "DCERT_PATH": "/opt/dcert/bin/dcert"
+        "DCERT_PATH": "/usr/local/bin/dcert"
       }
     }
   }
@@ -256,467 +440,111 @@ You can also set the `DCERT_PATH` environment variable to tell `dcert-mcp` where
 
 ---
 
-## CLI Usage
+## Features by Topic
 
-### Basic Examples
+### Certificate Analysis
 
-```bash
-# Analyze a local PEM file
-dcert certificate.pem
-
-# Fetch and analyze certificates from an HTTPS endpoint
-dcert https://www.google.com
-
-# Multiple targets in a single invocation
-dcert https://www.google.com https://github.com cert.pem
-
-# Pipe targets from stdin
-echo -e "https://google.com\nhttps://github.com" | dcert -
-
-# Only show expired certificates from a bundle
-dcert certificates.pem --expired-only
-
-# Output in JSON or YAML format
-dcert https://example.com --format json
-dcert https://example.com --format yaml
-
-# Show SHA-256 fingerprints
-dcert https://example.com --fingerprint
-
-# Show certificate extensions (key usage, EKU, basic constraints, AIA)
-dcert https://example.com --extensions
-
-# Warn if certificates expire within 30 days (exits with code 1)
-dcert https://example.com --expiry-warn 30
-
-# Check OCSP revocation status
-dcert https://example.com --check-revocation
-
-# Compare certificates between two targets
-dcert --diff https://www.google.com https://www.github.com
-
-# Monitor certificates every 60 seconds
-dcert --watch 60 https://example.com
-
-# Override SNI hostname
-dcert https://10.0.0.1 --sni example.com
-
-# Skip TLS verification (e.g. self-signed certs)
-dcert https://localhost:8443 --no-verify
-
-# Custom connection timeout
-dcert https://slow-server.example.com --timeout 30
-
-# Export fetched certificate chain to a file
-dcert https://www.google.com --export-pem google-certs.pem
-
-# Export certificate chain excluding expired certificates
-dcert https://www.google.com --export-pem google-certs.pem --exclude-expired
-
-# Sort certificates by expiry date (ascending - soonest expiry first)
-dcert certificates.pem --sort-expiry asc
-
-# Use HTTP/2 ALPN negotiation (shows negotiated protocol in debug output)
-dcert --http-protocol http2 https://www.google.com
-
-# Constrain TLS version (e.g. force TLS 1.2 only)
-dcert --min-tls 1.2 --max-tls 1.2 https://www.google.com
-
-# Require TLS 1.3 minimum
-dcert --min-tls 1.3 https://www.google.com
-
-# Specify allowed TLS 1.2 ciphers (OpenSSL cipher string format)
-dcert --cipher-list "ECDHE+AESGCM:CHACHA20" --max-tls 1.2 https://www.google.com
-
-# Specify TLS 1.3 cipher suites
-dcert --cipher-suites "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256" https://www.google.com
-
-# Custom HTTP headers and method
-dcert https://api.example.com --method POST --header "Authorization:Bearer token" --header "Content-Type:application/json"
-
-# POST with inline data (auto-sets method to POST, like curl -d)
-dcert https://api.example.com -d '{"key":"value"}' --header "Content-Type:application/json"
-
-# POST with data from a file
-dcert https://api.example.com --data-file body.json --header "Content-Type:application/json"
-
-# Send body with explicit method
-dcert https://api.example.com --method post -d 'param=value'
-```
-
-### Command Line Options
-
-```
-dcert [OPTIONS] [TARGETS]...
-
-Arguments:
-  [TARGETS]...  Path(s) to PEM file(s) or HTTPS URL(s). Use '-' to read targets from stdin (one per line)
-
-Options:
-  -f, --format <FORMAT>                Output format [default: pretty] [possible values: pretty, json, yaml]
-      --expired-only                   Show only expired certificates
-      --export-pem <EXPORT_PEM>        Export the fetched PEM chain to a file (only for HTTPS targets)
-      --exclude-expired                Exclude expired or invalid certificates from export (only with --export-pem)
-      --sort-expiry <SORT_EXPIRY>      Sort certificates by expiry date (asc = soonest first, desc = latest first) [possible values: asc, desc]
-      --method <METHOD>                HTTP method to use for HTTPS requests [default: get] [possible values: get, post, head, options]
-      --header [<HEADER>...]           Custom HTTP headers (key:value), can be repeated
-  -d, --data <DATA>                    Send data as the request body (implies POST)
-      --data-file <FILE>               Read request body from a file (implies POST)
-      --http-protocol <HTTP_PROTOCOL>  HTTP protocol to use [default: http1-1] [possible values: http1-1, http2]
-      --min-tls <VERSION>              Minimum TLS version to accept [possible values: 1.2, 1.3]
-      --max-tls <VERSION>              Maximum TLS version to accept [possible values: 1.2, 1.3]
-      --cipher-list <CIPHER_STRING>    Allowed TLS 1.2 cipher suites (OpenSSL cipher string format)
-      --cipher-suites <CIPHERSUITES>   Allowed TLS 1.3 cipher suites (colon-separated IANA names)
-      --no-verify                      Disable TLS certificate verification (insecure)
-      --timeout <TIMEOUT>              Connection timeout in seconds [default: 10]
-      --read-timeout <READ_TIMEOUT>   Read timeout in seconds (time to wait for server response) [default: 5]
-      --sni <SNI>                      Override SNI hostname for TLS handshake
-      --fingerprint                    Show SHA-256 fingerprint for each certificate
-      --extensions                     Show certificate extensions (key usage, basic constraints, etc.)
-      --expiry-warn <DAYS>             Warn if any certificate expires within the given number of days (exit code 1)
-      --diff                           Compare certificates between exactly two targets
-      --watch <SECONDS>                Periodically re-check targets at the given interval in seconds
-      --check-revocation               Check certificate revocation status via OCSP
-  -h, --help                           Print help
-  -V, --version                        Print version
-```
-
-### Input Formats
-
-#### PEM File
-A single file can contain multiple certificates:
-
-```pem
------BEGIN CERTIFICATE-----
-...base64...
------END CERTIFICATE-----
------BEGIN CERTIFICATE-----
-...base64...
------END CERTIFICATE-----
-```
-
-#### HTTPS URL
-Any valid HTTPS URL:
-- `https://www.google.com`
-- `https://api.github.com:443`
-- `https://example.com/path?query=value`
-
-## Output Examples
-
-### Pretty Format (Live HTTPS Endpoint)
-
-```
-dcert https://www.google.com
-
-Debug
-  HTTP protocol: HTTP/1.1
-  HTTP response code: 200
-  Hostname matches certificate SANs/CN: true
-  TLS version used: TLSv1.3
-  TLS ciphersuite agreed: TLS_AES_256_GCM_SHA384
-  TLS verification result: ok
-  Certificate transparency: true
-
-  Network latency (DNS resolution):      12 ms
-  Network latency (layer 4/TCP connect): 27 ms
-  Network latency (layer 7/TLS+HTTP):    125 ms
-
-Note: DNS, Layer 4, and Layer 7 latencies are measured separately and should not be summed.
-DNS covers name resolution only; Layer 4 covers DNS + TCP connection;
-Layer 7 covers TLS handshake, sending the HTTP request, and reading the
-HTTP status line (not the full response body).
-
-Certificate
-  Index        : 0
-  Subject      : CN=www.google.com
-  Issuer       : C=US, O=Google Trust Services, CN=WR2
-  Serial       : 00E7ABC9898ECE40981042627F3050E7BA
-  Not Before   : 2025-08-25T08:41:50Z
-  Not After    : 2025-11-17T08:41:49Z
-  SANs         :
-    - DNS:www.google.com
-  Status       : valid
-
-Certificate
-  Index        : 1
-  Subject      : C=US, O=Google Trust Services, CN=WR2
-  Issuer       : C=US, O=Google Trust Services LLC, CN=GTS Root R1
-  Serial       : 7FF005A07C4CDED100AD9D66A5107B98
-  Not Before   : 2023-12-13T09:00:00Z
-  Not After    : 2029-02-20T14:00:00Z
-  Status       : valid
-
-Certificate
-  Index        : 2
-  Subject      : C=US, O=Google Trust Services LLC, CN=GTS Root R1
-  Issuer       : C=BE, O=GlobalSign nv-sa, OU=Root CA, CN=GlobalSign Root CA
-  Serial       : 77BD0D6CDB36F91AEA210FC4F058D30D
-  Not Before   : 2020-06-19T00:00:42Z
-  Not After    : 2028-01-28T00:00:42Z
-  Status       : valid
-```
-
-### JSON Format
-
-```bash
-dcert https://www.google.com --format json
-```
-
-```json
-{
-  "certificates": [
-    {
-      "index": 0,
-      "subject": "CN=www.google.com",
-      "issuer": "C=US, O=Google Trust Services, CN=WR2",
-      "common_name": "www.google.com",
-      "subject_alternative_names": ["DNS:www.google.com"],
-      "serial_number": "00E7ABC9898ECE40981042627F3050E7BA",
-      "not_before": "2025-08-25T08:41:50Z",
-      "not_after": "2025-11-17T08:41:49Z",
-      "is_expired": false,
-      "ct_present": true
-    }
-  ],
-  "connection": {
-    "dns_latency": 12,
-    "l4_latency": 27,
-    "l7_latency": 125,
-    "tls_version": "TLSv1.3",
-    "tls_cipher": "TLS_AES_256_GCM_SHA384",
-    "tls_cipher_iana": "TLS_AES_256_GCM_SHA384",
-    "negotiated_protocol": "http/1.1",
-    "http_response_code": 200,
-    "verify_result": null,
-    "chain_validation_errors": []
-  }
-}
-```
-
-> **Note:** When `--fingerprint`, `--extensions`, or `--check-revocation` flags are used, additional fields appear in the output (e.g. `sha256_fingerprint`, `public_key_algorithm`, `public_key_size_bits`, `key_usage`, `extended_key_usage`, `basic_constraints`, `authority_info_access`, `signature_algorithm`, `sct_count`, `revocation_status`). The `connection` field is only present for HTTPS targets (not PEM files).
-
-### Exit Codes
-
-dcert uses distinct exit codes for scripting and CI/CD integration:
-
-| Code | Meaning |
-|------|---------|
-| 0 | Success - all certificates are valid |
-| 1 | Expiry warning - certificate(s) expiring within `--expiry-warn` threshold |
-| 2 | Error - connection failure, file not found, or processing error |
-| 3 | TLS verification failed - certificate chain could not be verified |
-| 4 | Certificate expired - at least one certificate in the chain has expired |
-| 5 | Certificate revoked - OCSP reports at least one certificate as revoked |
-
-```bash
-# Use in CI/CD scripts
-dcert https://your-api.com --expiry-warn 30
-case $? in
-  0) echo "All good" ;;
-  1) echo "Certificate expiring soon" ;;
-  3) echo "TLS verification failed" ;;
-  4) echo "Certificate expired!" ;;
-  5) echo "Certificate revoked!" ;;
-  *) echo "Error occurred" ;;
-esac
-```
-
-## Advanced Usage
-
-### TLS Debugging and Performance Analysis
-
-The debug output provides valuable insights for TLS troubleshooting:
-
-- **HTTP Protocol**: Shows the ALPN-negotiated protocol (e.g. HTTP/2 (h2), HTTP/1.1)
-- **HTTP Response Code**: Actual response code from the server
-- **Hostname Validation**: Checks if the certificate matches the requested hostname
-- **TLS Version & Cipher**: Shows negotiated TLS version and cipher suite (controllable via `--min-tls`/`--max-tls` and `--cipher-list`/`--cipher-suites`)
-- **TLS Verification Result**: Shows the OpenSSL verification outcome with per-certificate detail on failure
-- **Certificate Transparency**: Indicates if CT logs are present (with SCT count when `--extensions` is used)
-- **Network Latency**: Separate measurements for DNS resolution, TCP connect, and TLS+HTTP layers (Layer 7 includes TLS handshake, sending the HTTP request, and reading the status line — not the full response body)
+Decode X.509 certificates from PEM files or HTTPS endpoints: subject, issuer, serial number, validity window, SANs, expiry status.
 
 ### Certificate Extensions and Fingerprints
 
-Inspect detailed certificate metadata:
+SHA-256 fingerprints (`--fingerprint`), key usage, extended key usage, basic constraints, authority info access, signature algorithm, public key info, SCT count (`--extensions`).
 
-```bash
-# Show SHA-256 fingerprints and all extensions together
-dcert https://example.com --fingerprint --extensions
+### TLS Debugging
 
-# Extensions include:
-#   - Signature algorithm (e.g. SHA256-RSA)
-#   - Public key algorithm and key size (e.g. RSA 2048 bits, EC 256 bits)
-#   - Key usage (e.g. Digital Signature, Key Encipherment)
-#   - Extended key usage (e.g. TLS Web Server Authentication)
-#   - Basic constraints (CA status and path length)
-#   - Authority info access (OCSP and CA issuer URLs)
-#   - SCT count (number of Signed Certificate Timestamps)
-```
+Protocol version, cipher suite, ALPN negotiation, certificate transparency, verification result, and per-certificate chain validation detail. Network latency measurements for DNS resolution, TCP connect (Layer 4), and TLS+HTTP (Layer 7). Enable `--debug` for full OSI-layer diagnostics.
+
+### Mutual TLS (mTLS)
+
+Client certificate authentication via PEM (`--client-cert` + `--client-key`) or PKCS12/PFX (`--pkcs12` + `--cert-password`). Custom CA bundle support (`--ca-cert`) for corporate/internal PKI.
+
+### Key-Certificate Matching
+
+Verify private key matches a certificate (`dcert verify-key`). Supports RSA and EC keys against PEM files or live HTTPS endpoints.
+
+### PFX/PEM Conversion
+
+Convert PKCS12/PFX to separate PEM files or bundle PEM cert + key into PFX (`dcert convert pfx-to-pem`, `dcert convert pem-to-pfx`).
+
+### Java KeyStore and TrustStore
+
+Create PKCS12 keystores and truststores compatible with Java JDK 9+ (`dcert convert create-keystore`, `dcert convert create-truststore`).
 
 ### OCSP Revocation Checking
 
-Verify that certificates have not been revoked:
+Query the certificate's OCSP responder to verify revocation status (`--check-revocation`).
 
-```bash
-# Check revocation status via OCSP
-dcert https://example.com --check-revocation
+### Expiry Monitoring
 
-# Combine with JSON for programmatic access
-dcert https://example.com --check-revocation --format json | jq '.certificates[0].revocation_status'
-```
-
-### Expiry Monitoring and Warnings
-
-Use `--expiry-warn` in CI/CD pipelines or cron jobs:
-
-```bash
-# Exit code 1 if any cert expires within 30 days
-dcert https://your-api.com --expiry-warn 30
-
-# Use in a script
-if ! dcert https://your-api.com --expiry-warn 14 > /dev/null 2>&1; then
-  echo "Certificate expiring soon!"
-fi
-```
+Configurable threshold warnings (`--expiry-warn N`) with machine-readable exit codes. Continuous monitoring with `--watch`.
 
 ### Certificate Comparison
 
-Compare certificate chains between two targets:
+Side-by-side diff of certificates between two targets (`--diff`).
 
-```bash
-# Diff certificates from two endpoints
-dcert --diff https://www.google.com https://www.github.com
+### Certificate Export
 
-# Diff a local PEM against a live endpoint
-dcert --diff cert.pem https://example.com
-```
+Save fetched certificate chains as PEM files (`--export-pem`), with optional filtering of expired certificates (`--exclude-expired`).
 
-### Continuous Monitoring
-
-Watch mode re-checks targets at a fixed interval and reports changes:
-
-```bash
-# Re-check every 5 minutes
-dcert --watch 300 https://example.com
-
-# Monitor multiple targets
-dcert --watch 60 https://api.example.com https://www.example.com
-```
-
-### SNI Override and Verification Control
-
-Test specific backends behind load balancers or self-signed certs:
-
-```bash
-# Connect to an IP but send a specific SNI hostname
-dcert https://10.0.0.1 --sni api.example.com
-
-# Skip verification for self-signed or dev environments
-dcert https://localhost:8443 --no-verify
-```
-
-### Certificate Chain Export
-
-Export certificate chains for offline analysis or compliance:
-
-```bash
-# Export Google's certificate chain
-dcert https://www.google.com --export-pem google-chain.pem
-
-# Analyze the exported chain later
-dcert google-chain.pem --format json
-```
-
-### Custom HTTP Requests
-
-Test APIs and services with custom headers:
-
-```bash
-# API testing with authentication
-dcert https://api.github.com --header "Authorization:token ghp_xxxx" --header "User-Agent:dcert/2.0"
-
-# Test with different HTTP methods
-dcert https://httpbin.org/post --method POST --header "Content-Type:application/json"
-
-# Set a longer timeout for slow servers
-dcert https://slow-server.example.com --timeout 30
-
-# Set separate read timeout for slow responses
-dcert https://slow-server.example.com --timeout 30 --read-timeout 15
-```
+---
 
 ## Use Cases
 
-### DevOps & Site Reliability
+### DevOps & CI/CD
 
 ```bash
-# CI/CD gate: fail the build if certs expire within 14 days
+# Gate deployments on certificate health
 dcert https://your-api.com --expiry-warn 14
 
-# Check multiple endpoints at once
+# Check multiple endpoints
 dcert https://api.example.com https://www.example.com https://admin.example.com
 
-# Continuous monitoring with change detection
-dcert --watch 300 https://your-api.com https://your-site.com
+# Continuous monitoring
+dcert --watch 300 https://your-api.com
 ```
 
 ### Security Auditing
 
 ```bash
-# Require TLS 1.3 only (reject TLS 1.2)
-dcert https://target.com --min-tls 1.3
+# Enforce TLS 1.3 only
+dcert --min-tls 1.3 https://target.com
 
-# Check HTTP/2 support via ALPN
-dcert https://target.com --http-protocol http2
-
-# Test specific cipher suites
-dcert https://target.com --cipher-list "ECDHE+AESGCM" --max-tls 1.2
-
-# Verify revocation status
-dcert https://example.com --check-revocation
-
-# Full audit with extensions, fingerprints and revocation
+# Full audit with extensions, fingerprints, and revocation
 dcert https://site.com --fingerprint --extensions --check-revocation
 
-# Audit certificate chains as JSON
-dcert https://site.com --format json --extensions | jq '.certificates[] | {subject, key_usage, extended_key_usage}'
+# Test specific cipher suites
+dcert --cipher-list "ECDHE+AESGCM" --max-tls 1.2 https://target.com
 ```
 
 ### Certificate Management
 
 ```bash
-# Find expiring certificates in a bundle
-dcert certificate-bundle.pem --expiry-warn 90
+# Convert PFX for web server deployment
+dcert convert pfx-to-pem server.pfx --password secret --output-dir /etc/ssl
 
-# Sort certificates by expiry to find those expiring soonest
-dcert certificate-bundle.pem --sort-expiry asc
+# Prepare Java keystore
+dcert convert create-keystore --cert server.pem --key server-key.pem --output keystore.p12 --password changeit
 
-# Compare certificates across environments
+# Verify key matches certificate before deployment
+dcert verify-key server.pem --key server-key.pem
+
+# Compare staging vs production certificates
 dcert --diff https://staging.example.com https://prod.example.com
 
 # Export and backup certificate chains
-for domain in google.com github.com stackoverflow.com; do
+for domain in google.com github.com; do
   dcert "https://$domain" --export-pem "${domain}-chain.pem"
 done
-
-# Export only valid (non-expired) certificates from a bundle
-dcert certificate-bundle.pem --export-pem valid-certs.pem --exclude-expired
-
-# Pipe targets from a file
-cat endpoints.txt | dcert - --format yaml
 ```
+
+---
 
 ## Development
 
 ```bash
-# Format and lint
 cargo fmt --all
 cargo clippy --all-targets --all-features -- -D warnings
-
-# Tests
 cargo test
-
-# Build release (both dcert and dcert-mcp)
 cargo build --release
 ```
 
