@@ -1,12 +1,13 @@
 # dcert · TLS Certificate Decoder & Validator
 
-A powerful Rust CLI tool that reads X.509 certificates from PEM files or fetches them directly from HTTPS endpoints. It extracts key certificate information, validates TLS connections, checks revocation status, and provides detailed debugging output.
+A powerful Rust CLI and MCP server for X.509 certificate analysis. Reads certificates from PEM files or fetches them from HTTPS endpoints. Extracts key certificate details, validates TLS connections, checks revocation status, and integrates with AI-powered IDEs via the Model Context Protocol (MCP).
 
 [![CI/CD Pipeline](https://github.com/SCGIS-Wales/dcert/actions/workflows/ci.yml/badge.svg)](https://github.com/SCGIS-Wales/dcert/actions/workflows/ci.yml)
 
 ## Features
 
 - **Dual Mode Operation**: Parse certificates from PEM files OR fetch live certificates from HTTPS endpoints
+- **MCP Server**: Integrate with AI-powered IDEs (Claude Code, Kiro, Kiro CLI, VS Code, JetBrains) via the Model Context Protocol
 - **Multiple Targets**: Process multiple PEM files and URLs in a single invocation, or pipe targets via stdin
 - **Comprehensive Certificate Analysis**: Subject, issuer, serial number, validity window, expiry status, SANs, and fingerprints
 - **Certificate Extensions**: Key usage, extended key usage, basic constraints, authority info access, signature algorithm, and public key info (algorithm & key size)
@@ -36,13 +37,13 @@ A powerful Rust CLI tool that reads X.509 certificates from PEM files or fetches
 
 ### Prebuilt binaries
 
-Download the latest release from the **Releases** page and place the `dcert` binary on your `PATH`.
+Download the latest release from the **Releases** page. Each release includes both `dcert` (CLI) and `dcert-mcp` (MCP server).
 
 ```bash
 # Example for x86_64 glibc
 curl -L https://github.com/SCGIS-Wales/dcert/releases/latest/download/dcert-x86_64-unknown-linux-gnu.tar.gz | tar xz
-chmod +x dcert
-sudo mv dcert /usr/local/bin/
+chmod +x dcert dcert-mcp
+sudo mv dcert dcert-mcp /usr/local/bin/
 ```
 
 ### Homebrew
@@ -53,7 +54,7 @@ Install via the SCGIS-Wales tap:
 # Add the tap
 brew tap SCGIS-Wales/homebrew-tap https://github.com/SCGIS-Wales/homebrew-tap.git
 
-# Install dcert
+# Install dcert (includes both dcert and dcert-mcp)
 brew install dcert
 
 # Verify installation
@@ -75,24 +76,187 @@ Prerequisites: Rust and Cargo.
 git clone https://github.com/SCGIS-Wales/dcert.git
 cd dcert
 cargo build --release
+# Binaries are at target/release/dcert and target/release/dcert-mcp
+
 # Optional install to ~/.cargo/bin
 cargo install --path .
 ```
 
 ### Docker
 
+The Docker image includes both `dcert` (CLI) and `dcert-mcp` (MCP server).
+
 ```bash
 # Pull
 docker pull ghcr.io/scgis-wales/dcert:main
 
-# Run with a local PEM file
+# Run CLI with a local PEM file
 docker run --rm -v "$PWD:/data" ghcr.io/scgis-wales/dcert:main /data/certificate.pem
 
 # Fetch from HTTPS endpoint
 docker run --rm ghcr.io/scgis-wales/dcert:main https://www.google.com
+
+# Run MCP server (for IDE integration via Docker)
+docker run --rm -i --entrypoint dcert-mcp ghcr.io/scgis-wales/dcert:main
 ```
 
-## Usage
+---
+
+## MCP Server (IDE Integration)
+
+`dcert-mcp` is a Model Context Protocol (MCP) server that exposes dcert's TLS certificate analysis capabilities as tools for AI-powered IDEs. It communicates over stdio using the MCP protocol, allowing AI assistants to analyze certificates, check expiry, verify revocation status, and inspect TLS connections.
+
+### MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `analyze_certificate` | Decode and analyze TLS certificates from an HTTPS endpoint or PEM file. Returns certificate details including subject, issuer, SANs, validity dates, fingerprints, extensions, and TLS connection info. |
+| `check_expiry` | Check if certificates expire within a specified number of days. Returns expiry status: `ALL_VALID`, `EXPIRING_SOON`, or `ALREADY_EXPIRED`. |
+| `check_revocation` | Check OCSP revocation status. Queries the certificate's OCSP responder to determine if it has been revoked. |
+| `compare_certificates` | Compare TLS certificates between two targets. Useful for verifying certificate rotations or comparing staging vs production. |
+| `tls_connection_info` | Get TLS connection details including protocol version, cipher suite, ALPN negotiation, DNS/TCP/TLS latency, and verification status. |
+
+### IDE Configuration
+
+#### Claude Code
+
+Create `.mcp.json` at the project root:
+
+```json
+{
+  "mcpServers": {
+    "dcert": {
+      "type": "stdio",
+      "command": "dcert-mcp"
+    }
+  }
+}
+```
+
+Or add it via the CLI:
+
+```bash
+claude mcp add dcert -- dcert-mcp
+```
+
+#### Kiro (IDE)
+
+Create `.kiro/settings/mcp.json` in your workspace:
+
+```json
+{
+  "mcpServers": {
+    "dcert": {
+      "command": "dcert-mcp",
+      "args": []
+    }
+  }
+}
+```
+
+For global access across all projects, place the same file at `~/.kiro/settings/mcp.json`.
+
+#### Kiro CLI
+
+Kiro CLI uses the same configuration format and file locations as Kiro IDE. Create `.kiro/settings/mcp.json` in your workspace or `~/.kiro/settings/mcp.json` for global access:
+
+```json
+{
+  "mcpServers": {
+    "dcert": {
+      "command": "dcert-mcp",
+      "args": []
+    }
+  }
+}
+```
+
+#### VS Code (GitHub Copilot)
+
+Create `.vscode/mcp.json` in your workspace:
+
+```json
+{
+  "servers": {
+    "dcert": {
+      "type": "stdio",
+      "command": "dcert-mcp"
+    }
+  }
+}
+```
+
+#### JetBrains IDEs (IntelliJ IDEA, WebStorm, PyCharm, etc.)
+
+For JetBrains IDEs **2025.2+** (with built-in MCP support):
+
+1. Go to **Settings > Tools > AI Assistant > Model Context Protocol (MCP)**
+2. Click **+** and choose **"As JSON"**
+3. Paste:
+
+```json
+{
+  "mcpServers": {
+    "dcert": {
+      "type": "stdio",
+      "command": "dcert-mcp"
+    }
+  }
+}
+```
+
+For earlier versions, install the [MCP Server plugin](https://plugins.jetbrains.com/plugin/26071-mcp-server) first.
+
+#### Docker-based MCP
+
+If you cannot install the binary directly, use the Docker image as the MCP server:
+
+```json
+{
+  "mcpServers": {
+    "dcert": {
+      "type": "stdio",
+      "command": "docker",
+      "args": ["run", "--rm", "-i", "--entrypoint", "dcert-mcp", "ghcr.io/scgis-wales/dcert:main"]
+    }
+  }
+}
+```
+
+#### Custom binary path
+
+If `dcert-mcp` is not on your `PATH`, specify the full path:
+
+```json
+{
+  "mcpServers": {
+    "dcert": {
+      "type": "stdio",
+      "command": "/usr/local/bin/dcert-mcp"
+    }
+  }
+}
+```
+
+You can also set the `DCERT_PATH` environment variable to tell `dcert-mcp` where to find the `dcert` CLI binary:
+
+```json
+{
+  "mcpServers": {
+    "dcert": {
+      "type": "stdio",
+      "command": "dcert-mcp",
+      "env": {
+        "DCERT_PATH": "/opt/dcert/bin/dcert"
+      }
+    }
+  }
+}
+```
+
+---
+
+## CLI Usage
 
 ### Basic Examples
 
@@ -295,29 +459,41 @@ Certificate
 ### JSON Format
 
 ```bash
-dcert --http-protocol http2 https://www.google.com --format json
+dcert https://www.google.com --format json
 ```
 
 ```json
-[
-  {
-    "index": 0,
-    "subject": "CN=www.google.com",
-    "issuer": "C=US, O=Google Trust Services, CN=WR2",
-    "common_name": "www.google.com",
-    "subject_alternative_names": [
-      "DNS:www.google.com"
-    ],
-    "serial_number": "00E7ABC9898ECE40981042627F3050E7BA",
-    "not_before": "2025-08-25T08:41:50Z",
-    "not_after": "2025-11-17T08:41:49Z",
-    "is_expired": false,
-    "ct_present": true
+{
+  "certificates": [
+    {
+      "index": 0,
+      "subject": "CN=www.google.com",
+      "issuer": "C=US, O=Google Trust Services, CN=WR2",
+      "common_name": "www.google.com",
+      "subject_alternative_names": ["DNS:www.google.com"],
+      "serial_number": "00E7ABC9898ECE40981042627F3050E7BA",
+      "not_before": "2025-08-25T08:41:50Z",
+      "not_after": "2025-11-17T08:41:49Z",
+      "is_expired": false,
+      "ct_present": true
+    }
+  ],
+  "connection": {
+    "dns_latency": 12,
+    "l4_latency": 27,
+    "l7_latency": 125,
+    "tls_version": "TLSv1.3",
+    "tls_cipher": "TLS_AES_256_GCM_SHA384",
+    "tls_cipher_iana": "TLS_AES_256_GCM_SHA384",
+    "negotiated_protocol": "http/1.1",
+    "http_response_code": 200,
+    "verify_result": null,
+    "chain_validation_errors": []
   }
-]
+}
 ```
 
-> **Note:** When `--fingerprint`, `--extensions`, or `--check-revocation` flags are used, additional fields appear in the output (e.g. `sha256_fingerprint`, `public_key_algorithm`, `public_key_size_bits`, `key_usage`, `extended_key_usage`, `basic_constraints`, `authority_info_access`, `signature_algorithm`, `sct_count`, `revocation_status`).
+> **Note:** When `--fingerprint`, `--extensions`, or `--check-revocation` flags are used, additional fields appear in the output (e.g. `sha256_fingerprint`, `public_key_algorithm`, `public_key_size_bits`, `key_usage`, `extended_key_usage`, `basic_constraints`, `authority_info_access`, `signature_algorithm`, `sct_count`, `revocation_status`). The `connection` field is only present for HTTPS targets (not PEM files).
 
 ### Exit Codes
 
@@ -386,7 +562,7 @@ Verify that certificates have not been revoked:
 dcert https://example.com --check-revocation
 
 # Combine with JSON for programmatic access
-dcert https://example.com --check-revocation --format json | jq '.[0].revocation_status'
+dcert https://example.com --check-revocation --format json | jq '.certificates[0].revocation_status'
 ```
 
 ### Expiry Monitoring and Warnings
@@ -482,22 +658,16 @@ dcert https://api.example.com https://www.example.com https://admin.example.com
 
 # Continuous monitoring with change detection
 dcert --watch 300 https://your-api.com https://your-site.com
-
-# Performance monitoring
-dcert https://your-app.com --format json | jq '{l4: .debug.l4_latency_ms, l7: .debug.l7_latency_ms}'
 ```
 
 ### Security Auditing
 
 ```bash
-# Check for weak TLS configurations
-dcert https://target.com | grep -E "(TLS version|ciphersuite)"
-
 # Require TLS 1.3 only (reject TLS 1.2)
-dcert https://target.com --min-tls 1.3  # fails if server doesn't support TLS 1.3
+dcert https://target.com --min-tls 1.3
 
 # Check HTTP/2 support via ALPN
-dcert https://target.com --http-protocol http2  # shows negotiated protocol
+dcert https://target.com --http-protocol http2
 
 # Test specific cipher suites
 dcert https://target.com --cipher-list "ECDHE+AESGCM" --max-tls 1.2
@@ -509,7 +679,7 @@ dcert https://example.com --check-revocation
 dcert https://site.com --fingerprint --extensions --check-revocation
 
 # Audit certificate chains as JSON
-dcert https://site.com --format json --extensions | jq '.[] | {subject, key_usage, extended_key_usage}'
+dcert https://site.com --format json --extensions | jq '.certificates[] | {subject, key_usage, extended_key_usage}'
 ```
 
 ### Certificate Management
@@ -546,7 +716,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 # Tests
 cargo test
 
-# Build release
+# Build release (both dcert and dcert-mcp)
 cargo build --release
 ```
 
@@ -562,6 +732,7 @@ MIT. See [LICENSE](LICENSE).
 - TLS connections and OCSP by [openssl]
 - YAML serialization by [serde_yml]
 - Signal handling by [ctrlc]
+- MCP server by [rmcp]
 
 [x509-parser]: https://crates.io/crates/x509-parser
 [clap]: https://crates.io/crates/clap
@@ -569,3 +740,4 @@ MIT. See [LICENSE](LICENSE).
 [openssl]: https://crates.io/crates/openssl
 [serde_yml]: https://crates.io/crates/serde_yml
 [ctrlc]: https://crates.io/crates/ctrlc
+[rmcp]: https://crates.io/crates/rmcp
