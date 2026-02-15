@@ -6,8 +6,10 @@ use rmcp::{tool, tool_handler, tool_router, ServerHandler, ServiceExt};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::process::Command;
+use tokio::sync::Semaphore;
 
 /// Canonical description for dcert-mcp, consistent with the CLI.
 const MCP_DESCRIPTION: &str =
@@ -93,17 +95,84 @@ fn validate_path(path: &str, param_name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Maximum number of certificate paths in a single truststore creation request.
+const MAX_CERT_PATHS: usize = 100;
+
+/// Maximum password length to prevent memory-based attacks.
+const MAX_PASSWORD_LEN: usize = 1024;
+
+/// Maximum subprocess output size (10 MB) to prevent memory exhaustion.
+const MAX_OUTPUT_SIZE: usize = 10 * 1024 * 1024;
+
+/// Maximum number of concurrent subprocess invocations.
+/// Prevents resource exhaustion when many MCP tool calls arrive simultaneously.
+const MAX_CONCURRENT_SUBPROCESSES: usize = 10;
+
+/// Global semaphore for subprocess concurrency limiting.
+static SUBPROCESS_SEMAPHORE: std::sync::LazyLock<Arc<Semaphore>> =
+    std::sync::LazyLock::new(|| Arc::new(Semaphore::new(MAX_CONCURRENT_SUBPROCESSES)));
+
+/// Validate a password parameter for reasonable length.
+fn validate_password(password: &str) -> Result<(), String> {
+    if password.len() > MAX_PASSWORD_LEN {
+        return Err(format!(
+            "Password too long ({} bytes, maximum is {})",
+            password.len(),
+            MAX_PASSWORD_LEN
+        ));
+    }
+    if password.contains('\0') {
+        return Err("Password must not contain null bytes".to_string());
+    }
+    Ok(())
+}
+
+/// Validate a keystore alias (alphanumeric, hyphens, underscores, dots; max 256 chars).
+fn validate_alias(alias: &str) -> Result<(), String> {
+    if alias.is_empty() {
+        return Err("Alias must not be empty".to_string());
+    }
+    if alias.len() > 256 {
+        return Err(format!("Alias too long ({} chars, maximum is 256)", alias.len()));
+    }
+    if !alias
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        return Err(format!(
+            "Invalid alias '{}': must contain only alphanumeric characters, hyphens, underscores, or dots",
+            alias
+        ));
+    }
+    Ok(())
+}
+
+/// Truncate subprocess output if it exceeds the maximum allowed size.
+fn truncate_output(output: String) -> String {
+    if output.len() > MAX_OUTPUT_SIZE {
+        let mut truncated = output[..MAX_OUTPUT_SIZE].to_string();
+        truncated.push_str("\n--- output truncated (exceeded 10 MB limit) ---");
+        truncated
+    } else {
+        output
+    }
+}
+
 /// Run dcert with given arguments and return (stdout, stderr, exit_code).
 ///
 /// Always passes `--debug` so MCP tool responses include diagnostic info.
 /// Enforces a timeout to prevent indefinite hangs from slow or unreachable targets.
+/// Acquires a semaphore permit to limit concurrent subprocess invocations.
 async fn run_dcert(args: &[&str]) -> Result<(String, String, i32), String> {
+    let _permit = SUBPROCESS_SEMAPHORE
+        .acquire()
+        .await
+        .map_err(|_| "Subprocess semaphore closed".to_string())?;
+
     let dcert = find_dcert_binary();
 
     // Always include --debug for richer diagnostic output
     let mut full_args: Vec<&str> = Vec::with_capacity(args.len() + 1);
-    // For the "check" subcommand (default), inject --debug after target args
-    // For other subcommands, --debug may not apply, so only add if appropriate
     full_args.extend_from_slice(args);
     if !full_args.contains(&"--debug") {
         full_args.push("--debug");
@@ -121,15 +190,21 @@ async fn run_dcert(args: &[&str]) -> Result<(String, String, i32), String> {
         .map_err(|_| format!("dcert subprocess timed out after {}s", SUBPROCESS_TIMEOUT.as_secs()))?
         .map_err(|e| format!("Failed to run dcert at {}: {}", dcert.display(), e))?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let stdout = truncate_output(String::from_utf8_lossy(&output.stdout).to_string());
+    let stderr = truncate_output(String::from_utf8_lossy(&output.stderr).to_string());
     let code = output.status.code().unwrap_or(2);
 
     Ok((stdout, stderr, code))
 }
 
 /// Run dcert without --debug (for subcommands that don't support it).
+/// Acquires a semaphore permit to limit concurrent subprocess invocations.
 async fn run_dcert_raw(args: &[&str]) -> Result<(String, String, i32), String> {
+    let _permit = SUBPROCESS_SEMAPHORE
+        .acquire()
+        .await
+        .map_err(|_| "Subprocess semaphore closed".to_string())?;
+
     let dcert = find_dcert_binary();
     let child = Command::new(&dcert)
         .args(args)
@@ -143,8 +218,8 @@ async fn run_dcert_raw(args: &[&str]) -> Result<(String, String, i32), String> {
         .map_err(|_| format!("dcert subprocess timed out after {}s", SUBPROCESS_TIMEOUT.as_secs()))?
         .map_err(|e| format!("Failed to run dcert at {}: {}", dcert.display(), e))?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let stdout = truncate_output(String::from_utf8_lossy(&output.stdout).to_string());
+    let stderr = truncate_output(String::from_utf8_lossy(&output.stderr).to_string());
     let code = output.status.code().unwrap_or(2);
 
     Ok((stdout, stderr, code))
@@ -487,6 +562,9 @@ impl DcertMcpServer {
         if let Err(e) = params.mtls.validate() {
             return ok_error(e);
         }
+        if params.days > 3650 {
+            return ok_error(format!("days must be at most 3650 (10 years), got {}", params.days));
+        }
 
         let days_str = params.days.to_string();
         let mut args = vec![
@@ -650,6 +728,12 @@ impl DcertMcpServer {
             args.push("--max-tls".to_string());
             args.push(max.clone());
         }
+        // Validate min_tls <= max_tls ordering
+        if let (Some(ref min), Some(ref max)) = (&params.min_tls, &params.max_tls) {
+            if min == "1.3" && max == "1.2" {
+                return ok_error("min_tls (1.3) must not be greater than max_tls (1.2)".to_string());
+            }
+        }
         args.extend(params.mtls.to_args());
 
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
@@ -778,6 +862,12 @@ impl DcertMcpServer {
         if let Err(e) = validate_path(&params.pkcs12_path, "pkcs12_path") {
             return ok_error(e);
         }
+        if let Err(e) = validate_path(&params.output_dir, "output_dir") {
+            return ok_error(e);
+        }
+        if let Err(e) = validate_password(&params.password) {
+            return ok_error(e);
+        }
 
         let args = vec![
             "convert",
@@ -818,6 +908,17 @@ impl DcertMcpServer {
         }
         if let Err(e) = validate_path(&params.key_path, "key_path") {
             return ok_error(e);
+        }
+        if let Err(e) = validate_path(&params.output_path, "output_path") {
+            return ok_error(e);
+        }
+        if let Err(e) = validate_password(&params.password) {
+            return ok_error(e);
+        }
+        if let Some(ref ca) = params.ca_path {
+            if let Err(e) = validate_path(ca, "ca_path") {
+                return ok_error(e);
+            }
         }
 
         let mut args = vec![
@@ -868,6 +969,15 @@ impl DcertMcpServer {
         if let Err(e) = validate_path(&params.key_path, "key_path") {
             return ok_error(e);
         }
+        if let Err(e) = validate_path(&params.output_path, "output_path") {
+            return ok_error(e);
+        }
+        if let Err(e) = validate_password(&params.password) {
+            return ok_error(e);
+        }
+        if let Err(e) = validate_alias(&params.alias) {
+            return ok_error(e);
+        }
 
         let args = vec![
             "convert",
@@ -908,10 +1018,26 @@ impl DcertMcpServer {
         &self,
         Parameters(params): Parameters<CreateTruststoreParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if params.cert_paths.is_empty() {
+            return ok_error("cert_paths must contain at least one certificate file".to_string());
+        }
+        if params.cert_paths.len() > MAX_CERT_PATHS {
+            return ok_error(format!(
+                "cert_paths contains {} entries, maximum is {}",
+                params.cert_paths.len(),
+                MAX_CERT_PATHS
+            ));
+        }
         for path in &params.cert_paths {
             if let Err(e) = validate_path(path, "cert_paths") {
                 return ok_error(e);
             }
+        }
+        if let Err(e) = validate_path(&params.output_path, "output_path") {
+            return ok_error(e);
+        }
+        if let Err(e) = validate_password(&params.password) {
+            return ok_error(e);
         }
 
         let mut args: Vec<String> = vec!["convert".to_string(), "create-truststore".to_string()];
@@ -1528,6 +1654,195 @@ mod tests {
         assert!(
             text.contains("must not be empty"),
             "Error should mention empty target: {}",
+            text
+        );
+
+        client.cancel().await.unwrap();
+        server_handle.abort();
+    }
+
+    // ---------------------------------------------------------------
+    // validate_password unit tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_validate_password_accepts_normal() {
+        assert!(validate_password("secret123").is_ok());
+        assert!(validate_password("").is_ok()); // empty is valid (some tools allow it)
+        assert!(validate_password("a".repeat(1024).as_str()).is_ok()); // at the limit
+    }
+
+    #[test]
+    fn test_validate_password_rejects_too_long() {
+        let long = "a".repeat(1025);
+        assert!(validate_password(&long).is_err());
+    }
+
+    #[test]
+    fn test_validate_password_rejects_null_bytes() {
+        assert!(validate_password("pass\0word").is_err());
+    }
+
+    // ---------------------------------------------------------------
+    // validate_alias unit tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_validate_alias_accepts_valid() {
+        assert!(validate_alias("server").is_ok());
+        assert!(validate_alias("my-key_entry.1").is_ok());
+        assert!(validate_alias("a").is_ok());
+    }
+
+    #[test]
+    fn test_validate_alias_rejects_empty() {
+        assert!(validate_alias("").is_err());
+    }
+
+    #[test]
+    fn test_validate_alias_rejects_too_long() {
+        let long = "a".repeat(257);
+        assert!(validate_alias(&long).is_err());
+    }
+
+    #[test]
+    fn test_validate_alias_rejects_special_chars() {
+        assert!(validate_alias("my alias").is_err()); // space
+        assert!(validate_alias("my/alias").is_err()); // slash
+        assert!(validate_alias("alias;rm").is_err()); // semicolon
+    }
+
+    // ---------------------------------------------------------------
+    // truncate_output unit tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_truncate_output_passes_small() {
+        let small = "hello world".to_string();
+        let result = truncate_output(small.clone());
+        assert_eq!(result, small);
+    }
+
+    #[test]
+    fn test_truncate_output_truncates_large() {
+        let large = "x".repeat(MAX_OUTPUT_SIZE + 1000);
+        let result = truncate_output(large);
+        assert!(result.len() < MAX_OUTPUT_SIZE + 200); // truncated + message
+        assert!(result.contains("output truncated"));
+    }
+
+    // ---------------------------------------------------------------
+    // MCP tool: TLS version ordering rejection
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_mcp_tls_connection_rejects_inverted_tls_range() {
+        use rmcp::model::CallToolRequestParams;
+        use rmcp::{ClientHandler, ServiceExt};
+
+        let (server_transport, client_transport) = tokio::io::duplex(65536);
+
+        let server = DcertMcpServer::new();
+        let server_handle = tokio::spawn(async move {
+            let svc = server.serve(server_transport).await.unwrap();
+            svc.waiting().await.unwrap();
+        });
+
+        #[derive(Clone, Default)]
+        struct TestClient;
+        impl ClientHandler for TestClient {}
+
+        let client = TestClient.serve(client_transport).await.unwrap();
+
+        let result = client
+            .call_tool(CallToolRequestParams {
+                meta: None,
+                name: "tls_connection_info".into(),
+                arguments: Some(
+                    serde_json::json!({
+                        "target": "example.com",
+                        "min_tls": "1.3",
+                        "max_tls": "1.2"
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                ),
+                task: None,
+            })
+            .await;
+
+        assert!(result.is_ok());
+        let response = result.unwrap();
+        assert!(response.is_error.unwrap_or(false));
+        let text = response
+            .content
+            .first()
+            .and_then(|c| c.raw.as_text())
+            .map(|t| t.text.as_str())
+            .unwrap_or("");
+        assert!(
+            text.contains("must not be greater than"),
+            "Error should mention TLS version ordering: {}",
+            text
+        );
+
+        client.cancel().await.unwrap();
+        server_handle.abort();
+    }
+
+    // ---------------------------------------------------------------
+    // MCP tool: check_expiry days bounds
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_mcp_check_expiry_rejects_excessive_days() {
+        use rmcp::model::CallToolRequestParams;
+        use rmcp::{ClientHandler, ServiceExt};
+
+        let (server_transport, client_transport) = tokio::io::duplex(65536);
+
+        let server = DcertMcpServer::new();
+        let server_handle = tokio::spawn(async move {
+            let svc = server.serve(server_transport).await.unwrap();
+            svc.waiting().await.unwrap();
+        });
+
+        #[derive(Clone, Default)]
+        struct TestClient;
+        impl ClientHandler for TestClient {}
+
+        let client = TestClient.serve(client_transport).await.unwrap();
+
+        let result = client
+            .call_tool(CallToolRequestParams {
+                meta: None,
+                name: "check_expiry".into(),
+                arguments: Some(
+                    serde_json::json!({
+                        "target": "example.com",
+                        "days": 9999
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                ),
+                task: None,
+            })
+            .await;
+
+        assert!(result.is_ok());
+        let response = result.unwrap();
+        assert!(response.is_error.unwrap_or(false));
+        let text = response
+            .content
+            .first()
+            .and_then(|c| c.raw.as_text())
+            .map(|t| t.text.as_str())
+            .unwrap_or("");
+        assert!(
+            text.contains("at most 3650"),
+            "Error should mention days limit: {}",
             text
         );
 

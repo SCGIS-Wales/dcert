@@ -25,6 +25,44 @@ use output::{
 use proxy::ProxyConfig;
 
 fn run_check(mut args: CheckArgs) -> Result<i32> {
+    // Warn prominently when certificate verification is disabled
+    if args.no_verify {
+        eprintln!(
+            "{} {}",
+            "WARNING:".yellow().bold(),
+            "TLS certificate verification is disabled (--no-verify). Connection is NOT secure.".yellow()
+        );
+    }
+
+    // Validate min_tls <= max_tls ordering if both are set
+    if let (Some(min), Some(max)) = (&args.min_tls, &args.max_tls) {
+        let min_ord = match min {
+            cli::TlsVersionArg::Tls1_2 => 0,
+            cli::TlsVersionArg::Tls1_3 => 1,
+        };
+        let max_ord = match max {
+            cli::TlsVersionArg::Tls1_2 => 0,
+            cli::TlsVersionArg::Tls1_3 => 1,
+        };
+        if min_ord > max_ord {
+            return Err(anyhow::anyhow!(
+                "--min-tls ({}) must not be greater than --max-tls ({})",
+                min,
+                max
+            ));
+        }
+    }
+
+    // Warn when passwords are passed via CLI args (visible in process listing)
+    if args.cert_password.is_some() && std::env::var("DCERT_CERT_PASSWORD").is_err() {
+        eprintln!(
+            "{} {}",
+            "WARNING:".yellow().bold(),
+            "Password passed via --cert-password is visible in process listings. Consider using DCERT_CERT_PASSWORD env var instead."
+                .yellow()
+        );
+    }
+
     // Resolve request body from --data or --data-file
     let body_data: Option<Vec<u8>> = if let Some(ref data) = args.data {
         Some(data.as_bytes().to_vec())
@@ -255,6 +293,22 @@ fn run_check(mut args: CheckArgs) -> Result<i32> {
 }
 
 fn run_convert(args: cli::ConvertArgs) -> Result<i32> {
+    // Warn when passwords are passed via CLI args (visible in process listing)
+    let password_via_cli = match &args.mode {
+        cli::ConvertMode::PfxToPem { .. } => std::env::var("DCERT_CERT_PASSWORD").is_err(),
+        cli::ConvertMode::PemToPfx { .. } => std::env::var("DCERT_CERT_PASSWORD").is_err(),
+        cli::ConvertMode::CreateKeystore { .. } => std::env::var("DCERT_KEYSTORE_PASSWORD").is_err(),
+        cli::ConvertMode::CreateTruststore { .. } => false, // truststore password is low-sensitivity
+    };
+    if password_via_cli {
+        eprintln!(
+            "{} {}",
+            "WARNING:".yellow().bold(),
+            "Password passed via CLI argument is visible in process listings. Consider using the corresponding env var instead."
+                .yellow()
+        );
+    }
+
     match args.mode {
         cli::ConvertMode::PfxToPem {
             input,
