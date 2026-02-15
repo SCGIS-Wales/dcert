@@ -17,8 +17,8 @@ RUN apk add --no-cache \
 COPY Cargo.toml ./
 RUN cargo generate-lockfile
 
-# Create dummy main.rs to prebuild dependencies
-RUN mkdir -p src && echo 'fn main() {}' > src/main.rs
+# Create dummy sources to prebuild dependencies
+RUN mkdir -p src src/mcp && echo 'fn main() {}' > src/main.rs && echo 'fn main() {}' > src/mcp/main.rs
 RUN cargo build --release
 RUN rm -rf src
 
@@ -32,5 +32,6 @@ RUN cargo build --release
 FROM alpine:3.23 AS runtime
 RUN apk add --no-cache ca-certificates
 COPY --from=builder /app/target/release/dcert /usr/local/bin/dcert
+COPY --from=builder /app/target/release/dcert-mcp /usr/local/bin/dcert-mcp
 
 ENTRYPOINT ["/usr/local/bin/dcert"]

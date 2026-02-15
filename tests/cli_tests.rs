@@ -117,11 +117,15 @@ fn test_parse_valid_pem_json() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("output should be valid JSON");
-    assert!(parsed.is_array(), "JSON output should be an array");
-    let arr = parsed.as_array().unwrap();
+    assert!(parsed.is_object(), "JSON output should be an object");
+    let arr = parsed["certificates"]
+        .as_array()
+        .expect("should have certificates array");
     assert_eq!(arr.len(), 1);
     assert_eq!(arr[0]["common_name"], "test.example.com");
     assert!(!arr[0]["serial_number"].as_str().unwrap().is_empty());
+    // PEM files should not have connection info
+    assert!(parsed.get("connection").is_none() || parsed["connection"].is_null());
 }
 
 #[test]
@@ -136,7 +140,9 @@ fn test_parse_chain_json() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("output should be valid JSON");
-    let arr = parsed.as_array().unwrap();
+    let arr = parsed["certificates"]
+        .as_array()
+        .expect("should have certificates array");
     assert_eq!(arr.len(), 3, "chain should have 3 certs");
 }
 
@@ -204,7 +210,7 @@ fn test_sort_expiry_asc_json() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    let arr = parsed.as_array().unwrap();
+    let arr = parsed["certificates"].as_array().unwrap();
     // Verify ascending order
     for i in 1..arr.len() {
         let prev = arr[i - 1]["not_after"].as_str().unwrap();
@@ -227,7 +233,7 @@ fn test_sort_expiry_desc_json() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    let arr = parsed.as_array().unwrap();
+    let arr = parsed["certificates"].as_array().unwrap();
     // Verify descending order
     for i in 1..arr.len() {
         let prev = arr[i - 1]["not_after"].as_str().unwrap();
@@ -268,7 +274,7 @@ fn test_fingerprint_json() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    let arr = parsed.as_array().unwrap();
+    let arr = parsed["certificates"].as_array().unwrap();
     assert_eq!(arr.len(), 1);
     let fp = arr[0]["sha256_fingerprint"].as_str().unwrap();
     assert_eq!(fp.len(), 95, "fingerprint should be 95 chars (AA:BB:CC:... format)");
@@ -312,7 +318,7 @@ fn test_extensions_json() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    let arr = parsed.as_array().unwrap();
+    let arr = parsed["certificates"].as_array().unwrap();
     // At least one cert should have extended_key_usage
     let has_eku = arr.iter().any(|c| c.get("extended_key_usage").is_some());
     assert!(has_eku, "at least one cert in chain should have EKU in JSON");
@@ -404,6 +410,13 @@ fn test_multiple_pem_targets_json() {
     );
     let obj = parsed.as_object().unwrap();
     assert_eq!(obj.len(), 2, "should have 2 target entries");
+    // Each entry should have a certificates array
+    for (_key, val) in obj {
+        assert!(
+            val["certificates"].is_array(),
+            "each target entry should have a certificates array"
+        );
+    }
 }
 
 // ---------------------------------------------------------------
@@ -470,7 +483,7 @@ fn test_fingerprint_and_extensions_together() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    let arr = parsed.as_array().unwrap();
+    let arr = parsed["certificates"].as_array().unwrap();
     // Every cert should have a fingerprint
     for cert in arr {
         assert!(
@@ -675,7 +688,8 @@ fn test_debug_does_not_contaminate_json() {
     // stdout must be valid JSON (no debug contamination)
     let parsed: serde_json::Value =
         serde_json::from_str(&stdout).expect("JSON stdout must not be contaminated by debug output");
-    assert!(parsed.is_array());
+    assert!(parsed.is_object());
+    assert!(parsed["certificates"].is_array());
 }
 
 #[test]
