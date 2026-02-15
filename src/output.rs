@@ -230,6 +230,14 @@ pub struct TargetResult {
     pub pem_data: String,
 }
 
+/// JSON/YAML wrapper that includes both certificates and connection metadata.
+#[derive(serde::Serialize)]
+pub struct StructuredOutput {
+    pub certificates: Vec<CertInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connection: Option<TlsConnectionInfo>,
+}
+
 /// Process a single target (PEM file or HTTPS URL) and return results.
 #[allow(clippy::too_many_arguments)]
 pub fn process_target(
@@ -501,10 +509,18 @@ pub fn output_results(
             print_pretty(&result.infos, &debug);
         }
         OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&result.infos)?);
+            let output = StructuredOutput {
+                certificates: result.infos.clone(),
+                connection: result.conn_info.clone(),
+            };
+            println!("{}", serde_json::to_string_pretty(&output)?);
         }
         OutputFormat::Yaml => {
-            println!("{}", serde_yml::to_string(&result.infos)?);
+            let output = StructuredOutput {
+                certificates: result.infos.clone(),
+                connection: result.conn_info.clone(),
+            };
+            println!("{}", serde_yml::to_string(&output)?);
         }
     }
     Ok(())
