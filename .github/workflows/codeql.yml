@@ -1,11 +1,10 @@
 name: CodeQL
 
 on:
-  push:
-    branches: [ main ]
   schedule:
     # Weekly scan on Monday at 08:00 UTC
     - cron: '0 8 * * 1'
+  workflow_dispatch:
 
 permissions:
   security-events: write
@@ -20,9 +19,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@v4
         with:
           languages: actions
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@v4
