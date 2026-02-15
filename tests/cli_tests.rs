@@ -21,7 +21,7 @@ fn test_no_args_shows_help() {
     let output = dcert_bin().output().expect("failed to run dcert");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Decode and validate TLS certificates"),
+        stdout.contains("TLS certificate analysis"),
         "no-args output should show help text"
     );
 }

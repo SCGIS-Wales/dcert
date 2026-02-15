@@ -115,16 +115,25 @@ pub enum CipherNotation {
     Openssl,
 }
 
+/// Canonical one-liner description used by CLI, MCP, and Cargo.toml.
+pub const DCERT_DESCRIPTION: &str =
+    "TLS certificate analysis, format conversion, and key verification — CLI and MCP server";
+
+/// Long version string: version + description, for `dcert --version`.
+pub fn dcert_long_version() -> &'static str {
+    use std::sync::OnceLock;
+    static LONG_VER: OnceLock<String> = OnceLock::new();
+    let s = LONG_VER.get_or_init(|| format!("{}\n{}", dcert_version(), DCERT_DESCRIPTION));
+    s.as_str()
+}
+
 // -- Top-level CLI --
 
 #[derive(Parser, Debug)]
 #[command(name = "dcert")]
-#[command(
-    about = "Decode and validate TLS certificates, convert certificate formats, and verify key-certificate matching.\n\
-             Use 'dcert <target>' for certificate analysis (default), 'dcert convert' for format conversion,\n\
-             or 'dcert verify-key' for key matching."
-)]
+#[command(about = DCERT_DESCRIPTION)]
 #[command(version = dcert_version())]
+#[command(long_version = dcert_long_version())]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,

@@ -337,6 +337,7 @@ Returns key type, key size, certificate subject, and whether the key matches. Ex
 | `check_revocation` | Check OCSP revocation status via the certificate's OCSP responder. Supports mTLS. |
 | `compare_certificates` | Compare certificates between two targets side-by-side. |
 | `tls_connection_info` | Get TLS connection details: protocol, cipher, ALPN, latency, verification, diagnostics. Supports mTLS. |
+| `export_pem` | Export TLS certificate chain from an HTTPS endpoint as PEM. Optionally saves to file and can exclude expired certs. Supports mTLS. |
 | `verify_key_match` | Verify that a private key matches a certificate (PEM file or HTTPS endpoint). |
 | `convert_pfx_to_pem` | Convert PKCS12/PFX to separate PEM files (cert, key, CA chain). |
 | `convert_pem_to_pfx` | Convert PEM certificate + key to PKCS12/PFX file. |
