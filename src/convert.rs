@@ -59,6 +59,7 @@ pub fn pfx_to_pem(input: &str, password: &str, output_dir: &str) -> Result<Conve
             .with_context(|| "Failed to encode private key as PEM")?;
         let key_path = format!("{}/key.pem", output_dir);
         fs::write(&key_path, &key_pem).with_context(|| format!("Failed to write private key: {}", key_path))?;
+        restrict_file_permissions(&key_path);
         output_files.push(key_path);
 
         key_type = Some(key_type_name(pkey));
@@ -290,6 +291,19 @@ fn vec_to_stack(certs: Vec<X509>) -> Result<Stack<X509>> {
     }
     Ok(stack)
 }
+
+/// Set file permissions to owner-only (0600) on Unix.
+/// This is a best-effort operation — failure is silently ignored since
+/// the file was already written and the caller can check permissions.
+#[cfg(unix)]
+fn restrict_file_permissions(path: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+}
+
+/// No-op on non-Unix platforms.
+#[cfg(not(unix))]
+fn restrict_file_permissions(_path: &str) {}
 
 fn key_type_name(pkey: &PKey<openssl::pkey::Private>) -> String {
     if pkey.rsa().is_ok() {
