@@ -1,4 +1,4 @@
-use clap::{Parser, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use openssl::ssl::SslVersion;
 
 /// Return the version string for `--version` output.
@@ -30,7 +30,14 @@ pub mod exit_code {
     pub const CERT_EXPIRED: i32 = 4;
     /// At least one certificate has been revoked (OCSP).
     pub const CERT_REVOKED: i32 = 5;
+    /// Client certificate error (invalid, unreadable, wrong password).
+    #[allow(dead_code)]
+    pub const CLIENT_CERT_ERROR: i32 = 6;
+    /// Private key does not match the certificate.
+    pub const KEY_MISMATCH: i32 = 7;
 }
+
+// -- Value enums --
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum OutputFormat {
@@ -108,15 +115,53 @@ pub enum CipherNotation {
     Openssl,
 }
 
+// -- Top-level CLI --
+
 #[derive(Parser, Debug)]
 #[command(name = "dcert")]
 #[command(
-    about = "Decode and validate TLS certificates from a PEM file or fetch the TLS certificate chain from an HTTPS endpoint.\n\
-             If you specify an HTTPS URL, dcert will fetch and decode the server's TLS certificate chain.\n\
-             Optionally, you can export the chain as a PEM file."
+    about = "Decode and validate TLS certificates, convert certificate formats, and verify key-certificate matching.\n\
+             Use 'dcert <target>' for certificate analysis (default), 'dcert convert' for format conversion,\n\
+             or 'dcert verify-key' for key matching."
 )]
 #[command(version = dcert_version())]
-pub struct Args {
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Command,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum Command {
+    /// Analyze TLS certificates from PEM files or HTTPS endpoints (default command)
+    #[command(name = "check", alias = "c")]
+    Check(Box<CheckArgs>),
+
+    /// Convert certificate formats (PFX/PEM/PKCS12 keystore/truststore)
+    #[command(name = "convert")]
+    Convert(ConvertArgs),
+
+    /// Verify that a private key matches a certificate
+    #[command(name = "verify-key")]
+    VerifyKey(VerifyKeyArgs),
+}
+
+/// Known subcommand names for backward-compatible default routing.
+pub const KNOWN_SUBCOMMANDS: &[&str] = &[
+    "check",
+    "c",
+    "convert",
+    "verify-key",
+    "help",
+    "--help",
+    "-h",
+    "--version",
+    "-V",
+];
+
+// -- Check subcommand (default) --
+
+#[derive(Args, Debug)]
+pub struct CheckArgs {
     /// Path(s) to PEM file(s) or HTTPS URL(s). Use '-' to read targets from stdin (one per line)
     #[arg(value_parser = validate_target, num_args = 1..)]
     pub targets: Vec<String>,
@@ -231,7 +276,129 @@ pub struct Args {
     /// Show verbose debug output with OSI layer diagnostics on stderr
     #[arg(long)]
     pub debug: bool,
+
+    // -- mTLS options --
+    /// Client certificate PEM file for mutual TLS authentication
+    #[arg(long, value_name = "PATH", requires = "client_key")]
+    pub client_cert: Option<String>,
+
+    /// Client private key PEM file for mutual TLS (unencrypted RSA/EC key)
+    #[arg(long, value_name = "PATH", requires = "client_cert", conflicts_with = "pkcs12")]
+    pub client_key: Option<String>,
+
+    /// PKCS12/PFX file containing client certificate and private key for mTLS
+    #[arg(long, value_name = "PATH", conflicts_with_all = ["client_cert", "client_key"])]
+    pub pkcs12: Option<String>,
+
+    /// Password for the PKCS12/PFX file (or set DCERT_CERT_PASSWORD env var)
+    #[arg(long, value_name = "PASS", env = "DCERT_CERT_PASSWORD")]
+    pub cert_password: Option<String>,
+
+    /// Custom CA certificate bundle PEM file for server verification (overrides system CAs)
+    #[arg(long, value_name = "PATH")]
+    pub ca_cert: Option<String>,
 }
+
+// -- Convert subcommand --
+
+#[derive(Args, Debug)]
+pub struct ConvertArgs {
+    #[command(subcommand)]
+    pub mode: ConvertMode,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ConvertMode {
+    /// Convert PKCS12/PFX file to PEM certificate + key files
+    #[command(name = "pfx-to-pem")]
+    PfxToPem {
+        /// Input PKCS12/PFX file
+        input: String,
+        /// Password for PKCS12 file (or set DCERT_CERT_PASSWORD env var)
+        #[arg(long, env = "DCERT_CERT_PASSWORD")]
+        password: String,
+        /// Output directory for PEM files (cert.pem, key.pem, ca.pem)
+        #[arg(short, long, default_value = ".")]
+        output_dir: String,
+    },
+
+    /// Convert PEM certificate + key to PKCS12/PFX file
+    #[command(name = "pem-to-pfx")]
+    PemToPfx {
+        /// PEM certificate file
+        #[arg(long)]
+        cert: String,
+        /// PEM private key file (unencrypted)
+        #[arg(long)]
+        key: String,
+        /// Output PFX file path
+        #[arg(short, long)]
+        output: String,
+        /// Password for the output PKCS12 file
+        #[arg(long, env = "DCERT_CERT_PASSWORD")]
+        password: String,
+        /// Additional CA certificate PEM file to include in the chain
+        #[arg(long)]
+        ca: Option<String>,
+    },
+
+    /// Create a PKCS12 keystore from a private key + certificate (Java-compatible since JDK 9)
+    #[command(name = "create-keystore")]
+    CreateKeystore {
+        /// PEM certificate file (or chain)
+        #[arg(long)]
+        cert: String,
+        /// PEM private key file
+        #[arg(long)]
+        key: String,
+        /// Output PKCS12 keystore file path
+        #[arg(short, long)]
+        output: String,
+        /// KeyStore password
+        #[arg(long, env = "DCERT_KEYSTORE_PASSWORD")]
+        password: String,
+        /// Alias for the key entry
+        #[arg(long, default_value = "server")]
+        alias: String,
+    },
+
+    /// Create a PKCS12 truststore from CA certificates (Java-compatible since JDK 9)
+    #[command(name = "create-truststore")]
+    CreateTruststore {
+        /// PEM file(s) containing CA certificates to trust
+        #[arg(num_args = 1..)]
+        certs: Vec<String>,
+        /// Output PKCS12 truststore file path
+        #[arg(short, long)]
+        output: String,
+        /// TrustStore password
+        #[arg(long, default_value = "changeit")]
+        password: String,
+    },
+}
+
+// -- Verify-key subcommand --
+
+#[derive(Args, Debug)]
+pub struct VerifyKeyArgs {
+    /// PEM certificate file or HTTPS URL to verify against
+    #[arg(value_parser = validate_target)]
+    pub target: String,
+
+    /// Private key PEM file to verify against the certificate
+    #[arg(long)]
+    pub key: String,
+
+    /// Output format
+    #[arg(short, long, value_enum, default_value_t = OutputFormat::Pretty)]
+    pub format: OutputFormat,
+
+    /// Show verbose debug output
+    #[arg(long)]
+    pub debug: bool,
+}
+
+// -- Helper functions --
 
 pub fn validate_target(s: &str) -> Result<String, String> {
     if s == "-" || s.starts_with("https://") || std::path::Path::new(s).exists() {
@@ -409,5 +576,38 @@ mod tests {
         assert_eq!(HttpMethod::Post.to_string(), "POST");
         assert_eq!(HttpMethod::Head.to_string(), "HEAD");
         assert_eq!(HttpMethod::Options.to_string(), "OPTIONS");
+    }
+
+    // ---------------------------------------------------------------
+    // Subcommand backward-compat tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_known_subcommands_list() {
+        assert!(KNOWN_SUBCOMMANDS.contains(&"check"));
+        assert!(KNOWN_SUBCOMMANDS.contains(&"convert"));
+        assert!(KNOWN_SUBCOMMANDS.contains(&"verify-key"));
+        assert!(KNOWN_SUBCOMMANDS.contains(&"help"));
+    }
+
+    #[test]
+    fn test_check_subcommand_parse() {
+        let cli = Cli::parse_from(["dcert", "check", "tests/data/valid.pem"]);
+        assert!(matches!(cli.command, Command::Check(_)));
+        if let Command::Check(args) = cli.command {
+            assert_eq!(args.targets.len(), 1);
+        }
+    }
+
+    #[test]
+    fn test_verify_key_subcommand_parse() {
+        let cli = Cli::parse_from([
+            "dcert",
+            "verify-key",
+            "tests/data/valid.pem",
+            "--key",
+            "tests/data/valid.pem",
+        ]);
+        assert!(matches!(cli.command, Command::VerifyKey(_)));
     }
 }

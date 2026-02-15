@@ -50,10 +50,57 @@ fn validate_target(target: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate a file path parameter to prevent argument injection.
+fn validate_path(path: &str, param_name: &str) -> Result<(), String> {
+    if path.is_empty() {
+        return Err(format!("{} must not be empty", param_name));
+    }
+    if path.starts_with('-') {
+        return Err(format!("Invalid {}: '{}' must not start with '-'", param_name, path));
+    }
+    if path.contains('\0') {
+        return Err(format!("{} must not contain null bytes", param_name));
+    }
+    Ok(())
+}
+
 /// Run dcert with given arguments and return (stdout, stderr, exit_code).
 ///
+/// Always passes `--debug` so MCP tool responses include diagnostic info.
 /// Enforces a timeout to prevent indefinite hangs from slow or unreachable targets.
 async fn run_dcert(args: &[&str]) -> Result<(String, String, i32), String> {
+    let dcert = find_dcert_binary();
+
+    // Always include --debug for richer diagnostic output
+    let mut full_args: Vec<&str> = Vec::with_capacity(args.len() + 1);
+    // For the "check" subcommand (default), inject --debug after target args
+    // For other subcommands, --debug may not apply, so only add if appropriate
+    full_args.extend_from_slice(args);
+    if !full_args.contains(&"--debug") {
+        full_args.push("--debug");
+    }
+
+    let child = Command::new(&dcert)
+        .args(&full_args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to run dcert at {}: {}", dcert.display(), e))?;
+
+    let output = tokio::time::timeout(SUBPROCESS_TIMEOUT, child.wait_with_output())
+        .await
+        .map_err(|_| format!("dcert subprocess timed out after {}s", SUBPROCESS_TIMEOUT.as_secs()))?
+        .map_err(|e| format!("Failed to run dcert at {}: {}", dcert.display(), e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let code = output.status.code().unwrap_or(2);
+
+    Ok((stdout, stderr, code))
+}
+
+/// Run dcert without --debug (for subcommands that don't support it).
+async fn run_dcert_raw(args: &[&str]) -> Result<(String, String, i32), String> {
     let dcert = find_dcert_binary();
     let child = Command::new(&dcert)
         .args(args)
@@ -76,6 +123,80 @@ async fn run_dcert(args: &[&str]) -> Result<(String, String, i32), String> {
 
 // -- Parameter types --
 
+/// mTLS parameters shared across check-based tools.
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+struct MtlsParams {
+    /// Client certificate PEM file path for mutual TLS authentication
+    #[serde(default)]
+    client_cert: Option<String>,
+    /// Client private key PEM file path for mutual TLS (must be used with client_cert)
+    #[serde(default)]
+    client_key: Option<String>,
+    /// PKCS12/PFX file containing client cert + key (alternative to client_cert/client_key)
+    #[serde(default)]
+    pkcs12: Option<String>,
+    /// Password for the PKCS12 file
+    #[serde(default)]
+    cert_password: Option<String>,
+    /// Custom CA certificate bundle PEM file (overrides system CAs)
+    #[serde(default)]
+    ca_cert: Option<String>,
+}
+
+impl MtlsParams {
+    fn validate(&self) -> Result<(), String> {
+        // client_cert and client_key must both be set or both absent
+        match (&self.client_cert, &self.client_key) {
+            (Some(_), None) => return Err("client_cert requires client_key".to_string()),
+            (None, Some(_)) => return Err("client_key requires client_cert".to_string()),
+            _ => {}
+        }
+        // client_cert/client_key and pkcs12 are mutually exclusive
+        if self.client_cert.is_some() && self.pkcs12.is_some() {
+            return Err("client_cert/client_key and pkcs12 are mutually exclusive".to_string());
+        }
+        // Validate paths
+        if let Some(ref p) = self.client_cert {
+            validate_path(p, "client_cert")?;
+        }
+        if let Some(ref p) = self.client_key {
+            validate_path(p, "client_key")?;
+        }
+        if let Some(ref p) = self.pkcs12 {
+            validate_path(p, "pkcs12")?;
+        }
+        if let Some(ref p) = self.ca_cert {
+            validate_path(p, "ca_cert")?;
+        }
+        Ok(())
+    }
+
+    fn to_args(&self) -> Vec<String> {
+        let mut args = Vec::new();
+        if let Some(ref p) = self.client_cert {
+            args.push("--client-cert".to_string());
+            args.push(p.clone());
+        }
+        if let Some(ref p) = self.client_key {
+            args.push("--client-key".to_string());
+            args.push(p.clone());
+        }
+        if let Some(ref p) = self.pkcs12 {
+            args.push("--pkcs12".to_string());
+            args.push(p.clone());
+        }
+        if let Some(ref p) = self.cert_password {
+            args.push("--cert-password".to_string());
+            args.push(p.clone());
+        }
+        if let Some(ref p) = self.ca_cert {
+            args.push("--ca-cert".to_string());
+            args.push(p.clone());
+        }
+        args
+    }
+}
+
 /// Parameters for the analyze_certificate tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 struct AnalyzeCertificateParams {
@@ -90,6 +211,9 @@ struct AnalyzeCertificateParams {
     /// Check OCSP revocation status (default: false)
     #[serde(default)]
     check_revocation: bool,
+    /// mTLS and CA configuration
+    #[serde(flatten, default)]
+    mtls: MtlsParams,
 }
 
 /// Parameters for the check_expiry tool.
@@ -100,6 +224,9 @@ struct CheckExpiryParams {
     /// Warning threshold in days (default: 30)
     #[serde(default = "default_30")]
     days: u64,
+    /// mTLS and CA configuration
+    #[serde(flatten, default)]
+    mtls: MtlsParams,
 }
 
 /// Parameters for the check_revocation tool.
@@ -107,6 +234,9 @@ struct CheckExpiryParams {
 struct CheckRevocationParams {
     /// HTTPS URL, hostname, or local path to a PEM file. Bare hostnames are auto-converted to https://
     target: String,
+    /// mTLS and CA configuration
+    #[serde(flatten, default)]
+    mtls: MtlsParams,
 }
 
 /// Parameters for the compare_certificates tool.
@@ -127,6 +257,74 @@ struct TlsConnectionInfoParams {
     min_tls: Option<String>,
     /// Maximum TLS version: "1.2" or "1.3"
     max_tls: Option<String>,
+    /// mTLS and CA configuration
+    #[serde(flatten, default)]
+    mtls: MtlsParams,
+}
+
+/// Parameters for the verify_key_match tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct VerifyKeyMatchParams {
+    /// PEM certificate file or HTTPS URL to verify against
+    target: String,
+    /// Private key PEM file path
+    key_path: String,
+}
+
+/// Parameters for the convert_pfx_to_pem tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct ConvertPfxToPemParams {
+    /// Input PKCS12/PFX file path
+    pkcs12_path: String,
+    /// Password for the PKCS12 file
+    password: String,
+    /// Output directory for PEM files (default: current directory)
+    #[serde(default = "default_dot")]
+    output_dir: String,
+}
+
+/// Parameters for the convert_pem_to_pfx tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct ConvertPemToPfxParams {
+    /// PEM certificate file path
+    cert_path: String,
+    /// PEM private key file path
+    key_path: String,
+    /// Password for the output PKCS12 file
+    password: String,
+    /// Output PFX file path
+    output_path: String,
+    /// Optional CA certificate PEM file to include in the chain
+    #[serde(default)]
+    ca_path: Option<String>,
+}
+
+/// Parameters for the create_keystore tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct CreateKeystoreParams {
+    /// PEM certificate file path (or chain)
+    cert_path: String,
+    /// PEM private key file path
+    key_path: String,
+    /// Password for the keystore
+    password: String,
+    /// Output PKCS12 keystore file path
+    output_path: String,
+    /// Alias for the key entry (default: "server")
+    #[serde(default = "default_server")]
+    alias: String,
+}
+
+/// Parameters for the create_truststore tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct CreateTruststoreParams {
+    /// PEM file path(s) containing CA certificates to trust
+    cert_paths: Vec<String>,
+    /// Password for the truststore (default: "changeit")
+    #[serde(default = "default_changeit")]
+    password: String,
+    /// Output PKCS12 truststore file path
+    output_path: String,
 }
 
 fn default_true() -> bool {
@@ -134,6 +332,15 @@ fn default_true() -> bool {
 }
 fn default_30() -> u64 {
     30
+}
+fn default_dot() -> String {
+    ".".to_string()
+}
+fn default_server() -> String {
+    "server".to_string()
+}
+fn default_changeit() -> String {
+    "changeit".to_string()
 }
 
 /// Validate that a TLS version string is one of the accepted values.
@@ -179,7 +386,7 @@ impl Default for DcertMcpServer {
 impl DcertMcpServer {
     /// Decode and analyze TLS certificates from an HTTPS endpoint or PEM file.
     #[tool(
-        description = "Decode and analyze TLS certificates from an HTTPS endpoint or PEM file. Returns certificate details including subject, issuer, SANs, validity dates, fingerprints, extensions, and TLS connection information."
+        description = "Decode and analyze TLS certificates from an HTTPS endpoint or PEM file. Returns certificate details including subject, issuer, SANs, validity dates, fingerprints, extensions, TLS connection information, and OSI-layer diagnostics. Supports mTLS with client certificates and custom CA bundles."
     )]
     pub async fn analyze_certificate(
         &self,
@@ -188,23 +395,28 @@ impl DcertMcpServer {
         if let Err(e) = validate_target(&params.target) {
             return ok_error(e);
         }
+        if let Err(e) = params.mtls.validate() {
+            return ok_error(e);
+        }
 
-        let mut args = vec![params.target.as_str(), "--format", "json"];
+        let mut args = vec![params.target.clone(), "--format".to_string(), "json".to_string()];
         if params.fingerprint {
-            args.push("--fingerprint");
+            args.push("--fingerprint".to_string());
         }
         if params.extensions {
-            args.push("--extensions");
+            args.push("--extensions".to_string());
         }
         if params.check_revocation {
-            args.push("--check-revocation");
+            args.push("--check-revocation".to_string());
         }
+        args.extend(params.mtls.to_args());
 
-        match run_dcert(&args).await {
+        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        match run_dcert(&args_refs).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = stdout;
                 if !stderr.is_empty() {
-                    output.push_str("\n--- stderr ---\n");
+                    output.push_str("\n--- debug/stderr ---\n");
                     output.push_str(&stderr);
                 }
                 if code != 0 {
@@ -218,7 +430,7 @@ impl DcertMcpServer {
 
     /// Check if TLS certificates for a target expire within a specified number of days.
     #[tool(
-        description = "Check if TLS certificates for a target expire within a specified number of days. Returns expiry status and warnings. Exit codes: 0=ok, 1=expiring soon, 4=already expired."
+        description = "Check if TLS certificates for a target expire within a specified number of days. Returns expiry status and warnings. Exit codes: 0=ok, 1=expiring soon, 4=already expired. Supports mTLS."
     )]
     pub async fn check_expiry(
         &self,
@@ -227,18 +439,23 @@ impl DcertMcpServer {
         if let Err(e) = validate_target(&params.target) {
             return ok_error(e);
         }
+        if let Err(e) = params.mtls.validate() {
+            return ok_error(e);
+        }
 
         let days_str = params.days.to_string();
-        let args = vec![
-            params.target.as_str(),
-            "--format",
-            "json",
-            "--fingerprint",
-            "--expiry-warn",
-            &days_str,
+        let mut args = vec![
+            params.target.clone(),
+            "--format".to_string(),
+            "json".to_string(),
+            "--fingerprint".to_string(),
+            "--expiry-warn".to_string(),
+            days_str,
         ];
+        args.extend(params.mtls.to_args());
 
-        match run_dcert(&args).await {
+        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        match run_dcert(&args_refs).await {
             Ok((stdout, stderr, code)) => {
                 let status = match code {
                     0 => "ALL_VALID",
@@ -260,7 +477,7 @@ impl DcertMcpServer {
 
     /// Check the OCSP revocation status of TLS certificates.
     #[tool(
-        description = "Check the OCSP revocation status of TLS certificates. Queries the certificate's OCSP responder to determine if it has been revoked."
+        description = "Check the OCSP revocation status of TLS certificates. Queries the certificate's OCSP responder to determine if it has been revoked. Supports mTLS."
     )]
     pub async fn check_revocation(
         &self,
@@ -269,16 +486,21 @@ impl DcertMcpServer {
         if let Err(e) = validate_target(&params.target) {
             return ok_error(e);
         }
+        if let Err(e) = params.mtls.validate() {
+            return ok_error(e);
+        }
 
-        let args = vec![
-            params.target.as_str(),
-            "--format",
-            "json",
-            "--check-revocation",
-            "--extensions",
+        let mut args = vec![
+            params.target.clone(),
+            "--format".to_string(),
+            "json".to_string(),
+            "--check-revocation".to_string(),
+            "--extensions".to_string(),
         ];
+        args.extend(params.mtls.to_args());
 
-        match run_dcert(&args).await {
+        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        match run_dcert(&args_refs).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = stdout;
                 if code == 5 {
@@ -348,7 +570,7 @@ impl DcertMcpServer {
 
     /// Get TLS connection details for an HTTPS endpoint.
     #[tool(
-        description = "Get TLS connection details for an HTTPS endpoint including protocol version, cipher suite, ALPN negotiation, DNS/TCP/TLS latency, and verification status."
+        description = "Get TLS connection details for an HTTPS endpoint including protocol version, cipher suite, ALPN negotiation, DNS/TCP/TLS latency, verification status, and full OSI-layer diagnostics. Supports mTLS and custom CA bundles."
     )]
     pub async fn tls_connection_info(
         &self,
@@ -357,36 +579,249 @@ impl DcertMcpServer {
         if let Err(e) = validate_target(&params.target) {
             return ok_error(e);
         }
+        if let Err(e) = params.mtls.validate() {
+            return ok_error(e);
+        }
 
         let mut args = vec![
-            params.target.as_str(),
-            "--format",
-            "json",
-            "--fingerprint",
-            "--extensions",
+            params.target.clone(),
+            "--format".to_string(),
+            "json".to_string(),
+            "--fingerprint".to_string(),
+            "--extensions".to_string(),
         ];
-
-        let min_tls_owned;
-        let max_tls_owned;
 
         if let Some(ref min) = params.min_tls {
             if let Err(e) = validate_tls_version(min) {
                 return ok_error(e);
             }
-            min_tls_owned = min.clone();
-            args.push("--min-tls");
-            args.push(&min_tls_owned);
+            args.push("--min-tls".to_string());
+            args.push(min.clone());
         }
         if let Some(ref max) = params.max_tls {
             if let Err(e) = validate_tls_version(max) {
                 return ok_error(e);
             }
-            max_tls_owned = max.clone();
-            args.push("--max-tls");
-            args.push(&max_tls_owned);
+            args.push("--max-tls".to_string());
+            args.push(max.clone());
+        }
+        args.extend(params.mtls.to_args());
+
+        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        match run_dcert(&args_refs).await {
+            Ok((stdout, stderr, code)) => {
+                let mut output = stdout;
+                if !stderr.is_empty() {
+                    output.push_str("\n--- debug/stderr ---\n");
+                    output.push_str(&stderr);
+                }
+                if code != 0 {
+                    output.push_str(&format!("\n--- exit code: {} ---", code));
+                }
+                ok_text(output)
+            }
+            Err(e) => ok_error(e),
+        }
+    }
+
+    /// Verify that a private key matches a certificate.
+    #[tool(
+        description = "Verify that a private key PEM file matches a certificate (PEM file or HTTPS endpoint). Returns match status, key type/size, and certificate subject. Useful for validating key-cert pairs before deployment."
+    )]
+    pub async fn verify_key_match(
+        &self,
+        Parameters(params): Parameters<VerifyKeyMatchParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if let Err(e) = validate_target(&params.target) {
+            return ok_error(e);
+        }
+        if let Err(e) = validate_path(&params.key_path, "key_path") {
+            return ok_error(e);
         }
 
-        match run_dcert(&args).await {
+        let args = vec![
+            "verify-key",
+            params.target.as_str(),
+            "--key",
+            params.key_path.as_str(),
+            "--format",
+            "json",
+        ];
+
+        match run_dcert_raw(&args).await {
+            Ok((stdout, stderr, code)) => {
+                let mut output = stdout;
+                if !stderr.is_empty() {
+                    output.push_str("\n--- stderr ---\n");
+                    output.push_str(&stderr);
+                }
+                if code != 0 && code != 7 {
+                    output.push_str(&format!("\n--- exit code: {} ---", code));
+                }
+                ok_text(output)
+            }
+            Err(e) => ok_error(e),
+        }
+    }
+
+    /// Convert a PKCS12/PFX file to PEM certificate and key files.
+    #[tool(
+        description = "Convert a PKCS12/PFX file to separate PEM files (cert.pem, key.pem, ca.pem). Extracts the certificate, private key, and any CA chain certificates."
+    )]
+    pub async fn convert_pfx_to_pem(
+        &self,
+        Parameters(params): Parameters<ConvertPfxToPemParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if let Err(e) = validate_path(&params.pkcs12_path, "pkcs12_path") {
+            return ok_error(e);
+        }
+
+        let args = vec![
+            "convert",
+            "pfx-to-pem",
+            params.pkcs12_path.as_str(),
+            "--password",
+            params.password.as_str(),
+            "--output-dir",
+            params.output_dir.as_str(),
+        ];
+
+        match run_dcert_raw(&args).await {
+            Ok((stdout, stderr, code)) => {
+                let mut output = stdout;
+                if !stderr.is_empty() {
+                    output.push_str("\n--- stderr ---\n");
+                    output.push_str(&stderr);
+                }
+                if code != 0 {
+                    output.push_str(&format!("\n--- exit code: {} ---", code));
+                }
+                ok_text(output)
+            }
+            Err(e) => ok_error(e),
+        }
+    }
+
+    /// Convert PEM certificate and key to a PKCS12/PFX file.
+    #[tool(
+        description = "Convert PEM certificate and private key files to a PKCS12/PFX file. Optionally includes CA chain certificates."
+    )]
+    pub async fn convert_pem_to_pfx(
+        &self,
+        Parameters(params): Parameters<ConvertPemToPfxParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if let Err(e) = validate_path(&params.cert_path, "cert_path") {
+            return ok_error(e);
+        }
+        if let Err(e) = validate_path(&params.key_path, "key_path") {
+            return ok_error(e);
+        }
+
+        let mut args = vec![
+            "convert".to_string(),
+            "pem-to-pfx".to_string(),
+            "--cert".to_string(),
+            params.cert_path,
+            "--key".to_string(),
+            params.key_path,
+            "--output".to_string(),
+            params.output_path,
+            "--password".to_string(),
+            params.password,
+        ];
+        if let Some(ca) = params.ca_path {
+            args.push("--ca".to_string());
+            args.push(ca);
+        }
+
+        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        match run_dcert_raw(&args_refs).await {
+            Ok((stdout, stderr, code)) => {
+                let mut output = stdout;
+                if !stderr.is_empty() {
+                    output.push_str("\n--- stderr ---\n");
+                    output.push_str(&stderr);
+                }
+                if code != 0 {
+                    output.push_str(&format!("\n--- exit code: {} ---", code));
+                }
+                ok_text(output)
+            }
+            Err(e) => ok_error(e),
+        }
+    }
+
+    /// Create a PKCS12 keystore from a private key and certificate.
+    #[tool(
+        description = "Create a PKCS12 keystore from PEM certificate and private key files. Java-compatible since JDK 9 (PKCS12 is the default keystore type). Sets the key entry alias."
+    )]
+    pub async fn create_keystore(
+        &self,
+        Parameters(params): Parameters<CreateKeystoreParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if let Err(e) = validate_path(&params.cert_path, "cert_path") {
+            return ok_error(e);
+        }
+        if let Err(e) = validate_path(&params.key_path, "key_path") {
+            return ok_error(e);
+        }
+
+        let args = vec![
+            "convert",
+            "create-keystore",
+            "--cert",
+            params.cert_path.as_str(),
+            "--key",
+            params.key_path.as_str(),
+            "--output",
+            params.output_path.as_str(),
+            "--password",
+            params.password.as_str(),
+            "--alias",
+            params.alias.as_str(),
+        ];
+
+        match run_dcert_raw(&args).await {
+            Ok((stdout, stderr, code)) => {
+                let mut output = stdout;
+                if !stderr.is_empty() {
+                    output.push_str("\n--- stderr ---\n");
+                    output.push_str(&stderr);
+                }
+                if code != 0 {
+                    output.push_str(&format!("\n--- exit code: {} ---", code));
+                }
+                ok_text(output)
+            }
+            Err(e) => ok_error(e),
+        }
+    }
+
+    /// Create a PKCS12 truststore from CA certificates.
+    #[tool(
+        description = "Create a PKCS12 truststore from CA certificate PEM files. Java-compatible since JDK 9. Bundles multiple CA certificates into a single truststore file."
+    )]
+    pub async fn create_truststore(
+        &self,
+        Parameters(params): Parameters<CreateTruststoreParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        for path in &params.cert_paths {
+            if let Err(e) = validate_path(path, "cert_paths") {
+                return ok_error(e);
+            }
+        }
+
+        let mut args: Vec<String> = vec!["convert".to_string(), "create-truststore".to_string()];
+        for path in &params.cert_paths {
+            args.push(path.clone());
+        }
+        args.push("--output".to_string());
+        args.push(params.output_path);
+        args.push("--password".to_string());
+        args.push(params.password);
+
+        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        match run_dcert_raw(&args_refs).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = stdout;
                 if !stderr.is_empty() {
@@ -411,7 +846,10 @@ impl ServerHandler for DcertMcpServer {
                 name: "dcert-mcp".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
                 title: Some("dcert MCP Server".to_string()),
-                description: Some("TLS certificate analysis and validation tools for AI-powered IDEs".to_string()),
+                description: Some(
+                    "TLS certificate analysis, validation, conversion, and key verification tools for AI-powered IDEs"
+                        .to_string(),
+                ),
                 icons: None,
                 website_url: Some("https://github.com/SCGIS-Wales/dcert".to_string()),
             },
@@ -482,6 +920,71 @@ mod tests {
         let result = validate_target("example\0.com");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("null bytes"));
+    }
+
+    // ---------------------------------------------------------------
+    // validate_path unit tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_validate_path_accepts_valid() {
+        assert!(validate_path("/tmp/cert.pem", "cert").is_ok());
+        assert!(validate_path("relative/path.pem", "cert").is_ok());
+    }
+
+    #[test]
+    fn test_validate_path_rejects_empty() {
+        assert!(validate_path("", "cert").is_err());
+    }
+
+    #[test]
+    fn test_validate_path_rejects_dash_prefix() {
+        assert!(validate_path("--flag", "cert").is_err());
+    }
+
+    // ---------------------------------------------------------------
+    // MtlsParams validation tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_mtls_params_empty_valid() {
+        let params = MtlsParams::default();
+        assert!(params.validate().is_ok());
+    }
+
+    #[test]
+    fn test_mtls_params_cert_without_key() {
+        let params = MtlsParams {
+            client_cert: Some("/tmp/cert.pem".to_string()),
+            client_key: None,
+            ..Default::default()
+        };
+        assert!(params.validate().is_err());
+    }
+
+    #[test]
+    fn test_mtls_params_cert_and_pkcs12_conflict() {
+        let params = MtlsParams {
+            client_cert: Some("/tmp/cert.pem".to_string()),
+            client_key: Some("/tmp/key.pem".to_string()),
+            pkcs12: Some("/tmp/client.pfx".to_string()),
+            ..Default::default()
+        };
+        assert!(params.validate().is_err());
+    }
+
+    #[test]
+    fn test_mtls_params_to_args() {
+        let params = MtlsParams {
+            client_cert: Some("/tmp/cert.pem".to_string()),
+            client_key: Some("/tmp/key.pem".to_string()),
+            ca_cert: Some("/tmp/ca.pem".to_string()),
+            ..Default::default()
+        };
+        let args = params.to_args();
+        assert!(args.contains(&"--client-cert".to_string()));
+        assert!(args.contains(&"--client-key".to_string()));
+        assert!(args.contains(&"--ca-cert".to_string()));
     }
 
     // ---------------------------------------------------------------
