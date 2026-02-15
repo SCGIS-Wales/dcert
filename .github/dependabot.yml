@@ -1,6 +1,3 @@
-# File: .github/dependabot.yml
-# Copy to: dcert repository .github/ folder
-
 version: 2
 updates:
   # Rust dependencies
@@ -23,19 +20,13 @@ updates:
     labels:
       - "dependencies"
       - "automated"
-    
+
     # Allow updates for all dependency types
     allow:
       - dependency-type: "direct:production"
       - dependency-type: "direct:development"
       - dependency-type: "indirect"
-    
-    # Ignore specific packages if needed
-    ignore:
-      # Example: ignore major version updates for stable packages
-      # - dependency-name: "serde"
-      #   update-types: ["version-update:semver-major"]
-    
+
     # Group related dependencies
     groups:
       serde:
@@ -64,4 +55,22 @@ updates:
       include: "scope"
     labels:
       - "github-actions"
+      - "dependencies"
+
+  # Docker base image
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "10:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 3
+    reviewers:
+      - "api-py"
+    commit-message:
+      prefix: "docker"
+      include: "scope"
+    labels:
+      - "docker"
       - "dependencies"
