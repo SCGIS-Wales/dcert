@@ -156,7 +156,10 @@ jobs:
 
   build-linux:
     name: Build Linux binaries
-    runs-on: ubuntu-latest
+    # Pin to ubuntu-22.04 so binaries link against GLIBC 2.35 and work on
+    # Ubuntu 22.04+.  ubuntu-latest resolves to 24.04 (GLIBC 2.39) which
+    # breaks dcert-mcp on older distros.
+    runs-on: ubuntu-22.04
     needs: [ test, auto-tag ]
     if: always() && needs.test.result == 'success' && (needs.auto-tag.result == 'success' || needs.auto-tag.result == 'skipped')
     strategy:
@@ -547,15 +550,19 @@ jobs:
           cat > release-notes.md <<EOF
           ## Installation
 
-          ### Homebrew (macOS and Linux)
+          ### Homebrew (recommended — macOS and Linux)
 
-          Add the tap and install (includes both \`dcert\` CLI and \`dcert-mcp\` MCP server):
+          Homebrew is the recommended installation method. On Linux it builds from source, avoiding glibc compatibility issues across distributions.
+
           \`\`\`bash
           brew tap SCGIS-Wales/tap
           brew install dcert
           \`\`\`
 
-          Or install directly from the binary:
+          ### Prebuilt binaries
+
+          Prebuilt Linux binaries require **Ubuntu 22.04** (glibc 2.35) or later.
+
           \`\`\`bash
           # macOS (Intel)
           curl -L https://github.com/${REPO}/releases/download/${TAG}/dcert-x86_64-apple-darwin.tar.gz | tar xz
@@ -565,7 +572,7 @@ jobs:
           curl -L https://github.com/${REPO}/releases/download/${TAG}/dcert-aarch64-apple-darwin.tar.gz | tar xz
           chmod +x dcert dcert-mcp && sudo mv dcert dcert-mcp /usr/local/bin/
 
-          # Linux (x86_64)
+          # Linux (x86_64, Ubuntu 22.04+)
           curl -L https://github.com/${REPO}/releases/download/${TAG}/dcert-x86_64-unknown-linux-gnu.tar.gz | tar xz
           chmod +x dcert dcert-mcp && sudo mv dcert dcert-mcp /usr/local/bin/
           \`\`\`
