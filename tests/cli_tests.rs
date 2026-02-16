@@ -780,3 +780,152 @@ fn test_debug_does_not_contaminate_yaml() {
     // No debug prefix in stdout
     assert!(!stdout.contains("* ---"), "debug markers should not appear in stdout");
 }
+
+// ---------------------------------------------------------------
+// verify-key: explicit pair
+// ---------------------------------------------------------------
+
+#[test]
+fn test_verify_key_explicit_pair_matches() {
+    let cert_path = test_data("verify-key-discovery/server.crt");
+    let key_path = test_data("verify-key-discovery/server.key");
+    let output = dcert_bin()
+        .args([
+            "verify-key",
+            cert_path.to_str().unwrap(),
+            "--key",
+            key_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run dcert");
+    assert!(output.status.success(), "matching cert+key should succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Key matches certificate"),
+        "should show match: {stdout}"
+    );
+}
+
+#[test]
+fn test_verify_key_explicit_pair_mismatch() {
+    // Use server.crt with app.key (different key pair)
+    let cert_path = test_data("verify-key-discovery/server.crt");
+    let key_path = test_data("verify-key-discovery/app.key");
+    let output = dcert_bin()
+        .args([
+            "verify-key",
+            cert_path.to_str().unwrap(),
+            "--key",
+            key_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run dcert");
+    assert_eq!(output.status.code(), Some(7), "mismatch should exit with code 7");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("does NOT match"), "should indicate mismatch: {stdout}");
+}
+
+#[test]
+fn test_verify_key_explicit_pair_json() {
+    let cert_path = test_data("verify-key-discovery/server.crt");
+    let key_path = test_data("verify-key-discovery/server.key");
+    let output = dcert_bin()
+        .args([
+            "verify-key",
+            cert_path.to_str().unwrap(),
+            "--key",
+            key_path.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("failed to run dcert");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    assert_eq!(parsed["matches"], true);
+    assert_eq!(parsed["key_type"], "RSA");
+}
+
+// ---------------------------------------------------------------
+// verify-key: auto-discovery
+// ---------------------------------------------------------------
+
+#[test]
+fn test_verify_key_auto_discovery_pretty() {
+    let dir_path = test_data("verify-key-discovery");
+    let output = dcert_bin()
+        .args(["verify-key", "--dir", dir_path.to_str().unwrap()])
+        .output()
+        .expect("failed to run dcert");
+    assert!(
+        output.status.success(),
+        "auto-discovery with matching pairs should succeed"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Should find both pairs
+    assert!(stdout.contains("server.crt"), "should list server.crt: {stdout}");
+    assert!(stdout.contains("app.pem"), "should list app.pem: {stdout}");
+    // orphan.pem should NOT appear (no matching .key)
+    assert!(!stdout.contains("orphan"), "orphan.pem should be skipped: {stdout}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("2 cert/key pair(s)"),
+        "should report found pairs: {stderr}"
+    );
+}
+
+#[test]
+fn test_verify_key_auto_discovery_json() {
+    let dir_path = test_data("verify-key-discovery");
+    let output = dcert_bin()
+        .args(["verify-key", "--dir", dir_path.to_str().unwrap(), "--format", "json"])
+        .output()
+        .expect("failed to run dcert");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    assert!(parsed.is_array(), "auto-discovery JSON should be an array");
+    let arr = parsed.as_array().unwrap();
+    assert_eq!(arr.len(), 2, "should find 2 cert/key pairs");
+    // Each result should include cert_file and key_file
+    for result in arr {
+        assert!(result["cert_file"].is_string(), "should have cert_file");
+        assert!(result["key_file"].is_string(), "should have key_file");
+        assert_eq!(result["matches"], true, "all pairs should match");
+    }
+}
+
+#[test]
+fn test_verify_key_auto_discovery_empty_dir() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let output = dcert_bin()
+        .args(["verify-key", "--dir", dir.path().to_str().unwrap()])
+        .output()
+        .expect("failed to run dcert");
+    assert!(
+        !output.status.success(),
+        "empty directory should fail with no pairs found"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("No matching cert/key pairs"),
+        "should indicate no pairs found: {stderr}"
+    );
+}
+
+#[test]
+fn test_verify_key_requires_both_or_neither() {
+    // Provide target but not --key
+    let cert_path = test_data("verify-key-discovery/server.crt");
+    let output = dcert_bin()
+        .args(["verify-key", cert_path.to_str().unwrap()])
+        .output()
+        .expect("failed to run dcert");
+    assert!(!output.status.success(), "target without --key should fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Both target and --key must be provided together"),
+        "should explain both are needed: {stderr}"
+    );
+}
