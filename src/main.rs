@@ -353,38 +353,155 @@ fn run_convert(args: cli::ConvertArgs) -> Result<i32> {
     }
 }
 
-fn run_verify_key(args: cli::VerifyKeyArgs) -> Result<i32> {
-    let result = cert::verify_key_matches_cert(&args.key, &args.target, args.debug)?;
+/// Discover matching certificate/key pairs in a directory.
+///
+/// Scans for files with `.crt` or `.pem` extensions that have a corresponding `.key`
+/// file with the same base name (e.g. `server.crt` + `server.key`, `app.pem` + `app.key`).
+fn discover_cert_key_pairs(dir: &str) -> Result<Vec<(String, String)>> {
+    let dir_path = std::path::Path::new(dir);
+    if !dir_path.is_dir() {
+        return Err(anyhow::anyhow!("'{}' is not a directory", dir));
+    }
 
+    let entries = std::fs::read_dir(dir_path).with_context(|| format!("Failed to read directory '{}'", dir))?;
+
+    let mut pairs: Vec<(String, String)> = Vec::new();
+
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+
+        // Only consider .crt and .pem files as certificate candidates
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if ext != "crt" && ext != "pem" {
+            continue;
+        }
+
+        // Build the expected key path: same base name with .key extension
+        let key_path = path.with_extension("key");
+        if key_path.exists() {
+            pairs.push((
+                path.to_string_lossy().to_string(),
+                key_path.to_string_lossy().to_string(),
+            ));
+        }
+    }
+
+    // Sort for deterministic output
+    pairs.sort();
+    Ok(pairs)
+}
+
+fn print_single_result(result: &cert::KeyMatchResult, cert_path: Option<&str>, key_path: Option<&str>) {
+    if let (Some(cert), Some(key)) = (cert_path, key_path) {
+        println!("  Cert file      : {}", cert);
+        println!("  Key file       : {}", key);
+    }
+    if result.matches {
+        println!("{}", "  Key matches certificate".green().bold());
+    } else {
+        println!("{}", "  Key does NOT match certificate".red().bold());
+    }
+    println!("  Key type       : {}", result.key_type);
+    println!("  Key size       : {} bits", result.key_size_bits);
+    println!("  Cert subject   : {}", result.cert_subject);
+    println!("  Cert key algo  : {}", result.cert_public_key_algorithm);
+    println!("  Cert key size  : {} bits", result.cert_public_key_size_bits);
+    if !result.details.is_empty() {
+        println!("  Details        : {}", result.details);
+    }
+}
+
+fn run_verify_key(args: cli::VerifyKeyArgs) -> Result<i32> {
+    // If both target and key are provided, run single-pair verification
+    if let (Some(ref target), Some(ref key)) = (&args.target, &args.key) {
+        let result = cert::verify_key_matches_cert(key, target, args.debug)?;
+
+        match args.format {
+            OutputFormat::Json => {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            }
+            OutputFormat::Yaml => {
+                println!("{}", serde_yml::to_string(&result)?);
+            }
+            OutputFormat::Pretty => {
+                print_single_result(&result, None, None);
+            }
+        }
+
+        return if result.matches {
+            Ok(exit_code::SUCCESS)
+        } else {
+            Ok(exit_code::KEY_MISMATCH)
+        };
+    }
+
+    // If only one of target/key is provided, that's an error
+    if args.target.is_some() || args.key.is_some() {
+        return Err(anyhow::anyhow!(
+            "Both target and --key must be provided together, or omit both to auto-discover cert/key pairs in the directory"
+        ));
+    }
+
+    // Auto-discovery mode: scan directory for matching cert/key pairs
+    let pairs = discover_cert_key_pairs(&args.dir)?;
+    if pairs.is_empty() {
+        return Err(anyhow::anyhow!(
+            "No matching cert/key pairs found in '{}'. \
+             Looking for .crt/.pem files with a matching .key file (same base name, e.g. server.crt + server.key)",
+            args.dir
+        ));
+    }
+
+    eprintln!("Found {} cert/key pair(s) in '{}'", pairs.len(), args.dir);
+
+    let mut exit_code = exit_code::SUCCESS;
+    let mut all_results: Vec<serde_json::Value> = Vec::new();
+
+    for (cert_path, key_path) in &pairs {
+        match cert::verify_key_matches_cert(key_path, cert_path, args.debug) {
+            Ok(result) => {
+                match args.format {
+                    OutputFormat::Json | OutputFormat::Yaml => {
+                        let mut val = serde_json::to_value(&result)?;
+                        if let Some(obj) = val.as_object_mut() {
+                            obj.insert("cert_file".to_string(), serde_json::json!(cert_path));
+                            obj.insert("key_file".to_string(), serde_json::json!(key_path));
+                        }
+                        all_results.push(val);
+                    }
+                    OutputFormat::Pretty => {
+                        if pairs.len() > 1 {
+                            println!("---");
+                        }
+                        print_single_result(&result, Some(cert_path), Some(key_path));
+                    }
+                }
+                if !result.matches && exit_code < exit_code::KEY_MISMATCH {
+                    exit_code = exit_code::KEY_MISMATCH;
+                }
+            }
+            Err(e) => {
+                eprintln!("{} {} + {}: {}", "Error:".red().bold(), cert_path, key_path, e);
+                if exit_code < exit_code::ERROR {
+                    exit_code = exit_code::ERROR;
+                }
+            }
+        }
+    }
+
+    // Output collected JSON/YAML results
     match args.format {
         OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&result)?);
+            println!("{}", serde_json::to_string_pretty(&all_results)?);
         }
         OutputFormat::Yaml => {
-            println!("{}", serde_yml::to_string(&result)?);
+            println!("{}", serde_yml::to_string(&all_results)?);
         }
-        OutputFormat::Pretty => {
-            if result.matches {
-                println!("{}", "Key matches certificate".green().bold());
-            } else {
-                println!("{}", "Key does NOT match certificate".red().bold());
-            }
-            println!("  Key type       : {}", result.key_type);
-            println!("  Key size       : {} bits", result.key_size_bits);
-            println!("  Cert subject   : {}", result.cert_subject);
-            println!("  Cert key algo  : {}", result.cert_public_key_algorithm);
-            println!("  Cert key size  : {} bits", result.cert_public_key_size_bits);
-            if !result.details.is_empty() {
-                println!("  Details        : {}", result.details);
-            }
-        }
+        OutputFormat::Pretty => {} // already printed
     }
 
-    if result.matches {
-        Ok(exit_code::SUCCESS)
-    } else {
-        Ok(exit_code::KEY_MISMATCH)
-    }
+    Ok(exit_code)
 }
 
 fn run() -> Result<i32> {
