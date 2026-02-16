@@ -11,7 +11,6 @@ use anyhow::{Context, Result};
 use clap::CommandFactory;
 use clap::Parser;
 use colored::*;
-use std::io::BufRead;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -24,7 +23,11 @@ use output::{
 };
 use proxy::ProxyConfig;
 
-fn run_check(mut args: CheckArgs) -> Result<i32> {
+fn run_check(args: CheckArgs) -> Result<i32> {
+    run_check_with_stdin(args, None)
+}
+
+fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> Result<i32> {
     // Warn prominently when certificate verification is disabled
     if args.no_verify {
         eprintln!(
@@ -82,18 +85,35 @@ fn run_check(mut args: CheckArgs) -> Result<i32> {
 
     // Resolve targets (support stdin via '-')
     let mut targets: Vec<String> = Vec::new();
+    let mut stdin_pem: Option<String> = None;
     for t in &args.targets {
         if t == "-" {
-            use std::io::IsTerminal;
-            if std::io::stdin().is_terminal() {
-                eprintln!("Reading targets from stdin (one per line, Ctrl-D to finish)...");
-            }
-            let stdin = std::io::stdin();
-            for line in stdin.lock().lines() {
-                let line = line.with_context(|| "Failed to read from stdin")?;
-                let line = line.trim().to_string();
-                if !line.is_empty() {
-                    targets.push(line);
+            // Use pre-read stdin data if available, otherwise read now
+            let content = if let Some(ref data) = pre_read_stdin {
+                data.clone()
+            } else {
+                use std::io::Read as _;
+                let mut buf = Vec::new();
+                std::io::stdin()
+                    .lock()
+                    .read_to_end(&mut buf)
+                    .with_context(|| "Failed to read from stdin")?;
+                String::from_utf8_lossy(&buf).to_string()
+            };
+
+            let trimmed = content.trim();
+
+            if trimmed.starts_with("-----BEGIN ") {
+                // Stdin contains PEM data — process it directly
+                stdin_pem = Some(content);
+                targets.push("-".to_string());
+            } else {
+                // Stdin contains target names (one per line)
+                for line in trimmed.lines() {
+                    let line = line.trim();
+                    if !line.is_empty() {
+                        targets.push(line.to_string());
+                    }
                 }
             }
         } else {
@@ -146,7 +166,7 @@ fn run_check(mut args: CheckArgs) -> Result<i32> {
             );
 
             for target in &targets {
-                match process_target(target, &args, &proxy_config, body_data.as_deref()) {
+                match process_target(target, &args, &proxy_config, body_data.as_deref(), stdin_pem.as_deref()) {
                     Ok(result) => {
                         // Check for changes
                         let current_fps: Vec<Option<String>> =
@@ -183,7 +203,7 @@ fn run_check(mut args: CheckArgs) -> Result<i32> {
     let mut all_results: Vec<TargetResult> = Vec::new();
 
     for target in &targets {
-        match process_target(target, &args, &proxy_config, body_data.as_deref()) {
+        match process_target(target, &args, &proxy_config, body_data.as_deref(), stdin_pem.as_deref()) {
             Ok(result) => {
                 // Check for verification failure
                 if let Some(ref conn) = result.conn_info {
@@ -530,8 +550,35 @@ fn run() -> Result<i32> {
 }
 
 fn main() {
-    // Print help if no arguments (other than program name) are provided
+    // When no arguments are provided and stdin has piped data, treat it as PEM input
     if std::env::args().len() == 1 {
+        use std::io::{IsTerminal, Read as _};
+
+        if !std::io::stdin().is_terminal() {
+            // Try to read piped data — if non-empty, process as PEM content
+            let mut buf = Vec::new();
+            if std::io::stdin().lock().read_to_end(&mut buf).is_ok() && !buf.is_empty() {
+                // Re-parse with "check -" injected so clap builds the default CheckArgs
+                let new_args = vec![
+                    std::env::args().next().unwrap_or_else(|| "dcert".to_string()),
+                    "check".to_string(),
+                    "-".to_string(),
+                ];
+                let cli = Cli::parse_from(new_args);
+                let content = String::from_utf8_lossy(&buf).to_string();
+                match cli.command {
+                    Command::Check(args) => match run_check_with_stdin(*args, Some(content)) {
+                        Ok(code) => std::process::exit(code),
+                        Err(e) => {
+                            eprintln!("{} {}", "Error:".red().bold(), e);
+                            std::process::exit(exit_code::ERROR);
+                        }
+                    },
+                    _ => unreachable!(),
+                }
+            }
+        }
+
         Cli::command().print_help().unwrap();
         println!();
         std::process::exit(0);

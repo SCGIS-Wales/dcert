@@ -1,5 +1,6 @@
+use std::io::Write;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 fn dcert_bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_dcert"))
@@ -928,4 +929,144 @@ fn test_verify_key_requires_both_or_neither() {
         stderr.contains("Both target and --key must be provided together"),
         "should explain both are needed: {stderr}"
     );
+}
+
+// ---------------------------------------------------------------
+// stdin PEM piping
+// ---------------------------------------------------------------
+
+#[test]
+fn test_stdin_pem_with_dash_arg() {
+    // Pipe PEM data via stdin with explicit '-' target
+    let pem_data = std::fs::read(test_data("valid.pem")).expect("failed to read valid.pem");
+    let mut child = dcert_bin()
+        .args(["check", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn dcert");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&pem_data)
+        .expect("failed to write stdin");
+    let output = child.wait_with_output().expect("failed to wait");
+    assert!(output.status.success(), "piped PEM via stdin should succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("test.example.com"),
+        "should parse cert from stdin: {stdout}"
+    );
+}
+
+#[test]
+fn test_stdin_pem_no_args() {
+    // Pipe PEM data via stdin with no arguments at all (auto-detect)
+    let pem_data = std::fs::read(test_data("valid.pem")).expect("failed to read valid.pem");
+    let mut child = dcert_bin()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn dcert");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&pem_data)
+        .expect("failed to write stdin");
+    let output = child.wait_with_output().expect("failed to wait");
+    assert!(
+        output.status.success(),
+        "piped PEM with no args should succeed, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("test.example.com"),
+        "should parse cert from stdin: {stdout}"
+    );
+}
+
+#[test]
+fn test_stdin_base64_decoded_pem() {
+    // Simulate: echo "<base64 PEM>" | base64 --decode | dcert -
+    // Read the PEM file, base64-encode it, then decode in the pipeline
+    let pem_data = std::fs::read(test_data("valid.pem")).expect("failed to read valid.pem");
+    // The pem_data is already in PEM text format, pipe it directly as if it came from base64 --decode
+    let mut child = dcert_bin()
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn dcert");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&pem_data)
+        .expect("failed to write stdin");
+    let output = child.wait_with_output().expect("failed to wait");
+    assert!(output.status.success(), "base64-decoded PEM pipe should succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("test.example.com"),
+        "should parse cert from decoded stdin: {stdout}"
+    );
+}
+
+#[test]
+fn test_stdin_pem_json_format() {
+    // Pipe PEM via stdin and request JSON output
+    let pem_data = std::fs::read(test_data("valid.pem")).expect("failed to read valid.pem");
+    let mut child = dcert_bin()
+        .args(["check", "-", "--format", "json"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn dcert");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&pem_data)
+        .expect("failed to write stdin");
+    let output = child.wait_with_output().expect("failed to wait");
+    assert!(output.status.success(), "stdin PEM with JSON format should succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should produce valid JSON");
+    assert!(parsed["certificates"].is_array(), "JSON should have certificates array");
+    assert_eq!(
+        parsed["certificates"][0]["common_name"], "test.example.com",
+        "should contain the cert CN"
+    );
+}
+
+#[test]
+fn test_stdin_chain_pem() {
+    // Pipe a multi-cert chain via stdin
+    let pem_data = std::fs::read(test_data("test.pem")).expect("failed to read test.pem");
+    let mut child = dcert_bin()
+        .args(["check", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn dcert");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&pem_data)
+        .expect("failed to write stdin");
+    let output = child.wait_with_output().expect("failed to wait");
+    assert!(output.status.success(), "stdin chain PEM should succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // The chain should contain multiple certificates
+    let cert_count = stdout.matches("Certificate").count();
+    assert!(cert_count >= 2, "chain should parse multiple certs, found {cert_count}");
 }
