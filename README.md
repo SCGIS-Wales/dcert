@@ -13,6 +13,8 @@ A Rust CLI and MCP server for X.509 certificate analysis, format conversion, and
   - [dcert convert -- Format Conversion](#dcert-convert--format-conversion)
   - [dcert verify-key -- Key Matching](#dcert-verify-key--key-matching)
 - [MCP Server (AI IDE Integration)](#mcp-server-ai-ide-integration)
+  - [Proxy and Timeout Configuration](#proxy-and-timeout-configuration)
+  - [Troubleshooting](#troubleshooting)
 - [Features by Topic](#features-by-topic)
 - [Use Cases](#use-cases)
 - [Development](#development)
@@ -25,8 +27,12 @@ A Rust CLI and MCP server for X.509 certificate analysis, format conversion, and
 brew tap SCGIS-Wales/homebrew-tap https://github.com/SCGIS-Wales/homebrew-tap.git
 brew install dcert
 
-# Analyze a live HTTPS endpoint
+# Analyze a live HTTPS endpoint (bare hostname or full URL)
+dcert api.example.com
 dcert https://www.google.com
+
+# Read PEM from a pipe
+cat certificate.pem | dcert
 
 # Check certificate expiry (CI/CD gate)
 dcert https://your-api.com --expiry-warn 30
@@ -36,6 +42,9 @@ dcert convert pfx-to-pem client.pfx --password secret --output-dir ./certs
 
 # Verify a private key matches a certificate
 dcert verify-key cert.pem --key private.key
+
+# Auto-discover and verify all cert/key pairs in a directory
+dcert verify-key
 ```
 
 ## Installation
@@ -97,7 +106,8 @@ dcert uses subcommands to organize its features. The `check` subcommand is the d
 ```
 dcert <targets> [OPTIONS]              # Certificate analysis (default, same as 'dcert check')
 dcert convert <MODE> [OPTIONS]         # Format conversion (PFX/PEM/keystore/truststore)
-dcert verify-key <target> --key <KEY>  # Key-certificate matching
+dcert verify-key <target> --key <KEY>  # Key-certificate matching (single pair)
+dcert verify-key [--dir <DIR>]         # Auto-discover and verify all cert/key pairs
 ```
 
 ### dcert [check] -- Certificate Analysis (default)
@@ -108,13 +118,21 @@ Analyze TLS certificates from PEM files or HTTPS endpoints. The `check` keyword 
 # Fetch and analyze certificates from HTTPS
 dcert https://www.google.com
 
+# Bare hostname (auto-prepends https://)
+dcert api.example.com
+
 # Analyze a local PEM file
 dcert certificate.pem
+
+# Read PEM data from stdin (pipe)
+cat certificate.pem | dcert
+echo "<base64-pem>" | base64 --decode | dcert
+cat certificate.pem | dcert -
 
 # Multiple targets
 dcert https://www.google.com https://github.com cert.pem
 
-# Pipe targets from stdin
+# Pipe target names from stdin (one per line)
 echo -e "https://google.com\nhttps://github.com" | dcert -
 
 # JSON or YAML output
@@ -212,7 +230,8 @@ dcert https://slow-server.example.com --timeout 30 --read-timeout 15
 dcert [check] [OPTIONS] [TARGETS]...
 
 Arguments:
-  [TARGETS]...                         PEM file(s), HTTPS URL(s), or '-' for stdin
+  [TARGETS]...                         PEM file(s), HTTPS URL(s), bare hostnames, or '-' for stdin
+                                       Omit targets to read PEM data from a pipe
 
 Options:
   -f, --format <FORMAT>                Output format [pretty, json, yaml] (default: pretty)
@@ -314,18 +333,27 @@ dcert convert create-truststore ca1.pem ca2.pem --output truststore.p12 --passwo
 
 ### dcert verify-key -- Key Matching
 
-Verify that a private key matches a certificate. Works with PEM files and HTTPS endpoints.
+Verify that a private key matches a certificate. Works with PEM files and HTTPS endpoints. When run without arguments, auto-discovers matching cert/key pairs in the current directory.
 
 ```bash
-# Verify against a PEM file
+# Verify a specific pair
 dcert verify-key cert.pem --key private.key
 
 # Verify against an HTTPS endpoint
 dcert verify-key https://example.com --key private.key
 
+# Auto-discover all cert/key pairs in the current directory
+dcert verify-key
+
+# Auto-discover in a specific directory
+dcert verify-key --dir /etc/ssl/certs
+
 # JSON output
 dcert verify-key cert.pem --key private.key --format json
+dcert verify-key --format json
 ```
+
+**Auto-discovery** scans for `.crt` and `.pem` files that have a matching `.key` file with the same base name (e.g. `server.crt` + `server.key`, `app.pem` + `app.key`). Files without a matching key are skipped.
 
 Returns key type, key size, certificate subject, and whether the key matches. Exit code 7 on mismatch.
 
@@ -446,13 +474,119 @@ If `dcert-mcp` is not on your `PATH`, specify the full path. You can also set `D
 }
 ```
 
+### Proxy and Timeout Configuration
+
+In corporate environments behind forward proxies, `dcert-mcp` inherits proxy settings from the environment. The subprocess (`dcert`) automatically receives all parent environment variables including proxy and SSL settings.
+
+#### Proxy environment variables
+
+| Variable | Description |
+|----------|-------------|
+| `HTTPS_PROXY` / `https_proxy` | Forward proxy URL for HTTPS connections |
+| `HTTP_PROXY` / `http_proxy` | Forward proxy URL for HTTP connections (fallback for HTTPS) |
+| `NO_PROXY` / `no_proxy` | Comma-separated list of hosts to bypass the proxy |
+| `SSL_CERT_FILE` | Custom CA certificate file for proxy TLS interception |
+| `SSL_CERT_DIR` | Custom CA certificate directory |
+
+Example configuration with a corporate proxy:
+
+```json
+{
+  "mcpServers": {
+    "dcert": {
+      "type": "stdio",
+      "command": "dcert-mcp",
+      "env": {
+        "HTTPS_PROXY": "http://proxy.corp.com:8080",
+        "NO_PROXY": "localhost,127.0.0.1,.internal.corp.com",
+        "SSL_CERT_FILE": "/etc/ssl/certs/corporate-ca.pem"
+      }
+    }
+  }
+}
+```
+
+#### Timeout settings
+
+`dcert-mcp` supports configurable timeouts via CLI flags or environment variables:
+
+| Setting | CLI flag | Environment variable | Default | Description |
+|---------|----------|---------------------|---------|-------------|
+| Subprocess timeout | `--timeout` | `DCERT_MCP_TIMEOUT` | 60s | Max time for a single dcert invocation |
+| Connection timeout | `--connection-timeout` | `DCERT_MCP_CONNECTION_TIMEOUT` | 10s | TCP connection timeout (passed to dcert) |
+| Read timeout | `--read-timeout` | `DCERT_MCP_READ_TIMEOUT` | 5s | Response read timeout (passed to dcert) |
+
+Example with extended timeouts for slow networks:
+
+```json
+{
+  "mcpServers": {
+    "dcert": {
+      "type": "stdio",
+      "command": "dcert-mcp",
+      "env": {
+        "DCERT_MCP_TIMEOUT": "120",
+        "DCERT_MCP_CONNECTION_TIMEOUT": "30",
+        "DCERT_MCP_READ_TIMEOUT": "15"
+      }
+    }
+  }
+}
+```
+
+### Troubleshooting
+
+#### Startup diagnostics
+
+`dcert-mcp` logs diagnostic information to stderr at startup. In MCP mode, stderr is separate from the protocol channel (which uses stdio), so these logs are visible in your IDE's MCP server output or logs:
+
+```
+[dcert-mcp] v3.0.12
+[dcert-mcp] dcert binary: /usr/local/bin/dcert
+[dcert-mcp] subprocess timeout: 60s
+[dcert-mcp] connection timeout: 10s (--timeout)
+[dcert-mcp] read timeout: 5s (--read-timeout)
+[dcert-mcp] HTTPS proxy: http://proxy.corp.com:8080
+[dcert-mcp] HTTP proxy: (none)
+[dcert-mcp] NO_PROXY: localhost,127.0.0.1
+```
+
+Proxy URLs are logged with passwords masked (shown as `****`).
+
+#### Common issues
+
+**MCP server hangs or times out silently**
+
+This often happens behind corporate proxies. Check:
+
+1. Verify proxy settings are passed to `dcert-mcp` via the MCP config `env` block
+2. Check the startup diagnostics show the expected proxy URL
+3. Increase `DCERT_MCP_TIMEOUT` if the proxy is slow
+4. If the target is internal, add it to `NO_PROXY`
+5. If TLS interception is used, set `SSL_CERT_FILE` to the corporate CA bundle
+
+**dcert binary not found**
+
+If the startup log shows a warning about the dcert binary not being found:
+
+1. Ensure `dcert` is on your `PATH`, or
+2. Set `DCERT_PATH` to the full path in the MCP config `env` block
+
+**Timeout errors with diagnostic hints**
+
+When a subprocess times out, `dcert-mcp` produces actionable error messages that include:
+- The timeout duration
+- Detected proxy configuration
+- Suggestions for adjusting timeout environment variables
+- Hints about DNS, connectivity, or proxy issues
+
 ---
 
 ## Features by Topic
 
 ### Certificate Analysis
 
-Decode X.509 certificates from PEM files or HTTPS endpoints: subject, issuer, serial number, validity window, SANs, expiry status.
+Decode X.509 certificates from PEM files, HTTPS endpoints, bare hostnames, or piped stdin: subject, issuer, serial number, validity window, SANs, expiry status. Reads PEM data automatically when piped (e.g. `cat cert.pem | dcert`).
 
 ### Certificate Extensions and Fingerprints
 
@@ -468,7 +602,7 @@ Client certificate authentication via PEM (`--client-cert` + `--client-key`) or 
 
 ### Key-Certificate Matching
 
-Verify private key matches a certificate (`dcert verify-key`). Supports RSA and EC keys against PEM files or live HTTPS endpoints.
+Verify private key matches a certificate (`dcert verify-key`). Supports RSA and EC keys against PEM files or live HTTPS endpoints. Auto-discovers matching `.crt`/`.pem` + `.key` pairs in a directory when run without arguments.
 
 ### PFX/PEM Conversion
 
@@ -535,6 +669,9 @@ dcert convert create-keystore --cert server.pem --key server-key.pem --output ke
 
 # Verify key matches certificate before deployment
 dcert verify-key server.pem --key server-key.pem
+
+# Verify all cert/key pairs in a directory
+dcert verify-key --dir /etc/ssl/certs
 
 # Compare staging vs production certificates
 dcert --diff https://staging.example.com https://prod.example.com
