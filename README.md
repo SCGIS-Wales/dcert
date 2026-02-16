@@ -40,21 +40,28 @@ dcert verify-key cert.pem --key private.key
 
 ## Installation
 
+### Homebrew (recommended — macOS and Linux)
+
+Homebrew is the recommended installation method. On Linux it builds from source, which avoids glibc compatibility issues and works on Ubuntu 22.04 and later.
+
+```bash
+brew tap SCGIS-Wales/homebrew-tap https://github.com/SCGIS-Wales/homebrew-tap.git
+brew install dcert
+```
+
+> **Note:** If you don't have Homebrew on Linux, install it first:
+> ```bash
+> /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+> ```
+
 ### Prebuilt binaries
 
-Download from the [Releases](https://github.com/SCGIS-Wales/dcert/releases) page. Each release includes `dcert` (CLI) and `dcert-mcp` (MCP server).
+Download from the [Releases](https://github.com/SCGIS-Wales/dcert/releases) page. Each release includes `dcert` (CLI) and `dcert-mcp` (MCP server). Prebuilt Linux binaries require Ubuntu 22.04 (glibc 2.35) or later.
 
 ```bash
 curl -L https://github.com/SCGIS-Wales/dcert/releases/latest/download/dcert-x86_64-unknown-linux-gnu.tar.gz | tar xz
 chmod +x dcert dcert-mcp
 sudo mv dcert dcert-mcp /usr/local/bin/
-```
-
-### Homebrew
-
-```bash
-brew tap SCGIS-Wales/homebrew-tap https://github.com/SCGIS-Wales/homebrew-tap.git
-brew install dcert
 ```
 
 ### Build from source
