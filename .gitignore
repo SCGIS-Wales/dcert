@@ -27,6 +27,7 @@ Thumbs.db
 # Test files and artifacts
 test-certs/
 *.key
+!tests/data/**/*.key
 test_*.txt
 *_output.txt
 valgrind_output.txt
