@@ -156,7 +156,11 @@ jobs:
 
   build-linux:
     name: Build Linux binaries
-    runs-on: ubuntu-latest
+    # Pin to ubuntu-22.04 so binaries link against GLIBC 2.35 and run on
+    # Ubuntu 22.04+.  ubuntu-latest now resolves to 24.04 (GLIBC 2.39),
+    # which causes build-script failures when the cargo cache was populated
+    # on a different GLIBC version.
+    runs-on: ubuntu-22.04
     needs: [ test, auto-tag ]
     if: always() && needs.test.result == 'success' && (needs.auto-tag.result == 'success' || needs.auto-tag.result == 'skipped')
     strategy:
