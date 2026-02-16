@@ -383,13 +383,20 @@ pub enum ConvertMode {
 
 #[derive(Args, Debug)]
 pub struct VerifyKeyArgs {
-    /// PEM certificate file or HTTPS URL to verify against
+    /// PEM certificate file or HTTPS URL to verify against.
+    /// If omitted (along with --key), scans the current directory for matching cert/key pairs.
     #[arg(value_parser = validate_target)]
-    pub target: String,
+    pub target: Option<String>,
 
-    /// Private key PEM file to verify against the certificate
+    /// Private key PEM file to verify against the certificate.
+    /// If omitted (along with target), scans the current directory for matching cert/key pairs.
     #[arg(long)]
-    pub key: String,
+    pub key: Option<String>,
+
+    /// Directory to scan for matching cert/key pairs (default: current directory).
+    /// Only used when target and --key are omitted.
+    #[arg(long, default_value = ".")]
+    pub dir: String,
 
     /// Output format
     #[arg(short, long, value_enum, default_value_t = OutputFormat::Pretty)]

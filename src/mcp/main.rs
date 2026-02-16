@@ -34,10 +34,165 @@ fn dcert_mcp_long_version() -> &'static str {
 #[command(about = MCP_DESCRIPTION)]
 #[command(version = dcert_mcp_version())]
 #[command(long_version = dcert_mcp_long_version())]
-struct McpCli {}
+struct McpCli {
+    /// Subprocess timeout in seconds (max time for a single dcert invocation)
+    #[arg(long, env = "DCERT_MCP_TIMEOUT", default_value_t = DEFAULT_SUBPROCESS_TIMEOUT)]
+    timeout: u64,
 
-/// Maximum time allowed for a single dcert subprocess invocation.
-const SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(60);
+    /// Connection timeout in seconds passed to the dcert subprocess (TCP connect timeout)
+    #[arg(long, env = "DCERT_MCP_CONNECTION_TIMEOUT", default_value_t = DEFAULT_CONNECTION_TIMEOUT)]
+    connection_timeout: u64,
+
+    /// Read timeout in seconds passed to the dcert subprocess (time to wait for server response)
+    #[arg(long, env = "DCERT_MCP_READ_TIMEOUT", default_value_t = DEFAULT_READ_TIMEOUT)]
+    read_timeout: u64,
+}
+
+/// Default maximum time allowed for a single dcert subprocess invocation.
+const DEFAULT_SUBPROCESS_TIMEOUT: u64 = 60;
+
+/// Default TCP connection timeout (seconds) passed to the dcert subprocess via --timeout.
+const DEFAULT_CONNECTION_TIMEOUT: u64 = 10;
+
+/// Default read timeout (seconds) passed to the dcert subprocess via --read-timeout.
+const DEFAULT_READ_TIMEOUT: u64 = 5;
+
+/// Proxy environment info detected at MCP startup (for diagnostic logging).
+#[derive(Debug)]
+struct McpProxyInfo {
+    https_proxy: Option<String>,
+    http_proxy: Option<String>,
+    no_proxy: Option<String>,
+}
+
+impl McpProxyInfo {
+    /// Read proxy environment variables using the same precedence as the main dcert binary.
+    fn from_env() -> Self {
+        let https_proxy = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]
+            .iter()
+            .find_map(|var| std::env::var(var).ok().filter(|v| !v.is_empty()));
+        let http_proxy = ["HTTP_PROXY", "http_proxy"]
+            .iter()
+            .find_map(|var| std::env::var(var).ok().filter(|v| !v.is_empty()));
+        let no_proxy = std::env::var("NO_PROXY")
+            .or_else(|_| std::env::var("no_proxy"))
+            .ok()
+            .filter(|v| !v.is_empty());
+        Self {
+            https_proxy,
+            http_proxy,
+            no_proxy,
+        }
+    }
+}
+
+/// Runtime configuration for the dcert MCP server, resolved at startup.
+#[derive(Debug)]
+struct McpConfig {
+    /// Subprocess timeout (default 60s, overridable via DCERT_MCP_TIMEOUT or --timeout).
+    subprocess_timeout: Duration,
+    /// TCP connection timeout in seconds passed to dcert subprocess via --timeout.
+    connection_timeout: u64,
+    /// Read timeout in seconds passed to dcert subprocess via --read-timeout.
+    read_timeout: u64,
+    /// Resolved path to the dcert binary.
+    dcert_binary: PathBuf,
+    /// Detected proxy configuration (for logging; env vars are inherited by subprocesses).
+    proxy_config: McpProxyInfo,
+}
+
+/// Mask password in proxy URL for safe logging.
+fn sanitize_proxy_url(url_str: &str) -> String {
+    match url::Url::parse(url_str) {
+        Ok(mut u) => {
+            if u.password().is_some() {
+                let _ = u.set_password(Some("****"));
+            }
+            u.to_string()
+        }
+        Err(_) => url_str.to_string(),
+    }
+}
+
+/// Log MCP server startup diagnostics to stderr.
+/// MCP servers communicate over stdio, so diagnostics go to stderr.
+fn log_startup_diagnostics(config: &McpConfig) {
+    eprintln!("[dcert-mcp] v{}", dcert_mcp_version());
+    eprintln!("[dcert-mcp] dcert binary: {}", config.dcert_binary.display());
+    eprintln!(
+        "[dcert-mcp] subprocess timeout: {}s",
+        config.subprocess_timeout.as_secs()
+    );
+    eprintln!(
+        "[dcert-mcp] connection timeout: {}s (--timeout)",
+        config.connection_timeout
+    );
+    eprintln!("[dcert-mcp] read timeout: {}s (--read-timeout)", config.read_timeout);
+
+    match &config.proxy_config.https_proxy {
+        Some(proxy) => eprintln!("[dcert-mcp] HTTPS proxy: {}", sanitize_proxy_url(proxy)),
+        None => eprintln!("[dcert-mcp] HTTPS proxy: (none)"),
+    }
+    match &config.proxy_config.http_proxy {
+        Some(proxy) => eprintln!("[dcert-mcp] HTTP proxy: {}", sanitize_proxy_url(proxy)),
+        None => eprintln!("[dcert-mcp] HTTP proxy: (none)"),
+    }
+    match &config.proxy_config.no_proxy {
+        Some(no_proxy) => eprintln!("[dcert-mcp] NO_PROXY: {}", no_proxy),
+        None => eprintln!("[dcert-mcp] NO_PROXY: (none)"),
+    }
+
+    // Warn if dcert binary not found at resolved path
+    if config.dcert_binary != std::path::Path::new("dcert") && !config.dcert_binary.exists() {
+        eprintln!(
+            "[dcert-mcp] WARNING: dcert binary not found at {}",
+            config.dcert_binary.display()
+        );
+    }
+}
+
+/// Build a detailed timeout error message with diagnostic hints for corporate environments.
+fn format_timeout_error(config: &McpConfig) -> String {
+    let mut msg = format!(
+        "dcert subprocess timed out after {}s.",
+        config.subprocess_timeout.as_secs()
+    );
+
+    msg.push_str("\n\nPossible causes:");
+
+    if config.proxy_config.https_proxy.is_some() {
+        msg.push_str(&format!(
+            "\n  - Forward proxy detected ({}). The proxy may be blocking or slow to respond.",
+            sanitize_proxy_url(config.proxy_config.https_proxy.as_deref().unwrap_or(""))
+        ));
+        msg.push_str("\n  - Check that the target host is allowed through your proxy.");
+        if let Some(ref no_proxy) = config.proxy_config.no_proxy {
+            msg.push_str(&format!(
+                "\n  - NO_PROXY is set to '{}'. Verify the target isn't incorrectly bypassed.",
+                no_proxy
+            ));
+        }
+    } else {
+        msg.push_str("\n  - No proxy configured. If behind a corporate proxy, set HTTPS_PROXY.");
+    }
+
+    msg.push_str("\n  - DNS resolution may be slow or failing for the target host.");
+    msg.push_str("\n  - The target host may be unreachable or its port may be filtered.");
+    msg.push_str(&format!(
+        "\n  - The connection timeout is {}s and read timeout is {}s.",
+        config.connection_timeout, config.read_timeout
+    ));
+
+    msg.push_str("\n\nTo adjust timeouts:");
+    msg.push_str(&format!(
+        "\n  - Set DCERT_MCP_TIMEOUT to increase the subprocess timeout (current: {}s).",
+        config.subprocess_timeout.as_secs()
+    ));
+    msg.push_str("\n  - Set DCERT_MCP_CONNECTION_TIMEOUT to increase the TCP connection timeout.");
+    msg.push_str("\n  - Set DCERT_MCP_READ_TIMEOUT to increase the response read timeout.");
+
+    msg
+}
 
 /// Locate the dcert binary. Checks DCERT_PATH env, then sibling directory
 /// of the current executable, then falls back to "dcert" on $PATH.
@@ -158,34 +313,50 @@ fn truncate_output(output: String) -> String {
 /// Run dcert with given arguments and return (stdout, stderr, exit_code).
 ///
 /// Always passes `--debug` so MCP tool responses include diagnostic info.
-/// Enforces a timeout to prevent indefinite hangs from slow or unreachable targets.
+/// Passes `--timeout` and `--read-timeout` from the MCP config to the subprocess.
+/// Enforces a subprocess timeout to prevent indefinite hangs from slow or unreachable targets.
 /// Acquires a semaphore permit to limit concurrent subprocess invocations.
-async fn run_dcert(args: &[&str]) -> Result<(String, String, i32), String> {
+///
+/// Note: The subprocess inherits all parent environment variables (we do NOT call
+/// `.env_clear()` or `.env()` on the Command). This is required for proxy support —
+/// HTTPS_PROXY, HTTP_PROXY, NO_PROXY, SSL_CERT_FILE, and SSL_CERT_DIR are forwarded
+/// automatically to the dcert CLI subprocess.
+async fn run_dcert(args: &[&str], config: &McpConfig) -> Result<(String, String, i32), String> {
     let _permit = SUBPROCESS_SEMAPHORE
         .acquire()
         .await
         .map_err(|_| "Subprocess semaphore closed".to_string())?;
 
-    let dcert = find_dcert_binary();
-
     // Always include --debug for richer diagnostic output
-    let mut full_args: Vec<&str> = Vec::with_capacity(args.len() + 1);
+    let mut full_args: Vec<&str> = Vec::with_capacity(args.len() + 5);
     full_args.extend_from_slice(args);
     if !full_args.contains(&"--debug") {
         full_args.push("--debug");
     }
 
-    let child = Command::new(&dcert)
+    // Pass connection and read timeouts to the dcert subprocess
+    let timeout_str = config.connection_timeout.to_string();
+    let read_timeout_str = config.read_timeout.to_string();
+    if !full_args.contains(&"--timeout") {
+        full_args.push("--timeout");
+        full_args.push(&timeout_str);
+    }
+    if !full_args.contains(&"--read-timeout") {
+        full_args.push("--read-timeout");
+        full_args.push(&read_timeout_str);
+    }
+
+    let child = Command::new(&config.dcert_binary)
         .args(&full_args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Failed to run dcert at {}: {}", dcert.display(), e))?;
+        .map_err(|e| format!("Failed to run dcert at {}: {}", config.dcert_binary.display(), e))?;
 
-    let output = tokio::time::timeout(SUBPROCESS_TIMEOUT, child.wait_with_output())
+    let output = tokio::time::timeout(config.subprocess_timeout, child.wait_with_output())
         .await
-        .map_err(|_| format!("dcert subprocess timed out after {}s", SUBPROCESS_TIMEOUT.as_secs()))?
-        .map_err(|e| format!("Failed to run dcert at {}: {}", dcert.display(), e))?;
+        .map_err(|_| format_timeout_error(config))?
+        .map_err(|e| format!("Failed to run dcert at {}: {}", config.dcert_binary.display(), e))?;
 
     let stdout = truncate_output(String::from_utf8_lossy(&output.stdout).to_string());
     let stderr = truncate_output(String::from_utf8_lossy(&output.stderr).to_string());
@@ -194,26 +365,29 @@ async fn run_dcert(args: &[&str]) -> Result<(String, String, i32), String> {
     Ok((stdout, stderr, code))
 }
 
-/// Run dcert without --debug (for subcommands that don't support it).
+/// Run dcert without --debug and without --timeout/--read-timeout flags.
+/// Used for subcommands (convert, verify-key) that don't support connection timeouts.
 /// Acquires a semaphore permit to limit concurrent subprocess invocations.
-async fn run_dcert_raw(args: &[&str]) -> Result<(String, String, i32), String> {
+///
+/// Note: The subprocess inherits all parent environment variables including proxy
+/// settings. See `run_dcert()` for details.
+async fn run_dcert_raw(args: &[&str], config: &McpConfig) -> Result<(String, String, i32), String> {
     let _permit = SUBPROCESS_SEMAPHORE
         .acquire()
         .await
         .map_err(|_| "Subprocess semaphore closed".to_string())?;
 
-    let dcert = find_dcert_binary();
-    let child = Command::new(&dcert)
+    let child = Command::new(&config.dcert_binary)
         .args(args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Failed to run dcert at {}: {}", dcert.display(), e))?;
+        .map_err(|e| format!("Failed to run dcert at {}: {}", config.dcert_binary.display(), e))?;
 
-    let output = tokio::time::timeout(SUBPROCESS_TIMEOUT, child.wait_with_output())
+    let output = tokio::time::timeout(config.subprocess_timeout, child.wait_with_output())
         .await
-        .map_err(|_| format!("dcert subprocess timed out after {}s", SUBPROCESS_TIMEOUT.as_secs()))?
-        .map_err(|e| format!("Failed to run dcert at {}: {}", dcert.display(), e))?;
+        .map_err(|_| format_timeout_error(config))?
+        .map_err(|e| format!("Failed to run dcert at {}: {}", config.dcert_binary.display(), e))?;
 
     let stdout = truncate_output(String::from_utf8_lossy(&output.stdout).to_string());
     let stderr = truncate_output(String::from_utf8_lossy(&output.stderr).to_string());
@@ -482,20 +656,28 @@ fn ok_error(msg: String) -> Result<CallToolResult, rmcp::ErrorData> {
 #[derive(Debug, Clone)]
 pub struct DcertMcpServer {
     tool_router: ToolRouter<Self>,
+    config: Arc<McpConfig>,
 }
 
 impl DcertMcpServer {
-    /// Create a new dcert MCP server.
-    pub fn new() -> Self {
+    /// Create a new dcert MCP server with the given configuration.
+    fn new(config: McpConfig) -> Self {
         Self {
             tool_router: Self::tool_router(),
+            config: Arc::new(config),
         }
     }
 }
 
 impl Default for DcertMcpServer {
     fn default() -> Self {
-        Self::new()
+        Self::new(McpConfig {
+            subprocess_timeout: Duration::from_secs(DEFAULT_SUBPROCESS_TIMEOUT),
+            connection_timeout: DEFAULT_CONNECTION_TIMEOUT,
+            read_timeout: DEFAULT_READ_TIMEOUT,
+            dcert_binary: find_dcert_binary(),
+            proxy_config: McpProxyInfo::from_env(),
+        })
     }
 }
 
@@ -529,7 +711,7 @@ impl DcertMcpServer {
         args.extend(params.mtls.to_args());
 
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        match run_dcert(&args_refs).await {
+        match run_dcert(&args_refs, &self.config).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = stdout;
                 if !stderr.is_empty() {
@@ -575,7 +757,7 @@ impl DcertMcpServer {
         args.extend(params.mtls.to_args());
 
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        match run_dcert(&args_refs).await {
+        match run_dcert(&args_refs, &self.config).await {
             Ok((stdout, stderr, code)) => {
                 let status = match code {
                     0 => "ALL_VALID",
@@ -620,7 +802,7 @@ impl DcertMcpServer {
         args.extend(params.mtls.to_args());
 
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        match run_dcert(&args_refs).await {
+        match run_dcert(&args_refs, &self.config).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = stdout;
                 if code == 5 {
@@ -654,7 +836,7 @@ impl DcertMcpServer {
         let args_a = vec![params.target_a.as_str(), "--format", "json", "--fingerprint"];
         let args_b = vec![params.target_b.as_str(), "--format", "json", "--fingerprint"];
 
-        let (result_a, result_b) = tokio::join!(run_dcert(&args_a), run_dcert(&args_b));
+        let (result_a, result_b) = tokio::join!(run_dcert(&args_a, &self.config), run_dcert(&args_b, &self.config));
 
         match (result_a, result_b) {
             (Ok((stdout_a, _, _)), Ok((stdout_b, _, _))) => {
@@ -734,7 +916,7 @@ impl DcertMcpServer {
         args.extend(params.mtls.to_args());
 
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        match run_dcert(&args_refs).await {
+        match run_dcert(&args_refs, &self.config).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = stdout;
                 if !stderr.is_empty() {
@@ -781,7 +963,7 @@ impl DcertMcpServer {
         args.extend(params.mtls.to_args());
 
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        match run_dcert(&args_refs).await {
+        match run_dcert(&args_refs, &self.config).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = String::new();
 
@@ -832,7 +1014,7 @@ impl DcertMcpServer {
             "json",
         ];
 
-        match run_dcert_raw(&args).await {
+        match run_dcert_raw(&args, &self.config).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = stdout;
                 if !stderr.is_empty() {
@@ -876,7 +1058,7 @@ impl DcertMcpServer {
             params.output_dir.as_str(),
         ];
 
-        match run_dcert_raw(&args).await {
+        match run_dcert_raw(&args, &self.config).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = stdout;
                 if !stderr.is_empty() {
@@ -936,7 +1118,7 @@ impl DcertMcpServer {
         }
 
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        match run_dcert_raw(&args_refs).await {
+        match run_dcert_raw(&args_refs, &self.config).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = stdout;
                 if !stderr.is_empty() {
@@ -991,7 +1173,7 @@ impl DcertMcpServer {
             params.alias.as_str(),
         ];
 
-        match run_dcert_raw(&args).await {
+        match run_dcert_raw(&args, &self.config).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = stdout;
                 if !stderr.is_empty() {
@@ -1047,7 +1229,7 @@ impl DcertMcpServer {
         args.push(params.password);
 
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        match run_dcert_raw(&args_refs).await {
+        match run_dcert_raw(&args_refs, &self.config).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = stdout;
                 if !stderr.is_empty() {
@@ -1084,10 +1266,20 @@ impl ServerHandler for DcertMcpServer {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Parse CLI args so --version and --help work
-    let _cli = McpCli::parse();
+    let cli = McpCli::parse();
 
-    let server = DcertMcpServer::new();
+    let config = McpConfig {
+        subprocess_timeout: Duration::from_secs(cli.timeout),
+        connection_timeout: cli.connection_timeout,
+        read_timeout: cli.read_timeout,
+        dcert_binary: find_dcert_binary(),
+        proxy_config: McpProxyInfo::from_env(),
+    };
+
+    // Log startup diagnostics to stderr (MCP protocol uses stdio)
+    log_startup_diagnostics(&config);
+
+    let server = DcertMcpServer::new(config);
     let service = server.serve(rmcp::transport::io::stdio()).await?;
     service.waiting().await?;
     Ok(())
@@ -1275,9 +1467,24 @@ mod tests {
     // DcertMcpServer construction tests
     // ---------------------------------------------------------------
 
+    /// Create a test McpConfig with default values and optional dcert binary path.
+    fn test_config(dcert_binary: PathBuf) -> McpConfig {
+        McpConfig {
+            subprocess_timeout: Duration::from_secs(DEFAULT_SUBPROCESS_TIMEOUT),
+            connection_timeout: DEFAULT_CONNECTION_TIMEOUT,
+            read_timeout: DEFAULT_READ_TIMEOUT,
+            dcert_binary,
+            proxy_config: McpProxyInfo {
+                https_proxy: None,
+                http_proxy: None,
+                no_proxy: None,
+            },
+        }
+    }
+
     #[test]
     fn test_server_construction() {
-        let server = DcertMcpServer::new();
+        let server = DcertMcpServer::new(test_config(PathBuf::from("dcert")));
         let info = server.get_info();
         assert_eq!(info.server_info.name, "dcert-mcp");
         assert!(!info.server_info.version.is_empty());
@@ -1298,7 +1505,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_dcert_with_pem_file() {
-        // Point DCERT_PATH to the debug binary
         let dcert_path = std::env::current_exe()
             .unwrap()
             .parent()
@@ -1310,10 +1516,9 @@ mod tests {
             eprintln!("Skipping test: dcert binary not found at {:?}", dcert_path);
             return;
         }
-        std::env::set_var("DCERT_PATH", &dcert_path);
 
-        let result = run_dcert(&["tests/data/valid.pem", "--format", "json"]).await;
-        std::env::remove_var("DCERT_PATH");
+        let config = test_config(dcert_path);
+        let result = run_dcert(&["tests/data/valid.pem", "--format", "json"], &config).await;
 
         assert!(result.is_ok(), "run_dcert should succeed: {:?}", result);
         let (stdout, _stderr, code) = result.unwrap();
@@ -1334,10 +1539,9 @@ mod tests {
             eprintln!("Skipping test: dcert binary not found at {:?}", dcert_path);
             return;
         }
-        std::env::set_var("DCERT_PATH", &dcert_path);
 
-        let result = run_dcert(&["nonexistent_file.pem", "--format", "json"]).await;
-        std::env::remove_var("DCERT_PATH");
+        let config = test_config(dcert_path);
+        let result = run_dcert(&["nonexistent_file.pem", "--format", "json"], &config).await;
 
         assert!(result.is_ok(), "run_dcert should not fail on spawn");
         let (_stdout, stderr, code) = result.unwrap();
@@ -1354,7 +1558,6 @@ mod tests {
         use rmcp::model::CallToolRequestParams;
         use rmcp::{ClientHandler, ServiceExt};
 
-        // Build the dcert binary path
         let dcert_path = std::env::current_exe()
             .unwrap()
             .parent()
@@ -1366,11 +1569,10 @@ mod tests {
             eprintln!("Skipping test: dcert binary not found at {:?}", dcert_path);
             return;
         }
-        std::env::set_var("DCERT_PATH", &dcert_path);
 
         let (server_transport, client_transport) = tokio::io::duplex(65536);
 
-        let server = DcertMcpServer::new();
+        let server = DcertMcpServer::new(test_config(dcert_path));
         let server_handle = tokio::spawn(async move {
             let svc = server.serve(server_transport).await.unwrap();
             svc.waiting().await.unwrap();
@@ -1401,8 +1603,6 @@ mod tests {
             })
             .await;
 
-        std::env::remove_var("DCERT_PATH");
-
         assert!(result.is_ok(), "Tool call should succeed: {:?}", result);
         let response = result.unwrap();
         let text = response
@@ -1428,7 +1628,7 @@ mod tests {
 
         let (server_transport, client_transport) = tokio::io::duplex(65536);
 
-        let server = DcertMcpServer::new();
+        let server = DcertMcpServer::default();
         let server_handle = tokio::spawn(async move {
             let svc = server.serve(server_transport).await.unwrap();
             svc.waiting().await.unwrap();
@@ -1486,7 +1686,7 @@ mod tests {
 
         let (server_transport, client_transport) = tokio::io::duplex(65536);
 
-        let server = DcertMcpServer::new();
+        let server = DcertMcpServer::default();
         let server_handle = tokio::spawn(async move {
             let svc = server.serve(server_transport).await.unwrap();
             svc.waiting().await.unwrap();
@@ -1550,11 +1750,10 @@ mod tests {
             eprintln!("Skipping test: dcert binary not found at {:?}", dcert_path);
             return;
         }
-        std::env::set_var("DCERT_PATH", &dcert_path);
 
         let (server_transport, client_transport) = tokio::io::duplex(65536);
 
-        let server = DcertMcpServer::new();
+        let server = DcertMcpServer::new(test_config(dcert_path));
         let server_handle = tokio::spawn(async move {
             let svc = server.serve(server_transport).await.unwrap();
             svc.waiting().await.unwrap();
@@ -1583,8 +1782,6 @@ mod tests {
             })
             .await;
 
-        std::env::remove_var("DCERT_PATH");
-
         assert!(result.is_ok(), "Tool call should succeed: {:?}", result);
         let response = result.unwrap();
         let text = response
@@ -1610,7 +1807,7 @@ mod tests {
 
         let (server_transport, client_transport) = tokio::io::duplex(65536);
 
-        let server = DcertMcpServer::new();
+        let server = DcertMcpServer::default();
         let server_handle = tokio::spawn(async move {
             let svc = server.serve(server_transport).await.unwrap();
             svc.waiting().await.unwrap();
@@ -1739,7 +1936,7 @@ mod tests {
 
         let (server_transport, client_transport) = tokio::io::duplex(65536);
 
-        let server = DcertMcpServer::new();
+        let server = DcertMcpServer::default();
         let server_handle = tokio::spawn(async move {
             let svc = server.serve(server_transport).await.unwrap();
             svc.waiting().await.unwrap();
@@ -1799,7 +1996,7 @@ mod tests {
 
         let (server_transport, client_transport) = tokio::io::duplex(65536);
 
-        let server = DcertMcpServer::new();
+        let server = DcertMcpServer::default();
         let server_handle = tokio::spawn(async move {
             let svc = server.serve(server_transport).await.unwrap();
             svc.waiting().await.unwrap();
@@ -1845,5 +2042,127 @@ mod tests {
 
         client.cancel().await.unwrap();
         server_handle.abort();
+    }
+
+    // ---------------------------------------------------------------
+    // McpConfig and McpProxyInfo tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_mcp_proxy_info_from_env_empty() {
+        let _guard = DCERT_PATH_MUTEX.lock().unwrap();
+        // Clear all proxy env vars
+        for var in &[
+            "HTTPS_PROXY",
+            "https_proxy",
+            "HTTP_PROXY",
+            "http_proxy",
+            "NO_PROXY",
+            "no_proxy",
+        ] {
+            unsafe { std::env::remove_var(var) };
+        }
+        let info = McpProxyInfo::from_env();
+        assert!(info.https_proxy.is_none());
+        assert!(info.http_proxy.is_none());
+        assert!(info.no_proxy.is_none());
+    }
+
+    #[test]
+    fn test_mcp_proxy_info_from_env_with_proxy() {
+        let _guard = DCERT_PATH_MUTEX.lock().unwrap();
+        // Clear then set
+        for var in &[
+            "HTTPS_PROXY",
+            "https_proxy",
+            "HTTP_PROXY",
+            "http_proxy",
+            "NO_PROXY",
+            "no_proxy",
+        ] {
+            unsafe { std::env::remove_var(var) };
+        }
+        unsafe {
+            std::env::set_var("HTTPS_PROXY", "http://proxy.corp:8080");
+            std::env::set_var("NO_PROXY", "localhost,127.0.0.1");
+        }
+        let info = McpProxyInfo::from_env();
+        assert_eq!(info.https_proxy.as_deref(), Some("http://proxy.corp:8080"));
+        assert_eq!(info.no_proxy.as_deref(), Some("localhost,127.0.0.1"));
+        // Restore
+        unsafe {
+            std::env::remove_var("HTTPS_PROXY");
+            std::env::remove_var("NO_PROXY");
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // sanitize_proxy_url tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_sanitize_proxy_url_masks_password() {
+        let result = sanitize_proxy_url("http://user:secret@proxy.example.com:8080");
+        assert!(result.contains("****"), "password should be masked");
+        assert!(!result.contains("secret"), "original password should not appear");
+    }
+
+    #[test]
+    fn test_sanitize_proxy_url_no_password() {
+        let result = sanitize_proxy_url("http://proxy.example.com:8080");
+        assert!(!result.contains("****"));
+    }
+
+    #[test]
+    fn test_sanitize_proxy_url_invalid() {
+        let result = sanitize_proxy_url("not-a-url");
+        assert_eq!(result, "not-a-url");
+    }
+
+    // ---------------------------------------------------------------
+    // format_timeout_error tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_format_timeout_error_with_proxy() {
+        let config = McpConfig {
+            subprocess_timeout: Duration::from_secs(120),
+            connection_timeout: 30,
+            read_timeout: 15,
+            dcert_binary: PathBuf::from("dcert"),
+            proxy_config: McpProxyInfo {
+                https_proxy: Some("http://proxy.corp.com:8080".to_string()),
+                http_proxy: None,
+                no_proxy: Some("localhost,127.0.0.1".to_string()),
+            },
+        };
+        let msg = format_timeout_error(&config);
+        assert!(msg.contains("120s"), "should mention timeout duration");
+        assert!(msg.contains("proxy"), "should mention proxy: {}", msg);
+        assert!(msg.contains("DCERT_MCP_TIMEOUT"), "should mention env var");
+        assert!(msg.contains("NO_PROXY"), "should mention NO_PROXY");
+    }
+
+    #[test]
+    fn test_format_timeout_error_without_proxy() {
+        let config = McpConfig {
+            subprocess_timeout: Duration::from_secs(60),
+            connection_timeout: 10,
+            read_timeout: 5,
+            dcert_binary: PathBuf::from("dcert"),
+            proxy_config: McpProxyInfo {
+                https_proxy: None,
+                http_proxy: None,
+                no_proxy: None,
+            },
+        };
+        let msg = format_timeout_error(&config);
+        assert!(msg.contains("60s"));
+        assert!(
+            msg.contains("No proxy configured"),
+            "should hint to set HTTPS_PROXY: {}",
+            msg
+        );
+        assert!(msg.contains("HTTPS_PROXY"));
     }
 }

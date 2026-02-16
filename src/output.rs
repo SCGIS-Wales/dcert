@@ -238,13 +238,16 @@ pub struct StructuredOutput {
     pub connection: Option<TlsConnectionInfo>,
 }
 
-/// Process a single target (PEM file or HTTPS URL) and return results.
+/// Process a single target (PEM file, HTTPS URL, or stdin PEM data) and return results.
+///
+/// When `target` is `"-"`, the PEM data should be passed via `stdin_pem`.
 #[allow(clippy::too_many_arguments)]
 pub fn process_target(
     target: &str,
     args: &CheckArgs,
     proxy_config: &ProxyConfig,
     body: Option<&[u8]>,
+    stdin_pem: Option<&str>,
 ) -> Result<TargetResult> {
     debug_log!(args.debug, "Processing target: {}", target);
 
@@ -254,7 +257,12 @@ pub fn process_target(
         extensions: args.extensions,
     };
 
-    let (pem_data, conn_info) = if target.starts_with("https://") {
+    let (pem_data, conn_info) = if target == "-" {
+        let pem = stdin_pem
+            .ok_or_else(|| anyhow::anyhow!("No PEM data received from stdin"))?
+            .to_string();
+        (pem, None)
+    } else if target.starts_with("https://") {
         if args.no_verify {
             eprintln!(
                 "{} TLS certificate verification is disabled (--no-verify). \

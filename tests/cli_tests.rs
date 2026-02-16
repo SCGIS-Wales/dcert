@@ -1,5 +1,6 @@
+use std::io::Write;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 fn dcert_bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_dcert"))
@@ -779,4 +780,293 @@ fn test_debug_does_not_contaminate_yaml() {
     );
     // No debug prefix in stdout
     assert!(!stdout.contains("* ---"), "debug markers should not appear in stdout");
+}
+
+// ---------------------------------------------------------------
+// verify-key: explicit pair
+// ---------------------------------------------------------------
+
+#[test]
+fn test_verify_key_explicit_pair_matches() {
+    let cert_path = test_data("verify-key-discovery/server.crt");
+    let key_path = test_data("verify-key-discovery/server.key");
+    let output = dcert_bin()
+        .args([
+            "verify-key",
+            cert_path.to_str().unwrap(),
+            "--key",
+            key_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run dcert");
+    assert!(output.status.success(), "matching cert+key should succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Key matches certificate"),
+        "should show match: {stdout}"
+    );
+}
+
+#[test]
+fn test_verify_key_explicit_pair_mismatch() {
+    // Use server.crt with app.key (different key pair)
+    let cert_path = test_data("verify-key-discovery/server.crt");
+    let key_path = test_data("verify-key-discovery/app.key");
+    let output = dcert_bin()
+        .args([
+            "verify-key",
+            cert_path.to_str().unwrap(),
+            "--key",
+            key_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run dcert");
+    assert_eq!(output.status.code(), Some(7), "mismatch should exit with code 7");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("does NOT match"), "should indicate mismatch: {stdout}");
+}
+
+#[test]
+fn test_verify_key_explicit_pair_json() {
+    let cert_path = test_data("verify-key-discovery/server.crt");
+    let key_path = test_data("verify-key-discovery/server.key");
+    let output = dcert_bin()
+        .args([
+            "verify-key",
+            cert_path.to_str().unwrap(),
+            "--key",
+            key_path.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("failed to run dcert");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    assert_eq!(parsed["matches"], true);
+    assert_eq!(parsed["key_type"], "RSA");
+}
+
+// ---------------------------------------------------------------
+// verify-key: auto-discovery
+// ---------------------------------------------------------------
+
+#[test]
+fn test_verify_key_auto_discovery_pretty() {
+    let dir_path = test_data("verify-key-discovery");
+    let output = dcert_bin()
+        .args(["verify-key", "--dir", dir_path.to_str().unwrap()])
+        .output()
+        .expect("failed to run dcert");
+    assert!(
+        output.status.success(),
+        "auto-discovery with matching pairs should succeed"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Should find both pairs
+    assert!(stdout.contains("server.crt"), "should list server.crt: {stdout}");
+    assert!(stdout.contains("app.pem"), "should list app.pem: {stdout}");
+    // orphan.pem should NOT appear (no matching .key)
+    assert!(!stdout.contains("orphan"), "orphan.pem should be skipped: {stdout}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("2 cert/key pair(s)"),
+        "should report found pairs: {stderr}"
+    );
+}
+
+#[test]
+fn test_verify_key_auto_discovery_json() {
+    let dir_path = test_data("verify-key-discovery");
+    let output = dcert_bin()
+        .args(["verify-key", "--dir", dir_path.to_str().unwrap(), "--format", "json"])
+        .output()
+        .expect("failed to run dcert");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    assert!(parsed.is_array(), "auto-discovery JSON should be an array");
+    let arr = parsed.as_array().unwrap();
+    assert_eq!(arr.len(), 2, "should find 2 cert/key pairs");
+    // Each result should include cert_file and key_file
+    for result in arr {
+        assert!(result["cert_file"].is_string(), "should have cert_file");
+        assert!(result["key_file"].is_string(), "should have key_file");
+        assert_eq!(result["matches"], true, "all pairs should match");
+    }
+}
+
+#[test]
+fn test_verify_key_auto_discovery_empty_dir() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let output = dcert_bin()
+        .args(["verify-key", "--dir", dir.path().to_str().unwrap()])
+        .output()
+        .expect("failed to run dcert");
+    assert!(
+        !output.status.success(),
+        "empty directory should fail with no pairs found"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("No matching cert/key pairs"),
+        "should indicate no pairs found: {stderr}"
+    );
+}
+
+#[test]
+fn test_verify_key_requires_both_or_neither() {
+    // Provide target but not --key
+    let cert_path = test_data("verify-key-discovery/server.crt");
+    let output = dcert_bin()
+        .args(["verify-key", cert_path.to_str().unwrap()])
+        .output()
+        .expect("failed to run dcert");
+    assert!(!output.status.success(), "target without --key should fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Both target and --key must be provided together"),
+        "should explain both are needed: {stderr}"
+    );
+}
+
+// ---------------------------------------------------------------
+// stdin PEM piping
+// ---------------------------------------------------------------
+
+#[test]
+fn test_stdin_pem_with_dash_arg() {
+    // Pipe PEM data via stdin with explicit '-' target
+    let pem_data = std::fs::read(test_data("valid.pem")).expect("failed to read valid.pem");
+    let mut child = dcert_bin()
+        .args(["check", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn dcert");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&pem_data)
+        .expect("failed to write stdin");
+    let output = child.wait_with_output().expect("failed to wait");
+    assert!(output.status.success(), "piped PEM via stdin should succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("test.example.com"),
+        "should parse cert from stdin: {stdout}"
+    );
+}
+
+#[test]
+fn test_stdin_pem_no_args() {
+    // Pipe PEM data via stdin with no arguments at all (auto-detect)
+    let pem_data = std::fs::read(test_data("valid.pem")).expect("failed to read valid.pem");
+    let mut child = dcert_bin()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn dcert");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&pem_data)
+        .expect("failed to write stdin");
+    let output = child.wait_with_output().expect("failed to wait");
+    assert!(
+        output.status.success(),
+        "piped PEM with no args should succeed, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("test.example.com"),
+        "should parse cert from stdin: {stdout}"
+    );
+}
+
+#[test]
+fn test_stdin_base64_decoded_pem() {
+    // Simulate: echo "<base64 PEM>" | base64 --decode | dcert -
+    // Read the PEM file, base64-encode it, then decode in the pipeline
+    let pem_data = std::fs::read(test_data("valid.pem")).expect("failed to read valid.pem");
+    // The pem_data is already in PEM text format, pipe it directly as if it came from base64 --decode
+    let mut child = dcert_bin()
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn dcert");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&pem_data)
+        .expect("failed to write stdin");
+    let output = child.wait_with_output().expect("failed to wait");
+    assert!(output.status.success(), "base64-decoded PEM pipe should succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("test.example.com"),
+        "should parse cert from decoded stdin: {stdout}"
+    );
+}
+
+#[test]
+fn test_stdin_pem_json_format() {
+    // Pipe PEM via stdin and request JSON output
+    let pem_data = std::fs::read(test_data("valid.pem")).expect("failed to read valid.pem");
+    let mut child = dcert_bin()
+        .args(["check", "-", "--format", "json"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn dcert");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&pem_data)
+        .expect("failed to write stdin");
+    let output = child.wait_with_output().expect("failed to wait");
+    assert!(output.status.success(), "stdin PEM with JSON format should succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should produce valid JSON");
+    assert!(parsed["certificates"].is_array(), "JSON should have certificates array");
+    assert_eq!(
+        parsed["certificates"][0]["common_name"], "test.example.com",
+        "should contain the cert CN"
+    );
+}
+
+#[test]
+fn test_stdin_chain_pem() {
+    // Pipe a multi-cert chain via stdin
+    let pem_data = std::fs::read(test_data("test.pem")).expect("failed to read test.pem");
+    let mut child = dcert_bin()
+        .args(["check", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn dcert");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&pem_data)
+        .expect("failed to write stdin");
+    let output = child.wait_with_output().expect("failed to wait");
+    assert!(output.status.success(), "stdin chain PEM should succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // The chain should contain multiple certificates
+    let cert_count = stdout.matches("Certificate").count();
+    assert!(cert_count >= 2, "chain should parse multiple certs, found {cert_count}");
 }
