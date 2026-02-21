@@ -10,6 +10,7 @@ import logging
 import os
 import platform
 import shutil
+import stat
 from pathlib import Path
 
 from fastmcp.client.transports import StdioTransport
@@ -73,16 +74,19 @@ def _find_binary() -> str:
     arch_map = {"x86_64": "amd64", "aarch64": "arm64", "arm64": "arm64", "amd64": "amd64"}
     arch = arch_map.get(machine, machine)
     binary_name = f"dcert-mcp-{system}-{arch}"
-    bundled = pkg_dir / "bin" / binary_name
-    if bundled.is_file() and os.access(str(bundled), os.X_OK):
-        logger.debug("Using bundled binary: %s", bundled)
-        return str(bundled)
-
-    # Also check for plain "dcert-mcp" in bin/
-    plain = pkg_dir / "bin" / "dcert-mcp"
-    if plain.is_file() and os.access(str(plain), os.X_OK):
-        logger.debug("Using bundled binary: %s", plain)
-        return str(plain)
+    for candidate in [pkg_dir / "bin" / binary_name, pkg_dir / "bin" / "dcert-mcp"]:
+        if candidate.is_file():
+            # Ensure the binary is executable — pip may not preserve permissions
+            # for package-data files extracted from wheels.
+            if not os.access(str(candidate), os.X_OK):
+                try:
+                    candidate.chmod(
+                        candidate.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH
+                    )
+                except OSError:
+                    continue
+            logger.debug("Using bundled binary: %s", candidate)
+            return str(candidate)
 
     # 3. PATH lookup (before download — platform wheels put the binary on PATH)
     found = shutil.which("dcert-mcp")

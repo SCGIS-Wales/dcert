@@ -148,6 +148,27 @@ jobs:
       - name: Run wheel builder tests
         run: pytest -v scripts/test_build_wheels.py
 
+  # Functional test: build a platform wheel, install it in a venv,
+  # and verify that dcert, dcert-mcp, and dcert-python commands work.
+  # Pinned to ubuntu-22.04 to match the build environment for Linux wheels.
+  wheel-install-test:
+    name: Wheel install test (Ubuntu 22.04)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: pip install pytest build
+
+      - name: Run wheel install functional tests
+        run: pytest -v scripts/test_wheel_install.py
+
   python-build:
     name: Python build
     runs-on: ubuntu-latest
@@ -857,7 +878,7 @@ jobs:
   publish-pypi:
     name: Publish to PyPI
     if: needs.auto-tag.outputs.created == 'true'
-    needs: [ auto-tag, release, python-lint, python-test, python-build, build-platform-wheels, integration-test ]
+    needs: [ auto-tag, release, python-lint, python-test, python-build, build-platform-wheels, integration-test, wheel-install-test ]
     runs-on: ubuntu-latest
     permissions:
       id-token: write
