@@ -118,12 +118,18 @@ def build_platform_wheel(
             dst.writestr(item, data)
             records.append(_record_entry(item.filename, data))
 
-        # Add both binaries with executable permissions
+        # Add both binaries inside the Python package for reliable access.
+        # Using dcert/bin/ instead of .data/scripts/ because pip does not
+        # always preserve executable permissions on binary files placed in
+        # .data/scripts/ (especially when create_system defaults to 0/Windows
+        # in ZipInfo).  Console-script entry points (dcert, dcert-mcp) created
+        # by pip handle exec'ing these binaries and chmod'ing them on first run.
         for binary_name, binary_data in binaries.items():
-            binary_path_in_wheel = f"{data_dir}/scripts/{binary_name}"
+            binary_path_in_wheel = f"dcert/bin/{binary_name}"
             info = ZipInfo(binary_path_in_wheel)
             info.compress_type = ZIP_DEFLATED
-            info.external_attr = 0o755 << 16  # rwxr-xr-x
+            info.create_system = 3  # Unix
+            info.external_attr = 0o100755 << 16  # regular file + rwxr-xr-x
             dst.writestr(info, binary_data)
             records.append(_record_entry(binary_path_in_wheel, binary_data))
 

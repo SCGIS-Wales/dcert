@@ -436,12 +436,42 @@ def test_create_client_binary_not_found():
 # ---------------------------------------------------------------------------
 
 
+def test_find_binary_bundled_chmod(tmp_path):
+    """Test bundled binary gets chmod'd if it exists but is not executable."""
+    import dcert.server as server_mod
+    from dcert.server import _find_binary
+
+    pkg_dir = Path(server_mod.__file__).parent
+    bin_dir = pkg_dir / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    bundled = bin_dir / "dcert-mcp"
+    bundled.write_bytes(b"\x7fELF...")  # fake ELF header
+    bundled.chmod(0o644)  # NOT executable
+
+    try:
+        env = {k: v for k, v in os.environ.items() if k != "DCERT_MCP_BINARY"}
+        env["PATH"] = "/nonexistent"
+        with patch.dict(os.environ, env, clear=True):
+            result = _find_binary()
+            assert result == str(bundled)
+            # Verify it was made executable
+            assert os.access(str(bundled), os.X_OK)
+    finally:
+        bundled.unlink(missing_ok=True)
+        if bin_dir.exists():
+            bin_dir.rmdir()
+
+
 def test_cli_module_exists():
     """Test that CLI entry point module exists."""
     from dcert import cli
 
     assert hasattr(cli, "main")
     assert callable(cli.main)
+    assert hasattr(cli, "dcert_main")
+    assert callable(cli.dcert_main)
+    assert hasattr(cli, "dcert_mcp_main")
+    assert callable(cli.dcert_mcp_main)
 
 
 def test_cli_help(capsys):
@@ -539,3 +569,96 @@ def test_cli_http_transport(tmp_path):
         main()
 
     mock_server.run.assert_called_once_with(transport="http", host="127.0.0.1", port=9090)
+
+
+# ---------------------------------------------------------------------------
+# CLI entry points: dcert_main / dcert_mcp_main
+# ---------------------------------------------------------------------------
+
+
+def test_dcert_main_execs_binary(tmp_path):
+    """Test dcert_main finds bundled binary and calls os.execvp."""
+    from dcert.cli import dcert_main
+
+    fake_binary = tmp_path / "dcert"
+    fake_binary.write_text("#!/bin/sh\necho dcert")
+    fake_binary.chmod(0o755)
+
+    with (
+        patch("dcert.cli._find_binary", return_value=str(fake_binary)),
+        patch("os.execvp") as mock_exec,
+        patch("sys.argv", ["dcert", "--version"]),
+    ):
+        dcert_main()
+        mock_exec.assert_called_once_with(str(fake_binary), [str(fake_binary), "--version"])
+
+
+def test_dcert_mcp_main_execs_binary(tmp_path):
+    """Test dcert_mcp_main finds bundled binary and calls os.execvp."""
+    from dcert.cli import dcert_mcp_main
+
+    fake_binary = tmp_path / "dcert-mcp"
+    fake_binary.write_text("#!/bin/sh\necho dcert-mcp")
+    fake_binary.chmod(0o755)
+
+    with (
+        patch("dcert.cli._find_binary", return_value=str(fake_binary)),
+        patch("os.execvp") as mock_exec,
+        patch("sys.argv", ["dcert-mcp"]),
+    ):
+        dcert_mcp_main()
+        mock_exec.assert_called_once_with(str(fake_binary), [str(fake_binary)])
+
+
+def test_dcert_main_not_found(capsys):
+    """Test dcert_main exits 1 when binary not found."""
+    from dcert.cli import dcert_main
+
+    with (
+        patch("dcert.cli._find_binary", side_effect=FileNotFoundError("not found")),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        dcert_main()
+    assert exc_info.value.code == 1
+
+
+def test_dcert_mcp_main_not_found(capsys):
+    """Test dcert_mcp_main exits 1 when binary not found."""
+    from dcert.cli import dcert_mcp_main
+
+    with (
+        patch("dcert.cli._find_binary", side_effect=FileNotFoundError("not found")),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        dcert_mcp_main()
+    assert exc_info.value.code == 1
+
+
+def test_find_bundled_binary_found():
+    """Test _find_bundled_binary finds and chmod's bundled binary."""
+    import dcert.cli as cli_mod
+    from dcert.cli import _find_bundled_binary
+
+    pkg_dir = Path(cli_mod.__file__).parent
+    bin_dir = pkg_dir / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    bundled = bin_dir / "dcert"
+    bundled.write_bytes(b"\x7fELF...")
+    bundled.chmod(0o644)  # NOT executable
+
+    try:
+        result = _find_bundled_binary("dcert")
+        assert result == str(bundled)
+        assert os.access(str(bundled), os.X_OK)
+    finally:
+        bundled.unlink(missing_ok=True)
+        if bin_dir.exists():
+            bin_dir.rmdir()
+
+
+def test_find_bundled_binary_not_found():
+    """Test _find_bundled_binary returns None when binary doesn't exist."""
+    from dcert.cli import _find_bundled_binary
+
+    result = _find_bundled_binary("nonexistent-binary-xyz")
+    assert result is None

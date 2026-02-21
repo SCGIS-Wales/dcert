@@ -160,8 +160,8 @@ class TestBuildPlatformWheel:
         result = build_platform_wheel(src, archive, "macosx_11_0_arm64", output_dir)
         with ZipFile(result, "r") as zf:
             names = zf.namelist()
-            assert any("scripts/dcert-mcp" in n for n in names)
-            assert any("scripts/dcert" in n for n in names)
+            assert "dcert/bin/dcert-mcp" in names
+            assert "dcert/bin/dcert" in names
 
     def test_wheel_has_executable_permissions(self, tmp_path):
         src = _make_universal_wheel(tmp_path / "src")
@@ -172,10 +172,14 @@ class TestBuildPlatformWheel:
         result = build_platform_wheel(src, archive, "macosx_11_0_arm64", output_dir)
         with ZipFile(result, "r") as zf:
             for info in zf.infolist():
-                if "scripts/" in info.filename and info.filename.endswith(
+                if info.filename.startswith("dcert/bin/") and info.filename.endswith(
                     ("dcert", "dcert-mcp")
                 ):
-                    assert (info.external_attr >> 16) & 0o755 == 0o755
+                    # Verify Unix create_system
+                    assert info.create_system == 3, "create_system must be Unix (3)"
+                    # Verify file type is regular file (0o100000) + rwxr-xr-x (0o755)
+                    mode = (info.external_attr >> 16) & 0o777
+                    assert mode == 0o755, f"expected 0o755, got {oct(mode)}"
 
     def test_wheel_has_correct_platform_tag(self, tmp_path):
         src = _make_universal_wheel(tmp_path / "src")
