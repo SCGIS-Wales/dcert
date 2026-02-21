@@ -467,9 +467,6 @@ jobs:
     needs: [ auto-tag, build-linux, build-macos-intel, build-macos-arm, python-build ]
     if: always() && needs.python-build.result == 'success' && needs.build-linux.result == 'success' && needs.build-macos-intel.result == 'success' && needs.build-macos-arm.result == 'success'
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: python
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -483,14 +480,14 @@ jobs:
         if: needs.auto-tag.outputs.version != ''
         run: |
           VERSION="${{ needs.auto-tag.outputs.version }}"
-          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" pyproject.toml
-          sed -i "s/^__version__ = \".*\"/__version__ = \"$VERSION\"/" src/dcert/__init__.py
+          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" python/pyproject.toml
+          sed -i "s/^__version__ = \".*\"/__version__ = \"$VERSION\"/" python/src/dcert/__init__.py
 
       - name: Install build tools
         run: pip install build
 
       - name: Build universal wheel
-        run: python -m build --wheel
+        run: python -m build --wheel python/
 
       - name: Download all release artifacts
         uses: actions/download-artifact@v4
@@ -516,7 +513,7 @@ jobs:
                   path = os.path.join(assets_dir, f)
                   sha = hashlib.sha256(open(path, 'rb').read()).hexdigest()
                   checksums['archives'][f] = sha
-          with open('src/dcert/checksums.json', 'w') as out:
+          with open('python/src/dcert/checksums.json', 'w') as out:
               json.dump(checksums, out, indent=2)
               out.write('\n')
           print(json.dumps(checksums, indent=2))
@@ -524,13 +521,13 @@ jobs:
 
       - name: Build platform-specific wheels
         run: |
-          python ../scripts/build_wheels.py \
-            --wheel dist/dcert-*.whl \
+          python scripts/build_wheels.py \
+            --wheel python/dist/dcert-*.whl \
             --archives-dir release-assets/ \
-            --output platform-dist/
+            --output python/platform-dist/
 
       - name: List platform wheels
-        run: ls -la platform-dist/
+        run: ls -la python/platform-dist/
 
       - name: Upload universal wheel
         uses: actions/upload-artifact@v4
