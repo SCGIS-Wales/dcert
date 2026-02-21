@@ -128,7 +128,7 @@ jobs:
         run: pip install -e ".[dev]"
 
       - name: Run tests with coverage
-        run: pytest -v --cov=dcert --cov-report=term-missing --cov-report=xml:coverage.xml --cov-fail-under=80 tests/
+        run: pytest -v --timeout=120 --cov=dcert --cov-report=term-missing --cov-report=xml:coverage.xml --cov-fail-under=80 tests/
 
   wheel-builder-test:
     name: Wheel builder test
