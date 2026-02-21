@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import platform
+import shutil
 import stat
 import sys
 import sysconfig
@@ -30,6 +31,9 @@ logger = logging.getLogger(__name__)
 GITHUB_RELEASE_URL = (
     "https://github.com/SCGIS-Wales/dcert/releases/download/v{version}/{archive_name}"
 )
+
+# Timeout for the HTTP connection and read (seconds).
+DOWNLOAD_TIMEOUT = 60
 
 # Maps (system, machine) to Rust target triple
 PLATFORM_MAP: dict[tuple[str, str], str] = {
@@ -197,7 +201,11 @@ def ensure_binary(version: str) -> str | None:
     fd, tmp_path = tempfile.mkstemp(dir=str(install_dir), prefix=".dcert-")
     try:
         os.close(fd)
-        urllib.request.urlretrieve(url, tmp_path)  # noqa: S310 — URL is hardcoded HTTPS
+        with (
+            urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT) as resp,  # noqa: S310
+            open(tmp_path, "wb") as out,
+        ):
+            shutil.copyfileobj(resp, out)
 
         if not _verify_checksum(Path(tmp_path), expected):
             raise RuntimeError(

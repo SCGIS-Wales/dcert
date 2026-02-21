@@ -22,10 +22,32 @@ from dcert.tools import (
 
 
 def _binary_available() -> bool:
-    """Check if dcert-mcp binary is available."""
-    if os.environ.get("DCERT_MCP_BINARY"):
-        return True
-    return shutil.which("dcert-mcp") is not None
+    """Check if the *real* dcert-mcp Rust binary is available.
+
+    The Python package installs a ``dcert-mcp`` console-script wrapper,
+    which is *not* the Rust binary these integration tests need.  We
+    require either the ``DCERT_MCP_BINARY`` env-var to be set or a
+    ``dcert-mcp`` on PATH that is a compiled binary (not a Python script).
+    """
+    env_path = os.environ.get("DCERT_MCP_BINARY")
+    if env_path:
+        return os.path.isfile(env_path) and os.access(env_path, os.X_OK)
+
+    found = shutil.which("dcert-mcp")
+    if not found:
+        return False
+
+    # Reject Python console-script wrappers – they start with "#!" and
+    # reference python.  Real Rust binaries are ELF / Mach-O executables.
+    try:
+        with open(found, "rb") as f:
+            header = f.read(256)
+        if header.startswith(b"#!") and b"python" in header.lower():
+            return False
+    except OSError:
+        return False
+
+    return True
 
 
 # Skip all tests if the binary is not available
