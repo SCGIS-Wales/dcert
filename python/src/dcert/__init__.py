@@ -19,7 +19,7 @@ Usage as a client:
         result = await client.call_tool("analyze_certificate", {"target": "example.com"})
 """
 
-__version__ = "3.0.13"
+__version__ = "3.0.14"
 
 from dcert.client import create_client
 from dcert.server import create_server
