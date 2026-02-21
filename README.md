@@ -2,7 +2,9 @@
 
 A Rust CLI and MCP server for X.509 certificate analysis, format conversion, and key verification. Reads certificates from PEM files or HTTPS endpoints. Validates TLS connections, checks revocation status, converts between PFX and PEM formats, and integrates with AI-powered IDEs via the Model Context Protocol (MCP).
 
-[![CI/CD Pipeline](https://github.com/SCGIS-Wales/dcert/actions/workflows/ci.yml/badge.svg)](https://github.com/SCGIS-Wales/dcert/actions/workflows/ci.yml)
+[![CI/CD Pipeline](https://github.com/SCGIS-Wales/dcert/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/SCGIS-Wales/dcert/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/dcert)](https://crates.io/crates/dcert)
+[![PyPI version](https://img.shields.io/pypi/v/dcert)](https://pypi.org/project/dcert/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 <a href="https://glama.ai/mcp/servers/@SCGIS-Wales/dcert">
@@ -22,6 +24,7 @@ A Rust CLI and MCP server for X.509 certificate analysis, format conversion, and
   - [Troubleshooting](#troubleshooting)
 - [Features by Topic](#features-by-topic)
 - [Use Cases](#use-cases)
+- [Python Package](#python-package)
 - [Development](#development)
 - [License](#license)
 
@@ -686,6 +689,49 @@ for domain in google.com github.com; do
   dcert "https://$domain" --export-pem "${domain}-chain.pem"
 done
 ```
+
+---
+
+## Python Package
+
+A Python wrapper is available on PyPI, providing a FastMCP proxy around the `dcert-mcp` Rust binary. The Rust binary is **automatically downloaded** on first use with SHA256 checksum verification.
+
+```bash
+pip install dcert
+```
+
+### Quick Start
+
+```python
+from dcert import create_server
+
+server = create_server()
+server.run()  # stdio mode (default)
+```
+
+### CLI
+
+```bash
+# stdio mode (default, for MCP clients like Claude Code)
+dcert-python
+
+# HTTP mode
+dcert-python --transport http --host 0.0.0.0 --port 8080
+
+# Pre-download binary
+dcert-python --setup
+```
+
+### Binary Discovery
+
+The Python package locates the `dcert-mcp` binary in this order:
+
+1. `DCERT_MCP_BINARY` environment variable
+2. Bundled binary in the package `bin/` directory
+3. Auto-download from GitHub Releases (with SHA256 checksum verification)
+4. `dcert-mcp` on `PATH`
+
+See the [Python package README](python/README.md) for full documentation.
 
 ---
 

@@ -72,3 +72,13 @@ criterion/
 *.temp
 temp/
 tmp/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+python/dist/
+python/.venv/
+python/.pytest_cache/
+python/.ruff_cache/
+python/*.egg-info
