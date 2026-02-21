@@ -5,6 +5,7 @@ import io
 import json
 import os
 import tarfile
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,6 +20,22 @@ from dcert.download import (
     _verify_checksum,
     ensure_binary,
 )
+
+
+def _mock_urlopen(data: bytes, capture: dict | None = None):
+    """Create a mock for urllib.request.urlopen that returns *data*.
+
+    The mock behaves as a context-manager (``with urlopen(...) as resp``)
+    and records the URL via *capture* dict (key ``"url"``), if provided.
+    """
+
+    @contextmanager
+    def _urlopen(url, *, timeout=None):
+        if capture is not None:
+            capture["url"] = url
+        yield io.BytesIO(data)
+
+    return _urlopen
 
 # ---------------------------------------------------------------------------
 # _load_checksums
@@ -347,9 +364,6 @@ def test_ensure_binary_downloads_and_verifies(tmp_path):
         "archives": {"dcert-aarch64-apple-darwin.tar.gz": expected_sha},
     }
 
-    def fake_urlretrieve(url, path):
-        Path(path).write_bytes(archive_bytes)
-
     with (
         patch("dcert.download._get_install_dir", return_value=tmp_path),
         patch("dcert.download._load_checksums", return_value=checksums),
@@ -357,7 +371,7 @@ def test_ensure_binary_downloads_and_verifies(tmp_path):
             "dcert.download._get_archive_name",
             return_value="dcert-aarch64-apple-darwin.tar.gz",
         ),
-        patch("dcert.download.urllib.request.urlretrieve", side_effect=fake_urlretrieve),
+        patch("dcert.download.urllib.request.urlopen", _mock_urlopen(archive_bytes)),
     ):
         result = ensure_binary("1.0.0")
 
@@ -377,9 +391,6 @@ def test_ensure_binary_checksum_mismatch_raises(tmp_path):
         "archives": {"dcert-aarch64-apple-darwin.tar.gz": "expected_hash"},
     }
 
-    def fake_urlretrieve(url, path):
-        Path(path).write_bytes(b"tampered content")
-
     with (
         patch("dcert.download._get_install_dir", return_value=tmp_path),
         patch("dcert.download._load_checksums", return_value=checksums),
@@ -387,7 +398,7 @@ def test_ensure_binary_checksum_mismatch_raises(tmp_path):
             "dcert.download._get_archive_name",
             return_value="dcert-aarch64-apple-darwin.tar.gz",
         ),
-        patch("dcert.download.urllib.request.urlretrieve", side_effect=fake_urlretrieve),
+        patch("dcert.download.urllib.request.urlopen", _mock_urlopen(b"tampered content")),
         pytest.raises(RuntimeError, match="Checksum mismatch"),
     ):
         ensure_binary("1.0.0")
@@ -412,7 +423,7 @@ def test_ensure_binary_download_failure_cleans_up(tmp_path):
             return_value="dcert-aarch64-apple-darwin.tar.gz",
         ),
         patch(
-            "dcert.download.urllib.request.urlretrieve",
+            "dcert.download.urllib.request.urlopen",
             side_effect=ConnectionError("Network error"),
         ),
         pytest.raises(ConnectionError, match="Network error"),
@@ -442,12 +453,7 @@ def test_ensure_binary_url_format(tmp_path):
         "archives": {"dcert-aarch64-apple-darwin.tar.gz": expected_sha},
     }
 
-    captured_url = None
-
-    def fake_urlretrieve(url, path):
-        nonlocal captured_url
-        captured_url = url
-        Path(path).write_bytes(archive_bytes)
+    captured = {}
 
     with (
         patch("dcert.download._get_install_dir", return_value=tmp_path),
@@ -456,11 +462,11 @@ def test_ensure_binary_url_format(tmp_path):
             "dcert.download._get_archive_name",
             return_value="dcert-aarch64-apple-darwin.tar.gz",
         ),
-        patch("dcert.download.urllib.request.urlretrieve", side_effect=fake_urlretrieve),
+        patch("dcert.download.urllib.request.urlopen", _mock_urlopen(archive_bytes, captured)),
     ):
         ensure_binary("3.0.12")
 
-    assert captured_url == (
+    assert captured["url"] == (
         "https://github.com/SCGIS-Wales/dcert/releases/download/"
         "v3.0.12/dcert-aarch64-apple-darwin.tar.gz"
     )
