@@ -94,8 +94,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.14"
-          allow-prereleases: true
+          python-version: "3.12"
 
       - name: Install ruff
         run: pip install ruff
@@ -107,8 +106,11 @@ jobs:
         run: ruff format --check src/ tests/
 
   python-test:
-    name: Python test
+    name: Python test (${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.14"]
     defaults:
       run:
         working-directory: python
@@ -116,10 +118,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
-          python-version: "3.14"
+          python-version: ${{ matrix.python-version }}
           allow-prereleases: true
 
       - name: Install package with dev dependencies
@@ -127,6 +129,24 @@ jobs:
 
       - name: Run tests with coverage
         run: pytest -v --cov=dcert --cov-report=term-missing --cov-report=xml:coverage.xml --cov-fail-under=80 tests/
+
+  wheel-builder-test:
+    name: Wheel builder test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: pip install pytest
+
+      - name: Run wheel builder tests
+        run: pytest -v scripts/test_build_wheels.py
 
   python-build:
     name: Python build
@@ -141,8 +161,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.14"
-          allow-prereleases: true
+          python-version: "3.12"
 
       - name: Install build tools
         run: pip install build twine
@@ -152,6 +171,55 @@ jobs:
 
       - name: Check package
         run: twine check dist/*
+
+  # Integration tests: build the Rust binary and run Python integration tests
+  # against the real dcert-mcp binary
+  integration-test:
+    name: Integration test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: python
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-integration-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-integration-cargo-
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev
+
+      - name: Build dcert-mcp binary
+        run: cargo build --release
+        working-directory: .
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package with dev dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run integration tests
+        env:
+          DCERT_MCP_BINARY: ${{ github.workspace }}/target/release/dcert-mcp
+        run: pytest -v tests/test_integration.py
 
   # Auto-tag on merge to main: determines the next semver patch version,
   # updates Cargo.toml, commits, creates a git tag, and pushes.
@@ -392,6 +460,86 @@ jobs:
         with:
           name: dcert-aarch64-apple-darwin
           path: dist/dcert-aarch64-apple-darwin.tar.gz
+
+  # Build platform-specific Python wheels that bundle the Rust binaries
+  build-platform-wheels:
+    name: Build platform wheels
+    needs: [ auto-tag, build-linux, build-macos-intel, build-macos-arm, python-build ]
+    if: always() && needs.python-build.result == 'success' && needs.build-linux.result == 'success' && needs.build-macos-intel.result == 'success' && needs.build-macos-arm.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set Python package version
+        if: needs.auto-tag.outputs.version != ''
+        run: |
+          VERSION="${{ needs.auto-tag.outputs.version }}"
+          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" python/pyproject.toml
+          sed -i "s/^__version__ = \".*\"/__version__ = \"$VERSION\"/" python/src/dcert/__init__.py
+
+      - name: Install build tools
+        run: pip install build
+
+      - name: Build universal wheel
+        run: python -m build --wheel python/
+
+      - name: Download all release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dcert-*
+          merge-multiple: true
+          path: release-assets/
+
+      - name: List release assets
+        run: ls -la release-assets/
+
+      - name: Generate checksums.json
+        run: |
+          python3 -c "
+          import hashlib, json, os
+          checksums = {
+              'version': '${{ needs.auto-tag.outputs.version || '0.0.0' }}',
+              'archives': {}
+          }
+          assets_dir = 'release-assets'
+          for f in sorted(os.listdir(assets_dir)):
+              if f.startswith('dcert-') and f.endswith('.tar.gz'):
+                  path = os.path.join(assets_dir, f)
+                  sha = hashlib.sha256(open(path, 'rb').read()).hexdigest()
+                  checksums['archives'][f] = sha
+          with open('python/src/dcert/checksums.json', 'w') as out:
+              json.dump(checksums, out, indent=2)
+              out.write('\n')
+          print(json.dumps(checksums, indent=2))
+          "
+
+      - name: Build platform-specific wheels
+        run: |
+          python scripts/build_wheels.py \
+            --wheel python/dist/dcert-*.whl \
+            --archives-dir release-assets/ \
+            --output python/platform-dist/
+
+      - name: List platform wheels
+        run: ls -la python/platform-dist/
+
+      - name: Upload universal wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-wheel-universal
+          path: python/dist/*.whl
+
+      - name: Upload platform wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-wheels-platform
+          path: python/platform-dist/*.whl
 
   # Docker image reuses the Linux binary from the build-linux job instead
   # of recompiling from source, cutting build time from ~30min to ~30sec.
@@ -636,6 +784,14 @@ jobs:
           brew install dcert
           \`\`\`
 
+          ### Python (pip)
+
+          Platform-specific wheels bundle the binary — no network access needed at runtime:
+
+          \`\`\`bash
+          pip install dcert
+          \`\`\`
+
           ### Prebuilt binaries
 
           Prebuilt Linux binaries require **Ubuntu 22.04** (glibc 2.35) or later.
@@ -701,68 +857,36 @@ jobs:
   publish-pypi:
     name: Publish to PyPI
     if: needs.auto-tag.outputs.created == 'true'
-    needs: [ auto-tag, release, python-lint, python-test, python-build ]
+    needs: [ auto-tag, release, python-lint, python-test, python-build, build-platform-wheels, integration-test ]
     runs-on: ubuntu-latest
     permissions:
       id-token: write
     environment:
       name: pypi
       url: https://pypi.org/project/dcert/
-    defaults:
-      run:
-        working-directory: python
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.auto-tag.outputs.tag }}
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.14"
-          allow-prereleases: true
-
-      - name: Install build tools
-        run: pip install build
-
-      - name: Download release artifacts
+      - name: Download universal wheel
         uses: actions/download-artifact@v4
         with:
-          pattern: dcert-*
-          merge-multiple: true
-          path: release-assets/
+          name: python-wheel-universal
+          path: dist/
 
-      - name: Generate checksums.json
-        run: |
-          python3 -c "
-          import hashlib, json, os
-          checksums = {
-              'version': '${{ needs.auto-tag.outputs.version }}',
-              'archives': {}
-          }
-          assets_dir = '../release-assets'
-          for f in sorted(os.listdir(assets_dir)):
-              if f.startswith('dcert-') and f.endswith('.tar.gz'):
-                  path = os.path.join(assets_dir, f)
-                  sha = hashlib.sha256(open(path, 'rb').read()).hexdigest()
-                  checksums['archives'][f] = sha
-          with open('src/dcert/checksums.json', 'w') as out:
-              json.dump(checksums, out, indent=2)
-              out.write('\n')
-          print(json.dumps(checksums, indent=2))
-          "
+      - name: Download platform wheels
+        uses: actions/download-artifact@v4
+        with:
+          name: python-wheels-platform
+          path: dist/
 
-      - name: Set Python package version
-        run: |
-          VERSION="${{ needs.auto-tag.outputs.version }}"
-          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" pyproject.toml
-          sed -i "s/^__version__ = \".*\"/__version__ = \"$VERSION\"/" src/dcert/__init__.py
+      - name: Download source distribution
+        uses: actions/download-artifact@v4
+        with:
+          pattern: python-wheel-universal
+          path: sdist-tmp/
 
-      - name: Build package
-        run: python -m build
+      - name: List wheels to publish
+        run: ls -la dist/
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          packages-dir: python/dist/
+          packages-dir: dist/
