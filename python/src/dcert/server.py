@@ -6,6 +6,7 @@ proxy without any Python code changes. The MCP protocol handles tool
 discovery at runtime via the ``tools/list`` method.
 """
 
+import logging
 import os
 import platform
 import shutil
@@ -13,6 +14,8 @@ from pathlib import Path
 
 from fastmcp.client.transports import StdioTransport
 from fastmcp.server import create_proxy
+
+logger = logging.getLogger(__name__)
 
 # Environment variables forwarded to the Rust subprocess.
 PASSTHROUGH_ENV_VARS: list[str] = [
@@ -45,8 +48,8 @@ def _find_binary() -> str:
     Search order:
       1. ``DCERT_MCP_BINARY`` environment variable
       2. Bundled binary in the package ``bin/`` directory
-      3. Auto-download from GitHub Releases (with checksum verification)
-      4. ``dcert-mcp`` on ``PATH``
+      3. ``dcert-mcp`` on ``PATH``
+      4. Auto-download from GitHub Releases (with checksum verification)
 
     Returns:
         Absolute path to the dcert-mcp executable.
@@ -59,6 +62,7 @@ def _find_binary() -> str:
     if env_path:
         p = Path(env_path)
         if p.is_file() and os.access(str(p), os.X_OK):
+            logger.debug("Using binary from DCERT_MCP_BINARY: %s", p)
             return str(p)
         raise FileNotFoundError(f"DCERT_MCP_BINARY={env_path} does not exist or is not executable")
 
@@ -71,28 +75,32 @@ def _find_binary() -> str:
     binary_name = f"dcert-mcp-{system}-{arch}"
     bundled = pkg_dir / "bin" / binary_name
     if bundled.is_file() and os.access(str(bundled), os.X_OK):
+        logger.debug("Using bundled binary: %s", bundled)
         return str(bundled)
 
     # Also check for plain "dcert-mcp" in bin/
     plain = pkg_dir / "bin" / "dcert-mcp"
     if plain.is_file() and os.access(str(plain), os.X_OK):
+        logger.debug("Using bundled binary: %s", plain)
         return str(plain)
 
-    # 3. Auto-download from GitHub Releases
+    # 3. PATH lookup (before download — platform wheels put the binary on PATH)
+    found = shutil.which("dcert-mcp")
+    if found:
+        logger.debug("Using dcert-mcp from PATH: %s", found)
+        return found
+
+    # 4. Auto-download from GitHub Releases (fallback for universal wheel)
     from dcert import __version__
     from dcert.download import ensure_binary
 
     try:
         downloaded = ensure_binary(__version__)
         if downloaded:
+            logger.debug("Using auto-downloaded binary: %s", downloaded)
             return downloaded
     except Exception:
-        pass  # Fall through to PATH lookup
-
-    # 4. PATH lookup
-    found = shutil.which("dcert-mcp")
-    if found:
-        return found
+        logger.debug("Auto-download failed, binary not available", exc_info=True)
 
     raise FileNotFoundError(
         "dcert-mcp binary not found. Either:\n"

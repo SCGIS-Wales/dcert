@@ -31,10 +31,37 @@ def test_exports():
 
 
 def test_all_exports():
-    """Test __all__ matches expected exports."""
+    """Test __all__ includes core exports and tool wrappers."""
     import dcert
 
-    assert set(dcert.__all__) == {"create_server", "create_client", "__version__"}
+    all_exports = set(dcert.__all__)
+    # Core API
+    assert "create_server" in all_exports
+    assert "create_client" in all_exports
+    assert "__version__" in all_exports
+    # Client & exceptions
+    assert "DcertClient" in all_exports
+    assert "DcertError" in all_exports
+    assert "DcertTimeoutError" in all_exports
+    assert "DcertConnectionError" in all_exports
+    assert "DcertToolError" in all_exports
+    # Tool wrappers (all 11)
+    for tool in [
+        "analyze_certificate",
+        "check_expiry",
+        "check_revocation",
+        "compare_certificates",
+        "tls_connection_info",
+        "export_pem",
+        "verify_key_match",
+        "convert_pfx_to_pem",
+        "convert_pem_to_pfx",
+        "create_keystore",
+        "create_truststore",
+    ]:
+        assert tool in all_exports, f"{tool} missing from __all__"
+    # Total count: 3 core + 1 client + 4 exceptions + 11 tools = 19
+    assert len(all_exports) == 19
 
 
 def test_py_typed_marker():
@@ -100,12 +127,30 @@ def test_find_binary_path_lookup(tmp_path):
     env = {k: v for k, v in os.environ.items() if k != "DCERT_MCP_BINARY"}
     env["PATH"] = f"{tmp_path}:{env.get('PATH', '')}"
 
+    with patch.dict(os.environ, env, clear=True):
+        result = _find_binary()
+        assert result == str(fake_binary)
+
+
+def test_find_binary_path_before_download(tmp_path):
+    """Test that PATH lookup happens BEFORE auto-download attempt."""
+    from dcert.server import _find_binary
+
+    fake_binary = tmp_path / "dcert-mcp"
+    fake_binary.write_text("#!/bin/sh\necho hello")
+    fake_binary.chmod(0o755)
+
+    env = {k: v for k, v in os.environ.items() if k != "DCERT_MCP_BINARY"}
+    env["PATH"] = f"{tmp_path}:{env.get('PATH', '')}"
+
     with (
         patch.dict(os.environ, env, clear=True),
-        patch("dcert.download.ensure_binary", return_value=None),
+        patch("dcert.download.ensure_binary") as mock_download,
     ):
         result = _find_binary()
         assert result == str(fake_binary)
+        # Auto-download should NOT have been called since PATH found the binary
+        mock_download.assert_not_called()
 
 
 def test_find_binary_not_found():
@@ -142,8 +187,9 @@ def test_find_binary_bundled(tmp_path):
             result = _find_binary()
             assert result == str(bundled)
     finally:
-        bundled.unlink()
-        bin_dir.rmdir()
+        bundled.unlink(missing_ok=True)
+        if bin_dir.exists():
+            bin_dir.rmdir()
 
 
 def test_find_binary_bundled_platform_specific(tmp_path):
@@ -172,8 +218,25 @@ def test_find_binary_bundled_platform_specific(tmp_path):
             result = _find_binary()
             assert result == str(bundled)
     finally:
-        bundled.unlink()
-        bin_dir.rmdir()
+        bundled.unlink(missing_ok=True)
+        if bin_dir.exists():
+            bin_dir.rmdir()
+
+
+def test_find_binary_download_fallback():
+    """Test auto-download is used as fallback when PATH fails."""
+    from dcert.server import _find_binary
+
+    env = {k: v for k, v in os.environ.items() if k != "DCERT_MCP_BINARY"}
+    env["PATH"] = "/nonexistent"
+
+    with (
+        patch.dict(os.environ, env, clear=True),
+        patch("dcert.download.ensure_binary", return_value="/downloaded/dcert-mcp") as mock_dl,
+    ):
+        result = _find_binary()
+        assert result == "/downloaded/dcert-mcp"
+        mock_dl.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
