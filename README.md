@@ -3,6 +3,12 @@
 A Rust CLI and MCP server for X.509 certificate analysis, format conversion, and key verification. Reads certificates from PEM files or HTTPS endpoints. Validates TLS connections, checks revocation status, converts between PFX and PEM formats, and integrates with AI-powered IDEs via the Model Context Protocol (MCP).
 
 [![CI/CD Pipeline](https://github.com/SCGIS-Wales/dcert/actions/workflows/ci.yml/badge.svg)](https://github.com/SCGIS-Wales/dcert/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![smithery badge](https://smithery.ai/badge/@SCGIS-Wales/dcert)](https://smithery.ai/server/@SCGIS-Wales/dcert)
+
+<a href="https://glama.ai/mcp/servers/@SCGIS-Wales/dcert">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/@SCGIS-Wales/dcert/badge" alt="dcert MCP server" />
+</a>
 
 ## Table of Contents
 
