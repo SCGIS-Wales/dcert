@@ -47,6 +47,8 @@ Documentation = "https://github.com/SCGIS-Wales/dcert#python-package"
 Changelog = "https://github.com/SCGIS-Wales/dcert/releases"
 
 [project.scripts]
+dcert = "dcert.cli:dcert_main"
+dcert-mcp = "dcert.cli:dcert_mcp_main"
 dcert-python = "dcert.cli:main"
 
 [tool.hatch.build.targets.wheel]
