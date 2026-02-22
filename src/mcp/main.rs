@@ -102,6 +102,8 @@ struct McpConfig {
 }
 
 /// Mask password in proxy URL for safe logging.
+/// Note: This is identical to `debug::sanitize_url` in the main dcert binary.
+/// The two binaries don't share a library crate, so the logic is duplicated here.
 fn sanitize_proxy_url(url_str: &str) -> String {
     match url::Url::parse(url_str) {
         Ok(mut u) => {
@@ -346,23 +348,14 @@ async fn run_dcert(args: &[&str], config: &McpConfig) -> Result<(String, String,
         full_args.push(&read_timeout_str);
     }
 
-    let child = Command::new(&config.dcert_binary)
+    let mut child = Command::new(&config.dcert_binary)
         .args(&full_args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| format!("Failed to run dcert at {}: {}", config.dcert_binary.display(), e))?;
 
-    let output = tokio::time::timeout(config.subprocess_timeout, child.wait_with_output())
-        .await
-        .map_err(|_| format_timeout_error(config))?
-        .map_err(|e| format!("Failed to run dcert at {}: {}", config.dcert_binary.display(), e))?;
-
-    let stdout = truncate_output(String::from_utf8_lossy(&output.stdout).to_string());
-    let stderr = truncate_output(String::from_utf8_lossy(&output.stderr).to_string());
-    let code = output.status.code().unwrap_or(2);
-
-    Ok((stdout, stderr, code))
+    run_child_with_timeout(&mut child, config).await
 }
 
 /// Run dcert without --debug and without --timeout/--read-timeout flags.
@@ -377,23 +370,53 @@ async fn run_dcert_raw(args: &[&str], config: &McpConfig) -> Result<(String, Str
         .await
         .map_err(|_| "Subprocess semaphore closed".to_string())?;
 
-    let child = Command::new(&config.dcert_binary)
+    let mut child = Command::new(&config.dcert_binary)
         .args(args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| format!("Failed to run dcert at {}: {}", config.dcert_binary.display(), e))?;
 
-    let output = tokio::time::timeout(config.subprocess_timeout, child.wait_with_output())
-        .await
-        .map_err(|_| format_timeout_error(config))?
-        .map_err(|e| format!("Failed to run dcert at {}: {}", config.dcert_binary.display(), e))?;
+    run_child_with_timeout(&mut child, config).await
+}
 
-    let stdout = truncate_output(String::from_utf8_lossy(&output.stdout).to_string());
-    let stderr = truncate_output(String::from_utf8_lossy(&output.stderr).to_string());
-    let code = output.status.code().unwrap_or(2);
+/// Wait for a child process with timeout, explicitly killing it on timeout
+/// to prevent orphaned processes.
+async fn run_child_with_timeout(
+    child: &mut tokio::process::Child,
+    config: &McpConfig,
+) -> Result<(String, String, i32), String> {
+    // Take the pipes so we can read them separately from waiting
+    let mut stdout_pipe = child.stdout.take();
+    let mut stderr_pipe = child.stderr.take();
 
-    Ok((stdout, stderr, code))
+    // Wait for the child with a timeout
+    match tokio::time::timeout(config.subprocess_timeout, child.wait()).await {
+        Ok(result) => {
+            let status = result
+                .map_err(|e| format!("Failed waiting for dcert: {}", e))?;
+
+            // Read pipes after the process has exited
+            let mut stdout_buf = Vec::new();
+            let mut stderr_buf = Vec::new();
+            if let Some(ref mut pipe) = stdout_pipe {
+                let _ = tokio::io::AsyncReadExt::read_to_end(pipe, &mut stdout_buf).await;
+            }
+            if let Some(ref mut pipe) = stderr_pipe {
+                let _ = tokio::io::AsyncReadExt::read_to_end(pipe, &mut stderr_buf).await;
+            }
+
+            let stdout = truncate_output(String::from_utf8_lossy(&stdout_buf).to_string());
+            let stderr = truncate_output(String::from_utf8_lossy(&stderr_buf).to_string());
+            let code = status.code().unwrap_or(2);
+            Ok((stdout, stderr, code))
+        }
+        Err(_) => {
+            // Explicitly kill the child process on timeout to prevent orphaned processes
+            let _ = child.kill().await;
+            Err(format_timeout_error(config))
+        }
+    }
 }
 
 // -- Parameter types --
@@ -1428,8 +1451,12 @@ mod tests {
     // find_dcert_binary unit tests
     // ---------------------------------------------------------------
 
-    /// Mutex to serialize tests that modify the DCERT_PATH env var,
-    /// preventing race conditions when tests run in parallel.
+    /// Mutex to serialize tests that modify environment variables.
+    /// SAFETY: `set_var`/`remove_var` are unsafe because they are not
+    /// thread-safe. This mutex ensures only one test mutates env vars
+    /// at a time, and `--test-threads=1` (or the mutex) prevents
+    /// concurrent reads from other tests. Tests always restore the
+    /// original value before releasing the lock.
     static DCERT_PATH_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
