@@ -13,7 +13,7 @@ use crate::cli::{CheckArgs, CipherNotation, HttpProtocol, OutputFormat, SortOrde
 use crate::debug::debug_log;
 use crate::ocsp::check_ocsp_status;
 use crate::proxy::ProxyConfig;
-use crate::tls::{fetch_tls_chain_openssl, TlsConnectionInfo};
+use crate::tls::{fetch_tls_chain_openssl, TlsConnectionInfo, TlsFetchOptions};
 
 /// Debug/connection info for pretty output.
 pub struct PrettyDebugInfo<'a> {
@@ -270,28 +270,29 @@ pub fn process_target(
                 "Warning:".yellow().bold()
             );
         }
-        let conn = fetch_tls_chain_openssl(
-            target,
-            &args.method.to_string(),
-            &args.header,
+        let method_str = args.method.to_string();
+        let conn = fetch_tls_chain_openssl(&TlsFetchOptions {
+            endpoint: target,
+            method: &method_str,
+            headers: &args.header,
             body,
-            args.http_protocol,
-            args.no_verify,
-            args.timeout,
-            args.read_timeout,
-            args.sni.as_deref(),
+            http_protocol: args.http_protocol,
+            no_verify: args.no_verify,
+            timeout_secs: args.timeout,
+            read_timeout_secs: args.read_timeout,
+            sni_override: args.sni.as_deref(),
             proxy_config,
-            args.min_tls,
-            args.max_tls,
-            args.cipher_list.as_deref(),
-            args.cipher_suites.as_deref(),
-            args.debug,
-            args.client_cert.as_deref(),
-            args.client_key.as_deref(),
-            args.pkcs12.as_deref(),
-            args.cert_password.as_deref(),
-            args.ca_cert.as_deref(),
-        )?;
+            min_tls: args.min_tls,
+            max_tls: args.max_tls,
+            cipher_list: args.cipher_list.as_deref(),
+            cipher_suites: args.cipher_suites.as_deref(),
+            debug: args.debug,
+            client_cert_path: args.client_cert.as_deref(),
+            client_key_path: args.client_key.as_deref(),
+            pkcs12_path: args.pkcs12.as_deref(),
+            cert_password: args.cert_password.as_deref(),
+            ca_cert_path: args.ca_cert.as_deref(),
+        })?;
         let pem = conn.pem_data.clone();
         (pem, Some(conn))
     } else {

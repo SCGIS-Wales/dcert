@@ -23,6 +23,11 @@ use output::{
 };
 use proxy::ProxyConfig;
 
+/// Maximum size for stdin input (10 MB). Prevents OOM from accidentally
+/// piping huge files. 10 MB is generous enough for large PEM bundles
+/// containing 50+ certificates.
+const MAX_STDIN_SIZE: usize = 10 * 1024 * 1024;
+
 fn run_check(args: CheckArgs) -> Result<i32> {
     run_check_with_stdin(args, None)
 }
@@ -96,8 +101,15 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
                 let mut buf = Vec::new();
                 std::io::stdin()
                     .lock()
+                    .take(MAX_STDIN_SIZE as u64 + 1)
                     .read_to_end(&mut buf)
                     .with_context(|| "Failed to read from stdin")?;
+                if buf.len() > MAX_STDIN_SIZE {
+                    return Err(anyhow::anyhow!(
+                        "Stdin input exceeds {} MB limit",
+                        MAX_STDIN_SIZE / (1024 * 1024)
+                    ));
+                }
                 String::from_utf8_lossy(&buf).to_string()
             };
 
@@ -146,10 +158,15 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
         let r = running.clone();
 
         // Handle Ctrl+C gracefully
-        ctrlc::set_handler(move || {
+        if let Err(e) = ctrlc::set_handler(move || {
             r.store(false, Ordering::SeqCst);
-        })
-        .ok();
+        }) {
+            eprintln!(
+                "{} Failed to register Ctrl+C handler: {}. Watch mode may not stop gracefully.",
+                "WARNING:".yellow().bold(),
+                e
+            );
+        }
 
         let mut iteration = 0u64;
         let mut prev_fingerprints: std::collections::HashMap<String, Vec<Option<String>>> =
@@ -391,6 +408,11 @@ fn discover_cert_key_pairs(dir: &str) -> Result<Vec<(String, String)>> {
         let entry = entry?;
         let path = entry.path();
 
+        // Skip symlinks to prevent symlink-based attacks in shared directories
+        if path.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false) {
+            continue;
+        }
+
         // Only consider .crt and .pem files as certificate candidates
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         if ext != "crt" && ext != "pem" {
@@ -399,6 +421,10 @@ fn discover_cert_key_pairs(dir: &str) -> Result<Vec<(String, String)>> {
 
         // Build the expected key path: same base name with .key extension
         let key_path = path.with_extension("key");
+        // Also skip symlinked key files
+        if key_path.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false) {
+            continue;
+        }
         if key_path.exists() {
             pairs.push((
                 path.to_string_lossy().to_string(),
@@ -557,7 +583,14 @@ fn main() {
         if !std::io::stdin().is_terminal() {
             // Try to read piped data — if non-empty, process as PEM content
             let mut buf = Vec::new();
-            if std::io::stdin().lock().read_to_end(&mut buf).is_ok() && !buf.is_empty() {
+            if std::io::stdin()
+                .lock()
+                .take(MAX_STDIN_SIZE as u64 + 1)
+                .read_to_end(&mut buf)
+                .is_ok()
+                && !buf.is_empty()
+                && buf.len() <= MAX_STDIN_SIZE
+            {
                 // Re-parse with "check -" injected so clap builds the default CheckArgs
                 let new_args = vec![
                     std::env::args().next().unwrap_or_else(|| "dcert".to_string()),
