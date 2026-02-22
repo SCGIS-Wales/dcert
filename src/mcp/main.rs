@@ -393,8 +393,7 @@ async fn run_child_with_timeout(
     // Wait for the child with a timeout
     match tokio::time::timeout(config.subprocess_timeout, child.wait()).await {
         Ok(result) => {
-            let status = result
-                .map_err(|e| format!("Failed waiting for dcert: {}", e))?;
+            let status = result.map_err(|e| format!("Failed waiting for dcert: {}", e))?;
 
             // Read pipes after the process has exited
             let mut stdout_buf = Vec::new();
