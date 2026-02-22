@@ -136,6 +136,8 @@ pub fn pem_to_pfx(
     let pkcs12 = builder.build2(password).with_context(|| "Failed to build PKCS12")?;
     let der = pkcs12.to_der().with_context(|| "Failed to serialize PKCS12 to DER")?;
     fs::write(output, &der).with_context(|| format!("Failed to write PKCS12 file: {}", output))?;
+    // PFX contains private key material — restrict file permissions
+    restrict_file_permissions(output);
 
     Ok(ConvertResult {
         input_format: "PEM".to_string(),
@@ -201,6 +203,8 @@ pub fn create_keystore(
         .with_context(|| "Failed to build PKCS12 keystore")?;
     let der = pkcs12.to_der().with_context(|| "Failed to serialize keystore")?;
     fs::write(output, &der).with_context(|| format!("Failed to write keystore: {}", output))?;
+    // Keystore contains private key material — restrict file permissions
+    restrict_file_permissions(output);
 
     Ok(ConvertResult {
         input_format: "PEM".to_string(),
@@ -272,6 +276,8 @@ pub fn create_truststore(cert_paths: &[String], password: &str, output: &str) ->
         .with_context(|| "Failed to build PKCS12 truststore")?;
     let der = pkcs12.to_der().with_context(|| "Failed to serialize truststore")?;
     fs::write(output, &der).with_context(|| format!("Failed to write truststore: {}", output))?;
+    // Truststore contains ephemeral private key — restrict file permissions
+    restrict_file_permissions(output);
 
     Ok(ConvertResult {
         input_format: "PEM".to_string(),
@@ -296,14 +302,14 @@ fn vec_to_stack(certs: Vec<X509>) -> Result<Stack<X509>> {
 /// This is a best-effort operation — failure is silently ignored since
 /// the file was already written and the caller can check permissions.
 #[cfg(unix)]
-fn restrict_file_permissions(path: &str) {
+pub(crate) fn restrict_file_permissions(path: &str) {
     use std::os::unix::fs::PermissionsExt;
     let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
 }
 
 /// No-op on non-Unix platforms.
 #[cfg(not(unix))]
-fn restrict_file_permissions(_path: &str) {}
+pub(crate) fn restrict_file_permissions(_path: &str) {}
 
 fn key_type_name(pkey: &PKey<openssl::pkey::Private>) -> String {
     if pkey.rsa().is_ok() {

@@ -134,9 +134,15 @@ def _extract_binaries(archive_path: Path, install_dir: Path) -> Path:
         for member in tar.getmembers():
             name = Path(member.name).name
             if name in ("dcert", "dcert-mcp"):
-                member.name = name  # Strip any directory prefix
-                tar.extract(member, path=str(install_dir))
+                # Extract file contents manually to prevent path traversal
+                # attacks — tar.extract() trusts member.name which could
+                # contain "../" sequences even after stripping with Path.name.
+                file_obj = tar.extractfile(member)
+                if file_obj is None:
+                    continue
                 target = install_dir / name
+                with open(target, "wb") as out:
+                    shutil.copyfileobj(file_obj, out)
                 target.chmod(target.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
                 if name == "dcert-mcp":
                     found_mcp = True
