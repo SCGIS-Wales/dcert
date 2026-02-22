@@ -445,28 +445,28 @@ pub fn verify_key_matches_cert(key_path: &str, target: &str, debug: bool) -> Res
         debug_log!(debug, "Fetching certificate from: {}", target);
         // Fetch TLS chain from the target
         let proxy_config = crate::proxy::ProxyConfig::from_env();
-        let conn = crate::tls::fetch_tls_chain_openssl(
-            target,
-            "GET",
-            &[],
-            None,
-            crate::cli::HttpProtocol::Http1_1,
-            false,
-            10,
-            5,
-            None,
-            &proxy_config,
-            None,
-            None,
-            None,
-            None,
+        let conn = crate::tls::fetch_tls_chain_openssl(&crate::tls::TlsFetchOptions {
+            endpoint: target,
+            method: "GET",
+            headers: &[],
+            body: None,
+            http_protocol: crate::cli::HttpProtocol::Http1_1,
+            no_verify: false,
+            timeout_secs: 10,
+            read_timeout_secs: 5,
+            sni_override: None,
+            proxy_config: &proxy_config,
+            min_tls: None,
+            max_tls: None,
+            cipher_list: None,
+            cipher_suites: None,
             debug,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )?;
+            client_cert_path: None,
+            client_key_path: None,
+            pkcs12_path: None,
+            cert_password: None,
+            ca_cert_path: None,
+        })?;
         conn.pem_data
     } else {
         std::fs::read_to_string(target)

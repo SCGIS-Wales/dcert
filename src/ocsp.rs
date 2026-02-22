@@ -155,6 +155,30 @@ pub fn check_ocsp_status(cert_der: &[u8], issuer_der: Option<&[u8]>, ocsp_url: &
         Err(e) => return format!("error: OCSP basic response failed: {}", e),
     };
 
+    // Verify the OCSP response signature against the issuer certificate.
+    // This prevents MITM attacks from injecting forged "good" statuses.
+    {
+        let mut store_builder = match openssl::x509::store::X509StoreBuilder::new() {
+            Ok(b) => b,
+            Err(e) => return format!("error: failed to create X509 store: {}", e),
+        };
+        if let Err(e) = store_builder.add_cert(issuer.clone()) {
+            return format!("error: failed to add issuer to store: {}", e);
+        }
+        let store = store_builder.build();
+        let mut certs = match openssl::stack::Stack::new() {
+            Ok(s) => s,
+            Err(e) => return format!("error: failed to create cert stack: {}", e),
+        };
+        if let Err(e) = certs.push(issuer.clone()) {
+            return format!("error: failed to push issuer to stack: {}", e);
+        }
+        if let Err(e) = basic.verify(&certs, &store, openssl::ocsp::OcspFlag::empty()) {
+            return format!("error: OCSP response signature verification failed: {}", e);
+        }
+        debug_log!(debug, "OCSP response signature verified");
+    }
+
     // Re-create cert_id for status lookup
     let cert_id2 = match openssl::ocsp::OcspCertId::from_cert(MessageDigest::sha1(), &cert, &issuer) {
         Ok(id) => id,

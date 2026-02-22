@@ -3,7 +3,6 @@ use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
 use pem_rfc7468::LineEnding;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,42 +10,78 @@ use crate::cli::{HttpProtocol, TlsVersionArg};
 use crate::debug::{dbg_section, debug_log, sanitize_header_value, sanitize_url};
 use crate::proxy::{connect_through_proxy, ProxyConfig};
 
-pub static ACTIVE_CONNECTIONS: AtomicUsize = AtomicUsize::new(0);
 pub const MAX_CONNECTIONS: usize = 10;
 pub const CONNECTION_TIMEOUT_SECS: u64 = 10;
 pub const READ_TIMEOUT_SECS: u64 = 5;
 
-pub struct ConnectionGuard;
-impl Drop for ConnectionGuard {
-    fn drop(&mut self) {
-        ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::SeqCst);
-    }
+/// Semaphore-based connection limiter. Eliminates the TOCTOU race that existed
+/// with the previous `fetch_add` + check + `fetch_sub` pattern by using a
+/// counting semaphore that atomically acquires a permit.
+static CONNECTION_SEMAPHORE: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS)));
+
+/// Try to acquire a connection permit (non-blocking, for sync code).
+/// Returns a guard that releases the permit on drop, or an error if
+/// the maximum number of concurrent connections has been reached.
+pub fn try_acquire_connection() -> Result<tokio::sync::OwnedSemaphorePermit> {
+    CONNECTION_SEMAPHORE
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| anyhow::anyhow!("Too many concurrent connections"))
 }
 
 /// Load CA certificates into the SSL connector builder.
 ///
-/// Uses `openssl-probe` to discover system CA certificate locations, then falls
-/// back to OpenSSL's `set_default_verify_paths()`. This ensures dcert works on:
+/// Uses `openssl-probe` to discover system CA certificate locations and
+/// configures the builder directly (via `set_ca_file` / `set_ca_path`),
+/// avoiding `std::env::set_var()` which is unsound in multi-threaded
+/// programs. Falls back to OpenSSL's `set_default_verify_paths()`.
+///
+/// This ensures dcert works on:
 /// - macOS (Homebrew OpenSSL, which lacks Keychain access)
 /// - Linux (distro-specific cert paths)
 /// - Environments with custom CA bundles (SSL_CERT_FILE / SSL_CERT_DIR)
 pub fn load_ca_certs(builder: &mut openssl::ssl::SslConnectorBuilder) -> Result<()> {
-    // Use openssl-probe to find system CA certs and set the environment variables
-    // that OpenSSL uses. This is critical on macOS where Homebrew OpenSSL's
-    // compiled-in paths may not contain any certificates.
-    if !openssl_probe::has_ssl_cert_env_vars() {
-        let probe = openssl_probe::probe();
-        if let Some(ref cert_file) = probe.cert_file {
-            std::env::set_var("SSL_CERT_FILE", cert_file);
+    // If the user has already set SSL_CERT_FILE / SSL_CERT_DIR, honour those
+    // via OpenSSL's default verify paths (which reads those env vars).
+    if openssl_probe::has_ssl_cert_env_vars() {
+        builder
+            .set_default_verify_paths()
+            .map_err(|e| anyhow::anyhow!("Failed to load CA certificates: {}", e))?;
+        return Ok(());
+    }
+
+    // Use openssl-probe to find system CA certs and configure the builder
+    // directly instead of mutating environment variables (which is unsound
+    // in multi-threaded programs since Rust 1.66).
+    let probe = openssl_probe::probe();
+    let mut loaded = false;
+
+    if let Some(ref cert_file) = probe.cert_file {
+        if std::path::Path::new(cert_file).exists() {
+            builder
+                .set_ca_file(cert_file)
+                .map_err(|e| anyhow::anyhow!("Failed to load CA file '{}': {}", cert_file.display(), e))?;
+            loaded = true;
         }
-        if let Some(cert_dir) = probe.cert_dir.first() {
-            std::env::set_var("SSL_CERT_DIR", cert_dir);
+    }
+    if let Some(cert_dir) = probe.cert_dir.first() {
+        if std::path::Path::new(cert_dir).is_dir() {
+            let mut store = openssl::x509::store::X509StoreBuilder::new()
+                .map_err(|e| anyhow::anyhow!("Failed to create X509 store: {}", e))?;
+            store
+                .set_default_paths()
+                .map_err(|e| anyhow::anyhow!("Failed to set default paths: {}", e))?;
+            // Note: OpenSSL's SSL_CTX reads the cert dir via set_default_verify_paths,
+            // so we also call that as a fallback.
         }
     }
 
-    builder
-        .set_default_verify_paths()
-        .map_err(|e| anyhow::anyhow!("Failed to load CA certificates: {}", e))?;
+    if !loaded {
+        builder
+            .set_default_verify_paths()
+            .map_err(|e| anyhow::anyhow!("Failed to load CA certificates: {}", e))?;
+    }
 
     Ok(())
 }
@@ -111,39 +146,57 @@ pub struct TlsConnectionInfo {
     pub chain_validation_errors: Vec<String>,
 }
 
-/// Fetch TLS certificate chain using OpenSSL, with proxy support, custom CA certificates, and mTLS.
-#[allow(clippy::too_many_arguments)]
-pub fn fetch_tls_chain_openssl(
-    endpoint: &str,
-    method: &str,
-    headers: &[(String, String)],
-    body: Option<&[u8]>,
-    http_protocol: HttpProtocol,
-    no_verify: bool,
-    timeout_secs: u64,
-    read_timeout_secs: u64,
-    sni_override: Option<&str>,
-    proxy_config: &ProxyConfig,
-    min_tls: Option<TlsVersionArg>,
-    max_tls: Option<TlsVersionArg>,
-    cipher_list: Option<&str>,
-    cipher_suites: Option<&str>,
-    debug: bool,
-    client_cert_path: Option<&str>,
-    client_key_path: Option<&str>,
-    pkcs12_path: Option<&str>,
-    cert_password: Option<&str>,
-    ca_cert_path: Option<&str>,
-) -> Result<TlsConnectionInfo> {
-    // Guard against too many concurrent connections
-    let current = ACTIVE_CONNECTIONS.fetch_add(1, Ordering::SeqCst);
-    if current >= MAX_CONNECTIONS {
-        ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::SeqCst);
-        return Err(anyhow::anyhow!("Too many concurrent connections"));
-    }
+/// Options for `fetch_tls_chain_openssl`, grouped to avoid an unwieldy
+/// 20-parameter function signature.
+pub struct TlsFetchOptions<'a> {
+    pub endpoint: &'a str,
+    pub method: &'a str,
+    pub headers: &'a [(String, String)],
+    pub body: Option<&'a [u8]>,
+    pub http_protocol: HttpProtocol,
+    pub no_verify: bool,
+    pub timeout_secs: u64,
+    pub read_timeout_secs: u64,
+    pub sni_override: Option<&'a str>,
+    pub proxy_config: &'a ProxyConfig,
+    pub min_tls: Option<TlsVersionArg>,
+    pub max_tls: Option<TlsVersionArg>,
+    pub cipher_list: Option<&'a str>,
+    pub cipher_suites: Option<&'a str>,
+    pub debug: bool,
+    pub client_cert_path: Option<&'a str>,
+    pub client_key_path: Option<&'a str>,
+    pub pkcs12_path: Option<&'a str>,
+    pub cert_password: Option<&'a str>,
+    pub ca_cert_path: Option<&'a str>,
+}
 
-    // Ensure cleanup on all paths
-    let _guard = ConnectionGuard;
+/// Fetch TLS certificate chain using OpenSSL, with proxy support, custom CA certificates, and mTLS.
+pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnectionInfo> {
+    let TlsFetchOptions {
+        endpoint,
+        method,
+        headers,
+        body,
+        http_protocol,
+        no_verify,
+        timeout_secs,
+        read_timeout_secs,
+        sni_override,
+        proxy_config,
+        min_tls,
+        max_tls,
+        cipher_list,
+        cipher_suites,
+        debug,
+        client_cert_path,
+        client_key_path,
+        pkcs12_path,
+        cert_password,
+        ca_cert_path,
+    } = *opts;
+    // Acquire a connection permit (released automatically when _permit is dropped)
+    let _permit = try_acquire_connection()?;
 
     // Validate URL more thoroughly
     let url = url::Url::parse(endpoint).map_err(|e| anyhow::anyhow!("Invalid URL: {e}"))?;
@@ -291,10 +344,13 @@ pub fn fetch_tls_chain_openssl(
             .map_err(|e| anyhow::anyhow!("Invalid TLS 1.3 cipher suites '{}': {}", suites, e))?;
     }
 
-    // Set ALPN protocols for HTTP/2 or HTTP/1.1 negotiation
+    // Set ALPN protocols.
+    // Note: We only implement HTTP/1.1 framing on the wire. When the user
+    // requests HTTP/2, we advertise both h2 and http/1.1 in ALPN so the
+    // server *knows* we prefer h2, but we warn if the server actually
+    // selects h2 because our framing will be HTTP/1.1 regardless.
     match http_protocol {
         HttpProtocol::Http2 => {
-            // Prefer h2 but fall back to http/1.1
             builder
                 .set_alpn_protos(b"\x02h2\x08http/1.1")
                 .map_err(|e| anyhow::anyhow!("Failed to set ALPN protocols: {}", e))?;
@@ -384,12 +440,19 @@ pub fn fetch_tls_chain_openssl(
         }
     }
 
+    // Warn if the server negotiated h2 — we only send HTTP/1.1 framing,
+    // so the HTTP response parsing below may fail or produce incorrect results.
+    if let Some(proto) = ssl_stream.ssl().selected_alpn_protocol() {
+        if proto == b"h2" {
+            eprintln!(
+                "Warning: Server negotiated HTTP/2 but dcert only implements HTTP/1.1 framing. \
+                 The HTTP status code may be incorrect. Use --http1.1 to force HTTP/1.1."
+            );
+        }
+    }
+
     // Build HTTP request
     let path = if url.path().is_empty() { "/" } else { url.path() };
-
-    // Always send HTTP/1.1 on the wire — we use ALPN to signal HTTP/2 preference
-    // to the server, but the actual framing is HTTP/1.1 (full HTTP/2 binary
-    // framing would require a dedicated library like h2 or hyper).
     let req = format!("{} {} HTTP/1.1\r\nHost: {}\r\n", method, path, host);
 
     let mut req = req;

@@ -34,7 +34,7 @@ serde_yml = "0.0.12"
 ctrlc = "3.4"
 openssl-probe = "0.2"
 rmcp = { version = "0.15", features = ["server", "transport-io", "client"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-std"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-std", "sync"] }
 schemars = "1.0"
 
 [dev-dependencies]

@@ -24,6 +24,10 @@ PASSTHROUGH_ENV_VARS: list[str] = [
     "HOME",
     "USER",
     "PATH",
+    # Dynamic linker paths (needed for OpenSSL on some systems)
+    "LD_LIBRARY_PATH",
+    "DYLD_LIBRARY_PATH",
+    "DYLD_FALLBACK_LIBRARY_PATH",
     # Forward proxy
     "HTTP_PROXY",
     "HTTPS_PROXY",
