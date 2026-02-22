@@ -409,7 +409,11 @@ fn discover_cert_key_pairs(dir: &str) -> Result<Vec<(String, String)>> {
         let path = entry.path();
 
         // Skip symlinks to prevent symlink-based attacks in shared directories
-        if path.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false) {
+        if path
+            .symlink_metadata()
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+        {
             continue;
         }
 
@@ -422,7 +426,11 @@ fn discover_cert_key_pairs(dir: &str) -> Result<Vec<(String, String)>> {
         // Build the expected key path: same base name with .key extension
         let key_path = path.with_extension("key");
         // Also skip symlinked key files
-        if key_path.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false) {
+        if key_path
+            .symlink_metadata()
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+        {
             continue;
         }
         if key_path.exists() {
