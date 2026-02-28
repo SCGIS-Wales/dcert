@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from dcert.resilience import ResilienceConfig
 from dcert.tools import (
     DcertClient,
     DcertConnectionError,
@@ -15,6 +16,26 @@ from dcert.tools import (
     _extract_text,
     _validate_required,
 )
+
+
+def _make_stub_client(**overrides):
+    """Create a DcertClient stub bypassing __init__ with resilience attrs set."""
+    client = DcertClient.__new__(DcertClient)
+    client._timeout = overrides.pop("timeout", 300.0)
+    client._max_reconnects = overrides.pop("max_reconnects", 3)
+    client._binary_path = overrides.pop("binary_path", "/fake/dcert-mcp")
+    client._env = overrides.pop("env", None)
+    client._resilience = overrides.pop(
+        "resilience",
+        ResilienceConfig(circuit_breaker_enabled=False, rate_limit_enabled=False),
+    )
+    client._semaphore = asyncio.Semaphore(client._resilience.bulkhead_max)
+    client._circuit_breaker = None
+    client._rate_limiter = None
+    client._client = overrides.pop("mock_client", None)
+    client._connected = overrides.pop("connected", True)
+    return client
+
 
 # ---------------------------------------------------------------------------
 # Exception hierarchy
@@ -138,18 +159,10 @@ class TestToolCallHappyPath:
     @pytest.fixture
     def mock_client(self):
         """Create a connected DcertClient with mocked transport."""
-        client = DcertClient.__new__(DcertClient)
-        client._timeout = 300.0
-        client._max_reconnects = 3
-        client._binary_path = "/fake/dcert-mcp"
-        client._env = None
-
         mock = AsyncMock()
         text_result = SimpleNamespace(text='{"status": "ok"}')
         mock.call_tool = AsyncMock(return_value=[text_result])
-        client._client = mock
-        client._connected = True
-        return client
+        return _make_stub_client(mock_client=mock)
 
     @pytest.mark.asyncio
     async def test_analyze_certificate(self, mock_client):
@@ -289,16 +302,9 @@ class TestTimeout:
 
     @pytest.mark.asyncio
     async def test_timeout_raises(self):
-        client = DcertClient.__new__(DcertClient)
-        client._timeout = 0.01
-        client._max_reconnects = 0
-        client._binary_path = "/fake"
-        client._env = None
-
         mock = AsyncMock()
         mock.call_tool = AsyncMock(side_effect=asyncio.TimeoutError)
-        client._client = mock
-        client._connected = True
+        client = _make_stub_client(timeout=0.01, max_reconnects=0, mock_client=mock)
 
         with pytest.raises(DcertTimeoutError, match="analyze_certificate.*timed out"):
             await client.analyze_certificate(target="example.com")
@@ -314,18 +320,11 @@ class TestReconnection:
 
     @pytest.mark.asyncio
     async def test_reconnect_on_connection_failure(self):
-        client = DcertClient.__new__(DcertClient)
-        client._timeout = 300.0
-        client._max_reconnects = 2
-        client._binary_path = "/fake/dcert-mcp"
-        client._env = None
-
         mock = AsyncMock()
         text_result = SimpleNamespace(text="ok")
         # First call fails, second succeeds
         mock.call_tool = AsyncMock(side_effect=[RuntimeError("connection lost"), [text_result]])
-        client._client = mock
-        client._connected = True
+        client = _make_stub_client(max_reconnects=2, mock_client=mock)
 
         # Patch _reconnect to just reset the connection
         async def fake_reconnect():
@@ -347,17 +346,10 @@ class TestToolErrors:
 
     @pytest.mark.asyncio
     async def test_error_content_raises(self):
-        client = DcertClient.__new__(DcertClient)
-        client._timeout = 300.0
-        client._max_reconnects = 0
-        client._binary_path = "/fake"
-        client._env = None
-
         error_item = SimpleNamespace(type="error", text="something went wrong")
         mock = AsyncMock()
         mock.call_tool = AsyncMock(return_value=[error_item])
-        client._client = mock
-        client._connected = True
+        client = _make_stub_client(max_reconnects=0, mock_client=mock)
 
         with pytest.raises(DcertToolError, match="something went wrong"):
             await client._call("test_tool", {})
@@ -373,28 +365,19 @@ class TestInputValidation:
 
     @pytest.mark.asyncio
     async def test_analyze_certificate_requires_target(self):
-        client = DcertClient.__new__(DcertClient)
-        client._timeout = 300.0
-        client._max_reconnects = 0
-        client._connected = True
+        client = _make_stub_client(max_reconnects=0)
         with pytest.raises(TypeError):
             await client.analyze_certificate()
 
     @pytest.mark.asyncio
     async def test_compare_certificates_requires_both(self):
-        client = DcertClient.__new__(DcertClient)
-        client._timeout = 300.0
-        client._max_reconnects = 0
-        client._connected = True
+        client = _make_stub_client(max_reconnects=0)
         with pytest.raises(TypeError):
             await client.compare_certificates(target_a="a")
 
     @pytest.mark.asyncio
     async def test_create_truststore_empty_paths(self):
-        client = DcertClient.__new__(DcertClient)
-        client._timeout = 300.0
-        client._max_reconnects = 0
-        client._connected = True
+        client = _make_stub_client(max_reconnects=0)
         with pytest.raises(ValueError, match="at least one cert_path"):
             await client.create_truststore(cert_paths=[], output_path="out.p12")
 
@@ -485,17 +468,10 @@ class TestConcurrentCalls:
 
     @pytest.mark.asyncio
     async def test_concurrent_calls(self):
-        client = DcertClient.__new__(DcertClient)
-        client._timeout = 300.0
-        client._max_reconnects = 0
-        client._binary_path = "/fake"
-        client._env = None
-
         text_result = SimpleNamespace(text="ok")
         mock = AsyncMock()
         mock.call_tool = AsyncMock(return_value=[text_result])
-        client._client = mock
-        client._connected = True
+        client = _make_stub_client(max_reconnects=0, mock_client=mock)
 
         results = await asyncio.gather(
             client.analyze_certificate(target="a.com"),

@@ -12,6 +12,8 @@ Supply chain security:
   - No shell commands or install-time hooks are used.
 """
 
+from __future__ import annotations
+
 import hashlib
 import json
 import logging
