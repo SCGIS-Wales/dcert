@@ -281,7 +281,9 @@ class DcertClient:
                     text = truncate_response(text, self._resilience.max_response_bytes)
                 return text
 
-            except TimeoutError:
+            except (TimeoutError, asyncio.TimeoutError):
+                raise DcertTimeoutError(f"{tool_name} timed out after {timeout}s") from None
+            except asyncio.CancelledError:
                 raise DcertTimeoutError(f"{tool_name} timed out after {timeout}s") from None
             except DcertToolError:
                 raise

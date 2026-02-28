@@ -42,8 +42,8 @@ async def _wait_for_compat(coro, timeout):
     """``asyncio.wait_for`` wrapper that works around a Python 3.10 bug.
 
     On Python <3.11, ``asyncio.wait_for`` can leak ``CancelledError``
-    instead of raising ``TimeoutError``.  This shim catches the leak
-    and re-raises as ``TimeoutError``.
+    instead of raising ``TimeoutError``.  This shim catches both and
+    normalises to the built-in ``TimeoutError``.
     """
     if not _NEEDS_WAIT_FOR_COMPAT:
         return await asyncio.wait_for(coro, timeout=timeout)
@@ -51,6 +51,10 @@ async def _wait_for_compat(coro, timeout):
     try:
         return await asyncio.wait_for(coro, timeout=timeout)
     except asyncio.CancelledError:
+        raise TimeoutError(
+            f"Operation timed out after {timeout}s (Python {sys.version_info[:2]} compat)"
+        ) from None
+    except asyncio.TimeoutError:
         raise TimeoutError(
             f"Operation timed out after {timeout}s (Python {sys.version_info[:2]} compat)"
         ) from None
