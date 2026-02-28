@@ -6,12 +6,30 @@ Provides three commands:
   - ``dcert-python``: Python MCP proxy server wrapping the Rust binary via FastMCP.
 """
 
+from __future__ import annotations
+
 import argparse
 import os
 import shutil
 import stat
 import sys
 from pathlib import Path
+
+
+def _is_python_script(path: str) -> bool:
+    """Check if *path* is a Python console-script wrapper (not a compiled binary).
+
+    Reads the first 128 bytes; if the file starts with ``#!`` and the first
+    line contains ``python``, it is a pip-generated console_script wrapper
+    and must be skipped to avoid an infinite exec loop (see helm-mcp PR #33).
+    """
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(128)
+        first_line = head.split(b"\n", 1)[0].lower()
+        return head[:2] == b"#!" and b"python" in first_line
+    except OSError:
+        return False
 
 
 def _find_bundled_binary(name: str) -> str | None:
@@ -37,7 +55,10 @@ def _find_bundled_binary(name: str) -> str | None:
 
 
 def _find_binary(name: str) -> str:
-    """Find a binary by name: bundled in package, then PATH.
+    """Find a binary by name: bundled in package, then PATH, then auto-download.
+
+    Skips Python console-script wrappers on PATH to avoid infinite exec
+    loops when pip installs the universal wheel.
 
     Raises:
         FileNotFoundError: If the binary cannot be located.
@@ -47,10 +68,21 @@ def _find_binary(name: str) -> str:
     if bundled:
         return bundled
 
-    # 2. Binary on PATH (e.g. installed via Homebrew or cargo)
+    # 2. Binary on PATH — skip Python console-script wrappers
     found = shutil.which(name)
-    if found:
+    if found and not _is_python_script(found):
         return found
+
+    # 3. Auto-download from GitHub Releases (fallback for universal wheel)
+    from dcert import __version__
+    from dcert.download import ensure_binary
+
+    try:
+        downloaded = ensure_binary(__version__)
+        if downloaded:
+            return downloaded
+    except Exception:
+        pass
 
     raise FileNotFoundError(
         f"{name} binary not found. Install dcert via:\n"
@@ -119,6 +151,51 @@ def main() -> None:
         action="store_true",
         help="Download the dcert-mcp binary and exit",
     )
+
+    # -- Resiliency flags --
+    parser.add_argument(
+        "--no-retry",
+        action="store_true",
+        help="Disable automatic retry on connection errors",
+    )
+    parser.add_argument(
+        "--no-circuit-breaker",
+        action="store_true",
+        help="Disable circuit breaker",
+    )
+    parser.add_argument(
+        "--rate-limit",
+        type=float,
+        default=None,
+        metavar="RPS",
+        help="Enable rate limiting at RPS requests per second",
+    )
+    parser.add_argument(
+        "--cache",
+        action="store_true",
+        help="Enable response caching",
+    )
+    parser.add_argument(
+        "--bulkhead-max",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Maximum concurrent tool calls (default: 10)",
+    )
+
+    # -- OpenTelemetry --
+    parser.add_argument(
+        "--otel",
+        action="store_true",
+        help="Enable OpenTelemetry tracing",
+    )
+    parser.add_argument(
+        "--otel-exporter",
+        choices=["console", "otlp"],
+        default=None,
+        help="OpenTelemetry exporter (default: console)",
+    )
+
     args = parser.parse_args()
 
     if args.setup:
@@ -139,6 +216,29 @@ def main() -> None:
             print(f"Error downloading binary: {e}", file=sys.stderr)
             sys.exit(1)
         return
+
+    # Apply CLI overrides to environment so ResilienceConfig picks them up
+    if args.no_retry:
+        os.environ["DCERT_MCP_NO_RETRY"] = "1"
+    if args.no_circuit_breaker:
+        os.environ["DCERT_MCP_NO_CIRCUIT_BREAKER"] = "1"
+    if args.rate_limit is not None:
+        os.environ["DCERT_MCP_RATE_LIMIT_ENABLED"] = "1"
+        os.environ["DCERT_MCP_RATE_LIMIT_RPS"] = str(args.rate_limit)
+    if args.cache:
+        os.environ["DCERT_MCP_CACHE_ENABLED"] = "1"
+    if args.bulkhead_max is not None:
+        os.environ["DCERT_MCP_BULKHEAD_MAX"] = str(args.bulkhead_max)
+
+    # OpenTelemetry
+    if args.otel:
+        os.environ["DCERT_MCP_OTEL_ENABLED"] = "1"
+    if args.otel_exporter is not None:
+        os.environ["DCERT_MCP_OTEL_EXPORTER"] = args.otel_exporter
+
+    from dcert.resilience import OTelConfig, setup_otel
+
+    setup_otel(OTelConfig())
 
     from dcert.server import create_server
 

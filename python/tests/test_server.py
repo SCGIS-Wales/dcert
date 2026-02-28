@@ -45,6 +45,17 @@ def test_all_exports():
     assert "DcertTimeoutError" in all_exports
     assert "DcertConnectionError" in all_exports
     assert "DcertToolError" in all_exports
+    # Resilience exports
+    for name in [
+        "ResilienceConfig",
+        "OTelConfig",
+        "CircuitBreaker",
+        "CircuitBreakerOpen",
+        "RateLimiter",
+        "setup_otel",
+        "truncate_response",
+    ]:
+        assert name in all_exports, f"{name} missing from __all__"
     # Tool wrappers (all 11)
     for tool in [
         "analyze_certificate",
@@ -60,8 +71,8 @@ def test_all_exports():
         "create_truststore",
     ]:
         assert tool in all_exports, f"{tool} missing from __all__"
-    # Total count: 3 core + 1 client + 4 exceptions + 11 tools = 19
-    assert len(all_exports) == 19
+    # Total count: 3 core + 1 client + 4 exceptions + 7 resilience + 11 tools = 26
+    assert len(all_exports) == 26
 
 
 def test_py_typed_marker():
@@ -662,3 +673,113 @@ def test_find_bundled_binary_not_found():
 
     result = _find_bundled_binary("nonexistent-binary-xyz")
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# _is_python_script guard (infinite exec loop prevention — helm-mcp PR #33)
+# ---------------------------------------------------------------------------
+
+
+class TestIsPythonScriptCli:
+    """Tests for cli._is_python_script."""
+
+    def test_detects_python_shebang(self, tmp_path):
+        """Pip console-script wrappers with #!/…/python are detected."""
+        from dcert.cli import _is_python_script
+
+        wrapper = tmp_path / "dcert-mcp"
+        wrapper.write_bytes(b"#!/usr/bin/env python3\nimport sys\n")
+        assert _is_python_script(str(wrapper)) is True
+
+    def test_rejects_elf_binary(self, tmp_path):
+        """Real ELF binaries are not flagged."""
+        from dcert.cli import _is_python_script
+
+        binary = tmp_path / "dcert-mcp"
+        binary.write_bytes(b"\x7fELF\x02\x01\x01\x00" + b"\x00" * 120)
+        assert _is_python_script(str(binary)) is False
+
+    def test_rejects_mach_o_binary(self, tmp_path):
+        """Mach-O binaries (macOS) are not flagged."""
+        from dcert.cli import _is_python_script
+
+        binary = tmp_path / "dcert-mcp"
+        binary.write_bytes(b"\xcf\xfa\xed\xfe" + b"\x00" * 124)
+        assert _is_python_script(str(binary)) is False
+
+    def test_nonexistent_path(self):
+        """Missing file returns False (no crash)."""
+        from dcert.cli import _is_python_script
+
+        assert _is_python_script("/nonexistent/path/xyz") is False
+
+    def test_shebang_without_python(self, tmp_path):
+        """Shell shebang (not python) is not flagged."""
+        from dcert.cli import _is_python_script
+
+        script = tmp_path / "dcert-mcp"
+        script.write_bytes(b"#!/bin/bash\necho hello\n")
+        assert _is_python_script(str(script)) is False
+
+
+class TestIsPythonScriptServer:
+    """Tests for server._is_python_script."""
+
+    def test_detects_python_shebang(self, tmp_path):
+        """Pip console-script wrappers with #!/…/python are detected."""
+        from dcert.server import _is_python_script
+
+        wrapper = tmp_path / "dcert-mcp"
+        wrapper.write_bytes(b"#!/usr/bin/env python3\nimport sys\n")
+        assert _is_python_script(str(wrapper)) is True
+
+    def test_rejects_elf_binary(self, tmp_path):
+        """Real ELF binaries are not flagged."""
+        from dcert.server import _is_python_script
+
+        binary = tmp_path / "dcert-mcp"
+        binary.write_bytes(b"\x7fELF\x02\x01\x01\x00" + b"\x00" * 120)
+        assert _is_python_script(str(binary)) is False
+
+    def test_nonexistent_path(self):
+        """Missing file returns False."""
+        from dcert.server import _is_python_script
+
+        assert _is_python_script("/nonexistent/path/xyz") is False
+
+
+class TestFindBinarySkipsPythonWrapper:
+    """Verify _find_binary skips console-script wrappers on PATH."""
+
+    def test_cli_find_binary_skips_wrapper(self, tmp_path):
+        """cli._find_binary falls through when PATH binary is a Python wrapper."""
+        from dcert.cli import _find_binary
+
+        wrapper = tmp_path / "dcert"
+        wrapper.write_bytes(b"#!/usr/bin/env python3\nimport sys\n")
+        wrapper.chmod(0o755)
+
+        with (
+            patch("dcert.cli._find_bundled_binary", return_value=None),
+            patch("dcert.cli.shutil.which", return_value=str(wrapper)),
+            patch("dcert.download.ensure_binary", side_effect=Exception("no download")),
+            pytest.raises(FileNotFoundError),
+        ):
+            _find_binary("dcert")
+
+    def test_server_find_binary_skips_wrapper(self, tmp_path):
+        """server._find_binary falls through when PATH binary is a Python wrapper."""
+        from dcert.server import _find_binary
+
+        wrapper = tmp_path / "dcert-mcp"
+        wrapper.write_bytes(b"#!/usr/bin/env python3\nimport sys\n")
+        wrapper.chmod(0o755)
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("DCERT_MCP_BINARY", None)
+            with (
+                patch("dcert.server.shutil.which", return_value=str(wrapper)),
+                patch("dcert.download.ensure_binary", side_effect=Exception("no download")),
+                pytest.raises(FileNotFoundError),
+            ):
+                _find_binary()
