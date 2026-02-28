@@ -2,7 +2,7 @@
 
 Provides typed Python functions for every dcert-mcp tool with production-grade
 resilience: automatic reconnection, configurable timeouts, structured error
-handling, and graceful shutdown.
+handling, circuit breaker, bulkhead, and graceful shutdown.
 
 Usage::
 
@@ -28,6 +28,14 @@ from typing import Any
 from fastmcp import Client
 from fastmcp.client.transports import StdioTransport
 
+from dcert.resilience import (
+    CircuitBreaker,
+    CircuitBreakerOpen,
+    RateLimiter,
+    ResilienceConfig,
+    _wait_for_compat,
+    truncate_response,
+)
 from dcert.server import _build_subprocess_env, _find_binary
 
 logger = logging.getLogger(__name__)
@@ -102,11 +110,20 @@ def _validate_required(params: dict[str, Any], names: list[str], tool: str) -> N
 class DcertClient:
     """Async context manager wrapping the dcert-mcp subprocess.
 
+    Applies five resilience layers (outermost to innermost):
+
+    1. **Bulkhead** -- ``asyncio.Semaphore`` limiting concurrent calls.
+    2. **Reconnection loop** -- auto-reconnects on subprocess crash.
+    3. **Circuit breaker** -- trips after repeated connection failures.
+    4. **Retry with backoff** -- retries transient connection errors.
+    5. **Timeout** -- per-call deadline with Python 3.10 compat shim.
+
     Args:
         binary_path: Explicit path to the dcert-mcp binary.
         env: Additional environment variables for the subprocess.
         timeout: Default timeout (seconds) for tool calls.
         max_reconnects: Maximum automatic reconnection attempts.
+        resilience: Resilience configuration (defaults from env vars).
     """
 
     def __init__(
@@ -115,13 +132,34 @@ class DcertClient:
         env: dict[str, str] | None = None,
         timeout: float = 300.0,
         max_reconnects: int = 3,
+        resilience: ResilienceConfig | None = None,
     ) -> None:
         self._binary_path = binary_path
         self._env = env
+        self._resilience = resilience or ResilienceConfig()
         self._timeout = timeout
         self._max_reconnects = max_reconnects
         self._client: Client | None = None
         self._connected = False
+
+        # Resilience primitives
+        self._semaphore = asyncio.Semaphore(self._resilience.bulkhead_max)
+        self._circuit_breaker: CircuitBreaker | None = (
+            CircuitBreaker(
+                threshold=self._resilience.circuit_breaker_threshold,
+                reset_timeout=self._resilience.circuit_breaker_reset_timeout,
+            )
+            if self._resilience.circuit_breaker_enabled
+            else None
+        )
+        self._rate_limiter: RateLimiter | None = (
+            RateLimiter(
+                rps=self._resilience.rate_limit_rps,
+                burst=self._resilience.rate_limit_burst,
+            )
+            if self._resilience.rate_limit_enabled
+            else None
+        )
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -168,8 +206,32 @@ class DcertClient:
         arguments: dict[str, Any],
         timeout: float | None = None,
     ) -> Any:
-        """Call an MCP tool with retry logic."""
+        """Call an MCP tool with full resilience stack."""
         effective_timeout = timeout if timeout is not None else self._timeout
+
+        # Layer 1: Bulkhead (concurrency limiter)
+        async with self._semaphore:
+            # Layer 2: Rate limiting
+            if self._rate_limiter is not None:
+                await self._rate_limiter.acquire()
+
+            # Layer 3: Circuit breaker
+            if self._circuit_breaker is not None and not await self._circuit_breaker.allow():
+                raise DcertConnectionError(
+                    f"Circuit breaker is open — {tool_name} call rejected. "
+                    "The subprocess has failed repeatedly. "
+                    "It will recover automatically after the reset timeout."
+                )
+
+            return await self._call_with_retry(tool_name, arguments, effective_timeout)
+
+    async def _call_with_retry(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        timeout: float,
+    ) -> Any:
+        """Inner call loop with reconnection and retry."""
         last_error: Exception | None = None
 
         for attempt in range(1 + self._max_reconnects):
@@ -180,13 +242,15 @@ class DcertClient:
                     await self._reconnect()
                 except Exception as exc:
                     last_error = DcertConnectionError(str(exc))
+                    if self._circuit_breaker is not None:
+                        await self._circuit_breaker.record_failure()
                     continue
 
             try:
                 logger.debug("Calling tool %s (attempt %d)", tool_name, attempt + 1)
-                result = await asyncio.wait_for(
+                result = await _wait_for_compat(
                     self._client.call_tool(tool_name, arguments),
-                    timeout=effective_timeout,
+                    timeout=timeout,
                 )
 
                 # Check for error content in the result
@@ -207,19 +271,31 @@ class DcertClient:
                             text = getattr(item, "text", str(item))
                             raise DcertToolError(text, tool=tool_name, error_content=result)
 
-                return _extract_text(result)
+                # Record success for circuit breaker
+                if self._circuit_breaker is not None:
+                    await self._circuit_breaker.record_success()
 
-            except TimeoutError:
-                raise DcertTimeoutError(
-                    f"{tool_name} timed out after {effective_timeout}s"
-                ) from None
+                # Apply response payload management (truncation)
+                text = _extract_text(result)
+                if isinstance(text, str) and self._resilience.max_response_bytes > 0:
+                    text = truncate_response(text, self._resilience.max_response_bytes)
+                return text
+
+            except (TimeoutError, asyncio.TimeoutError):
+                raise DcertTimeoutError(f"{tool_name} timed out after {timeout}s") from None
+            except asyncio.CancelledError:
+                raise DcertTimeoutError(f"{tool_name} timed out after {timeout}s") from None
             except DcertToolError:
                 raise
             except DcertTimeoutError:
                 raise
+            except CircuitBreakerOpen:
+                raise DcertConnectionError(f"Circuit breaker open — {tool_name} rejected") from None
             except Exception as exc:
                 last_error = DcertConnectionError(str(exc))
                 self._connected = False
+                if self._circuit_breaker is not None:
+                    await self._circuit_breaker.record_failure()
                 logger.warning("Tool call %s failed (attempt %d): %s", tool_name, attempt + 1, exc)
 
         raise last_error or DcertConnectionError("All reconnection attempts exhausted")

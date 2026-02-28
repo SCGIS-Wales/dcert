@@ -5,6 +5,8 @@ transport. All tool discovery is handled by the MCP protocol at runtime,
 so new tools added to the binary are automatically available.
 """
 
+from __future__ import annotations
+
 from fastmcp import Client
 from fastmcp.client.transports import StdioTransport
 
