@@ -6,6 +6,8 @@ proxy without any Python code changes. The MCP protocol handles tool
 discovery at runtime via the ``tools/list`` method.
 """
 
+from __future__ import annotations
+
 import logging
 import os
 import platform
@@ -17,6 +19,23 @@ from fastmcp.client.transports import StdioTransport
 from fastmcp.server import create_proxy
 
 logger = logging.getLogger(__name__)
+
+
+def _is_python_script(path: str) -> bool:
+    """Check if *path* is a Python console-script wrapper (not a compiled binary).
+
+    Reads the first 128 bytes; if the file starts with ``#!`` and the first
+    line contains ``python``, it is a pip-generated console_script wrapper
+    and must be skipped to avoid an infinite exec loop (see helm-mcp PR #33).
+    """
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(128)
+        first_line = head.split(b"\n", 1)[0].lower()
+        return head[:2] == b"#!" and b"python" in first_line
+    except OSError:
+        return False
+
 
 # Environment variables forwarded to the Rust subprocess.
 PASSTHROUGH_ENV_VARS: list[str] = [
@@ -93,8 +112,9 @@ def _find_binary() -> str:
             return str(candidate)
 
     # 3. PATH lookup (before download — platform wheels put the binary on PATH)
+    # Skip Python console-script wrappers to avoid infinite exec loops.
     found = shutil.which("dcert-mcp")
-    if found:
+    if found and not _is_python_script(found):
         logger.debug("Using dcert-mcp from PATH: %s", found)
         return found
 

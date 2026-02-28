@@ -27,6 +27,15 @@ Usage with typed async wrappers:
 __version__ = "3.0.18"
 
 from dcert.client import create_client
+from dcert.resilience import (
+    CircuitBreaker,
+    CircuitBreakerOpen,
+    OTelConfig,
+    RateLimiter,
+    ResilienceConfig,
+    setup_otel,
+    truncate_response,
+)
 from dcert.server import create_server
 from dcert.tools import (
     DcertClient,
@@ -59,6 +68,14 @@ __all__ = [
     "DcertTimeoutError",
     "DcertConnectionError",
     "DcertToolError",
+    # Resilience
+    "ResilienceConfig",
+    "OTelConfig",
+    "CircuitBreaker",
+    "CircuitBreakerOpen",
+    "RateLimiter",
+    "setup_otel",
+    "truncate_response",
     # Tool wrappers
     "analyze_certificate",
     "check_expiry",

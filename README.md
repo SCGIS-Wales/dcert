@@ -3,13 +3,11 @@
 A Rust CLI and MCP server for X.509 certificate analysis, format conversion, and key verification. Reads certificates from PEM files or HTTPS endpoints. Validates TLS connections, checks revocation status, converts between PFX and PEM formats, and integrates with AI-powered IDEs via the Model Context Protocol (MCP).
 
 [![CI/CD Pipeline](https://github.com/SCGIS-Wales/dcert/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/SCGIS-Wales/dcert/actions/workflows/ci.yml)
-[![Crates.io](https://img.shields.io/crates/v/dcert)](https://crates.io/crates/dcert)
 [![PyPI version](https://img.shields.io/pypi/v/dcert)](https://pypi.org/project/dcert/)
+[![PyPI Downloads](https://img.shields.io/pypi/dm/dcert)](https://pypi.org/project/dcert/)
+[![Python](https://img.shields.io/pypi/pyversions/dcert)](https://pypi.org/project/dcert/)
+[![Rust](https://img.shields.io/badge/Rust-stable-000000?logo=rust&logoColor=white)](https://github.com/SCGIS-Wales/dcert)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-
-<a href="https://glama.ai/mcp/servers/@SCGIS-Wales/dcert">
-  <img width="380" height="200" src="https://glama.ai/mcp/servers/@SCGIS-Wales/dcert/badge" alt="dcert MCP server" />
-</a>
 
 ## Table of Contents
 
