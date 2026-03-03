@@ -1,13 +1,19 @@
-# dcert - TLS Certificate Decoder & Validator
+<div align="center">
+  <img src="assets/logo.svg" alt="dcert logo" width="160">
+  <h1>dcert</h1>
+  <p><strong>TLS Certificate Decoder & Validator</strong></p>
+  <p>A Rust CLI and MCP server for X.509 certificate analysis, format conversion, and key verification.<br>Reads certificates from PEM files or HTTPS endpoints. Validates TLS connections, checks revocation status,<br>converts between PFX and PEM formats, and integrates with AI-powered IDEs via the Model Context Protocol (MCP).</p>
+  <p>
+    <a href="https://github.com/SCGIS-Wales/dcert/actions/workflows/ci.yml"><img src="https://github.com/SCGIS-Wales/dcert/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI/CD Pipeline"></a>
+    <a href="https://pypi.org/project/dcert/"><img src="https://img.shields.io/pypi/v/dcert" alt="PyPI version"></a>
+    <a href="https://pypi.org/project/dcert/"><img src="https://img.shields.io/pypi/dm/dcert" alt="PyPI Downloads"></a>
+    <a href="https://pypi.org/project/dcert/"><img src="https://img.shields.io/pypi/pyversions/dcert" alt="Python"></a>
+    <a href="https://github.com/SCGIS-Wales/dcert"><img src="https://img.shields.io/badge/Rust-stable-000000?logo=rust&logoColor=white" alt="Rust"></a>
+    <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+  </p>
+</div>
 
-A Rust CLI and MCP server for X.509 certificate analysis, format conversion, and key verification. Reads certificates from PEM files or HTTPS endpoints. Validates TLS connections, checks revocation status, converts between PFX and PEM formats, and integrates with AI-powered IDEs via the Model Context Protocol (MCP).
-
-[![CI/CD Pipeline](https://github.com/SCGIS-Wales/dcert/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/SCGIS-Wales/dcert/actions/workflows/ci.yml)
-[![PyPI version](https://img.shields.io/pypi/v/dcert)](https://pypi.org/project/dcert/)
-[![PyPI Downloads](https://img.shields.io/pypi/dm/dcert)](https://pypi.org/project/dcert/)
-[![Python](https://img.shields.io/pypi/pyversions/dcert)](https://pypi.org/project/dcert/)
-[![Rust](https://img.shields.io/badge/Rust-stable-000000?logo=rust&logoColor=white)](https://github.com/SCGIS-Wales/dcert)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+---
 
 ## Table of Contents
 
