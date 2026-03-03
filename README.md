@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/logo.svg" alt="dcert logo" width="160">
+  <img src="assets/logo.svg" alt="dcert logo" width="400">
   <h1>dcert</h1>
   <p><strong>TLS Certificate Decoder & Validator</strong></p>
   <p>A Rust CLI and MCP server for X.509 certificate analysis, format conversion, and key verification.<br>Reads certificates from PEM files or HTTPS endpoints. Validates TLS connections, checks revocation status,<br>converts between PFX and PEM formats, and integrates with AI-powered IDEs via the Model Context Protocol (MCP).</p>
