@@ -23,8 +23,10 @@ pub enum KeyAlgorithm {
     Rsa4096,
     /// ECDSA with NIST P-256 — modern, fast, recommended
     EcdsaP256,
-    /// ECDSA with NIST P-384 — high-security requirements
+    /// ECDSA with NIST P-384 — high-security, CNSA 2.0 compliant
     EcdsaP384,
+    /// Ed25519 — modern EdDSA, compact signatures, high performance
+    Ed25519,
 }
 
 impl KeyAlgorithm {
@@ -34,6 +36,7 @@ impl KeyAlgorithm {
             KeyAlgorithm::Rsa4096 => "RSA 4096",
             KeyAlgorithm::EcdsaP256 => "ECDSA P-256",
             KeyAlgorithm::EcdsaP384 => "ECDSA P-384",
+            KeyAlgorithm::Ed25519 => "Ed25519",
         }
     }
 
@@ -43,6 +46,7 @@ impl KeyAlgorithm {
             KeyAlgorithm::Rsa4096 => 4096,
             KeyAlgorithm::EcdsaP256 => 256,
             KeyAlgorithm::EcdsaP384 => 384,
+            KeyAlgorithm::Ed25519 => 256,
         }
     }
 }
@@ -185,8 +189,17 @@ pub fn create_csr(opts: &CsrCreateOptions, csr_path: &str, key_path: &str) -> Re
     }
 
     // Sign the CSR
-    let digest = select_digest(opts.key_algo);
-    req_builder.sign(&pkey, digest).with_context(|| "Failed to sign CSR")?;
+    // Ed25519 uses a built-in hash, so we pass MessageDigest from a null pointer
+    match select_digest(opts.key_algo) {
+        Some(digest) => req_builder.sign(&pkey, digest).with_context(|| "Failed to sign CSR")?,
+        None => {
+            // For Ed25519/Ed448, OpenSSL expects a null digest
+            // The openssl crate handles this via sign() with a special digest
+            req_builder
+                .sign(&pkey, unsafe { MessageDigest::from_ptr(std::ptr::null()) })
+                .with_context(|| "Failed to sign CSR with Ed25519")?
+        }
+    };
 
     let req = req_builder.build();
 
@@ -210,7 +223,9 @@ pub fn create_csr(opts: &CsrCreateOptions, csr_path: &str, key_path: &str) -> Re
     let subject_str = format_subject_name(&opts.subject);
     let sig_algo = match opts.key_algo {
         KeyAlgorithm::Rsa2048 | KeyAlgorithm::Rsa4096 => "SHA-256 with RSA",
-        KeyAlgorithm::EcdsaP256 | KeyAlgorithm::EcdsaP384 => "ECDSA with SHA-256",
+        KeyAlgorithm::EcdsaP256 => "ECDSA with SHA-256",
+        KeyAlgorithm::EcdsaP384 => "ECDSA with SHA-384",
+        KeyAlgorithm::Ed25519 => "Ed25519",
     };
 
     Ok(CsrCreateResult {
@@ -502,6 +517,9 @@ fn generate_key(algo: KeyAlgorithm) -> Result<PKey<openssl::pkey::Private>> {
             let ec = EcKey::generate(&group).with_context(|| "Failed to generate ECDSA P-384 key")?;
             PKey::from_ec_key(ec).with_context(|| "Failed to wrap EC key")
         }
+        KeyAlgorithm::Ed25519 => {
+            PKey::generate_ed25519().with_context(|| "Failed to generate Ed25519 key")
+        }
     }
 }
 
@@ -545,11 +563,13 @@ fn build_subject_name(subject: &CsrSubject) -> Result<X509Name> {
     Ok(builder.build())
 }
 
-fn select_digest(algo: KeyAlgorithm) -> MessageDigest {
+fn select_digest(algo: KeyAlgorithm) -> Option<MessageDigest> {
     match algo {
-        KeyAlgorithm::Rsa2048 | KeyAlgorithm::Rsa4096 => MessageDigest::sha256(),
-        KeyAlgorithm::EcdsaP256 => MessageDigest::sha256(),
-        KeyAlgorithm::EcdsaP384 => MessageDigest::sha384(),
+        KeyAlgorithm::Rsa2048 | KeyAlgorithm::Rsa4096 => Some(MessageDigest::sha256()),
+        KeyAlgorithm::EcdsaP256 => Some(MessageDigest::sha256()),
+        KeyAlgorithm::EcdsaP384 => Some(MessageDigest::sha384()),
+        // Ed25519 uses its own built-in hash (SHA-512 internally); pass None to sign()
+        KeyAlgorithm::Ed25519 => None,
     }
 }
 

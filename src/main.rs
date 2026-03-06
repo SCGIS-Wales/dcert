@@ -1,5 +1,6 @@
 mod cert;
 mod cli;
+mod compliance;
 mod convert;
 mod csr;
 mod debug;
@@ -263,6 +264,7 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
             let output = StructuredOutput {
                 certificates: result.infos.clone(),
                 connection: result.conn_info.clone(),
+                compliance: result.compliance_report.clone(),
             };
             map.insert(result.target.clone(), serde_json::to_value(&output)?);
         }
@@ -273,6 +275,7 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
             let output = StructuredOutput {
                 certificates: result.infos.clone(),
                 connection: result.conn_info.clone(),
+                compliance: result.compliance_report.clone(),
             };
             map.insert(result.target.clone(), output);
         }
@@ -574,6 +577,7 @@ fn run_csr_create(args: cli::CsrCreateArgs) -> Result<i32> {
         cli::KeyAlgorithmArg::Rsa2048 => KeyAlgorithm::Rsa2048,
         cli::KeyAlgorithmArg::EcdsaP256 => KeyAlgorithm::EcdsaP256,
         cli::KeyAlgorithmArg::EcdsaP384 => KeyAlgorithm::EcdsaP384,
+        cli::KeyAlgorithmArg::Ed25519 => KeyAlgorithm::Ed25519,
     };
 
     // If no CN is provided, enter interactive mode

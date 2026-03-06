@@ -10,6 +10,7 @@ use x509_parser::prelude::FromDer;
 
 use crate::cert::{extract_ocsp_url, parse_cert_infos_from_pem, CertInfo, CertProcessOpts};
 use crate::cli::{CheckArgs, CipherNotation, HttpProtocol, OutputFormat, SortOrder};
+use crate::compliance::{self, ChainComplianceReport, Severity};
 use crate::debug::debug_log;
 use crate::ocsp::check_ocsp_status;
 use crate::proxy::ProxyConfig;
@@ -228,6 +229,7 @@ pub struct TargetResult {
     pub conn_info: Option<TlsConnectionInfo>,
     pub infos: Vec<CertInfo>,
     pub pem_data: String,
+    pub compliance_report: Option<ChainComplianceReport>,
 }
 
 /// JSON/YAML wrapper that includes both certificates and connection metadata.
@@ -236,6 +238,8 @@ pub struct StructuredOutput {
     pub certificates: Vec<CertInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connection: Option<TlsConnectionInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compliance: Option<ChainComplianceReport>,
 }
 
 /// Process a single target (PEM file, HTTPS URL, or stdin PEM data) and return results.
@@ -251,10 +255,12 @@ pub fn process_target(
 ) -> Result<TargetResult> {
     debug_log!(args.debug, "Processing target: {}", target);
 
+    // Auto-enable extensions and fingerprint for compliance mode (needed for full analysis)
+    let compliance_mode = args.compliance;
     let opts = CertProcessOpts {
         expired_only: args.expired_only,
-        fingerprint: args.fingerprint,
-        extensions: args.extensions,
+        fingerprint: args.fingerprint || compliance_mode,
+        extensions: args.extensions || compliance_mode,
     };
 
     let (pem_data, conn_info) = if target == "-" {
@@ -331,11 +337,19 @@ pub fn process_target(
         sort_certs_by_expiry(&mut infos, sort_order);
     }
 
+    // Run compliance checks if requested
+    let compliance_report = if compliance_mode {
+        Some(compliance::check_chain_compliance(&infos))
+    } else {
+        None
+    };
+
     Ok(TargetResult {
         target: target.to_string(),
         conn_info,
         infos,
         pem_data,
+        compliance_report,
     })
 }
 
@@ -521,11 +535,17 @@ pub fn output_results(
                 cipher_notation: args.ciphers,
             };
             print_pretty(&result.infos, &debug);
+
+            // Print compliance report if available
+            if let Some(ref report) = result.compliance_report {
+                print_compliance_pretty(report);
+            }
         }
         OutputFormat::Json => {
             let output = StructuredOutput {
                 certificates: result.infos.clone(),
                 connection: result.conn_info.clone(),
+                compliance: result.compliance_report.clone(),
             };
             println!("{}", serde_json::to_string_pretty(&output)?);
         }
@@ -533,11 +553,61 @@ pub fn output_results(
             let output = StructuredOutput {
                 certificates: result.infos.clone(),
                 connection: result.conn_info.clone(),
+                compliance: result.compliance_report.clone(),
             };
             println!("{}", serde_yml::to_string(&output)?);
         }
     }
     Ok(())
+}
+
+/// Print compliance report in pretty format.
+pub fn print_compliance_pretty(report: &ChainComplianceReport) {
+    println!("{}", "=== Compliance Report ===".bold());
+    println!();
+
+    for cert_report in &report.certificates {
+        let cn_display = cert_report
+            .common_name
+            .as_deref()
+            .unwrap_or(&cert_report.subject);
+        println!(
+            "{} [{}] {}",
+            "Certificate".bold(),
+            cert_report.index,
+            cn_display
+        );
+
+        println!("{}", "  Compliance Findings:".bold());
+        for finding in &cert_report.findings {
+            let (icon, color_fn): (&str, fn(&str) -> colored::ColoredString) = match finding.severity {
+                Severity::Error => ("ERROR", |s: &str| s.red().bold()),
+                Severity::Warning => ("WARN ", |s: &str| s.yellow()),
+                Severity::Info => ("INFO ", |s: &str| s.cyan()),
+            };
+            println!(
+                "    {} [{}] {}",
+                color_fn(icon),
+                finding.category,
+                finding.message
+            );
+        }
+
+        if cert_report.compliant {
+            println!("  {}", "Status: COMPLIANT".green().bold());
+        } else {
+            println!("  {}", "Status: NON-COMPLIANT".red().bold());
+        }
+        println!();
+    }
+
+    // Overall chain result
+    if report.chain_compliant {
+        println!("{}", "Overall Chain: COMPLIANT".green().bold());
+    } else {
+        println!("{}", "Overall Chain: NON-COMPLIANT".red().bold());
+    }
+    println!();
 }
 
 #[cfg(test)]

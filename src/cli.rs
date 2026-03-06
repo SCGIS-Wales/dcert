@@ -43,9 +43,12 @@ pub enum KeyAlgorithmArg {
     /// ECDSA P-256 — modern, fast, recommended for new deployments
     #[value(name = "ecdsa-p256")]
     EcdsaP256,
-    /// ECDSA P-384 — high-security requirements
+    /// ECDSA P-384 — high-security, CNSA 2.0 compliant
     #[value(name = "ecdsa-p384")]
     EcdsaP384,
+    /// Ed25519 — modern EdDSA, compact signatures, high performance (requires OpenSSL 3.x)
+    #[value(name = "ed25519")]
+    Ed25519,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -295,6 +298,11 @@ pub struct CheckArgs {
     /// Show the negotiated (agreed) TLS cipher suite in the given notation
     #[arg(long, value_enum, value_name = "NOTATION")]
     pub ciphers: Option<CipherNotation>,
+
+    /// Run compliance checks against CA/B Forum Baseline Requirements, DigiCert, and X9 standards.
+    /// Reports findings (error/warning/info) and overall COMPLIANT/NON-COMPLIANT status.
+    #[arg(long)]
+    pub compliance: bool,
 
     /// Show verbose debug output with OSI layer diagnostics on stderr
     #[arg(long)]

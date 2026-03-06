@@ -186,6 +186,13 @@ dcert certificates.pem --sort-expiry asc
 
 # Only show expired certificates
 dcert certificates.pem --expired-only
+
+# Compliance report (CA/B Forum Baseline Requirements)
+dcert https://example.com --compliance
+dcert certificate.pem --compliance
+
+# Compliance report in JSON (for CI/CD)
+dcert https://example.com --compliance --format json
 ```
 
 #### TLS Options
@@ -278,6 +285,7 @@ Options:
       --expiry-warn <DAYS>             Warn if expiring within N days (exit code 1)
       --diff                           Compare certificates between two targets
       --watch <SECONDS>                Re-check at interval
+      --compliance                      Run compliance checks (CA/B Forum, DigiCert, X9)
       --check-revocation               Check OCSP revocation status
       --debug                          Verbose OSI-layer diagnostics on stderr
       --client-cert <PATH>             Client certificate PEM for mTLS
@@ -352,6 +360,7 @@ dcert csr validate my-cert.csr --strict
 | RSA 2048 | `--key-algo rsa-2048` | Minimum accepted by CAs. |
 | ECDSA P-256 | `--key-algo ecdsa-p256` | Recommended modern choice. Faster, equivalent to RSA 3072. |
 | ECDSA P-384 | `--key-algo ecdsa-p384` | High-security requirements. |
+| Ed25519 | `--key-algo ed25519` | Modern EdDSA. Compact signatures, high performance. Requires OpenSSL 3.x. |
 
 #### Compliance Checks
 
@@ -378,7 +387,7 @@ Options:
       --locality <NAME>    City or locality (L)
       --email <EMAIL>      Email address
       --san <TYPE:VALUE>   Subject Alternative Name (repeatable, e.g., DNS:www.example.com, IP:10.0.0.1)
-      --key-algo <ALGO>    Key algorithm [rsa-4096, rsa-2048, ecdsa-p256, ecdsa-p384] (default: rsa-4096)
+      --key-algo <ALGO>    Key algorithm [rsa-4096, rsa-2048, ecdsa-p256, ecdsa-p384, ed25519] (default: rsa-4096)
       --encrypt-key        Encrypt the private key (AES-256-CBC, PKCS#8)
       --key-password <PW>  Password for key encryption (env: DCERT_KEY_PASSWORD)
       --csr-out <FILE>     Output CSR file path (default: <cn>.csr)
@@ -489,6 +498,7 @@ Returns key type, key size, certificate subject, and whether the key matches. Ex
 | `export_pem` | Export TLS certificate chain from an HTTPS endpoint as PEM. Optionally saves to file and can exclude expired certs. Supports mTLS. |
 | `create_csr` | Create a PKCS#10 CSR and private key. Supports RSA/ECDSA, OU metadata, and encrypted keys. Compliant with CA/B Forum, DigiCert, and X9 standards. |
 | `validate_csr` | Validate a CSR for compliance with CA/B Forum Baseline Requirements, DigiCert, and X9 standards. Returns findings with severity levels. |
+| `validate_certificate` | Run compliance checks on a certificate (PEM file or HTTPS endpoint). Checks key size, signature algorithm, validity period, SANs, CT, EKU, and Basic Constraints against CA/B Forum standards. |
 | `verify_key_match` | Verify that a private key matches a certificate (PEM file or HTTPS endpoint). |
 | `convert_pfx_to_pem` | Convert PKCS12/PFX to separate PEM files (cert, key, CA chain). |
 | `convert_pem_to_pfx` | Convert PEM certificate + key to PKCS12/PFX file. |
@@ -718,7 +728,11 @@ Client certificate authentication via PEM (`--client-cert` + `--client-key`) or 
 
 ### CSR Creation & Validation
 
-Create PKCS#10 Certificate Signing Requests with guided interactive mode or CLI flags (`dcert csr create`). Supports RSA 4096 (default), RSA 2048, ECDSA P-256 (recommended), and ECDSA P-384. Optional AES-256-CBC key encryption. Validate existing CSRs for compliance with CA/B Forum, DigiCert, and X9 standards (`dcert csr validate`). OU metadata identifiers (e.g., `AppId:my-service`) supported for internal PKI.
+Create PKCS#10 Certificate Signing Requests with guided interactive mode or CLI flags (`dcert csr create`). Supports RSA 4096 (default), RSA 2048, ECDSA P-256 (recommended), ECDSA P-384, and Ed25519 (modern EdDSA). Optional AES-256-CBC key encryption. Validate existing CSRs for compliance with CA/B Forum, DigiCert, and X9 standards (`dcert csr validate`). OU metadata identifiers (e.g., `AppId:my-service`) supported for internal PKI.
+
+### Certificate Compliance
+
+Run compliance checks against CA/B Forum Baseline Requirements, DigiCert, and X9 standards (`--compliance`). Checks key size, signature algorithm (SHA-256+ required), validity period (398-day maximum), Subject Alternative Names, Certificate Transparency (SCTs), Extended Key Usage, and Basic Constraints. Returns findings with severity levels (Error, Warning, Info) and an overall COMPLIANT/NON-COMPLIANT status. Available in pretty, JSON, and YAML formats.
 
 ### Key-Certificate Matching
 
@@ -774,6 +788,9 @@ dcert --min-tls 1.3 https://target.com
 # Full audit with extensions, fingerprints, and revocation
 dcert https://site.com --fingerprint --extensions --check-revocation
 
+# Compliance audit against CA/B Forum Baseline Requirements
+dcert https://site.com --compliance
+
 # Test specific cipher suites
 dcert --cipher-list "ECDHE+AESGCM" --max-tls 1.2 https://target.com
 ```
@@ -786,6 +803,9 @@ dcert csr create --cn api.example.com --org "My Corp" --country GB --san DNS:api
 
 # Create with ECDSA P-256 for modern deployments
 dcert csr create --cn api.example.com --key-algo ecdsa-p256
+
+# Create with Ed25519 (modern EdDSA, compact signatures)
+dcert csr create --cn api.example.com --key-algo ed25519
 
 # Validate before submitting to CA
 dcert csr validate api-example-com.csr --format json
