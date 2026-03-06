@@ -567,16 +567,8 @@ pub fn print_compliance_pretty(report: &ChainComplianceReport) {
     println!();
 
     for cert_report in &report.certificates {
-        let cn_display = cert_report
-            .common_name
-            .as_deref()
-            .unwrap_or(&cert_report.subject);
-        println!(
-            "{} [{}] {}",
-            "Certificate".bold(),
-            cert_report.index,
-            cn_display
-        );
+        let cn_display = cert_report.common_name.as_deref().unwrap_or(&cert_report.subject);
+        println!("{} [{}] {}", "Certificate".bold(), cert_report.index, cn_display);
 
         println!("{}", "  Compliance Findings:".bold());
         for finding in &cert_report.findings {
@@ -585,12 +577,7 @@ pub fn print_compliance_pretty(report: &ChainComplianceReport) {
                 Severity::Warning => ("WARN ", |s: &str| s.yellow()),
                 Severity::Info => ("INFO ", |s: &str| s.cyan()),
             };
-            println!(
-                "    {} [{}] {}",
-                color_fn(icon),
-                finding.category,
-                finding.message
-            );
+            println!("    {} [{}] {}", color_fn(icon), finding.category, finding.message);
         }
 
         if cert_report.compliant {

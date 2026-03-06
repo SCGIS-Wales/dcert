@@ -517,9 +517,7 @@ fn generate_key(algo: KeyAlgorithm) -> Result<PKey<openssl::pkey::Private>> {
             let ec = EcKey::generate(&group).with_context(|| "Failed to generate ECDSA P-384 key")?;
             PKey::from_ec_key(ec).with_context(|| "Failed to wrap EC key")
         }
-        KeyAlgorithm::Ed25519 => {
-            PKey::generate_ed25519().with_context(|| "Failed to generate Ed25519 key")
-        }
+        KeyAlgorithm::Ed25519 => PKey::generate_ed25519().with_context(|| "Failed to generate Ed25519 key"),
     }
 }
 

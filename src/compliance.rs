@@ -111,8 +111,7 @@ fn check_key_compliance(info: &CertInfo, findings: &mut Vec<CertFinding>) {
             findings.push(CertFinding {
                 severity: Severity::Info,
                 category: "Key Size".to_string(),
-                message: "Public key information not available (use --extensions to extract)"
-                    .to_string(),
+                message: "Public key information not available (use --extensions to extract)".to_string(),
             });
             return;
         }
@@ -260,10 +259,7 @@ fn check_expiry_compliance(info: &CertInfo, findings: &mut Vec<CertFinding>) {
             findings.push(CertFinding {
                 severity: Severity::Info,
                 category: "Expiry".to_string(),
-                message: format!(
-                    "Certificate expires in {} days ({})",
-                    days_left, info.not_after
-                ),
+                message: format!("Certificate expires in {} days ({})", days_left, info.not_after),
             });
         } else {
             findings.push(CertFinding {
@@ -301,7 +297,10 @@ fn check_validity_period(info: &CertInfo, findings: &mut Vec<CertFinding>) {
         findings.push(CertFinding {
             severity: Severity::Info,
             category: "Validity Period".to_string(),
-            message: format!("Certificate validity period: {} days (within 398-day limit)", validity_days),
+            message: format!(
+                "Certificate validity period: {} days (within 398-day limit)",
+                validity_days
+            ),
         });
     }
 }
@@ -346,10 +345,7 @@ fn check_san_compliance(info: &CertInfo, findings: &mut Vec<CertFinding>) {
         findings.push(CertFinding {
             severity: Severity::Info,
             category: "SAN".to_string(),
-            message: format!(
-                "{} SAN(s) present",
-                info.subject_alternative_names.len()
-            ),
+            message: format!("{} SAN(s) present", info.subject_alternative_names.len()),
         });
 
         // Check CN is in SANs
@@ -604,7 +600,9 @@ mod tests {
         cert.not_after = "2026-12-31T00:00:00Z".to_string(); // ~365 days
         let mut findings = Vec::new();
         check_validity_period(&cert, &mut findings);
-        assert!(!findings.iter().any(|f| f.severity == Severity::Warning || f.severity == Severity::Error));
+        assert!(!findings
+            .iter()
+            .any(|f| f.severity == Severity::Warning || f.severity == Severity::Error));
     }
 
     #[test]
@@ -627,7 +625,9 @@ mod tests {
         let cert = make_leaf_cert_with_extensions();
         let mut findings = Vec::new();
         check_certificate_transparency(&cert, &mut findings);
-        assert!(!findings.iter().any(|f| f.severity == Severity::Warning || f.severity == Severity::Error));
+        assert!(!findings
+            .iter()
+            .any(|f| f.severity == Severity::Warning || f.severity == Severity::Error));
     }
 
     #[test]
@@ -649,7 +649,9 @@ mod tests {
         let cert = make_leaf_cert_with_extensions();
         let mut findings = Vec::new();
         check_san_compliance(&cert, &mut findings);
-        assert!(!findings.iter().any(|f| f.severity == Severity::Error || f.severity == Severity::Warning));
+        assert!(!findings
+            .iter()
+            .any(|f| f.severity == Severity::Error || f.severity == Severity::Warning));
     }
 
     #[test]
@@ -667,7 +669,9 @@ mod tests {
         cert.common_name = Some("other.example.com".to_string());
         let mut findings = Vec::new();
         check_san_compliance(&cert, &mut findings);
-        assert!(findings.iter().any(|f| f.severity == Severity::Warning && f.category == "SAN"));
+        assert!(findings
+            .iter()
+            .any(|f| f.severity == Severity::Warning && f.category == "SAN"));
     }
 
     // ---------------------------------------------------------------
@@ -700,7 +704,9 @@ mod tests {
         let cert = make_ca_cert();
         let mut findings = Vec::new();
         check_ca_compliance(&cert, &mut findings);
-        assert!(!findings.iter().any(|f| f.severity == Severity::Error || f.severity == Severity::Warning));
+        assert!(!findings
+            .iter()
+            .any(|f| f.severity == Severity::Error || f.severity == Severity::Warning));
     }
 
     #[test]
@@ -709,7 +715,9 @@ mod tests {
         cert.key_usage = Some(vec!["digitalSignature".to_string()]);
         let mut findings = Vec::new();
         check_ca_compliance(&cert, &mut findings);
-        assert!(findings.iter().any(|f| f.severity == Severity::Warning && f.message.contains("keyCertSign")));
+        assert!(findings
+            .iter()
+            .any(|f| f.severity == Severity::Warning && f.message.contains("keyCertSign")));
     }
 
     // ---------------------------------------------------------------
