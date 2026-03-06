@@ -640,6 +640,64 @@ struct CreateTruststoreParams {
     output_path: String,
 }
 
+/// Parameters for the create_csr tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct CreateCsrParams {
+    /// Common Name (CN) — typically the FQDN (e.g., "api.example.com")
+    common_name: String,
+    /// Organization name (O)
+    #[serde(default)]
+    organization: Option<String>,
+    /// Organizational Unit(s) (OU) — supports metadata identifiers (e.g., "AppId:my-app-123").
+    /// Note: OU is deprecated for publicly-trusted certificates since CA/B Forum Ballot SC47v2 (Sep 2022),
+    /// but remains valid for internal/private PKI.
+    #[serde(default)]
+    organizational_units: Vec<String>,
+    /// Two-letter ISO 3166-1 country code (e.g., "GB", "US")
+    #[serde(default)]
+    country: Option<String>,
+    /// State or province name (ST)
+    #[serde(default)]
+    state: Option<String>,
+    /// Locality or city name (L)
+    #[serde(default)]
+    locality: Option<String>,
+    /// Email address for the certificate (rarely used in modern TLS)
+    #[serde(default)]
+    email: Option<String>,
+    /// Subject Alternative Names in TYPE:VALUE format (e.g., "DNS:www.example.com", "IP:10.0.0.1").
+    /// If empty, the CN is automatically added as a DNS SAN.
+    #[serde(default)]
+    subject_alternative_names: Vec<String>,
+    /// Key algorithm: "rsa-4096" (default, strong), "rsa-2048" (minimum), "ecdsa-p256" (recommended, modern), "ecdsa-p384" (high-security)
+    #[serde(default = "default_rsa_4096")]
+    key_algorithm: String,
+    /// Whether to encrypt the private key with AES-256-CBC (PKCS#8)
+    #[serde(default)]
+    encrypt_key: bool,
+    /// Password for key encryption (required when encrypt_key is true)
+    #[serde(default)]
+    key_password: Option<String>,
+    /// Output path for the CSR file
+    csr_output_path: String,
+    /// Output path for the private key file
+    key_output_path: String,
+}
+
+/// Parameters for the validate_csr tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct ValidateCsrParams {
+    /// Path to the PEM-encoded CSR file to validate
+    csr_file: String,
+    /// Strict mode: treat warnings as errors (e.g., OU deprecation, RSA 2048 key size)
+    #[serde(default)]
+    strict: bool,
+}
+
+fn default_rsa_4096() -> String {
+    "rsa-4096".to_string()
+}
+
 fn default_true() -> bool {
     true
 }
@@ -654,6 +712,17 @@ fn default_server() -> String {
 }
 fn default_changeit() -> String {
     "changeit".to_string()
+}
+
+/// Validate that a key algorithm string is one of the accepted values.
+fn validate_key_algorithm(algo: &str) -> Result<(), String> {
+    match algo {
+        "rsa-4096" | "rsa-2048" | "ecdsa-p256" | "ecdsa-p384" => Ok(()),
+        _ => Err(format!(
+            "Invalid key algorithm '{}': must be one of \"rsa-4096\", \"rsa-2048\", \"ecdsa-p256\", \"ecdsa-p384\"",
+            algo
+        )),
+    }
 }
 
 /// Validate that a TLS version string is one of the accepted values.
@@ -1200,6 +1269,157 @@ impl DcertMcpServer {
                 let mut output = stdout;
                 if !stderr.is_empty() {
                     output.push_str("\n--- stderr ---\n");
+                    output.push_str(&stderr);
+                }
+                if code != 0 {
+                    output.push_str(&format!("\n--- exit code: {} ---", code));
+                }
+                ok_text(output)
+            }
+            Err(e) => ok_error(e),
+        }
+    }
+
+    /// Create a new Certificate Signing Request (CSR) with a private key.
+    #[tool(
+        description = "Create a PKCS#10 Certificate Signing Request (CSR) and private key. Supports RSA 4096 (default), RSA 2048, ECDSA P-256 (recommended modern), and ECDSA P-384. Compliant with CA/B Forum Baseline Requirements, DigiCert, and X9 standards. OU fields can encode metadata identifiers (e.g., AppId:my-app-123) for internal PKI. Returns JSON with CSR details, key info, and file paths."
+    )]
+    pub async fn create_csr(
+        &self,
+        Parameters(params): Parameters<CreateCsrParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        // Validate inputs
+        if params.common_name.trim().is_empty() {
+            return ok_error("common_name must not be empty".to_string());
+        }
+        if params.common_name.len() > 64 {
+            return ok_error("common_name must not exceed 64 characters (X.520 limit)".to_string());
+        }
+        if let Err(e) = validate_key_algorithm(&params.key_algorithm) {
+            return ok_error(e);
+        }
+        if let Err(e) = validate_path(&params.csr_output_path, "csr_output_path") {
+            return ok_error(e);
+        }
+        if let Err(e) = validate_path(&params.key_output_path, "key_output_path") {
+            return ok_error(e);
+        }
+        if params.encrypt_key && params.key_password.is_none() {
+            return ok_error("key_password is required when encrypt_key is true".to_string());
+        }
+        if let Some(ref pw) = params.key_password {
+            if let Err(e) = validate_password(pw) {
+                return ok_error(e);
+            }
+        }
+        if let Some(ref country) = params.country {
+            if country.len() != 2 || !country.chars().all(|c| c.is_ascii_uppercase()) {
+                return ok_error(format!(
+                    "country must be a 2-letter ISO 3166-1 alpha-2 code (e.g., 'GB', 'US'), got '{}'",
+                    country
+                ));
+            }
+        }
+        if params.subject_alternative_names.len() > 100 {
+            return ok_error("subject_alternative_names must not exceed 100 entries".to_string());
+        }
+
+        let mut args: Vec<String> = vec![
+            "csr".to_string(),
+            "create".to_string(),
+            "--cn".to_string(),
+            params.common_name.clone(),
+            "--key-algo".to_string(),
+            params.key_algorithm,
+            "--csr-out".to_string(),
+            params.csr_output_path,
+            "--key-out".to_string(),
+            params.key_output_path,
+            "--format".to_string(),
+            "json".to_string(),
+        ];
+        if let Some(org) = params.organization {
+            args.push("--org".to_string());
+            args.push(org);
+        }
+        for ou in params.organizational_units {
+            args.push("--ou".to_string());
+            args.push(ou);
+        }
+        if let Some(country) = params.country {
+            args.push("--country".to_string());
+            args.push(country);
+        }
+        if let Some(state) = params.state {
+            args.push("--state".to_string());
+            args.push(state);
+        }
+        if let Some(locality) = params.locality {
+            args.push("--locality".to_string());
+            args.push(locality);
+        }
+        if let Some(email) = params.email {
+            args.push("--email".to_string());
+            args.push(email);
+        }
+        for san in params.subject_alternative_names {
+            args.push("--san".to_string());
+            args.push(san);
+        }
+        if params.encrypt_key {
+            args.push("--encrypt-key".to_string());
+            if let Some(pw) = params.key_password {
+                args.push("--key-password".to_string());
+                args.push(pw);
+            }
+        }
+
+        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        match run_dcert_raw(&args_refs, &self.config).await {
+            Ok((stdout, stderr, code)) => {
+                let mut output = stdout;
+                if !stderr.is_empty() {
+                    output.push_str("\n--- notes ---\n");
+                    output.push_str(&stderr);
+                }
+                if code != 0 {
+                    output.push_str(&format!("\n--- exit code: {} ---", code));
+                }
+                ok_text(output)
+            }
+            Err(e) => ok_error(e),
+        }
+    }
+
+    /// Validate a PEM-encoded CSR for compliance with industry standards.
+    #[tool(
+        description = "Validate a PEM-encoded Certificate Signing Request (CSR) for compliance with CA/B Forum Baseline Requirements, DigiCert, and X9 standards. Checks key algorithm/size, signature algorithm, SAN presence, OU deprecation, country code format, and more. Returns JSON with subject info, key details, SANs, compliance findings (error/warning/info), and overall compliant/non-compliant status."
+    )]
+    pub async fn validate_csr(
+        &self,
+        Parameters(params): Parameters<ValidateCsrParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if let Err(e) = validate_path(&params.csr_file, "csr_file") {
+            return ok_error(e);
+        }
+
+        let mut args: Vec<String> = vec![
+            "csr".to_string(),
+            "validate".to_string(),
+            params.csr_file,
+            "--format".to_string(),
+            "json".to_string(),
+        ];
+        if params.strict {
+            args.push("--strict".to_string());
+        }
+
+        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        match run_dcert_raw(&args_refs, &self.config).await {
+            Ok((stdout, stderr, code)) => {
+                let mut output = stdout;
+                if !stderr.is_empty() {
+                    output.push_str("\n--- notes ---\n");
                     output.push_str(&stderr);
                 }
                 if code != 0 {
