@@ -669,7 +669,7 @@ struct CreateCsrParams {
     /// If empty, the CN is automatically added as a DNS SAN.
     #[serde(default)]
     subject_alternative_names: Vec<String>,
-    /// Key algorithm: "rsa-4096" (default, strong), "rsa-2048" (minimum), "ecdsa-p256" (recommended, modern), "ecdsa-p384" (high-security)
+    /// Key algorithm: "rsa-4096" (default, strong), "rsa-2048" (minimum), "ecdsa-p256" (recommended, modern), "ecdsa-p384" (high-security), "ed25519" (modern EdDSA, compact signatures, requires OpenSSL 3.x)
     #[serde(default = "default_rsa_4096")]
     key_algorithm: String,
     /// Whether to encrypt the private key with AES-256-CBC (PKCS#8)
@@ -692,6 +692,16 @@ struct ValidateCsrParams {
     /// Strict mode: treat warnings as errors (e.g., OU deprecation, RSA 2048 key size)
     #[serde(default)]
     strict: bool,
+}
+
+/// Parameters for the validate_certificate tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct ValidateCertificateParams {
+    /// HTTPS URL, hostname, or local path to a PEM file. Bare hostnames are auto-converted to https://
+    target: String,
+    /// mTLS and CA configuration
+    #[serde(flatten, default)]
+    mtls: MtlsParams,
 }
 
 fn default_rsa_4096() -> String {
@@ -717,9 +727,9 @@ fn default_changeit() -> String {
 /// Validate that a key algorithm string is one of the accepted values.
 fn validate_key_algorithm(algo: &str) -> Result<(), String> {
     match algo {
-        "rsa-4096" | "rsa-2048" | "ecdsa-p256" | "ecdsa-p384" => Ok(()),
+        "rsa-4096" | "rsa-2048" | "ecdsa-p256" | "ecdsa-p384" | "ed25519" => Ok(()),
         _ => Err(format!(
-            "Invalid key algorithm '{}': must be one of \"rsa-4096\", \"rsa-2048\", \"ecdsa-p256\", \"ecdsa-p384\"",
+            "Invalid key algorithm '{}': must be one of \"rsa-4096\", \"rsa-2048\", \"ecdsa-p256\", \"ecdsa-p384\", \"ed25519\"",
             algo
         )),
     }
@@ -1282,7 +1292,7 @@ impl DcertMcpServer {
 
     /// Create a new Certificate Signing Request (CSR) with a private key.
     #[tool(
-        description = "Create a PKCS#10 Certificate Signing Request (CSR) and private key. Supports RSA 4096 (default), RSA 2048, ECDSA P-256 (recommended modern), and ECDSA P-384. Compliant with CA/B Forum Baseline Requirements, DigiCert, and X9 standards. OU fields can encode metadata identifiers (e.g., AppId:my-app-123) for internal PKI. Returns JSON with CSR details, key info, and file paths."
+        description = "Create a PKCS#10 Certificate Signing Request (CSR) and private key. Supports RSA 4096 (default), RSA 2048, ECDSA P-256 (recommended modern), ECDSA P-384, and Ed25519 (modern EdDSA). Compliant with CA/B Forum Baseline Requirements, DigiCert, and X9 standards. OU fields can encode metadata identifiers (e.g., AppId:my-app-123) for internal PKI. Returns JSON with CSR details, key info, and file paths."
     )]
     pub async fn create_csr(
         &self,
@@ -1420,6 +1430,46 @@ impl DcertMcpServer {
                 let mut output = stdout;
                 if !stderr.is_empty() {
                     output.push_str("\n--- notes ---\n");
+                    output.push_str(&stderr);
+                }
+                if code != 0 {
+                    output.push_str(&format!("\n--- exit code: {} ---", code));
+                }
+                ok_text(output)
+            }
+            Err(e) => ok_error(e),
+        }
+    }
+
+    /// Validate TLS certificates against industry standards and report compliance status.
+    #[tool(
+        description = "Validate TLS certificates from an HTTPS endpoint or PEM file against CA/B Forum Baseline Requirements, DigiCert, and X9 standards. Checks key size, signature algorithm (SHA-1/MD5 rejection), SAN presence, certificate validity period (398-day max), Certificate Transparency (SCT presence), Extended Key Usage, and CA constraints. Returns JSON with per-certificate findings (error/warning/info) and overall COMPLIANT/NON-COMPLIANT status. Supports mTLS."
+    )]
+    pub async fn validate_certificate(
+        &self,
+        Parameters(params): Parameters<ValidateCertificateParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if let Err(e) = validate_target(&params.target) {
+            return ok_error(e);
+        }
+        if let Err(e) = params.mtls.validate() {
+            return ok_error(e);
+        }
+
+        let mut args = vec![
+            params.target.clone(),
+            "--format".to_string(),
+            "json".to_string(),
+            "--compliance".to_string(),
+        ];
+        args.extend(params.mtls.to_args());
+
+        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        match run_dcert(&args_refs, &self.config).await {
+            Ok((stdout, stderr, code)) => {
+                let mut output = stdout;
+                if !stderr.is_empty() {
+                    output.push_str("\n--- debug/stderr ---\n");
                     output.push_str(&stderr);
                 }
                 if code != 0 {
