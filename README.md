@@ -27,6 +27,7 @@
 - [MCP Server (AI IDE Integration)](#mcp-server-ai-ide-integration)
   - [Proxy and Timeout Configuration](#proxy-and-timeout-configuration)
   - [Troubleshooting](#troubleshooting)
+  - [HTTP Transport Mode](#http-transport-mode)
 - [Features by Topic](#features-by-topic)
 - [Use Cases](#use-cases)
 - [Python Package](#python-package)
@@ -484,7 +485,7 @@ Returns key type, key size, certificate subject, and whether the key matches. Ex
 
 ## MCP Server (AI IDE Integration)
 
-`dcert-mcp` is a Model Context Protocol server that exposes dcert's capabilities as tools for AI-powered IDEs. It communicates over stdio using the MCP protocol.
+`dcert-mcp` is a Model Context Protocol server that exposes dcert's capabilities as tools for AI-powered IDEs. It supports two transport modes: **stdio** (default, for IDE integration) and **HTTP** (for remote deployment with optional OIDC/OAuth2 authentication).
 
 ### Tools
 
@@ -705,6 +706,64 @@ When a subprocess times out, `dcert-mcp` produces actionable error messages that
 - Detected proxy configuration
 - Suggestions for adjusting timeout environment variables
 - Hints about DNS, connectivity, or proxy issues
+
+### HTTP Transport Mode
+
+For remote or multi-user deployments, `dcert-mcp` can run as an HTTP server:
+
+```bash
+# Start in HTTP mode (no auth)
+dcert-mcp --mode http --addr 0.0.0.0:3000
+
+# With OIDC/OAuth2 authentication
+DCERT_MCP_OIDC_ISSUER="https://login.example.com/v2.0" \
+DCERT_MCP_OIDC_AUDIENCE="api://dcert-mcp" \
+dcert-mcp --mode http --addr 0.0.0.0:3000
+
+# With static bearer token (simpler deployments)
+DCERT_MCP_AUTH_TOKEN="my-secret-token" \
+dcert-mcp --mode http
+```
+
+The HTTP server exposes:
+- `GET /health` — health check endpoint
+- `POST /mcp` — JSON-RPC endpoint for MCP tool calls
+
+#### Authentication (OIDC/OAuth2)
+
+When running in HTTP mode, `dcert-mcp` supports OIDC/OAuth2 JWT authentication following [MCP Security Best Practices](https://modelcontextprotocol.io/specification/2024-11-05/security). Authentication is resolved in priority order:
+
+1. **OIDC/OAuth2** — if `DCERT_MCP_OIDC_ISSUER` is set (recommended for production)
+2. **Static bearer token** — if only `DCERT_MCP_AUTH_TOKEN` is set
+3. **No auth** — if neither is configured
+
+OIDC tokens are validated against JWKS (JSON Web Key Sets) with automatic key rotation. Validated tokens are cached in-memory with a configurable sliding window TTL.
+
+#### On-Behalf-Of (OBO) Token Exchange
+
+For downstream API calls that require user context, `dcert-mcp` supports the OBO token exchange flow:
+
+- User tokens are **never forwarded** to downstream APIs
+- OBO exchange acquires a new token scoped to the downstream resource
+- Classified error handling with actionable guidance for each failure mode
+
+#### Authentication Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `DCERT_MCP_OIDC_ISSUER` | OIDC issuer URL (enables OIDC mode) |
+| `DCERT_MCP_OIDC_AUDIENCE` | Expected audience claim (required with OIDC) |
+| `DCERT_MCP_OIDC_JWKS_URL` | JWKS URL (auto-discovered from issuer if omitted) |
+| `DCERT_MCP_REQUIRED_SCOPES` | Comma-separated required OAuth2 scopes |
+| `DCERT_MCP_REQUIRED_ROLES` | Comma-separated required app roles |
+| `DCERT_MCP_ALLOWED_CLIENTS` | Comma-separated allowed client app IDs |
+| `DCERT_MCP_SESSION_TTL` | Session cache inactivity TTL in seconds (default: 300) |
+| `DCERT_MCP_AUTH_TOKEN` | Static bearer token (lower priority than OIDC) |
+| `DCERT_MCP_OBO_TOKEN_URL` | OBO token exchange endpoint |
+| `DCERT_MCP_OBO_CLIENT_ID` | OBO client application ID |
+| `DCERT_MCP_OBO_CLIENT_SECRET` | OBO client secret |
+
+See [SECURITY.md](SECURITY.md) for full security architecture documentation.
 
 ---
 
