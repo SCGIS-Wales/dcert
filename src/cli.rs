@@ -32,6 +32,22 @@ pub mod exit_code {
 
 // -- Value enums --
 
+#[derive(ValueEnum, Clone, Copy, Debug)]
+pub enum KeyAlgorithmArg {
+    /// RSA 4096-bit — strong, widely compatible (default)
+    #[value(name = "rsa-4096")]
+    Rsa4096,
+    /// RSA 2048-bit — minimum accepted by CAs
+    #[value(name = "rsa-2048")]
+    Rsa2048,
+    /// ECDSA P-256 — modern, fast, recommended for new deployments
+    #[value(name = "ecdsa-p256")]
+    EcdsaP256,
+    /// ECDSA P-384 — high-security requirements
+    #[value(name = "ecdsa-p384")]
+    EcdsaP384,
+}
+
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum OutputFormat {
     Pretty,
@@ -145,6 +161,10 @@ pub enum Command {
     /// Verify that a private key matches a certificate
     #[command(name = "verify-key")]
     VerifyKey(VerifyKeyArgs),
+
+    /// Create or validate Certificate Signing Requests (CSRs)
+    #[command(name = "csr")]
+    Csr(CsrArgs),
 }
 
 /// Known subcommand names for backward-compatible default routing.
@@ -153,6 +173,7 @@ pub const KNOWN_SUBCOMMANDS: &[&str] = &[
     "c",
     "convert",
     "verify-key",
+    "csr",
     "help",
     "--help",
     "-h",
@@ -407,6 +428,101 @@ pub struct VerifyKeyArgs {
     pub debug: bool,
 }
 
+// -- CSR subcommand --
+
+#[derive(Args, Debug)]
+pub struct CsrArgs {
+    #[command(subcommand)]
+    pub mode: CsrMode,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CsrMode {
+    /// Create a new Certificate Signing Request (CSR) with private key generation.
+    /// Run without --cn for an interactive guided wizard.
+    #[command(name = "create")]
+    Create(Box<CsrCreateArgs>),
+
+    /// Validate a CSR file against industry standards (CA/Browser Forum Baseline Requirements)
+    #[command(name = "validate")]
+    Validate(CsrValidateArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct CsrCreateArgs {
+    /// Common Name (e.g., www.example.com). If omitted, enters interactive wizard mode.
+    #[arg(long)]
+    pub cn: Option<String>,
+
+    /// Organization name (e.g., "Example Inc")
+    #[arg(long)]
+    pub org: Option<String>,
+
+    /// Organizational Unit — can be repeated. Supports metadata identifiers (e.g., "AppId:my-app-123").
+    /// Note: OU is deprecated for public CA certificates but valid for internal/private PKI.
+    #[arg(long, num_args = 0..)]
+    pub ou: Vec<String>,
+
+    /// Country code (2-letter ISO 3166, e.g., GB, US)
+    #[arg(long)]
+    pub country: Option<String>,
+
+    /// State or Province name
+    #[arg(long)]
+    pub state: Option<String>,
+
+    /// Locality or City name
+    #[arg(long)]
+    pub locality: Option<String>,
+
+    /// Email address (uncommon for TLS certs; prefer SAN Email)
+    #[arg(long)]
+    pub email: Option<String>,
+
+    /// Subject Alternative Names — can be repeated. Use prefix DNS:, IP:, Email:, URI: (DNS: is default)
+    #[arg(long, num_args = 0..)]
+    pub san: Vec<String>,
+
+    /// Key algorithm [default: rsa-4096]
+    #[arg(long, value_enum, default_value_t = KeyAlgorithmArg::Rsa4096)]
+    pub key_algo: KeyAlgorithmArg,
+
+    /// Encrypt the private key with a passphrase (AES-256-CBC)
+    #[arg(long)]
+    pub encrypt_key: bool,
+
+    /// Passphrase for private key encryption (or set DCERT_KEY_PASSWORD env var).
+    /// Required when --encrypt-key is set.
+    #[arg(long, env = "DCERT_KEY_PASSWORD", requires = "encrypt_key")]
+    pub key_password: Option<String>,
+
+    /// Output CSR file path [default: <cn>.csr]
+    #[arg(long)]
+    pub csr_out: Option<String>,
+
+    /// Output private key file path [default: <cn>.key]
+    #[arg(long)]
+    pub key_out: Option<String>,
+
+    /// Output format for result summary
+    #[arg(short, long, value_enum, default_value_t = OutputFormat::Pretty)]
+    pub format: OutputFormat,
+}
+
+#[derive(Args, Debug)]
+pub struct CsrValidateArgs {
+    /// Path to CSR PEM file to validate
+    pub csr_file: String,
+
+    /// Output format
+    #[arg(short, long, value_enum, default_value_t = OutputFormat::Pretty)]
+    pub format: OutputFormat,
+
+    /// Treat warnings as errors (exit code 1 if any warnings)
+    #[arg(long)]
+    pub strict: bool,
+}
+
 // -- Helper functions --
 
 pub fn validate_target(s: &str) -> Result<String, String> {
@@ -596,6 +712,7 @@ mod tests {
         assert!(KNOWN_SUBCOMMANDS.contains(&"check"));
         assert!(KNOWN_SUBCOMMANDS.contains(&"convert"));
         assert!(KNOWN_SUBCOMMANDS.contains(&"verify-key"));
+        assert!(KNOWN_SUBCOMMANDS.contains(&"csr"));
         assert!(KNOWN_SUBCOMMANDS.contains(&"help"));
     }
 
