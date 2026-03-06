@@ -21,6 +21,7 @@
 - [Installation](#installation)
 - [Commands](#commands)
   - [dcert [check] -- Certificate Analysis](#dcert-check--certificate-analysis-default)
+  - [dcert csr -- CSR Creation & Validation](#dcert-csr--csr-creation--validation)
   - [dcert convert -- Format Conversion](#dcert-convert--format-conversion)
   - [dcert verify-key -- Key Matching](#dcert-verify-key--key-matching)
 - [MCP Server (AI IDE Integration)](#mcp-server-ai-ide-integration)
@@ -57,6 +58,12 @@ dcert verify-key cert.pem --key private.key
 
 # Auto-discover and verify all cert/key pairs in a directory
 dcert verify-key
+
+# Create a new CSR with RSA 4096 key
+dcert csr create --cn api.example.com --org "My Corp" --country GB
+
+# Validate a CSR for compliance
+dcert csr validate my-cert.csr
 ```
 
 ## Installation
@@ -117,6 +124,8 @@ dcert uses subcommands to organize its features. The `check` subcommand is the d
 
 ```
 dcert <targets> [OPTIONS]              # Certificate analysis (default, same as 'dcert check')
+dcert csr create [OPTIONS]             # Create a CSR and private key
+dcert csr validate <CSR_FILE>          # Validate a CSR for compliance
 dcert convert <MODE> [OPTIONS]         # Format conversion (PFX/PEM/keystore/truststore)
 dcert verify-key <target> --key <KEY>  # Key-certificate matching (single pair)
 dcert verify-key [--dir <DIR>]         # Auto-discover and verify all cert/key pairs
@@ -295,6 +304,99 @@ Options:
 
 ---
 
+### dcert csr -- CSR Creation & Validation
+
+Create PKCS#10 Certificate Signing Requests (CSRs) and validate existing CSRs for compliance with CA/B Forum Baseline Requirements, DigiCert, and X9 standards.
+
+#### Create a CSR
+
+```bash
+# RSA 4096 (default) — guided interactive mode (omit --cn)
+dcert csr create
+
+# RSA 4096 with subject fields
+dcert csr create --cn api.example.com --org "My Corp" --country GB
+
+# ECDSA P-256 (recommended modern) with multiple SANs
+dcert csr create --cn www.example.com --key-algo ecdsa-p256 \
+  --san DNS:www.example.com --san DNS:example.com --san IP:10.0.0.1
+
+# Encrypted private key
+dcert csr create --cn secure.example.com --encrypt-key --key-password "$(read -sp 'Password: ' p && echo $p)"
+
+# Custom output paths and JSON output
+dcert csr create --cn api.example.com --csr-out api.csr --key-out api.key --format json
+
+# OU metadata identifiers (for internal/private PKI)
+dcert csr create --cn app.internal.corp --ou "AppId:my-service-123" --ou "Team:Platform"
+```
+
+#### Validate a CSR
+
+```bash
+# Pretty compliance report
+dcert csr validate my-cert.csr
+
+# JSON output (for CI/CD pipelines)
+dcert csr validate my-cert.csr --format json
+
+# Strict mode (warnings become errors)
+dcert csr validate my-cert.csr --strict
+```
+
+#### Key Algorithm Options
+
+| Algorithm | Flag | Description |
+|-----------|------|-------------|
+| RSA 4096 | `--key-algo rsa-4096` | Default. Strong, widely compatible. |
+| RSA 2048 | `--key-algo rsa-2048` | Minimum accepted by CAs. |
+| ECDSA P-256 | `--key-algo ecdsa-p256` | Recommended modern choice. Faster, equivalent to RSA 3072. |
+| ECDSA P-384 | `--key-algo ecdsa-p384` | High-security requirements. |
+
+#### Compliance Checks
+
+The validator checks against CA/B Forum Baseline Requirements, DigiCert, and X9 standards:
+
+- **Key size**: Minimum RSA 2048-bit / ECDSA P-256
+- **Signature algorithm**: SHA-256+ required, SHA-1 rejected
+- **Subject Alternative Names**: Required for all modern certificates
+- **OU deprecation**: Warning for publicly-trusted CAs (CA/B Forum Ballot SC47v2, Sep 2022)
+- **Country code**: ISO 3166-1 alpha-2 validation
+- **CN in SAN**: CN should be included in SANs per RFC 6125
+
+#### Full Options Reference
+
+```
+dcert csr create [OPTIONS]
+
+Options:
+      --cn <NAME>          Common Name (FQDN). Omit for interactive mode.
+      --org <NAME>         Organization (O)
+      --ou <NAME>          Organizational Unit (repeatable, supports metadata e.g., "AppId:xxx")
+      --country <CODE>     Two-letter country code (e.g., GB, US)
+      --state <NAME>       State or province (ST)
+      --locality <NAME>    City or locality (L)
+      --email <EMAIL>      Email address
+      --san <TYPE:VALUE>   Subject Alternative Name (repeatable, e.g., DNS:www.example.com, IP:10.0.0.1)
+      --key-algo <ALGO>    Key algorithm [rsa-4096, rsa-2048, ecdsa-p256, ecdsa-p384] (default: rsa-4096)
+      --encrypt-key        Encrypt the private key (AES-256-CBC, PKCS#8)
+      --key-password <PW>  Password for key encryption (env: DCERT_KEY_PASSWORD)
+      --csr-out <FILE>     Output CSR file path (default: <cn>.csr)
+      --key-out <FILE>     Output key file path (default: <cn>.key)
+  -f, --format <FORMAT>    Output format [pretty, json, yaml] (default: pretty)
+
+dcert csr validate [OPTIONS] <CSR_FILE>
+
+Arguments:
+  <CSR_FILE>              PEM-encoded CSR file to validate
+
+Options:
+      --strict             Treat warnings as errors
+  -f, --format <FORMAT>   Output format [pretty, json, yaml] (default: pretty)
+```
+
+---
+
 ### dcert convert -- Format Conversion
 
 Convert between certificate formats. Four modes are available:
@@ -385,6 +487,8 @@ Returns key type, key size, certificate subject, and whether the key matches. Ex
 | `compare_certificates` | Compare certificates between two targets side-by-side. |
 | `tls_connection_info` | Get TLS connection details: protocol, cipher, ALPN, latency, verification, diagnostics. Supports mTLS. |
 | `export_pem` | Export TLS certificate chain from an HTTPS endpoint as PEM. Optionally saves to file and can exclude expired certs. Supports mTLS. |
+| `create_csr` | Create a PKCS#10 CSR and private key. Supports RSA/ECDSA, OU metadata, and encrypted keys. Compliant with CA/B Forum, DigiCert, and X9 standards. |
+| `validate_csr` | Validate a CSR for compliance with CA/B Forum Baseline Requirements, DigiCert, and X9 standards. Returns findings with severity levels. |
 | `verify_key_match` | Verify that a private key matches a certificate (PEM file or HTTPS endpoint). |
 | `convert_pfx_to_pem` | Convert PKCS12/PFX to separate PEM files (cert, key, CA chain). |
 | `convert_pem_to_pfx` | Convert PEM certificate + key to PKCS12/PFX file. |
@@ -612,6 +716,10 @@ Protocol version, cipher suite, ALPN negotiation, certificate transparency, veri
 
 Client certificate authentication via PEM (`--client-cert` + `--client-key`) or PKCS12/PFX (`--pkcs12` + `--cert-password`). Custom CA bundle support (`--ca-cert`) for corporate/internal PKI.
 
+### CSR Creation & Validation
+
+Create PKCS#10 Certificate Signing Requests with guided interactive mode or CLI flags (`dcert csr create`). Supports RSA 4096 (default), RSA 2048, ECDSA P-256 (recommended), and ECDSA P-384. Optional AES-256-CBC key encryption. Validate existing CSRs for compliance with CA/B Forum, DigiCert, and X9 standards (`dcert csr validate`). OU metadata identifiers (e.g., `AppId:my-service`) supported for internal PKI.
+
 ### Key-Certificate Matching
 
 Verify private key matches a certificate (`dcert verify-key`). Supports RSA and EC keys against PEM files or live HTTPS endpoints. Auto-discovers matching `.crt`/`.pem` + `.key` pairs in a directory when run without arguments.
@@ -668,6 +776,22 @@ dcert https://site.com --fingerprint --extensions --check-revocation
 
 # Test specific cipher suites
 dcert --cipher-list "ECDHE+AESGCM" --max-tls 1.2 https://target.com
+```
+
+### CSR Management
+
+```bash
+# Create a CSR for a new service
+dcert csr create --cn api.example.com --org "My Corp" --country GB --san DNS:api.example.com
+
+# Create with ECDSA P-256 for modern deployments
+dcert csr create --cn api.example.com --key-algo ecdsa-p256
+
+# Validate before submitting to CA
+dcert csr validate api-example-com.csr --format json
+
+# Internal PKI with metadata identifiers
+dcert csr create --cn app.internal.corp --ou "AppId:svc-123" --ou "Env:prod"
 ```
 
 ### Certificate Management

@@ -1,6 +1,7 @@
 mod cert;
 mod cli;
 mod convert;
+mod csr;
 mod debug;
 mod ocsp;
 mod output;
@@ -558,6 +559,210 @@ fn run_verify_key(args: cli::VerifyKeyArgs) -> Result<i32> {
     Ok(exit_code)
 }
 
+fn run_csr(args: cli::CsrArgs) -> Result<i32> {
+    match args.mode {
+        cli::CsrMode::Create(create_args) => run_csr_create(*create_args),
+        cli::CsrMode::Validate(validate_args) => run_csr_validate(validate_args),
+    }
+}
+
+fn run_csr_create(args: cli::CsrCreateArgs) -> Result<i32> {
+    use csr::{CsrCreateOptions, CsrSubject, KeyAlgorithm};
+
+    let key_algo = match args.key_algo {
+        cli::KeyAlgorithmArg::Rsa4096 => KeyAlgorithm::Rsa4096,
+        cli::KeyAlgorithmArg::Rsa2048 => KeyAlgorithm::Rsa2048,
+        cli::KeyAlgorithmArg::EcdsaP256 => KeyAlgorithm::EcdsaP256,
+        cli::KeyAlgorithmArg::EcdsaP384 => KeyAlgorithm::EcdsaP384,
+    };
+
+    // If no CN is provided, enter interactive mode
+    let (opts, csr_path, key_path) = if let Some(cn) = args.cn {
+        // Build SANs — auto-add CN as DNS SAN if no SANs provided
+        let mut sans = args.san;
+        if sans.is_empty() {
+            sans.push(format!("DNS:{}", cn));
+        }
+
+        // Validate key password requirement
+        if args.encrypt_key && args.key_password.is_none() {
+            return Err(anyhow::anyhow!("--key-password is required when --encrypt-key is set"));
+        }
+
+        // Determine output paths
+        let base = cn.replace('*', "wildcard").replace('.', "-");
+        let csr_path = args.csr_out.unwrap_or_else(|| format!("{}.csr", base));
+        let key_path = args.key_out.unwrap_or_else(|| format!("{}.key", base));
+
+        let subject = CsrSubject {
+            common_name: cn,
+            organization: args.org,
+            organizational_units: args.ou,
+            country: args.country,
+            state: args.state,
+            locality: args.locality,
+            email: args.email,
+        };
+
+        let opts = CsrCreateOptions {
+            subject,
+            san: sans,
+            key_algo,
+            encrypt_key: args.encrypt_key,
+            key_password: args.key_password,
+        };
+
+        (opts, csr_path, key_path)
+    } else {
+        csr::interactive_create()?
+    };
+
+    // Warn about OU deprecation for public CAs
+    if !opts.subject.organizational_units.is_empty() {
+        eprintln!(
+            "{} {}",
+            "NOTE:".cyan().bold(),
+            "OU fields are deprecated for publicly-trusted certificates (CA/B Forum, Sep 2022). \
+             For internal/private PKI, OU with metadata identifiers (e.g., AppId:xxx) is valid."
+                .cyan()
+        );
+    }
+
+    // Warn about key password on CLI
+    if opts.encrypt_key && opts.key_password.is_some() && std::env::var("DCERT_KEY_PASSWORD").is_err() {
+        eprintln!(
+            "{} {}",
+            "WARNING:".yellow().bold(),
+            "Password passed via --key-password is visible in process listings. Consider using DCERT_KEY_PASSWORD env var."
+                .yellow()
+        );
+    }
+
+    let result = csr::create_csr(&opts, &csr_path, &key_path)?;
+
+    match args.format {
+        OutputFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        OutputFormat::Yaml => {
+            println!("{}", serde_yml::to_string(&result)?);
+        }
+        OutputFormat::Pretty => {
+            println!("{}", "CSR created successfully".green().bold());
+            println!("  CSR file          : {}", result.csr_file);
+            println!("  Key file          : {}", result.key_file);
+            println!("  Key algorithm     : {}", result.key_algorithm);
+            println!("  Key size          : {} bits", result.key_size_bits);
+            println!("  Signature algo    : {}", result.signature_algorithm);
+            println!("  Subject           : {}", result.subject);
+            if !result.sans.is_empty() {
+                println!("  SANs              : {}", result.sans.join(", "));
+            }
+            println!(
+                "  Key encrypted     : {}",
+                if result.key_encrypted { "yes" } else { "no" }
+            );
+        }
+    }
+
+    Ok(exit_code::SUCCESS)
+}
+
+fn run_csr_validate(args: cli::CsrValidateArgs) -> Result<i32> {
+    let pem_data = std::fs::read_to_string(&args.csr_file)
+        .with_context(|| format!("Failed to read CSR file: {}", args.csr_file))?;
+
+    let result = csr::validate_csr(&pem_data)?;
+
+    match args.format {
+        OutputFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        OutputFormat::Yaml => {
+            println!("{}", serde_yml::to_string(&result)?);
+        }
+        OutputFormat::Pretty => {
+            println!("{}", "=== CSR Validation Report ===".bold());
+            println!();
+
+            // Subject
+            println!("{}", "Subject:".bold());
+            if let Some(ref cn) = result.subject.common_name {
+                println!("  Common Name    : {}", cn);
+            }
+            if let Some(ref org) = result.subject.organization {
+                println!("  Organization   : {}", org);
+            }
+            for ou in &result.subject.organizational_units {
+                println!("  Org Unit       : {}", ou);
+            }
+            if let Some(ref c) = result.subject.country {
+                println!("  Country        : {}", c);
+            }
+            if let Some(ref st) = result.subject.state {
+                println!("  State          : {}", st);
+            }
+            if let Some(ref l) = result.subject.locality {
+                println!("  Locality       : {}", l);
+            }
+            if let Some(ref email) = result.subject.email {
+                println!("  Email          : {}", email);
+            }
+            println!();
+
+            // Key info
+            println!("{}", "Public Key:".bold());
+            println!("  Algorithm      : {}", result.public_key_algorithm);
+            println!("  Size           : {} bits", result.public_key_size_bits);
+            println!("  Signature algo : {}", result.signature_algorithm);
+            println!();
+
+            // SANs
+            if !result.subject_alternative_names.is_empty() {
+                println!("{}", "Subject Alternative Names:".bold());
+                for san in &result.subject_alternative_names {
+                    println!("  {}", san);
+                }
+                println!();
+            }
+
+            // Findings
+            println!("{}", "Compliance Findings:".bold());
+            for finding in &result.findings {
+                let (icon, color_fn): (&str, fn(&str) -> colored::ColoredString) = match finding.severity {
+                    csr::Severity::Error => ("ERROR", |s: &str| s.red().bold()),
+                    csr::Severity::Warning => ("WARN ", |s: &str| s.yellow()),
+                    csr::Severity::Info => ("INFO ", |s: &str| s.cyan()),
+                };
+                println!("  {} [{}] {}", color_fn(icon), finding.category, finding.message);
+            }
+            println!();
+
+            // Overall result
+            if result.compliant {
+                println!("{}", "Result: COMPLIANT".green().bold());
+            } else {
+                println!("{}", "Result: NON-COMPLIANT".red().bold());
+            }
+        }
+    }
+
+    if !result.compliant {
+        return Ok(exit_code::ERROR);
+    }
+
+    if args.strict && result.findings.iter().any(|f| f.severity == csr::Severity::Warning) {
+        eprintln!(
+            "{} {}",
+            "WARNING:".yellow().bold(),
+            "Strict mode: warnings treated as errors".yellow()
+        );
+        return Ok(exit_code::EXPIRY_WARNING);
+    }
+
+    Ok(exit_code::SUCCESS)
+}
+
 fn run() -> Result<i32> {
     let os_args: Vec<String> = std::env::args().collect();
 
@@ -580,6 +785,7 @@ fn run() -> Result<i32> {
         Command::Check(args) => run_check(*args),
         Command::Convert(args) => run_convert(args),
         Command::VerifyKey(args) => run_verify_key(args),
+        Command::Csr(args) => run_csr(args),
     }
 }
 

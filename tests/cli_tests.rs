@@ -1,6 +1,7 @@
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use tempfile::tempdir;
 
 fn dcert_bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_dcert"))
@@ -1069,4 +1070,390 @@ fn test_stdin_chain_pem() {
     // The chain should contain multiple certificates
     let cert_count = stdout.matches("Certificate").count();
     assert!(cert_count >= 2, "chain should parse multiple certs, found {cert_count}");
+}
+
+// ---------------------------------------------------------------
+// CSR subcommand: help
+// ---------------------------------------------------------------
+
+#[test]
+fn test_csr_help() {
+    let output = dcert_bin()
+        .args(["csr", "--help"])
+        .output()
+        .expect("failed to run dcert");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("create"), "csr help should list create subcommand");
+    assert!(stdout.contains("validate"), "csr help should list validate subcommand");
+}
+
+#[test]
+fn test_csr_create_help() {
+    let output = dcert_bin()
+        .args(["csr", "create", "--help"])
+        .output()
+        .expect("failed to run dcert");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--cn"), "create help should show --cn");
+    assert!(stdout.contains("--key-algo"), "create help should show --key-algo");
+    assert!(stdout.contains("--san"), "create help should show --san");
+    assert!(stdout.contains("--ou"), "create help should show --ou");
+    assert!(
+        stdout.contains("--encrypt-key"),
+        "create help should show --encrypt-key"
+    );
+}
+
+#[test]
+fn test_csr_validate_help() {
+    let output = dcert_bin()
+        .args(["csr", "validate", "--help"])
+        .output()
+        .expect("failed to run dcert");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--strict"), "validate help should show --strict");
+    assert!(stdout.contains("--format"), "validate help should show --format");
+}
+
+// ---------------------------------------------------------------
+// CSR subcommand: create
+// ---------------------------------------------------------------
+
+#[test]
+fn test_csr_create_rsa4096_pretty() {
+    let dir = tempdir().unwrap();
+    let csr_path = dir.path().join("test.csr");
+    let key_path = dir.path().join("test.key");
+
+    let output = dcert_bin()
+        .args([
+            "csr",
+            "create",
+            "--cn",
+            "test.example.com",
+            "--org",
+            "Test Corp",
+            "--country",
+            "GB",
+            "--csr-out",
+            csr_path.to_str().unwrap(),
+            "--key-out",
+            key_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run dcert");
+
+    assert!(output.status.success(), "CSR create should succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("CSR created"), "should show success message");
+    assert!(stdout.contains("RSA"), "should show key algorithm");
+    assert!(stdout.contains("4096"), "should show key size");
+    assert!(csr_path.exists(), "CSR file should be created");
+    assert!(key_path.exists(), "key file should be created");
+
+    // Verify the CSR file is valid PEM
+    let csr_content = std::fs::read_to_string(&csr_path).unwrap();
+    assert!(
+        csr_content.contains("-----BEGIN CERTIFICATE REQUEST-----"),
+        "CSR should be PEM formatted"
+    );
+
+    // Verify the key file is valid PEM
+    let key_content = std::fs::read_to_string(&key_path).unwrap();
+    assert!(
+        key_content.contains("-----BEGIN PRIVATE KEY-----"),
+        "key should be PEM formatted"
+    );
+}
+
+#[test]
+fn test_csr_create_ecdsa_p256_json() {
+    let dir = tempdir().unwrap();
+    let csr_path = dir.path().join("ec.csr");
+    let key_path = dir.path().join("ec.key");
+
+    let output = dcert_bin()
+        .args([
+            "csr",
+            "create",
+            "--cn",
+            "ec.example.com",
+            "--key-algo",
+            "ecdsa-p256",
+            "--san",
+            "DNS:ec.example.com",
+            "--san",
+            "DNS:www.ec.example.com",
+            "--format",
+            "json",
+            "--csr-out",
+            csr_path.to_str().unwrap(),
+            "--key-out",
+            key_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run dcert");
+
+    assert!(output.status.success(), "ECDSA CSR create should succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("output should be valid JSON");
+    assert_eq!(parsed["key_algorithm"], "ECDSA P-256");
+    assert_eq!(parsed["key_size_bits"], 256);
+    assert!(
+        parsed["sans"].as_array().unwrap().len() >= 2,
+        "should have at least 2 SANs"
+    );
+}
+
+#[test]
+fn test_csr_create_with_ou_metadata() {
+    let dir = tempdir().unwrap();
+    let csr_path = dir.path().join("ou.csr");
+    let key_path = dir.path().join("ou.key");
+
+    let output = dcert_bin()
+        .args([
+            "csr",
+            "create",
+            "--cn",
+            "app.internal.corp",
+            "--ou",
+            "AppId:my-service-123",
+            "--ou",
+            "Team:Platform",
+            "--format",
+            "json",
+            "--csr-out",
+            csr_path.to_str().unwrap(),
+            "--key-out",
+            key_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run dcert");
+
+    assert!(output.status.success(), "CSR with OUs should succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    let subject = parsed["subject"].as_str().unwrap();
+    assert!(
+        subject.contains("AppId:my-service-123"),
+        "subject should contain OU metadata"
+    );
+
+    // stderr should have the OU deprecation note
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("OU"), "should warn about OU deprecation");
+}
+
+#[test]
+fn test_csr_create_encrypted_key() {
+    let dir = tempdir().unwrap();
+    let csr_path = dir.path().join("enc.csr");
+    let key_path = dir.path().join("enc.key");
+
+    let output = dcert_bin()
+        .args([
+            "csr",
+            "create",
+            "--cn",
+            "secure.example.com",
+            "--encrypt-key",
+            "--key-password",
+            "testpass123",
+            "--format",
+            "json",
+            "--csr-out",
+            csr_path.to_str().unwrap(),
+            "--key-out",
+            key_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run dcert");
+
+    assert!(
+        output.status.success(),
+        "encrypted key CSR should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    assert_eq!(parsed["key_encrypted"], true, "key should be encrypted");
+
+    // Verify the key file is encrypted PEM
+    let key_content = std::fs::read_to_string(&key_path).unwrap();
+    assert!(key_content.contains("ENCRYPTED"), "key file should be encrypted PEM");
+}
+
+#[test]
+fn test_csr_create_encrypt_requires_password() {
+    let dir = tempdir().unwrap();
+    let output = dcert_bin()
+        .args([
+            "csr",
+            "create",
+            "--cn",
+            "test.example.com",
+            "--encrypt-key",
+            "--csr-out",
+            dir.path().join("t.csr").to_str().unwrap(),
+            "--key-out",
+            dir.path().join("t.key").to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run dcert");
+
+    assert!(!output.status.success(), "should fail without password");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("key-password"),
+        "should mention --key-password: {stderr}"
+    );
+}
+
+// ---------------------------------------------------------------
+// CSR subcommand: validate
+// ---------------------------------------------------------------
+
+#[test]
+fn test_csr_validate_pretty() {
+    // First create a CSR, then validate it
+    let dir = tempdir().unwrap();
+    let csr_path = dir.path().join("val.csr");
+    let key_path = dir.path().join("val.key");
+
+    // Create
+    let create = dcert_bin()
+        .args([
+            "csr",
+            "create",
+            "--cn",
+            "validate.example.com",
+            "--org",
+            "Val Corp",
+            "--country",
+            "US",
+            "--san",
+            "DNS:validate.example.com",
+            "--san",
+            "DNS:www.validate.example.com",
+            "--csr-out",
+            csr_path.to_str().unwrap(),
+            "--key-out",
+            key_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to create CSR");
+    assert!(create.status.success(), "CSR creation must succeed first");
+
+    // Validate
+    let output = dcert_bin()
+        .args(["csr", "validate", csr_path.to_str().unwrap()])
+        .output()
+        .expect("failed to run validate");
+
+    assert!(output.status.success(), "validation should succeed for valid CSR");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Validation Report"), "should show report header");
+    assert!(stdout.contains("COMPLIANT"), "should show compliant status");
+    assert!(stdout.contains("validate.example.com"), "should show CN: {stdout}");
+}
+
+#[test]
+fn test_csr_validate_json() {
+    let dir = tempdir().unwrap();
+    let csr_path = dir.path().join("val.csr");
+    let key_path = dir.path().join("val.key");
+
+    // Create
+    let create = dcert_bin()
+        .args([
+            "csr",
+            "create",
+            "--cn",
+            "json.example.com",
+            "--csr-out",
+            csr_path.to_str().unwrap(),
+            "--key-out",
+            key_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to create CSR");
+    assert!(create.status.success());
+
+    // Validate with JSON
+    let output = dcert_bin()
+        .args(["csr", "validate", csr_path.to_str().unwrap(), "--format", "json"])
+        .output()
+        .expect("failed to validate");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    assert_eq!(parsed["compliant"], true);
+    assert!(parsed["subject"]["common_name"].is_string());
+    assert!(parsed["findings"].is_array());
+    assert!(parsed["public_key_algorithm"].is_string());
+    assert!(parsed["subject_alternative_names"].is_array());
+}
+
+#[test]
+fn test_csr_validate_nonexistent_file() {
+    let output = dcert_bin()
+        .args(["csr", "validate", "/nonexistent/path/fake.csr"])
+        .output()
+        .expect("failed to run dcert");
+    assert!(!output.status.success(), "should fail with nonexistent file");
+}
+
+#[test]
+fn test_csr_create_and_validate_roundtrip_ecdsa() {
+    let dir = tempdir().unwrap();
+    let csr_path = dir.path().join("rt.csr");
+    let key_path = dir.path().join("rt.key");
+
+    // Create ECDSA P-384
+    let create = dcert_bin()
+        .args([
+            "csr",
+            "create",
+            "--cn",
+            "roundtrip.example.com",
+            "--key-algo",
+            "ecdsa-p384",
+            "--org",
+            "RT Corp",
+            "--country",
+            "GB",
+            "--csr-out",
+            csr_path.to_str().unwrap(),
+            "--key-out",
+            key_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to create CSR");
+    assert!(create.status.success());
+
+    // Validate
+    let output = dcert_bin()
+        .args(["csr", "validate", csr_path.to_str().unwrap(), "--format", "json"])
+        .output()
+        .expect("failed to validate");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    assert_eq!(parsed["compliant"], true);
+    assert!(
+        parsed["public_key_algorithm"].as_str().unwrap().contains("EC"),
+        "should be ECDSA: {}",
+        parsed["public_key_algorithm"]
+    );
+    assert_eq!(parsed["public_key_size_bits"], 384);
+}
+
+#[test]
+fn test_csr_help_listed_in_top_level() {
+    let output = dcert_bin().arg("--help").output().expect("failed to run dcert");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("csr"), "top-level help should list csr subcommand");
 }
