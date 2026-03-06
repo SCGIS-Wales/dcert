@@ -11,6 +11,8 @@ use std::time::Duration;
 use tokio::process::Command;
 use tokio::sync::Semaphore;
 
+mod security;
+
 /// Canonical description for dcert-mcp, consistent with the CLI.
 const MCP_DESCRIPTION: &str =
     "MCP server for TLS certificate analysis, format conversion, and key verification — for AI-powered IDEs";
@@ -46,6 +48,14 @@ struct McpCli {
     /// Read timeout in seconds passed to the dcert subprocess (time to wait for server response)
     #[arg(long, env = "DCERT_MCP_READ_TIMEOUT", default_value_t = DEFAULT_READ_TIMEOUT)]
     read_timeout: u64,
+
+    /// Transport mode: "stdio" (default) or "http"
+    #[arg(long, env = "DCERT_MCP_MODE", default_value = "stdio")]
+    mode: String,
+
+    /// HTTP bind address (only used in http mode)
+    #[arg(long, env = "DCERT_MCP_ADDR", default_value = "0.0.0.0:3000")]
+    addr: String,
 }
 
 /// Default maximum time allowed for a single dcert subprocess invocation.
@@ -1568,6 +1578,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         proxy_config: McpProxyInfo::from_env(),
     };
 
+    match cli.mode.as_str() {
+        "http" => run_http_mode(config, &cli.addr).await,
+        _ => run_stdio_mode(config).await,
+    }
+}
+
+/// Run in stdio mode (default, unchanged behavior).
+async fn run_stdio_mode(config: McpConfig) -> Result<(), Box<dyn std::error::Error>> {
     // Log startup diagnostics to stderr (MCP protocol uses stdio)
     log_startup_diagnostics(&config);
 
@@ -1575,6 +1593,262 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let service = server.serve(rmcp::transport::io::stdio()).await?;
     service.waiting().await?;
     Ok(())
+}
+
+/// Shared state for HTTP mode handlers.
+struct HttpAppState {
+    mcp_server: DcertMcpServer,
+}
+
+/// Run in HTTP mode with OIDC/OAuth2 authentication.
+async fn run_http_mode(config: McpConfig, addr: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use axum::routing::{get, post};
+    use security::audit::AuditLogger;
+    use security::middleware::{auth_middleware, AuthState};
+    use security::session::{SessionCache, SessionConfig};
+    use tower_http::cors::CorsLayer;
+
+    // Initialize structured logging for HTTP mode.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .with_target(false)
+        .json()
+        .init();
+
+    log_startup_diagnostics(&config);
+
+    // Build auth state from environment variables.
+    let oidc_validator = build_oidc_validator();
+    let static_token = std::env::var("DCERT_MCP_AUTH_TOKEN").ok().filter(|s| !s.is_empty());
+
+    // Log auth status.
+    if oidc_validator.is_some() {
+        tracing::info!("authentication: OIDC/OAuth2 enabled");
+    } else if static_token.is_some() {
+        tracing::info!("authentication: static bearer token enabled");
+    } else {
+        tracing::warn!("authentication: DISABLED — no OIDC issuer or static token configured");
+    }
+
+    // Session cache.
+    let session_ttl = std::env::var("DCERT_MCP_SESSION_TTL")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(300);
+    let session_cache = Arc::new(SessionCache::new(SessionConfig {
+        inactivity_ttl: Duration::from_secs(session_ttl),
+        ..SessionConfig::default()
+    }));
+
+    let audit_logger = Arc::new(AuditLogger::new());
+
+    let auth_state = Arc::new(AuthState {
+        oidc_validator: oidc_validator.map(Arc::new),
+        static_token,
+        session_cache: Some(session_cache),
+        audit_logger: Some(audit_logger),
+    });
+
+    let mcp_server = DcertMcpServer::new(config);
+
+    let app_state = Arc::new(HttpAppState { mcp_server });
+
+    // Create axum router with auth middleware.
+    let app = axum::Router::new()
+        .route("/health", get(health_handler))
+        .route("/mcp", post(mcp_handler))
+        .layer(CorsLayer::permissive())
+        .layer(axum::middleware::from_fn_with_state(auth_state, auth_middleware))
+        .with_state(app_state);
+
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    tracing::info!(addr = addr, "dcert-mcp HTTP server listening");
+
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+/// Build OIDC validator from environment variables (if configured).
+fn build_oidc_validator() -> Option<security::oidc::OidcValidator> {
+    let issuer = std::env::var("DCERT_MCP_OIDC_ISSUER").ok().filter(|s| !s.is_empty())?;
+    let audience = std::env::var("DCERT_MCP_OIDC_AUDIENCE")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_default();
+
+    if audience.is_empty() {
+        eprintln!("[dcert-mcp] WARNING: DCERT_MCP_OIDC_ISSUER set but DCERT_MCP_OIDC_AUDIENCE missing");
+        return None;
+    }
+
+    let config = security::oidc::OidcConfig {
+        issuer_url: issuer,
+        audience,
+        jwks_url: std::env::var("DCERT_MCP_OIDC_JWKS_URL").ok().filter(|s| !s.is_empty()),
+        required_scopes: std::env::var("DCERT_MCP_REQUIRED_SCOPES")
+            .ok()
+            .map(|s| {
+                s.split(',')
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default(),
+        required_roles: std::env::var("DCERT_MCP_REQUIRED_ROLES")
+            .ok()
+            .map(|s| {
+                s.split(',')
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default(),
+        allowed_client_ids: std::env::var("DCERT_MCP_ALLOWED_CLIENTS")
+            .ok()
+            .map(|s| {
+                s.split(',')
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default(),
+    };
+
+    match security::oidc::OidcValidator::new(config) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            eprintln!("[dcert-mcp] ERROR: failed to create OIDC validator: {e}");
+            None
+        }
+    }
+}
+
+/// Health check endpoint.
+async fn health_handler() -> &'static str {
+    "ok"
+}
+
+/// MCP JSON-RPC handler for HTTP mode.
+async fn mcp_handler(
+    axum::extract::State(state): axum::extract::State<Arc<HttpAppState>>,
+    axum::extract::Json(body): axum::extract::Json<serde_json::Value>,
+) -> axum::response::Json<serde_json::Value> {
+    let method = body.get("method").and_then(|v| v.as_str()).unwrap_or("");
+    let params = body.get("params").cloned().unwrap_or(serde_json::Value::Null);
+    let id = body.get("id").cloned().unwrap_or(serde_json::Value::Null);
+
+    match method {
+        "tools/list" => {
+            let tools = state.mcp_server.tool_router.list_all();
+            let tool_list: Vec<serde_json::Value> = tools
+                .into_iter()
+                .map(|t| {
+                    serde_json::json!({
+                        "name": t.name,
+                        "description": t.description,
+                        "inputSchema": t.input_schema
+                    })
+                })
+                .collect();
+            axum::response::Json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": { "tools": tool_list }
+            }))
+        }
+        "tools/call" => {
+            let tool_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let arguments = params
+                .get("arguments")
+                .cloned()
+                .unwrap_or(serde_json::Value::Object(Default::default()));
+
+            // Run the dcert binary directly for tool calls.
+            let result = dispatch_tool_call(&state.mcp_server.config, &tool_name, &arguments).await;
+
+            axum::response::Json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "content": [{"type": "text", "text": result}],
+                    "isError": false
+                }
+            }))
+        }
+        "initialize" => axum::response::Json(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": { "tools": {} },
+                "serverInfo": {
+                    "name": "dcert-mcp",
+                    "version": dcert_mcp_version()
+                }
+            }
+        })),
+        _ => axum::response::Json(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": {
+                "code": -32601,
+                "message": format!("method not found: {method}")
+            }
+        })),
+    }
+}
+
+/// Dispatch a tool call by running the dcert binary with appropriate arguments.
+async fn dispatch_tool_call(config: &McpConfig, tool_name: &str, arguments: &serde_json::Value) -> String {
+    // Map tool names to dcert CLI arguments.
+    let mut args: Vec<String> = Vec::new();
+
+    match tool_name {
+        "analyze_certificate" => {
+            if let Some(target) = arguments.get("target").and_then(|v| v.as_str()) {
+                args.push(target.to_string());
+            }
+            args.extend(["--format".to_string(), "json".to_string()]);
+            if arguments.get("fingerprint").and_then(|v| v.as_bool()) == Some(true) {
+                args.push("--fingerprint".to_string());
+            }
+            if arguments.get("extensions").and_then(|v| v.as_bool()) == Some(true) {
+                args.push("--extensions".to_string());
+            }
+            if arguments.get("check_revocation").and_then(|v| v.as_bool()) == Some(true) {
+                args.push("--check-revocation".to_string());
+            }
+        }
+        "validate_certificate" => {
+            if let Some(target) = arguments.get("target").and_then(|v| v.as_str()) {
+                args.push(target.to_string());
+            }
+            args.push("--compliance".to_string());
+            args.extend(["--format".to_string(), "json".to_string()]);
+        }
+        _ => {
+            return format!("unknown tool: {tool_name}");
+        }
+    }
+
+    let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    match run_dcert(&args_refs, config).await {
+        Ok((stdout, stderr, code)) => {
+            let mut output = stdout;
+            if !stderr.is_empty() {
+                output.push_str("\n--- stderr ---\n");
+                output.push_str(&stderr);
+            }
+            if code != 0 {
+                output.push_str(&format!("\n--- exit code: {code} ---"));
+            }
+            output
+        }
+        Err(e) => format!("error: {e}"),
+    }
 }
 
 #[cfg(test)]

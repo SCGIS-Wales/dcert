@@ -34,10 +34,19 @@ serde_yml = "0.0.12"
 ctrlc = "3.4"
 openssl-probe = "0.2"
 rmcp = { version = "0.15", features = ["server", "transport-io", "client"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-std", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-std", "sync", "time"] }
 schemars = "1.0"
+jsonwebtoken = "9"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+regex-lite = "0.1"
 
 [dev-dependencies]
 tempfile = "3.25"
+wiremock = "0.6"
 
 rustc_version_runtime = "0.3"
