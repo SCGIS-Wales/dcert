@@ -444,7 +444,7 @@ pub fn interactive_create() -> Result<(CsrCreateOptions, String, String)> {
     Ok((opts, csr_path, key_path))
 }
 
-fn prompt_required(label: &str) -> Result<String> {
+pub(crate) fn prompt_required(label: &str) -> Result<String> {
     use std::io::{self, Write};
     loop {
         eprint!("{}: ", label);
@@ -461,7 +461,7 @@ fn prompt_required(label: &str) -> Result<String> {
     }
 }
 
-fn prompt_optional(label: &str) -> Result<Option<String>> {
+pub(crate) fn prompt_optional(label: &str) -> Result<Option<String>> {
     use std::io::{self, Write};
     eprint!("{}: ", label);
     io::stderr().flush().ok();
@@ -477,7 +477,7 @@ fn prompt_optional(label: &str) -> Result<Option<String>> {
     }
 }
 
-fn prompt_with_default(label: &str, default: &str) -> Result<String> {
+pub(crate) fn prompt_with_default(label: &str, default: &str) -> Result<String> {
     use std::io::{self, Write};
     eprint!("{} [{}]: ", label, default);
     io::stderr().flush().ok();

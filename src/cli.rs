@@ -168,6 +168,10 @@ pub enum Command {
     /// Create or validate Certificate Signing Requests (CSRs)
     #[command(name = "csr")]
     Csr(CsrArgs),
+
+    /// HashiCorp Vault PKI operations (issue, sign, revoke, list, store, validate, renew)
+    #[command(name = "vault")]
+    Vault(VaultArgs),
 }
 
 /// Known subcommand names for backward-compatible default routing.
@@ -177,6 +181,7 @@ pub const KNOWN_SUBCOMMANDS: &[&str] = &[
     "convert",
     "verify-key",
     "csr",
+    "vault",
     "help",
     "--help",
     "-h",
@@ -529,6 +534,276 @@ pub struct CsrValidateArgs {
     /// Treat warnings as errors (exit code 1 if any warnings)
     #[arg(long)]
     pub strict: bool,
+}
+
+// -- Vault subcommand --
+
+#[derive(Args, Debug)]
+pub struct VaultArgs {
+    #[command(subcommand)]
+    pub mode: VaultMode,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum VaultMode {
+    /// Issue a new TLS certificate from Vault PKI (generates private key).
+    /// Run without --cn for an interactive guided wizard.
+    #[command(name = "issue")]
+    Issue(Box<VaultIssueArgs>),
+
+    /// Sign a Certificate Signing Request (CSR) using Vault PKI
+    #[command(name = "sign")]
+    Sign(VaultSignArgs),
+
+    /// Revoke a certificate in Vault PKI by serial number or PEM file
+    #[command(name = "revoke")]
+    Revoke(VaultRevokeArgs),
+
+    /// List all certificates issued by Vault PKI (with optional filtering)
+    #[command(name = "list")]
+    List(VaultListArgs),
+
+    /// Store a local certificate and private key in Vault KV
+    #[command(name = "store")]
+    Store(VaultStoreArgs),
+
+    /// Read and validate a certificate stored in Vault KV
+    #[command(name = "validate")]
+    Validate(VaultValidateArgs),
+
+    /// Renew an existing certificate in Vault KV by re-issuing from Vault PKI
+    #[command(name = "renew")]
+    Renew(VaultRenewArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct VaultIssueArgs {
+    /// Common Name (e.g., www.example.com). If omitted, enters interactive wizard mode.
+    #[arg(long)]
+    pub cn: Option<String>,
+
+    /// Subject Alternative Names (can be repeated, e.g., --san DNS:*.example.com)
+    #[arg(long, num_args = 0..)]
+    pub san: Vec<String>,
+
+    /// IP Subject Alternative Names (can be repeated, e.g., --ip-san 10.0.0.1)
+    #[arg(long, num_args = 0..)]
+    pub ip_san: Vec<String>,
+
+    /// Certificate TTL (e.g., 8760h for 1 year)
+    #[arg(long, default_value = "8760h")]
+    pub ttl: String,
+
+    /// Vault PKI role name
+    #[arg(long)]
+    pub role: Option<String>,
+
+    /// Vault PKI mount point
+    #[arg(long, default_value = "vault_intermediate")]
+    pub mount: String,
+
+    /// Output file base name (without extension). Defaults to sanitised CN.
+    #[arg(long)]
+    pub output: Option<String>,
+
+    /// Output format
+    #[arg(short, long, value_enum, default_value_t = OutputFormat::Pretty)]
+    pub format: OutputFormat,
+
+    /// PFX password — if provided, output will be PKCS12/PFX instead of PEM
+    #[arg(long, env = "DCERT_CERT_PASSWORD")]
+    pub pfx_password: Option<String>,
+
+    /// Store certificate and key in Vault KV at this path after issuance
+    #[arg(long)]
+    pub store_path: Option<String>,
+
+    /// Vault KV version (1 or 2) for --store-path
+    #[arg(long, default_value_t = 1)]
+    pub kv_version: u8,
+}
+
+#[derive(Args, Debug)]
+pub struct VaultSignArgs {
+    /// Path to CSR PEM file to sign. If omitted, enters interactive wizard mode.
+    #[arg(long)]
+    pub csr_file: Option<String>,
+
+    /// Common Name override (defaults to CN from CSR)
+    #[arg(long)]
+    pub cn: Option<String>,
+
+    /// Subject Alternative Names (can be repeated)
+    #[arg(long, num_args = 0..)]
+    pub san: Vec<String>,
+
+    /// IP Subject Alternative Names (can be repeated, e.g., --ip-san 10.0.0.1)
+    #[arg(long, num_args = 0..)]
+    pub ip_san: Vec<String>,
+
+    /// Certificate TTL
+    #[arg(long, default_value = "8760h")]
+    pub ttl: String,
+
+    /// Vault PKI role name
+    #[arg(long)]
+    pub role: Option<String>,
+
+    /// Vault PKI mount point
+    #[arg(long, default_value = "vault_intermediate")]
+    pub mount: String,
+
+    /// Output file base name
+    #[arg(long)]
+    pub output: Option<String>,
+
+    /// Output format
+    #[arg(short, long, value_enum, default_value_t = OutputFormat::Pretty)]
+    pub format: OutputFormat,
+
+    /// PFX password — if provided, output will be PKCS12/PFX instead of PEM
+    #[arg(long, env = "DCERT_CERT_PASSWORD")]
+    pub pfx_password: Option<String>,
+
+    /// Store certificate in Vault KV at this path after signing
+    #[arg(long)]
+    pub store_path: Option<String>,
+
+    /// Vault KV version (1 or 2) for --store-path
+    #[arg(long, default_value_t = 1)]
+    pub kv_version: u8,
+}
+
+#[derive(Args, Debug)]
+pub struct VaultRevokeArgs {
+    /// Certificate serial number (colon or hyphen-separated hex)
+    #[arg(long, conflicts_with = "cert_file")]
+    pub serial: Option<String>,
+
+    /// PEM certificate file to revoke
+    #[arg(long, conflicts_with = "serial")]
+    pub cert_file: Option<String>,
+
+    /// Vault PKI mount point
+    #[arg(long, default_value = "vault_intermediate")]
+    pub mount: String,
+}
+
+#[derive(Args, Debug)]
+pub struct VaultListArgs {
+    /// Vault PKI mount point
+    #[arg(long, default_value = "vault_intermediate")]
+    pub mount: String,
+
+    /// Output format
+    #[arg(short, long, value_enum, default_value_t = OutputFormat::Pretty)]
+    pub format: OutputFormat,
+
+    /// Fetch and display details for each certificate (slower for large lists)
+    #[arg(long)]
+    pub show_details: bool,
+
+    /// Show only expired certificates
+    #[arg(long)]
+    pub expired_only: bool,
+
+    /// Show only valid (non-expired) certificates
+    #[arg(long, conflicts_with = "expired_only")]
+    pub valid_only: bool,
+
+    /// Export results to a file (JSON, CSV, or XLSX based on extension)
+    #[arg(long, value_name = "FILE")]
+    pub export: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct VaultStoreArgs {
+    /// Local PEM certificate file to store
+    #[arg(long)]
+    pub cert_file: String,
+
+    /// Local PEM private key file to store
+    #[arg(long)]
+    pub key_file: String,
+
+    /// Vault KV path (e.g., secret/company/project/certs/my-cert)
+    pub path: String,
+
+    /// Key name for the certificate in Vault KV
+    #[arg(long, default_value = "cert")]
+    pub cert_key: String,
+
+    /// Key name for the private key in Vault KV
+    #[arg(long, default_value = "key")]
+    pub key_key: String,
+
+    /// Vault KV version (1 or 2). KV v1 uses flat paths; v2 uses /data/ prefix.
+    #[arg(long, default_value_t = 1)]
+    pub kv_version: u8,
+}
+
+#[derive(Args, Debug)]
+pub struct VaultValidateArgs {
+    /// Vault KV path to read certificate from (e.g., secret/company/project/certs/my-cert)
+    pub path: String,
+
+    /// Key name for the certificate in Vault KV
+    #[arg(long, default_value = "cert")]
+    pub cert_key: String,
+
+    /// Key name for the private key in Vault KV
+    #[arg(long, default_value = "key")]
+    pub key_key: String,
+
+    /// Vault KV version (1 or 2)
+    #[arg(long, default_value_t = 1)]
+    pub kv_version: u8,
+
+    /// Output format
+    #[arg(short, long, value_enum, default_value_t = OutputFormat::Pretty)]
+    pub format: OutputFormat,
+}
+
+#[derive(Args, Debug)]
+pub struct VaultRenewArgs {
+    /// Vault KV path containing the existing certificate to renew
+    pub path: String,
+
+    /// Vault PKI role name for issuing the new certificate
+    #[arg(long)]
+    pub role: Option<String>,
+
+    /// Vault PKI mount point
+    #[arg(long, default_value = "vault_intermediate")]
+    pub mount: String,
+
+    /// TTL for the new certificate
+    #[arg(long, default_value = "8760h")]
+    pub ttl: String,
+
+    /// Key name for the certificate in Vault KV
+    #[arg(long, default_value = "cert")]
+    pub cert_key: String,
+
+    /// Key name for the private key in Vault KV
+    #[arg(long, default_value = "key")]
+    pub key_key: String,
+
+    /// Vault KV version (1 or 2)
+    #[arg(long, default_value_t = 1)]
+    pub kv_version: u8,
+
+    /// Additional Subject Alternative Names (override existing SANs if provided)
+    #[arg(long, num_args = 0..)]
+    pub san: Vec<String>,
+
+    /// Additional IP Subject Alternative Names
+    #[arg(long, num_args = 0..)]
+    pub ip_san: Vec<String>,
+
+    /// Output format
+    #[arg(short, long, value_enum, default_value_t = OutputFormat::Pretty)]
+    pub format: OutputFormat,
 }
 
 // -- Helper functions --
