@@ -24,6 +24,7 @@
   - [dcert csr -- CSR Creation & Validation](#dcert-csr--csr-creation--validation)
   - [dcert convert -- Format Conversion](#dcert-convert--format-conversion)
   - [dcert verify-key -- Key Matching](#dcert-verify-key--key-matching)
+  - [dcert vault -- HashiCorp Vault PKI](#dcert-vault--hashicorp-vault-pki)
 - [MCP Server (AI IDE Integration)](#mcp-server-ai-ide-integration)
   - [Proxy and Timeout Configuration](#proxy-and-timeout-configuration)
   - [Troubleshooting](#troubleshooting)
@@ -65,6 +66,12 @@ dcert csr create --cn api.example.com --org "My Corp" --country GB
 
 # Validate a CSR for compliance
 dcert csr validate my-cert.csr
+
+# Issue a TLS certificate from HashiCorp Vault PKI
+dcert vault issue --cn www.example.com --role my-role
+
+# Renew a certificate stored in Vault KV
+dcert vault renew secret/certs/www-example-com --role my-role
 ```
 
 ## Installation
@@ -130,6 +137,13 @@ dcert csr validate <CSR_FILE>          # Validate a CSR for compliance
 dcert convert <MODE> [OPTIONS]         # Format conversion (PFX/PEM/keystore/truststore)
 dcert verify-key <target> --key <KEY>  # Key-certificate matching (single pair)
 dcert verify-key [--dir <DIR>]         # Auto-discover and verify all cert/key pairs
+dcert vault issue [OPTIONS]            # Issue a TLS certificate from Vault PKI
+dcert vault sign [OPTIONS]             # Sign a CSR using Vault PKI
+dcert vault revoke [OPTIONS]           # Revoke a certificate in Vault PKI
+dcert vault list [OPTIONS]             # List certificates issued by Vault PKI
+dcert vault store [OPTIONS] <PATH>     # Store cert+key in Vault KV
+dcert vault validate <PATH>            # Validate a certificate in Vault KV
+dcert vault renew <PATH> [OPTIONS]     # Renew a certificate in Vault KV
 ```
 
 ### dcert [check] -- Certificate Analysis (default)
@@ -483,6 +497,208 @@ Returns key type, key size, certificate subject, and whether the key matches. Ex
 
 ---
 
+### dcert vault -- HashiCorp Vault PKI
+
+Issue, sign, revoke, list, store, validate, and renew TLS certificates using HashiCorp Vault's PKI Secrets Engine. Supports interactive wizard mode (omit required args) or fully non-interactive CLI usage.
+
+#### Prerequisites
+
+Set these environment variables before using vault commands:
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `VAULT_ADDR` | Yes | Vault server URL (e.g., `https://vault.example.com:8200`) |
+| `VAULT_TOKEN` | No* | Vault authentication token |
+
+\* Token is discovered in order: `VAULT_TOKEN` env var, then `~/.vault-token` file.
+
+#### Issue a Certificate
+
+Vault generates a new private key and certificate via the PKI engine.
+
+```bash
+# Interactive wizard (guided step-by-step)
+dcert vault issue
+
+# Non-interactive with all options
+dcert vault issue --cn www.example.com --role my-role \
+  --san "DNS:*.example.com" --ip-san 10.0.0.1 --ttl 8760h
+
+# Output as PFX instead of PEM
+dcert vault issue --cn www.example.com --role my-role --pfx-password secret
+
+# Issue and store in Vault KV
+dcert vault issue --cn www.example.com --role my-role \
+  --store-path secret/company/project/certs/www-example-com
+
+# Custom PKI mount point
+dcert vault issue --cn www.example.com --role my-role --mount pki_intermediate
+```
+
+#### Sign a CSR
+
+Submit an existing CSR to Vault PKI for signing (no private key is generated).
+
+```bash
+# Interactive wizard
+dcert vault sign
+
+# Non-interactive
+dcert vault sign --csr-file server.csr --role my-role --ttl 8760h
+
+# Override CN from CSR
+dcert vault sign --csr-file server.csr --role my-role --cn override.example.com
+```
+
+#### Revoke a Certificate
+
+```bash
+# Revoke by serial number
+dcert vault revoke --serial "1a:2b:3c:4d:5e"
+
+# Revoke by PEM certificate file
+dcert vault revoke --cert-file server.crt
+```
+
+#### List Certificates
+
+```bash
+# List all issued certificates (serial numbers only)
+dcert vault list
+
+# Fetch and display details for each certificate
+dcert vault list --show-details
+
+# Filter by status
+dcert vault list --show-details --expired-only
+dcert vault list --show-details --valid-only
+
+# Export to JSON or CSV
+dcert vault list --show-details --export certs.json
+dcert vault list --show-details --export certs.csv
+
+# JSON output
+dcert vault list --show-details --format json
+```
+
+#### Store in Vault KV
+
+Store a local certificate and private key in Vault KV v2.
+
+```bash
+dcert vault store --cert-file server.crt --key-file server.key \
+  secret/company/project/certs/www-example-com
+
+# Custom key names in KV
+dcert vault store --cert-file server.crt --key-file server.key \
+  --cert-key tls_cert --key-key tls_key \
+  secret/company/project/certs/www-example-com
+```
+
+#### Validate from Vault KV
+
+Read a certificate and key from Vault KV, validate them, and display certificate details (same output as `dcert check`). Also verifies the private key matches the certificate.
+
+```bash
+dcert vault validate secret/company/project/certs/www-example-com
+
+# Custom key names
+dcert vault validate secret/company/project/certs/www-example-com \
+  --cert-key tls_cert --key-key tls_key
+
+# JSON output
+dcert vault validate secret/company/project/certs/www-example-com --format json
+```
+
+#### Renew a Certificate
+
+Read an existing certificate from Vault KV, extract its CN and SANs, issue a new certificate with the same parameters, and overwrite the KV entry.
+
+```bash
+dcert vault renew secret/company/project/certs/www-example-com --role my-role
+
+# Custom TTL and mount
+dcert vault renew secret/company/project/certs/www-example-com \
+  --role my-role --ttl 2160h --mount pki_intermediate
+```
+
+#### Permission Errors
+
+All Vault API calls produce clear, actionable error messages on permission denial:
+
+```
+Error: Permission denied by Vault.
+
+  Endpoint: POST vault_intermediate/issue/my-role
+  Required: create capability on "vault_intermediate/issue/my-role"
+
+  Ask your Vault administrator to add this policy to your token:
+    path "vault_intermediate/issue/my-role" {
+      capabilities = ["create"]
+    }
+```
+
+#### Full Options Reference
+
+```
+dcert vault issue [OPTIONS]
+      --cn <NAME>           Common Name. Omit for interactive wizard.
+      --san <SAN>           Subject Alternative Names (repeatable)
+      --ip-san <IP>         IP SANs (repeatable)
+      --ttl <TTL>           Certificate TTL (default: 8760h)
+      --role <ROLE>         Vault PKI role name
+      --mount <MOUNT>       Vault PKI mount point (default: vault_intermediate)
+      --output <NAME>       Output file base name (default: sanitised CN)
+  -f, --format <FORMAT>     Output format [pretty, json, yaml]
+      --pfx-password <PW>   Output as PFX instead of PEM (env: DCERT_CERT_PASSWORD)
+      --store-path <PATH>   Store cert+key in Vault KV after issuance
+
+dcert vault sign [OPTIONS]
+      --csr-file <FILE>     CSR PEM file. Omit for interactive wizard.
+      --cn <NAME>           Override CN from CSR
+      --san <SAN>           Additional SANs (repeatable)
+      --ttl <TTL>           Certificate TTL (default: 8760h)
+      --role <ROLE>         Vault PKI role name
+      --mount <MOUNT>       PKI mount point (default: vault_intermediate)
+      --output <NAME>       Output file base name
+  -f, --format <FORMAT>     Output format [pretty, json, yaml]
+      --store-path <PATH>   Store certificate in Vault KV after signing
+
+dcert vault revoke [OPTIONS]
+      --serial <SERIAL>     Certificate serial number (hex, colon or hyphen-separated)
+      --cert-file <FILE>    PEM certificate file to revoke
+      --mount <MOUNT>       PKI mount point (default: vault_intermediate)
+
+dcert vault list [OPTIONS]
+      --mount <MOUNT>       PKI mount point (default: vault_intermediate)
+  -f, --format <FORMAT>     Output format [pretty, json, yaml]
+      --show-details        Fetch details for each certificate
+      --expired-only        Show only expired certificates
+      --valid-only          Show only valid certificates
+      --export <FILE>       Export to JSON or CSV file
+
+dcert vault store [OPTIONS] <PATH>
+      --cert-file <FILE>    Local PEM certificate file (required)
+      --key-file <FILE>     Local PEM private key file (required)
+      --cert-key <NAME>     KV key name for certificate (default: cert)
+      --key-key <NAME>      KV key name for private key (default: key)
+
+dcert vault validate [OPTIONS] <PATH>
+      --cert-key <NAME>     KV key name for certificate (default: cert)
+      --key-key <NAME>      KV key name for private key (default: key)
+  -f, --format <FORMAT>     Output format [pretty, json, yaml]
+
+dcert vault renew [OPTIONS] <PATH>
+      --role <ROLE>         PKI role name for issuing new certificate
+      --mount <MOUNT>       PKI mount point (default: vault_intermediate)
+      --ttl <TTL>           TTL for new certificate (default: 8760h)
+      --cert-key <NAME>     KV key name for certificate (default: cert)
+      --key-key <NAME>      KV key name for private key (default: key)
+  -f, --format <FORMAT>     Output format [pretty, json, yaml]
+```
+
+---
+
 ## MCP Server (AI IDE Integration)
 
 `dcert-mcp` is a Model Context Protocol server that exposes dcert's capabilities as tools for AI-powered IDEs. It supports two transport modes: **stdio** (default, for IDE integration) and **HTTP** (for remote deployment with optional OIDC/OAuth2 authentication).
@@ -821,6 +1037,10 @@ Side-by-side diff of certificates between two targets (`--diff`).
 
 Save fetched certificate chains as PEM files (`--export-pem`), with optional filtering of expired certificates (`--exclude-expired`).
 
+### Vault PKI Integration
+
+Issue, sign, revoke, list, and renew TLS certificates via HashiCorp Vault's PKI Secrets Engine (`dcert vault`). Store and validate certificates in Vault KV v2. Interactive wizard mode for guided certificate issuance. Full chain assembly from Vault root and intermediate CAs. Clear, actionable permission error messages with Vault policy hints.
+
 ---
 
 ## Use Cases
@@ -871,6 +1091,26 @@ dcert csr validate api-example-com.csr --format json
 
 # Internal PKI with metadata identifiers
 dcert csr create --cn app.internal.corp --ou "AppId:svc-123" --ou "Env:prod"
+```
+
+### Vault PKI Automation
+
+```bash
+# Issue a certificate from Vault PKI and store in KV
+dcert vault issue --cn www.example.com --role web-server \
+  --san "DNS:*.example.com" --store-path secret/certs/www-example-com
+
+# Renew a certificate stored in Vault KV
+dcert vault renew secret/certs/www-example-com --role web-server
+
+# Validate certificates stored in Vault KV
+dcert vault validate secret/certs/www-example-com
+
+# Audit all issued certificates
+dcert vault list --show-details --export audit.csv
+
+# Sign a CSR through Vault PKI
+dcert vault sign --csr-file server.csr --role web-server --ttl 2160h
 ```
 
 ### Certificate Management
