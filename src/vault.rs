@@ -907,8 +907,8 @@ pub fn sanitise_cn(cn: &str) -> String {
 pub fn display_certificate(pem_data: &str) {
     let opts = CertProcessOpts {
         expired_only: false,
-        fingerprint: true,
-        extensions: true,
+        fingerprint: false,
+        extensions: false,
     };
 
     match parse_cert_infos_from_pem(pem_data, &opts) {
