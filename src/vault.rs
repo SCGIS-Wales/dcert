@@ -293,6 +293,101 @@ fn handle_vault_response(resp: reqwest::blocking::Response, hint: &PolicyHint) -
 }
 
 // ---------------------------------------------------------------------------
+// Token Lookup & Role Discovery
+// ---------------------------------------------------------------------------
+
+/// Look up the current token's metadata via Vault API (`/auth/token/lookup-self`).
+pub fn token_lookup_self(client: &VaultClient) -> Result<serde_json::Value> {
+    client.get("auth/token/lookup-self")
+}
+
+/// Extract unique role names from Vault token policies.
+///
+/// Policies follow a dotted naming convention (e.g., `prefix.rolename.permission`).
+/// This function extracts the second segment from policies that have at least three
+/// dot-separated parts, deduplicates, and sorts alphabetically.
+pub fn extract_roles_from_policies(policies: &[String]) -> Vec<String> {
+    let mut roles: Vec<String> = policies
+        .iter()
+        .filter_map(|p| {
+            let parts: Vec<&str> = p.split('.').collect();
+            if parts.len() >= 3 {
+                Some(parts[1].to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    roles.sort();
+    roles.dedup();
+    roles
+}
+
+/// Discover roles from the current Vault token's policies and prompt the user to select one.
+/// Returns the selected role name.
+pub fn discover_role_from_token(client: &VaultClient) -> Result<Option<String>> {
+    let resp = match token_lookup_self(client) {
+        Ok(r) => r,
+        Err(_) => return Ok(None),
+    };
+
+    let policies: Vec<String> = resp["data"]["policies"]
+        .as_array()
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+
+    let roles = extract_roles_from_policies(&policies);
+
+    if roles.is_empty() {
+        return Ok(None);
+    }
+
+    if roles.len() == 1 {
+        eprintln!(
+            "  {} Inferred role '{}' from token policies",
+            "Auto:".cyan().bold(),
+            roles[0]
+        );
+        return Ok(Some(roles[0].clone()));
+    }
+
+    // Present selection
+    eprintln!("{}", "Available roles (from token policies):".bold());
+    for (i, role) in roles.iter().enumerate() {
+        eprintln!("  {}. {}", i + 1, role);
+    }
+    eprintln!();
+
+    let selection = prompt_required(&format!("Select role [1-{}]", roles.len()))?;
+    let idx: usize = selection
+        .trim()
+        .parse::<usize>()
+        .map_err(|_| anyhow::anyhow!("Invalid selection: '{}'", selection))?;
+
+    if idx < 1 || idx > roles.len() {
+        return Err(anyhow::anyhow!("Selection out of range: {}", idx));
+    }
+
+    Ok(Some(roles[idx - 1].clone()))
+}
+
+/// Resolve the role name: use provided value, or discover from token policies, or prompt.
+pub fn resolve_role(client: &VaultClient, role: Option<String>) -> Result<String> {
+    if let Some(role) = role {
+        return Ok(role);
+    }
+
+    // Try to discover from token policies
+    if let Ok(Some(role)) = discover_role_from_token(client) {
+        return Ok(role);
+    }
+
+    // Fall back to manual prompt
+    prompt_required("Role name")
+}
+
+// ---------------------------------------------------------------------------
 // Vault PKI Response Types
 // ---------------------------------------------------------------------------
 
@@ -355,6 +450,7 @@ pub fn issue_certificate(
 // Sign CSR
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 pub fn sign_csr(
     client: &VaultClient,
     mount: &str,
@@ -362,6 +458,7 @@ pub fn sign_csr(
     csr_pem: &str,
     common_name: Option<&str>,
     alt_names: &[String],
+    ip_sans: &[String],
     ttl: &str,
 ) -> Result<VaultPkiIssueData> {
     let mut body = serde_json::json!({
@@ -375,6 +472,9 @@ pub fn sign_csr(
     }
     if !alt_names.is_empty() {
         body["alt_names"] = serde_json::json!(alt_names.join(","));
+    }
+    if !ip_sans.is_empty() {
+        body["ip_sans"] = serde_json::json!(ip_sans.join(","));
     }
 
     let path = format!("{}/sign/{}", mount, role);
@@ -512,7 +612,9 @@ pub fn list_certificates(
 }
 
 pub fn export_cert_list(entries: &[VaultCertListEntry], export_path: &str) -> Result<()> {
-    if export_path.ends_with(".csv") {
+    if export_path.ends_with(".xlsx") {
+        export_cert_list_xlsx(entries, export_path)?;
+    } else if export_path.ends_with(".csv") {
         let mut csv = String::from("serial_number,common_name,not_before,not_after,status\n");
         for entry in entries {
             csv.push_str(&format!(
@@ -532,6 +634,52 @@ pub fn export_cert_list(entries: &[VaultCertListEntry], export_path: &str) -> Re
     }
 
     println!("Certificate list exported to {}", export_path);
+    Ok(())
+}
+
+fn export_cert_list_xlsx(entries: &[VaultCertListEntry], export_path: &str) -> Result<()> {
+    use rust_xlsxwriter::{Format, Workbook};
+
+    let mut workbook = Workbook::new();
+    let worksheet = workbook.add_worksheet();
+    worksheet
+        .set_name("Certificates")
+        .map_err(|e| anyhow::anyhow!("Failed to set worksheet name: {}", e))?;
+
+    let header_format = Format::new().set_bold();
+
+    // Write headers
+    let headers = ["Serial Number", "Common Name", "Not Before", "Not After", "Status"];
+    for (col, header) in headers.iter().enumerate() {
+        worksheet
+            .write_string_with_format(0, col as u16, *header, &header_format)
+            .map_err(|e| anyhow::anyhow!("Failed to write header: {}", e))?;
+    }
+
+    // Write data rows
+    for (row, entry) in entries.iter().enumerate() {
+        let r = (row + 1) as u32;
+        worksheet
+            .write_string(r, 0, &entry.serial_number)
+            .map_err(|e| anyhow::anyhow!("Failed to write cell: {}", e))?;
+        worksheet
+            .write_string(r, 1, entry.common_name.as_deref().unwrap_or(""))
+            .map_err(|e| anyhow::anyhow!("Failed to write cell: {}", e))?;
+        worksheet
+            .write_string(r, 2, &entry.not_before)
+            .map_err(|e| anyhow::anyhow!("Failed to write cell: {}", e))?;
+        worksheet
+            .write_string(r, 3, &entry.not_after)
+            .map_err(|e| anyhow::anyhow!("Failed to write cell: {}", e))?;
+        worksheet
+            .write_string(r, 4, &entry.status)
+            .map_err(|e| anyhow::anyhow!("Failed to write cell: {}", e))?;
+    }
+
+    workbook
+        .save(export_path)
+        .map_err(|e| anyhow::anyhow!("Failed to save Excel file: {}", e))?;
+
     Ok(())
 }
 
@@ -637,7 +785,32 @@ pub fn display_certificate(pem_data: &str) {
 // Vault KV Operations
 // ---------------------------------------------------------------------------
 
-/// Store certificate and key in Vault KV v2.
+/// Build the Vault KV API path based on the KV version.
+/// KV v1: path as-is. KV v2: insert `/data/` after the mount point.
+fn kv_api_path(user_path: &str, kv_version: u8) -> String {
+    if kv_version >= 2 {
+        // Insert /data/ after the first path segment (mount point)
+        if let Some(idx) = user_path.find('/') {
+            format!("{}/data/{}", &user_path[..idx], &user_path[idx + 1..])
+        } else {
+            format!("{}/data", user_path)
+        }
+    } else {
+        user_path.to_string()
+    }
+}
+
+/// Extract data from a KV response based on version.
+/// KV v1: `resp["data"]`. KV v2: `resp["data"]["data"]`.
+fn kv_extract_data(resp: &serde_json::Value, kv_version: u8) -> serde_json::Value {
+    if kv_version >= 2 {
+        resp["data"]["data"].clone()
+    } else {
+        resp["data"].clone()
+    }
+}
+
+/// Store certificate and key in Vault KV.
 pub fn kv_store(
     client: &VaultClient,
     kv_path: &str,
@@ -645,9 +818,12 @@ pub fn kv_store(
     key_pem: &str,
     cert_key_name: &str,
     key_key_name: &str,
+    kv_version: u8,
 ) -> Result<()> {
+    let api_path = kv_api_path(kv_path, kv_version);
+
     // Check if secret already exists
-    let exists = kv_read_raw(client, kv_path).is_ok();
+    let exists = client.get(&api_path).is_ok();
     if exists {
         eprintln!(
             "{} Secret already exists at path '{}'.",
@@ -661,37 +837,45 @@ pub fn kv_store(
         }
     }
 
-    let body = serde_json::json!({
-        "data": {
+    let body = if kv_version >= 2 {
+        // KV v2 wraps data in a "data" envelope
+        serde_json::json!({
+            "data": {
+                cert_key_name: cert_pem,
+                key_key_name: key_pem,
+            }
+        })
+    } else {
+        // KV v1 uses flat structure
+        serde_json::json!({
             cert_key_name: cert_pem,
             key_key_name: key_pem,
-        }
-    });
+        })
+    };
 
-    // KV v2 uses POST to {mount}/data/{path}
-    client.post(kv_path, &body)?;
+    client.post(&api_path, &body)?;
 
-    println!("{}", format!("Certificate and key stored at '{}'", kv_path).green());
+    println!(
+        "{}",
+        format!("Certificate and key stored at '{}' (KV v{})", kv_path, kv_version).green()
+    );
     println!("  Format: base64 PEM certificate, unencrypted private key");
 
     Ok(())
 }
 
-/// Read raw KV v2 data from Vault.
-fn kv_read_raw(client: &VaultClient, kv_path: &str) -> Result<serde_json::Value> {
-    client.get(kv_path)
-}
-
-/// Read certificate and key from Vault KV v2.
+/// Read certificate and key from Vault KV.
 pub fn kv_read_cert_key(
     client: &VaultClient,
     kv_path: &str,
     cert_key_name: &str,
     key_key_name: &str,
+    kv_version: u8,
 ) -> Result<(String, Option<String>)> {
-    let resp = client.get(kv_path)?;
+    let api_path = kv_api_path(kv_path, kv_version);
+    let resp = client.get(&api_path)?;
 
-    let data = &resp["data"]["data"];
+    let data = kv_extract_data(&resp, kv_version);
     if data.is_null() {
         return Err(anyhow::anyhow!("No data found at path '{}'", kv_path));
     }
@@ -718,8 +902,14 @@ pub fn kv_read_cert_key(
 // Validate (read from KV and display)
 // ---------------------------------------------------------------------------
 
-pub fn validate_from_kv(client: &VaultClient, kv_path: &str, cert_key_name: &str, key_key_name: &str) -> Result<()> {
-    let (cert_pem, key_pem) = kv_read_cert_key(client, kv_path, cert_key_name, key_key_name)?;
+pub fn validate_from_kv(
+    client: &VaultClient,
+    kv_path: &str,
+    cert_key_name: &str,
+    key_key_name: &str,
+    kv_version: u8,
+) -> Result<()> {
+    let (cert_pem, key_pem) = kv_read_cert_key(client, kv_path, cert_key_name, key_key_name, kv_version)?;
 
     println!("{}", format!("=== Certificate from Vault KV: {} ===", kv_path).bold());
     println!();
@@ -770,6 +960,7 @@ pub fn validate_from_kv(client: &VaultClient, kv_path: &str, cert_key_name: &str
 // Renew (read existing cert from KV, re-issue, overwrite)
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 pub fn renew_certificate(
     client: &VaultClient,
     kv_path: &str,
@@ -778,13 +969,16 @@ pub fn renew_certificate(
     ttl: &str,
     cert_key_name: &str,
     key_key_name: &str,
+    kv_version: u8,
+    san_overrides: &[String],
+    ip_san_overrides: &[String],
 ) -> Result<()> {
     // Step 1: Read existing cert from KV
     println!("{}", "=== Certificate Renewal ===".bold());
     println!();
     println!("Reading existing certificate from '{}'...", kv_path);
 
-    let (cert_pem, _) = kv_read_cert_key(client, kv_path, cert_key_name, key_key_name)?;
+    let (cert_pem, _) = kv_read_cert_key(client, kv_path, cert_key_name, key_key_name, kv_version)?;
 
     // Step 2: Parse existing cert to extract CN and SANs
     let opts = CertProcessOpts {
@@ -803,11 +997,24 @@ pub fn renew_certificate(
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("Existing certificate has no Common Name"))?;
 
-    let sans: Vec<String> = info
-        .subject_alternative_names
-        .iter()
-        .filter_map(|san| san.strip_prefix("DNS:").map(|s| s.to_string()))
-        .collect();
+    // Use SAN overrides if provided, otherwise extract from existing cert
+    let sans: Vec<String> = if !san_overrides.is_empty() {
+        san_overrides.to_vec()
+    } else {
+        info.subject_alternative_names
+            .iter()
+            .filter_map(|san| san.strip_prefix("DNS:").map(|s| s.to_string()))
+            .collect()
+    };
+
+    let ip_sans: Vec<String> = if !ip_san_overrides.is_empty() {
+        ip_san_overrides.to_vec()
+    } else {
+        info.subject_alternative_names
+            .iter()
+            .filter_map(|san| san.strip_prefix("IP:").map(|s| s.to_string()))
+            .collect()
+    };
 
     // Step 3: Display current cert details
     println!();
@@ -815,6 +1022,9 @@ pub fn renew_certificate(
     println!("  Common Name  : {}", cn);
     if !sans.is_empty() {
         println!("  SANs         : {}", sans.join(", "));
+    }
+    if !ip_sans.is_empty() {
+        println!("  IP SANs      : {}", ip_sans.join(", "));
     }
     println!("  Issuer       : {}", info.issuer);
     println!("  Not After    : {}", info.not_after);
@@ -829,7 +1039,7 @@ pub fn renew_certificate(
     // Step 4: Issue new certificate with same CN + SANs
     println!("Issuing new certificate from {}/issue/{} ...", mount, role);
 
-    let new_data = issue_certificate(client, mount, role, cn, &sans, &[], ttl)?;
+    let new_data = issue_certificate(client, mount, role, cn, &sans, &ip_sans, ttl)?;
 
     // Step 5: Build full chain
     let full_chain = build_full_chain(client, &new_data.certificate, &new_data.ca_chain, mount);
@@ -860,14 +1070,22 @@ pub fn renew_certificate(
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("Vault did not return a private key for the new certificate"))?;
 
-    let body = serde_json::json!({
-        "data": {
+    let api_path = kv_api_path(kv_path, kv_version);
+    let body = if kv_version >= 2 {
+        serde_json::json!({
+            "data": {
+                cert_key_name: full_chain,
+                key_key_name: key_pem,
+            }
+        })
+    } else {
+        serde_json::json!({
             cert_key_name: full_chain,
             key_key_name: key_pem,
-        }
-    });
+        })
+    };
 
-    client.post(kv_path, &body)?;
+    client.post(&api_path, &body)?;
 
     println!();
     println!(
@@ -924,7 +1142,7 @@ type SignWizardResult = (
 );
 
 /// Interactive wizard for issuing a certificate.
-pub fn interactive_issue() -> Result<IssueWizardResult> {
+pub fn interactive_issue(client: &VaultClient) -> Result<IssueWizardResult> {
     use std::io::IsTerminal;
 
     if !std::io::stdin().is_terminal() {
@@ -937,7 +1155,7 @@ pub fn interactive_issue() -> Result<IssueWizardResult> {
     eprintln!();
 
     let mount = prompt_with_default("PKI mount point", "vault_intermediate")?;
-    let role = prompt_required("Role name")?;
+    let role = resolve_role(client, None)?;
     let cn = prompt_required("Common Name (CN) [e.g., www.example.com]")?;
 
     eprintln!();
@@ -984,7 +1202,7 @@ pub fn interactive_issue() -> Result<IssueWizardResult> {
 }
 
 /// Interactive wizard for signing a CSR.
-pub fn interactive_sign() -> Result<SignWizardResult> {
+pub fn interactive_sign(client: &VaultClient) -> Result<SignWizardResult> {
     use std::io::IsTerminal;
 
     if !std::io::stdin().is_terminal() {
@@ -997,7 +1215,7 @@ pub fn interactive_sign() -> Result<SignWizardResult> {
     eprintln!();
 
     let mount = prompt_with_default("PKI mount point", "vault_intermediate")?;
-    let role = prompt_required("Role name")?;
+    let role = resolve_role(client, None)?;
     let csr_file = prompt_required("CSR file path")?;
 
     let cn = prompt_optional("Common Name override (press Enter to use CN from CSR)")?;
@@ -1432,5 +1650,194 @@ mod tests {
         let parsed: Vec<VaultCertListEntry> = serde_json::from_str(&content).unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].serial_number, "11:22:33");
+    }
+
+    // -- Role Discovery from Policies --
+
+    #[test]
+    fn test_extract_roles_from_policies_basic() {
+        let policies = vec![
+            "default".to_string(),
+            "team.app-alpha.admin".to_string(),
+            "team.app-alpha.contributor".to_string(),
+            "team.app-beta.deployer".to_string(),
+            "team.app-gamma.admin".to_string(),
+            "team.app-gamma.contributor".to_string(),
+        ];
+        let roles = extract_roles_from_policies(&policies);
+        assert_eq!(roles, vec!["app-alpha", "app-beta", "app-gamma"]);
+    }
+
+    #[test]
+    fn test_extract_roles_skips_short_policies() {
+        let policies = vec!["default".to_string(), "admin".to_string(), "org.svc.read".to_string()];
+        let roles = extract_roles_from_policies(&policies);
+        assert_eq!(roles, vec!["svc"]);
+    }
+
+    #[test]
+    fn test_extract_roles_deduplicates_and_sorts() {
+        let policies = vec![
+            "org.zebra.admin".to_string(),
+            "org.alpha.contributor".to_string(),
+            "org.zebra.deployer".to_string(),
+            "org.alpha.admin".to_string(),
+            "org.middle.viewer".to_string(),
+        ];
+        let roles = extract_roles_from_policies(&policies);
+        assert_eq!(roles, vec!["alpha", "middle", "zebra"]);
+    }
+
+    #[test]
+    fn test_extract_roles_empty_policies() {
+        let policies: Vec<String> = vec!["default".to_string()];
+        let roles = extract_roles_from_policies(&policies);
+        assert!(roles.is_empty());
+    }
+
+    #[test]
+    fn test_extract_roles_four_part_policies() {
+        let policies = vec!["org.service.sub.admin".to_string(), "org.other.deployer".to_string()];
+        let roles = extract_roles_from_policies(&policies);
+        // Still extracts the 2nd part
+        assert_eq!(roles, vec!["other", "service"]);
+    }
+
+    #[test]
+    fn test_parse_token_lookup_policies() {
+        let json = serde_json::json!({
+            "data": {
+                "policies": [
+                    "default",
+                    "team.app-one.admin",
+                    "team.app-one.contributor",
+                    "team.app-two.deployer",
+                    "team.app-three.admin"
+                ]
+            }
+        });
+
+        let policies: Vec<String> = json["data"]["policies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+
+        let roles = extract_roles_from_policies(&policies);
+        assert_eq!(roles, vec!["app-one", "app-three", "app-two"]);
+    }
+
+    // -- KV v1/v2 path construction --
+
+    #[test]
+    fn test_kv_api_path_v1() {
+        assert_eq!(kv_api_path("secret/my-cert", 1), "secret/my-cert");
+        assert_eq!(kv_api_path("secret/team/app/cert", 1), "secret/team/app/cert");
+        assert_eq!(kv_api_path("secret", 1), "secret");
+    }
+
+    #[test]
+    fn test_kv_api_path_v2() {
+        assert_eq!(kv_api_path("secret/my-cert", 2), "secret/data/my-cert");
+        assert_eq!(kv_api_path("secret/team/app/cert", 2), "secret/data/team/app/cert");
+        assert_eq!(kv_api_path("secret", 2), "secret/data");
+    }
+
+    // -- KV v1/v2 response parsing --
+
+    #[test]
+    fn test_kv_extract_data_v1() {
+        let resp = serde_json::json!({
+            "data": {
+                "cert": "-----BEGIN CERTIFICATE-----\nTEST\n-----END CERTIFICATE-----",
+                "key": "-----BEGIN PRIVATE KEY-----\nKEY\n-----END PRIVATE KEY-----"
+            }
+        });
+        let data = kv_extract_data(&resp, 1);
+        assert_eq!(
+            data["cert"].as_str().unwrap(),
+            "-----BEGIN CERTIFICATE-----\nTEST\n-----END CERTIFICATE-----"
+        );
+        assert_eq!(
+            data["key"].as_str().unwrap(),
+            "-----BEGIN PRIVATE KEY-----\nKEY\n-----END PRIVATE KEY-----"
+        );
+    }
+
+    #[test]
+    fn test_kv_extract_data_v2() {
+        let resp = serde_json::json!({
+            "data": {
+                "data": {
+                    "cert": "-----BEGIN CERTIFICATE-----\nTEST\n-----END CERTIFICATE-----",
+                    "key": "-----BEGIN PRIVATE KEY-----\nKEY\n-----END PRIVATE KEY-----"
+                },
+                "metadata": {
+                    "version": 1
+                }
+            }
+        });
+        let data = kv_extract_data(&resp, 2);
+        assert_eq!(
+            data["cert"].as_str().unwrap(),
+            "-----BEGIN CERTIFICATE-----\nTEST\n-----END CERTIFICATE-----"
+        );
+        assert_eq!(
+            data["key"].as_str().unwrap(),
+            "-----BEGIN PRIVATE KEY-----\nKEY\n-----END PRIVATE KEY-----"
+        );
+    }
+
+    // -- Excel Export --
+
+    #[test]
+    fn test_export_cert_list_xlsx() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let xlsx_path = temp_dir.path().join("certs.xlsx").to_str().unwrap().to_string();
+
+        let entries = vec![
+            VaultCertListEntry {
+                serial_number: "aa:bb:cc".to_string(),
+                common_name: Some("test.example.com".to_string()),
+                not_before: "2024-01-01T00:00:00Z".to_string(),
+                not_after: "2025-01-01T00:00:00Z".to_string(),
+                status: "valid".to_string(),
+            },
+            VaultCertListEntry {
+                serial_number: "dd:ee:ff".to_string(),
+                common_name: Some("api.example.com".to_string()),
+                not_before: "2023-06-01T00:00:00Z".to_string(),
+                not_after: "2024-06-01T00:00:00Z".to_string(),
+                status: "expired".to_string(),
+            },
+        ];
+
+        export_cert_list(&entries, &xlsx_path).unwrap();
+
+        // Verify the file exists and has non-zero size
+        let metadata = fs::metadata(&xlsx_path).unwrap();
+        assert!(metadata.len() > 0, "XLSX file should not be empty");
+    }
+
+    #[test]
+    fn test_export_cert_list_defaults_to_json() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let txt_path = temp_dir.path().join("certs.txt").to_str().unwrap().to_string();
+
+        let entries = vec![VaultCertListEntry {
+            serial_number: "aa:bb:cc".to_string(),
+            common_name: Some("test.example.com".to_string()),
+            not_before: "2024-01-01T00:00:00Z".to_string(),
+            not_after: "2025-01-01T00:00:00Z".to_string(),
+            status: "valid".to_string(),
+        }];
+
+        export_cert_list(&entries, &txt_path).unwrap();
+        // Unknown extension defaults to JSON
+        let content = fs::read_to_string(&txt_path).unwrap();
+        let parsed: Vec<VaultCertListEntry> = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].serial_number, "aa:bb:cc");
     }
 }

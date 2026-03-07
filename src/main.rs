@@ -788,10 +788,9 @@ fn run_vault(args: cli::VaultArgs) -> Result<i32> {
 }
 
 fn run_vault_issue(client: &vault::VaultClient, args: cli::VaultIssueArgs) -> Result<i32> {
+    let kv_version = args.kv_version;
     let (mount, role, cn, sans, ip_sans, ttl, pfx_password, output_base, store_path) = if let Some(cn) = args.cn {
-        let role = args
-            .role
-            .ok_or_else(|| anyhow::anyhow!("--role is required in non-interactive mode"))?;
+        let role = vault::resolve_role(client, args.role)?;
         let output_base = args.output.unwrap_or_else(|| vault::sanitise_cn(&cn));
         (
             args.mount,
@@ -806,7 +805,7 @@ fn run_vault_issue(client: &vault::VaultClient, args: cli::VaultIssueArgs) -> Re
         )
     } else {
         // Interactive wizard
-        vault::interactive_issue()?
+        vault::interactive_issue(client)?
     };
 
     let data = vault::issue_certificate(client, &mount, &role, &cn, &sans, &ip_sans, &ttl)?;
@@ -846,18 +845,17 @@ fn run_vault_issue(client: &vault::VaultClient, args: cli::VaultIssueArgs) -> Re
     // Store in Vault KV if requested
     if let Some(ref kv_path) = store_path {
         let key_pem = data.private_key.as_deref().unwrap_or("");
-        vault::kv_store(client, kv_path, &full_chain, key_pem, "cert", "key")?;
+        vault::kv_store(client, kv_path, &full_chain, key_pem, "cert", "key", kv_version)?;
     }
 
     Ok(exit_code::SUCCESS)
 }
 
 fn run_vault_sign(client: &vault::VaultClient, args: cli::VaultSignArgs) -> Result<i32> {
-    let (mount, role, csr_file, cn_override, sans, ttl, pfx_password, output_base, store_path) =
+    let kv_version = args.kv_version;
+    let (mount, role, csr_file, cn_override, sans, ip_sans, ttl, pfx_password, output_base, store_path) =
         if let Some(csr_file) = args.csr_file {
-            let role = args
-                .role
-                .ok_or_else(|| anyhow::anyhow!("--role is required in non-interactive mode"))?;
+            let role = vault::resolve_role(client, args.role)?;
             let output_base = args.output.unwrap_or_else(|| "signed-cert".to_string());
             (
                 args.mount,
@@ -865,6 +863,7 @@ fn run_vault_sign(client: &vault::VaultClient, args: cli::VaultSignArgs) -> Resu
                 csr_file,
                 args.cn,
                 args.san,
+                args.ip_san,
                 args.ttl,
                 args.pfx_password,
                 output_base,
@@ -872,13 +871,35 @@ fn run_vault_sign(client: &vault::VaultClient, args: cli::VaultSignArgs) -> Resu
             )
         } else {
             // Interactive wizard
-            vault::interactive_sign()?
+            let (mount, role, csr_file, cn_override, sans, ttl, pfx_password, output_base, store_path) =
+                vault::interactive_sign(client)?;
+            (
+                mount,
+                role,
+                csr_file,
+                cn_override,
+                sans,
+                vec![],
+                ttl,
+                pfx_password,
+                output_base,
+                store_path,
+            )
         };
 
     let csr_pem =
         std::fs::read_to_string(&csr_file).with_context(|| format!("Failed to read CSR file: {}", csr_file))?;
 
-    let data = vault::sign_csr(client, &mount, &role, &csr_pem, cn_override.as_deref(), &sans, &ttl)?;
+    let data = vault::sign_csr(
+        client,
+        &mount,
+        &role,
+        &csr_pem,
+        cn_override.as_deref(),
+        &sans,
+        &ip_sans,
+        &ttl,
+    )?;
 
     // Build full chain
     let full_chain = vault::build_full_chain(client, &data.certificate, &data.ca_chain, &mount);
@@ -899,7 +920,7 @@ fn run_vault_sign(client: &vault::VaultClient, args: cli::VaultSignArgs) -> Resu
 
     // Store in Vault KV if requested
     if let Some(ref kv_path) = store_path {
-        vault::kv_store(client, kv_path, &full_chain, "", "cert", "key")?;
+        vault::kv_store(client, kv_path, &full_chain, "", "cert", "key", kv_version)?;
     }
 
     Ok(exit_code::SUCCESS)
@@ -965,20 +986,26 @@ fn run_vault_store(client: &vault::VaultClient, args: cli::VaultStoreArgs) -> Re
     let key_pem = std::fs::read_to_string(&args.key_file)
         .with_context(|| format!("Failed to read key file: {}", args.key_file))?;
 
-    vault::kv_store(client, &args.path, &cert_pem, &key_pem, &args.cert_key, &args.key_key)?;
+    vault::kv_store(
+        client,
+        &args.path,
+        &cert_pem,
+        &key_pem,
+        &args.cert_key,
+        &args.key_key,
+        args.kv_version,
+    )?;
 
     Ok(exit_code::SUCCESS)
 }
 
 fn run_vault_validate(client: &vault::VaultClient, args: cli::VaultValidateArgs) -> Result<i32> {
-    vault::validate_from_kv(client, &args.path, &args.cert_key, &args.key_key)?;
+    vault::validate_from_kv(client, &args.path, &args.cert_key, &args.key_key, args.kv_version)?;
     Ok(exit_code::SUCCESS)
 }
 
 fn run_vault_renew(client: &vault::VaultClient, args: cli::VaultRenewArgs) -> Result<i32> {
-    let role = args.role.ok_or_else(|| {
-        anyhow::anyhow!("--role is required for renewal. Specify the PKI role used to issue the new certificate.")
-    })?;
+    let role = vault::resolve_role(client, args.role)?;
 
     vault::renew_certificate(
         client,
@@ -988,6 +1015,9 @@ fn run_vault_renew(client: &vault::VaultClient, args: cli::VaultRenewArgs) -> Re
         &args.ttl,
         &args.cert_key,
         &args.key_key,
+        args.kv_version,
+        &args.san,
+        &args.ip_san,
     )?;
 
     Ok(exit_code::SUCCESS)

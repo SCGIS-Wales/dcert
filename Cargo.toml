@@ -45,6 +45,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 regex-lite = "0.1"
 tempfile = "3.25"
+rust_xlsxwriter = "0.90"
 
 [dev-dependencies]
 wiremock = "0.6"
