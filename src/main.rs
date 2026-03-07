@@ -8,6 +8,7 @@ mod ocsp;
 mod output;
 mod proxy;
 mod tls;
+mod vault;
 
 use anyhow::{Context, Result};
 use clap::CommandFactory;
@@ -767,6 +768,231 @@ fn run_csr_validate(args: cli::CsrValidateArgs) -> Result<i32> {
     Ok(exit_code::SUCCESS)
 }
 
+fn run_vault(args: cli::VaultArgs) -> Result<i32> {
+    // Discover Vault token and address
+    let token = vault::discover_vault_token()?;
+    let addr = vault::vault_addr()?;
+    let client = vault::VaultClient::new(&addr, &token)?;
+
+    vault::print_vault_connectivity(&addr, &token);
+
+    match args.mode {
+        cli::VaultMode::Issue(args) => run_vault_issue(&client, *args),
+        cli::VaultMode::Sign(args) => run_vault_sign(&client, args),
+        cli::VaultMode::Revoke(args) => run_vault_revoke(&client, args),
+        cli::VaultMode::List(args) => run_vault_list(&client, args),
+        cli::VaultMode::Store(args) => run_vault_store(&client, args),
+        cli::VaultMode::Validate(args) => run_vault_validate(&client, args),
+        cli::VaultMode::Renew(args) => run_vault_renew(&client, args),
+    }
+}
+
+fn run_vault_issue(client: &vault::VaultClient, args: cli::VaultIssueArgs) -> Result<i32> {
+    let (mount, role, cn, sans, ip_sans, ttl, pfx_password, output_base, store_path) = if let Some(cn) = args.cn {
+        let role = args
+            .role
+            .ok_or_else(|| anyhow::anyhow!("--role is required in non-interactive mode"))?;
+        let output_base = args.output.unwrap_or_else(|| vault::sanitise_cn(&cn));
+        (
+            args.mount,
+            role,
+            cn,
+            args.san,
+            args.ip_san,
+            args.ttl,
+            args.pfx_password,
+            output_base,
+            args.store_path,
+        )
+    } else {
+        // Interactive wizard
+        vault::interactive_issue()?
+    };
+
+    let data = vault::issue_certificate(client, &mount, &role, &cn, &sans, &ip_sans, &ttl)?;
+
+    // Build full chain
+    let full_chain = vault::build_full_chain(client, &data.certificate, &data.ca_chain, &mount);
+
+    // Display certificate
+    vault::display_certificate(&full_chain);
+
+    // Write output files
+    if let Some(ref pfx_pw) = pfx_password {
+        let key_pem = data
+            .private_key
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("Vault did not return a private key"))?;
+        let pfx_path = format!("{}.pfx", output_base);
+        // Write temp files for PFX conversion
+        let temp_dir = tempfile::TempDir::new()?;
+        let cert_path = temp_dir.path().join("cert.pem");
+        let key_path = temp_dir.path().join("key.pem");
+        std::fs::write(&cert_path, &full_chain)?;
+        std::fs::write(&key_path, key_pem)?;
+        convert::pem_to_pfx(
+            cert_path.to_str().unwrap(),
+            key_path.to_str().unwrap(),
+            pfx_pw,
+            &pfx_path,
+            None,
+        )?;
+        println!("{}", format!("PFX written to {}", pfx_path).green());
+    } else {
+        let key_pem = data.private_key.as_deref();
+        vault::write_pem_files(&full_chain, key_pem, &output_base)?;
+    }
+
+    // Store in Vault KV if requested
+    if let Some(ref kv_path) = store_path {
+        let key_pem = data.private_key.as_deref().unwrap_or("");
+        vault::kv_store(client, kv_path, &full_chain, key_pem, "cert", "key")?;
+    }
+
+    Ok(exit_code::SUCCESS)
+}
+
+fn run_vault_sign(client: &vault::VaultClient, args: cli::VaultSignArgs) -> Result<i32> {
+    let (mount, role, csr_file, cn_override, sans, ttl, pfx_password, output_base, store_path) =
+        if let Some(csr_file) = args.csr_file {
+            let role = args
+                .role
+                .ok_or_else(|| anyhow::anyhow!("--role is required in non-interactive mode"))?;
+            let output_base = args.output.unwrap_or_else(|| "signed-cert".to_string());
+            (
+                args.mount,
+                role,
+                csr_file,
+                args.cn,
+                args.san,
+                args.ttl,
+                args.pfx_password,
+                output_base,
+                args.store_path,
+            )
+        } else {
+            // Interactive wizard
+            vault::interactive_sign()?
+        };
+
+    let csr_pem =
+        std::fs::read_to_string(&csr_file).with_context(|| format!("Failed to read CSR file: {}", csr_file))?;
+
+    let data = vault::sign_csr(client, &mount, &role, &csr_pem, cn_override.as_deref(), &sans, &ttl)?;
+
+    // Build full chain
+    let full_chain = vault::build_full_chain(client, &data.certificate, &data.ca_chain, &mount);
+
+    // Display certificate
+    vault::display_certificate(&full_chain);
+
+    // Write output (no private key from sign operation)
+    if pfx_password.is_some() {
+        eprintln!(
+            "{} PFX output requires a private key. The sign operation does not return a key.",
+            "WARNING:".yellow().bold()
+        );
+        eprintln!("Use PFX output with 'vault issue' instead, or bundle manually with 'dcert convert pem-to-pfx'.");
+    }
+
+    vault::write_pem_files(&full_chain, None, &output_base)?;
+
+    // Store in Vault KV if requested
+    if let Some(ref kv_path) = store_path {
+        vault::kv_store(client, kv_path, &full_chain, "", "cert", "key")?;
+    }
+
+    Ok(exit_code::SUCCESS)
+}
+
+fn run_vault_revoke(client: &vault::VaultClient, args: cli::VaultRevokeArgs) -> Result<i32> {
+    let cert_pem = if let Some(ref path) = args.cert_file {
+        Some(std::fs::read_to_string(path).with_context(|| format!("Failed to read certificate file: {}", path))?)
+    } else {
+        None
+    };
+
+    vault::revoke_certificate(client, &args.mount, args.serial.as_deref(), cert_pem.as_deref())?;
+
+    Ok(exit_code::SUCCESS)
+}
+
+fn run_vault_list(client: &vault::VaultClient, args: cli::VaultListArgs) -> Result<i32> {
+    let entries = vault::list_certificates(
+        client,
+        &args.mount,
+        args.show_details,
+        args.expired_only,
+        args.valid_only,
+    )?;
+
+    // Export to file if requested
+    if let Some(ref export_path) = args.export {
+        vault::export_cert_list(&entries, export_path)?;
+        return Ok(exit_code::SUCCESS);
+    }
+
+    match args.format {
+        OutputFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&entries)?);
+        }
+        OutputFormat::Yaml => {
+            println!("{}", serde_yml::to_string(&entries)?);
+        }
+        OutputFormat::Pretty => {
+            println!("{} {} certificates", "Vault PKI:".bold(), entries.len());
+            for entry in &entries {
+                let status = if entry.status == "expired" {
+                    "EXPIRED".red().to_string()
+                } else {
+                    entry.status.green().to_string()
+                };
+                let cn = entry.common_name.as_deref().unwrap_or("(unknown)");
+                println!("  {} [{}] {}", entry.serial_number, status, cn);
+                if !entry.not_after.is_empty() {
+                    println!("    Not After: {}", entry.not_after);
+                }
+            }
+        }
+    }
+
+    Ok(exit_code::SUCCESS)
+}
+
+fn run_vault_store(client: &vault::VaultClient, args: cli::VaultStoreArgs) -> Result<i32> {
+    let cert_pem = std::fs::read_to_string(&args.cert_file)
+        .with_context(|| format!("Failed to read certificate file: {}", args.cert_file))?;
+    let key_pem = std::fs::read_to_string(&args.key_file)
+        .with_context(|| format!("Failed to read key file: {}", args.key_file))?;
+
+    vault::kv_store(client, &args.path, &cert_pem, &key_pem, &args.cert_key, &args.key_key)?;
+
+    Ok(exit_code::SUCCESS)
+}
+
+fn run_vault_validate(client: &vault::VaultClient, args: cli::VaultValidateArgs) -> Result<i32> {
+    vault::validate_from_kv(client, &args.path, &args.cert_key, &args.key_key)?;
+    Ok(exit_code::SUCCESS)
+}
+
+fn run_vault_renew(client: &vault::VaultClient, args: cli::VaultRenewArgs) -> Result<i32> {
+    let role = args.role.ok_or_else(|| {
+        anyhow::anyhow!("--role is required for renewal. Specify the PKI role used to issue the new certificate.")
+    })?;
+
+    vault::renew_certificate(
+        client,
+        &args.path,
+        &args.mount,
+        &role,
+        &args.ttl,
+        &args.cert_key,
+        &args.key_key,
+    )?;
+
+    Ok(exit_code::SUCCESS)
+}
+
 fn run() -> Result<i32> {
     let os_args: Vec<String> = std::env::args().collect();
 
@@ -790,6 +1016,7 @@ fn run() -> Result<i32> {
         Command::Convert(args) => run_convert(args),
         Command::VerifyKey(args) => run_verify_key(args),
         Command::Csr(args) => run_csr(args),
+        Command::Vault(args) => run_vault(args),
     }
 }
 
