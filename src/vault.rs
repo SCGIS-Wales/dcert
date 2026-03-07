@@ -75,11 +75,23 @@ fn mask_token(token: &str) -> String {
 // Vault HTTP Client
 // ---------------------------------------------------------------------------
 
+/// Configuration for the Vault HTTP client (TLS, debug, etc.).
+#[derive(Debug, Clone, Default)]
+pub struct VaultClientConfig {
+    /// Custom CA certificate PEM file for TLS verification.
+    pub cacert: Option<String>,
+    /// Skip TLS certificate verification (insecure).
+    pub skip_verify: bool,
+    /// Enable verbose debug output.
+    pub debug: bool,
+}
+
 /// A simple Vault HTTP client wrapping reqwest.
 pub struct VaultClient {
     client: reqwest::blocking::Client,
     base_url: String,
     token: String,
+    debug: bool,
 }
 
 /// Describes the required Vault policy capability for an endpoint.
@@ -89,18 +101,106 @@ struct PolicyHint {
 }
 
 impl VaultClient {
-    /// Create a new Vault client.
-    pub fn new(addr: &str, token: &str) -> Result<Self> {
-        let client = reqwest::blocking::Client::builder()
-            .danger_accept_invalid_certs(false)
-            .timeout(std::time::Duration::from_secs(30))
+    /// Create a new Vault client with TLS configuration.
+    ///
+    /// Supports:
+    /// - `VAULT_SKIP_VERIFY=1` or `config.skip_verify` — disables TLS verification
+    /// - `VAULT_CACERT` env var or `config.cacert` — custom CA certificate PEM
+    /// - `VAULT_CAPATH` env var — directory of CA PEM files
+    /// - System native root certificates (corporate CAs installed system-wide)
+    pub fn new(addr: &str, token: &str, config: &VaultClientConfig) -> Result<Self> {
+        let skip_verify = config.skip_verify
+            || std::env::var("VAULT_SKIP_VERIFY")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
+                .unwrap_or(false);
+
+        let mut builder = reqwest::blocking::Client::builder()
+            .danger_accept_invalid_certs(skip_verify)
+            .timeout(std::time::Duration::from_secs(30));
+
+        if config.debug {
+            eprintln!("{}", "  Vault TLS configuration:".dimmed());
+            eprintln!("    skip_verify   : {}", skip_verify);
+            eprintln!("    native roots  : {} (system CA store)", "enabled".green());
+        }
+
+        if skip_verify {
+            eprintln!(
+                "{} {}",
+                "WARNING:".yellow().bold(),
+                "TLS certificate verification is disabled for Vault. Connection is NOT secure.".yellow()
+            );
+        }
+
+        // Load custom CA cert from CLI flag, VAULT_CACERT, or SSL_CERT_FILE env var
+        let cacert_path = config
+            .cacert
+            .clone()
+            .or_else(|| std::env::var("VAULT_CACERT").ok())
+            .or_else(|| std::env::var("SSL_CERT_FILE").ok());
+
+        if let Some(ref cacert_path) = cacert_path {
+            let pem_data = fs::read(cacert_path)
+                .with_context(|| format!("Failed to read CA certificate file: {}", cacert_path))?;
+            let cert = reqwest::Certificate::from_pem(&pem_data)
+                .with_context(|| format!("Failed to parse CA certificate from: {}", cacert_path))?;
+            builder = builder.add_root_certificate(cert);
+
+            if config.debug {
+                let source = if config.cacert.as_deref() == Some(cacert_path.as_str()) {
+                    "--vault-cacert"
+                } else if std::env::var("VAULT_CACERT").ok().as_deref() == Some(cacert_path.as_str()) {
+                    "VAULT_CACERT"
+                } else {
+                    "SSL_CERT_FILE"
+                };
+                eprintln!("    CA cert       : {} (from {})", cacert_path, source);
+            }
+        }
+
+        // Load CA certs from VAULT_CAPATH or SSL_CERT_DIR env var
+        let capath = std::env::var("VAULT_CAPATH")
+            .ok()
+            .or_else(|| std::env::var("SSL_CERT_DIR").ok());
+        if let Some(capath) = capath {
+            if config.debug {
+                eprintln!("    CA cert dir   : {}", capath);
+            }
+            let mut loaded = 0usize;
+            for entry in
+                fs::read_dir(&capath).with_context(|| format!("Failed to read CA path directory: {}", capath))?
+            {
+                let entry = entry?;
+                let path = entry.path();
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                if ext == "pem" || ext == "crt" || ext == "cer" {
+                    if let Ok(pem_data) = fs::read(&path) {
+                        if let Ok(cert) = reqwest::Certificate::from_pem(&pem_data) {
+                            builder = builder.add_root_certificate(cert);
+                            loaded += 1;
+                        }
+                    }
+                }
+            }
+            if config.debug {
+                eprintln!("    CA certs loaded: {}", loaded);
+            }
+        }
+
+        let client = builder
             .build()
             .with_context(|| "Failed to build HTTP client for Vault")?;
+
+        if config.debug {
+            eprintln!("    Target        : {}", addr);
+            eprintln!();
+        }
 
         Ok(Self {
             client,
             base_url: addr.trim_end_matches('/').to_string(),
             token: token.to_string(),
+            debug: config.debug,
         })
     }
 
@@ -116,7 +216,7 @@ impl VaultClient {
             .get(&url)
             .header("X-Vault-Token", &self.token)
             .send()
-            .map_err(|e| vault_connection_error(e, &self.base_url))?;
+            .map_err(|e| vault_connection_error(e, &self.base_url, self.debug))?;
 
         handle_vault_response(resp, &hint)
     }
@@ -134,7 +234,7 @@ impl VaultClient {
             .header("X-Vault-Token", &self.token)
             .json(body)
             .send()
-            .map_err(|e| vault_connection_error(e, &self.base_url))?;
+            .map_err(|e| vault_connection_error(e, &self.base_url, self.debug))?;
 
         handle_vault_response(resp, &hint)
     }
@@ -154,7 +254,7 @@ impl VaultClient {
             )
             .header("X-Vault-Token", &self.token)
             .send()
-            .map_err(|e| vault_connection_error(e, &self.base_url))?;
+            .map_err(|e| vault_connection_error(e, &self.base_url, self.debug))?;
 
         handle_vault_response(resp, &hint)
     }
@@ -173,7 +273,7 @@ impl VaultClient {
             .header("X-Vault-Token", &self.token)
             .json(body)
             .send()
-            .map_err(|e| vault_connection_error(e, &self.base_url))?;
+            .map_err(|e| vault_connection_error(e, &self.base_url, self.debug))?;
 
         handle_vault_response(resp, &hint)
     }
@@ -186,7 +286,7 @@ impl VaultClient {
             .get(&url)
             .header("X-Vault-Token", &self.token)
             .send()
-            .map_err(|e| vault_connection_error(e, &self.base_url))?;
+            .map_err(|e| vault_connection_error(e, &self.base_url, self.debug))?;
 
         let hint = PolicyHint {
             path: path.to_string(),
@@ -201,21 +301,42 @@ impl VaultClient {
     }
 }
 
-fn vault_connection_error(e: reqwest::Error, base_url: &str) -> anyhow::Error {
+fn vault_connection_error(e: reqwest::Error, base_url: &str, debug: bool) -> anyhow::Error {
+    let debug_detail = if debug {
+        format!("\n\n  Debug detail: {:#}", e)
+    } else {
+        String::new()
+    };
+
     if e.is_connect() {
+        let tls_hint = if base_url.starts_with("https") {
+            "\n\n  If using a corporate/internal CA, try one of:\n\
+             \x20   export VAULT_CACERT=/path/to/ca.pem\n\
+             \x20   export SSL_CERT_FILE=/path/to/ca-bundle.pem\n\
+             \x20   dcert vault --vault-cacert /path/to/ca.pem ...\n\
+             \x20   dcert vault --skip-verify ...  (insecure)\n\
+             \x20   export VAULT_SKIP_VERIFY=1     (insecure)\n\n\
+             \x20 Run with --debug for full error details."
+        } else {
+            ""
+        };
+
         anyhow::anyhow!(
             "Failed to connect to Vault at {}.\n\
-             Check that VAULT_ADDR is correct and the Vault server is running.",
-            base_url
+             Check that VAULT_ADDR is correct and the Vault server is running.{}{}",
+            base_url,
+            tls_hint,
+            debug_detail
         )
     } else if e.is_timeout() {
         anyhow::anyhow!(
             "Connection to Vault at {} timed out.\n\
-             Check network connectivity and Vault server health.",
-            base_url
+             Check network connectivity and Vault server health.{}",
+            base_url,
+            debug_detail
         )
     } else {
-        anyhow::anyhow!("Vault HTTP request failed: {}", e)
+        anyhow::anyhow!("Vault HTTP request failed: {}{}", e, debug_detail)
     }
 }
 
@@ -329,7 +450,18 @@ pub fn extract_roles_from_policies(policies: &[String]) -> Vec<String> {
 pub fn discover_role_from_token(client: &VaultClient) -> Result<Option<String>> {
     let resp = match token_lookup_self(client) {
         Ok(r) => r,
-        Err(_) => return Ok(None),
+        Err(e) => {
+            // Only swallow 403/404 (permission denied or endpoint not found).
+            // Propagate connection errors so TLS issues are surfaced.
+            let err_str = format!("{}", e);
+            if err_str.contains("Permission denied") || err_str.contains("Not found") {
+                if client.debug {
+                    eprintln!("  {} token lookup-self failed (non-fatal): {}", "DEBUG:".dimmed(), e);
+                }
+                return Ok(None);
+            }
+            return Err(e);
+        }
     };
 
     let policies: Vec<String> = resp["data"]["policies"]
@@ -337,9 +469,23 @@ pub fn discover_role_from_token(client: &VaultClient) -> Result<Option<String>> 
         .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
         .unwrap_or_default();
 
+    if client.debug {
+        eprintln!("  {} Token policies: {:?}", "DEBUG:".dimmed(), policies);
+    }
+
     let roles = extract_roles_from_policies(&policies);
 
+    if client.debug {
+        eprintln!("  {} Extracted roles: {:?}", "DEBUG:".dimmed(), roles);
+    }
+
     if roles.is_empty() {
+        if client.debug {
+            eprintln!(
+                "  {} No roles found (expecting policies with 3+ dot-separated segments, e.g. prefix.rolename.permission)",
+                "DEBUG:".dimmed()
+            );
+        }
         return Ok(None);
     }
 
@@ -1102,8 +1248,8 @@ pub fn renew_certificate(
 // Interactive Wizards
 // ---------------------------------------------------------------------------
 
-/// Print Vault connectivity info.
-pub fn print_vault_connectivity(addr: &str, token: &str) {
+/// Print Vault connectivity info and optionally check server health.
+pub fn print_vault_connectivity(client: &VaultClient, addr: &str, token: &str) {
     eprintln!("{}", "Vault connectivity:".bold());
     eprintln!("  VAULT_ADDR : {}", addr);
     let source = if std::env::var("VAULT_TOKEN").is_ok() {
@@ -1112,7 +1258,115 @@ pub fn print_vault_connectivity(addr: &str, token: &str) {
         "~/.vault-token"
     };
     eprintln!("  Token      : {} (from {})", mask_token(token), source);
+
+    // Query Vault health endpoint (unauthenticated) to verify connectivity and show version
+    if client.debug {
+        match vault_health_check(client) {
+            Ok(health) => {
+                if let Some(ref version) = health.version {
+                    eprintln!("  Vault ver  : {}", version.green());
+                }
+                let status_str = if health.sealed {
+                    "SEALED".red().bold().to_string()
+                } else if !health.initialized {
+                    "NOT INITIALIZED".red().bold().to_string()
+                } else if health.performance_standby {
+                    "perf-standby".yellow().to_string()
+                } else if health.standby {
+                    "standby".yellow().to_string()
+                } else {
+                    "active".green().to_string()
+                };
+                eprintln!("  Status     : {}", status_str);
+                if let Some(ref cluster) = health.cluster_name {
+                    eprintln!("  Cluster    : {}", cluster);
+                }
+                if let Some(ref cluster_id) = health.cluster_id {
+                    eprintln!("  Cluster ID : {}", cluster_id);
+                }
+                if let Some(ref dr_mode) = health.replication_dr_mode {
+                    eprintln!("  DR mode    : {}", dr_mode);
+                }
+                if let Some(ref perf_mode) = health.replication_perf_mode {
+                    eprintln!("  Perf repl  : {}", perf_mode);
+                }
+                if let Some(ref expiry) = health.license_expiry {
+                    // Parse the expiry to check for warnings
+                    match time::OffsetDateTime::parse(expiry, &time::format_description::well_known::Rfc3339) {
+                        Ok(expiry_dt) => {
+                            let now = time::OffsetDateTime::now_utc();
+                            let days_left = (expiry_dt - now).whole_days();
+                            if days_left < 0 {
+                                eprintln!(
+                                    "  License    : {} (expired {} days ago)",
+                                    "EXPIRED".red().bold(),
+                                    -days_left
+                                );
+                            } else if days_left <= 30 {
+                                eprintln!(
+                                    "  {} Vault license expires in {} days ({})",
+                                    "WARNING:".yellow().bold(),
+                                    days_left,
+                                    expiry
+                                );
+                            } else {
+                                eprintln!("  License    : expires {} ({} days)", expiry, days_left);
+                            }
+                        }
+                        Err(_) => {
+                            eprintln!("  License    : expires {}", expiry);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("  Health     : {} ({})", "unavailable".red(), e);
+            }
+        }
+    }
+
     eprintln!();
+}
+
+/// Vault health check response fields.
+struct VaultHealth {
+    version: Option<String>,
+    initialized: bool,
+    sealed: bool,
+    standby: bool,
+    performance_standby: bool,
+    cluster_name: Option<String>,
+    cluster_id: Option<String>,
+    replication_dr_mode: Option<String>,
+    replication_perf_mode: Option<String>,
+    license_expiry: Option<String>,
+}
+
+/// Query `/v1/sys/health` to verify connectivity and get server version.
+/// This endpoint is unauthenticated and returns status even for sealed/standby nodes.
+fn vault_health_check(client: &VaultClient) -> Result<VaultHealth> {
+    // Use ?standbyok=true&sealedok=true to always get 200 status
+    let url = format!("{}/v1/sys/health?standbyok=true&sealedok=true", client.base_url);
+    let resp = client
+        .client
+        .get(&url)
+        .send()
+        .map_err(|e| vault_connection_error(e, &client.base_url, client.debug))?;
+
+    let json: serde_json::Value = resp.json().with_context(|| "Failed to parse Vault health response")?;
+
+    Ok(VaultHealth {
+        version: json["version"].as_str().map(String::from),
+        initialized: json["initialized"].as_bool().unwrap_or(false),
+        sealed: json["sealed"].as_bool().unwrap_or(true),
+        standby: json["standby"].as_bool().unwrap_or(false),
+        performance_standby: json["performance_standby"].as_bool().unwrap_or(false),
+        cluster_name: json["cluster_name"].as_str().map(String::from),
+        cluster_id: json["cluster_id"].as_str().map(String::from),
+        replication_dr_mode: json["replication_dr_mode"].as_str().map(String::from),
+        replication_perf_mode: json["replication_performance_mode"].as_str().map(String::from),
+        license_expiry: json["license"]["expiry_time"].as_str().map(String::from),
+    })
 }
 
 /// Return type for interactive_issue: (mount, role, cn, sans, ip_sans, ttl, pfx_password, output, store_path)

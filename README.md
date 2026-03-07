@@ -509,8 +509,30 @@ Set these environment variables before using vault commands:
 |----------|----------|-------------|
 | `VAULT_ADDR` | Yes | Vault server URL (e.g., `https://vault.example.com:8200`) |
 | `VAULT_TOKEN` | No* | Vault authentication token |
+| `VAULT_CACERT` | No | Custom CA certificate PEM file for Vault TLS |
+| `VAULT_CAPATH` | No | Directory of CA PEM files for Vault TLS |
+| `VAULT_SKIP_VERIFY` | No | Set to `1` to skip TLS verification (insecure) |
+| `SSL_CERT_FILE` | No | Fallback CA cert file (used if `VAULT_CACERT` is not set) |
+| `SSL_CERT_DIR` | No | Fallback CA cert directory (used if `VAULT_CAPATH` is not set) |
 
 \* Token is discovered in order: `VAULT_TOKEN` env var, then `~/.vault-token` file.
+
+**TLS configuration**: By default, dcert uses your system's native CA store. For corporate Vault servers using internal CAs, set `VAULT_CACERT` or `SSL_CERT_FILE` to point to your CA bundle. Use `--debug` to diagnose TLS issues:
+
+```bash
+# Use a custom CA certificate
+export VAULT_CACERT=/path/to/corporate-ca.pem
+dcert vault issue --cn www.example.com --role my-role
+
+# Or via CLI flag
+dcert vault --vault-cacert /path/to/ca.pem issue --cn www.example.com --role my-role
+
+# Debug TLS connectivity issues
+dcert vault --debug issue --cn www.example.com --role my-role
+
+# Skip TLS verification (insecure, for testing only)
+dcert vault --skip-verify issue --cn www.example.com --role my-role
+```
 
 #### Role Discovery
 
@@ -657,6 +679,13 @@ Error: Permission denied by Vault.
 #### Full Options Reference
 
 ```
+dcert vault [GLOBAL OPTIONS] <SUBCOMMAND> [OPTIONS]
+
+Global Vault Options:
+      --skip-verify           Skip TLS verification (insecure). Also: VAULT_SKIP_VERIFY=1
+      --vault-cacert <PATH>   Custom CA certificate PEM file. Also: VAULT_CACERT env var
+      --debug                 Show verbose TLS and API diagnostics
+
 dcert vault issue [OPTIONS]
       --cn <NAME>           Common Name. Omit for interactive wizard.
       --san <SAN>           Subject Alternative Names (repeatable)

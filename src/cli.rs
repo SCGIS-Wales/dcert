@@ -540,6 +540,18 @@ pub struct CsrValidateArgs {
 
 #[derive(Args, Debug)]
 pub struct VaultArgs {
+    /// Skip TLS certificate verification for Vault (insecure). Also: VAULT_SKIP_VERIFY=1
+    #[arg(long)]
+    pub skip_verify: bool,
+
+    /// Custom CA certificate PEM file for Vault TLS verification. Also: VAULT_CACERT env var
+    #[arg(long, value_name = "PATH")]
+    pub vault_cacert: Option<String>,
+
+    /// Show verbose debug output for Vault connectivity and API diagnostics
+    #[arg(long)]
+    pub debug: bool,
+
     #[command(subcommand)]
     pub mode: VaultMode,
 }
