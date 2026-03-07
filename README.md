@@ -512,6 +512,10 @@ Set these environment variables before using vault commands:
 
 \* Token is discovered in order: `VAULT_TOKEN` env var, then `~/.vault-token` file.
 
+#### Role Discovery
+
+If `--role` is not provided, dcert looks up your token's policies (`vault token lookup-self`) and extracts role names from policies that follow a dotted naming convention (`prefix.rolename.permission`). The second segment is used as the role name. If multiple roles are found, you are prompted to select one.
+
 #### Issue a Certificate
 
 Vault generates a new private key and certificate via the PKI engine.
@@ -548,6 +552,9 @@ dcert vault sign --csr-file server.csr --role my-role --ttl 8760h
 
 # Override CN from CSR
 dcert vault sign --csr-file server.csr --role my-role --cn override.example.com
+
+# Sign with IP SANs
+dcert vault sign --csr-file server.csr --role my-role --ip-san 10.0.0.1 --ip-san 192.168.1.1
 ```
 
 #### Revoke a Certificate
@@ -573,9 +580,10 @@ dcert vault list --show-details
 dcert vault list --show-details --expired-only
 dcert vault list --show-details --valid-only
 
-# Export to JSON or CSV
+# Export to JSON, CSV, or Excel
 dcert vault list --show-details --export certs.json
 dcert vault list --show-details --export certs.csv
+dcert vault list --show-details --export certs.xlsx
 
 # JSON output
 dcert vault list --show-details --format json
@@ -583,11 +591,15 @@ dcert vault list --show-details --format json
 
 #### Store in Vault KV
 
-Store a local certificate and private key in Vault KV v2.
+Store a local certificate and private key in Vault KV (v1 by default, v2 with `--kv-version 2`).
 
 ```bash
 dcert vault store --cert-file server.crt --key-file server.key \
   secret/company/project/certs/www-example-com
+
+# Use KV v2
+dcert vault store --cert-file server.crt --key-file server.key \
+  --kv-version 2 secret/company/project/certs/www-example-com
 
 # Custom key names in KV
 dcert vault store --cert-file server.crt --key-file server.key \
@@ -612,7 +624,7 @@ dcert vault validate secret/company/project/certs/www-example-com --format json
 
 #### Renew a Certificate
 
-Read an existing certificate from Vault KV, extract its CN and SANs, issue a new certificate with the same parameters, and overwrite the KV entry.
+Read an existing certificate from Vault KV, extract its CN and SANs, issue a new certificate with the same parameters, and overwrite the KV entry. Optionally override SANs or IP SANs.
 
 ```bash
 dcert vault renew secret/company/project/certs/www-example-com --role my-role
@@ -620,6 +632,10 @@ dcert vault renew secret/company/project/certs/www-example-com --role my-role
 # Custom TTL and mount
 dcert vault renew secret/company/project/certs/www-example-com \
   --role my-role --ttl 2160h --mount pki_intermediate
+
+# Override SANs on renew
+dcert vault renew secret/company/project/certs/www-example-com --role my-role \
+  --san app.example.com --ip-san 10.0.0.1
 ```
 
 #### Permission Errors
@@ -652,17 +668,20 @@ dcert vault issue [OPTIONS]
   -f, --format <FORMAT>     Output format [pretty, json, yaml]
       --pfx-password <PW>   Output as PFX instead of PEM (env: DCERT_CERT_PASSWORD)
       --store-path <PATH>   Store cert+key in Vault KV after issuance
+      --kv-version <1|2>    Vault KV version for --store-path (default: 1)
 
 dcert vault sign [OPTIONS]
       --csr-file <FILE>     CSR PEM file. Omit for interactive wizard.
       --cn <NAME>           Override CN from CSR
       --san <SAN>           Additional SANs (repeatable)
+      --ip-san <IP>         IP SANs (repeatable)
       --ttl <TTL>           Certificate TTL (default: 8760h)
       --role <ROLE>         Vault PKI role name
       --mount <MOUNT>       PKI mount point (default: vault_intermediate)
       --output <NAME>       Output file base name
   -f, --format <FORMAT>     Output format [pretty, json, yaml]
       --store-path <PATH>   Store certificate in Vault KV after signing
+      --kv-version <1|2>    Vault KV version for --store-path (default: 1)
 
 dcert vault revoke [OPTIONS]
       --serial <SERIAL>     Certificate serial number (hex, colon or hyphen-separated)
@@ -675,17 +694,19 @@ dcert vault list [OPTIONS]
       --show-details        Fetch details for each certificate
       --expired-only        Show only expired certificates
       --valid-only          Show only valid certificates
-      --export <FILE>       Export to JSON or CSV file
+      --export <FILE>       Export to JSON, CSV, or XLSX file
 
 dcert vault store [OPTIONS] <PATH>
       --cert-file <FILE>    Local PEM certificate file (required)
       --key-file <FILE>     Local PEM private key file (required)
       --cert-key <NAME>     KV key name for certificate (default: cert)
       --key-key <NAME>      KV key name for private key (default: key)
+      --kv-version <1|2>    Vault KV version (default: 1)
 
 dcert vault validate [OPTIONS] <PATH>
       --cert-key <NAME>     KV key name for certificate (default: cert)
       --key-key <NAME>      KV key name for private key (default: key)
+      --kv-version <1|2>    Vault KV version (default: 1)
   -f, --format <FORMAT>     Output format [pretty, json, yaml]
 
 dcert vault renew [OPTIONS] <PATH>
@@ -694,6 +715,9 @@ dcert vault renew [OPTIONS] <PATH>
       --ttl <TTL>           TTL for new certificate (default: 8760h)
       --cert-key <NAME>     KV key name for certificate (default: cert)
       --key-key <NAME>      KV key name for private key (default: key)
+      --kv-version <1|2>    Vault KV version (default: 1)
+      --san <SAN>           Override SANs from existing cert (repeatable)
+      --ip-san <IP>         Override IP SANs from existing cert (repeatable)
   -f, --format <FORMAT>     Output format [pretty, json, yaml]
 ```
 
@@ -1039,7 +1063,7 @@ Save fetched certificate chains as PEM files (`--export-pem`), with optional fil
 
 ### Vault PKI Integration
 
-Issue, sign, revoke, list, and renew TLS certificates via HashiCorp Vault's PKI Secrets Engine (`dcert vault`). Store and validate certificates in Vault KV v2. Interactive wizard mode for guided certificate issuance. Full chain assembly from Vault root and intermediate CAs. Clear, actionable permission error messages with Vault policy hints.
+Issue, sign, revoke, list, and renew TLS certificates via HashiCorp Vault's PKI Secrets Engine (`dcert vault`). Store and validate certificates in Vault KV v1 or v2 (`--kv-version`). Interactive wizard mode for guided certificate issuance. Full chain assembly from Vault root and intermediate CAs. Export certificate lists to JSON, CSV, or Excel (`.xlsx`). SAN and IP SAN support across all certificate operations. Role inference from Vault token policies. Clear, actionable permission error messages with Vault policy hints.
 
 ---
 
@@ -1107,7 +1131,7 @@ dcert vault renew secret/certs/www-example-com --role web-server
 dcert vault validate secret/certs/www-example-com
 
 # Audit all issued certificates
-dcert vault list --show-details --export audit.csv
+dcert vault list --show-details --export audit.xlsx
 
 # Sign a CSR through Vault PKI
 dcert vault sign --csr-file server.csr --role web-server --ttl 2160h

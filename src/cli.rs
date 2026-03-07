@@ -617,6 +617,10 @@ pub struct VaultIssueArgs {
     /// Store certificate and key in Vault KV at this path after issuance
     #[arg(long)]
     pub store_path: Option<String>,
+
+    /// Vault KV version (1 or 2) for --store-path
+    #[arg(long, default_value_t = 1)]
+    pub kv_version: u8,
 }
 
 #[derive(Args, Debug)]
@@ -632,6 +636,10 @@ pub struct VaultSignArgs {
     /// Subject Alternative Names (can be repeated)
     #[arg(long, num_args = 0..)]
     pub san: Vec<String>,
+
+    /// IP Subject Alternative Names (can be repeated, e.g., --ip-san 10.0.0.1)
+    #[arg(long, num_args = 0..)]
+    pub ip_san: Vec<String>,
 
     /// Certificate TTL
     #[arg(long, default_value = "8760h")]
@@ -660,6 +668,10 @@ pub struct VaultSignArgs {
     /// Store certificate in Vault KV at this path after signing
     #[arg(long)]
     pub store_path: Option<String>,
+
+    /// Vault KV version (1 or 2) for --store-path
+    #[arg(long, default_value_t = 1)]
+    pub kv_version: u8,
 }
 
 #[derive(Args, Debug)]
@@ -699,7 +711,7 @@ pub struct VaultListArgs {
     #[arg(long, conflicts_with = "expired_only")]
     pub valid_only: bool,
 
-    /// Export results to a file (JSON or CSV based on extension)
+    /// Export results to a file (JSON, CSV, or XLSX based on extension)
     #[arg(long, value_name = "FILE")]
     pub export: Option<String>,
 }
@@ -724,6 +736,10 @@ pub struct VaultStoreArgs {
     /// Key name for the private key in Vault KV
     #[arg(long, default_value = "key")]
     pub key_key: String,
+
+    /// Vault KV version (1 or 2). KV v1 uses flat paths; v2 uses /data/ prefix.
+    #[arg(long, default_value_t = 1)]
+    pub kv_version: u8,
 }
 
 #[derive(Args, Debug)]
@@ -738,6 +754,10 @@ pub struct VaultValidateArgs {
     /// Key name for the private key in Vault KV
     #[arg(long, default_value = "key")]
     pub key_key: String,
+
+    /// Vault KV version (1 or 2)
+    #[arg(long, default_value_t = 1)]
+    pub kv_version: u8,
 
     /// Output format
     #[arg(short, long, value_enum, default_value_t = OutputFormat::Pretty)]
@@ -768,6 +788,18 @@ pub struct VaultRenewArgs {
     /// Key name for the private key in Vault KV
     #[arg(long, default_value = "key")]
     pub key_key: String,
+
+    /// Vault KV version (1 or 2)
+    #[arg(long, default_value_t = 1)]
+    pub kv_version: u8,
+
+    /// Additional Subject Alternative Names (override existing SANs if provided)
+    #[arg(long, num_args = 0..)]
+    pub san: Vec<String>,
+
+    /// Additional IP Subject Alternative Names
+    #[arg(long, num_args = 0..)]
+    pub ip_san: Vec<String>,
 
     /// Output format
     #[arg(short, long, value_enum, default_value_t = OutputFormat::Pretty)]
