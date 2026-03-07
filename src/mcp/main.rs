@@ -733,6 +733,486 @@ fn default_server() -> String {
 fn default_changeit() -> String {
     "changeit".to_string()
 }
+fn default_vault_mount() -> String {
+    "vault_intermediate".to_string()
+}
+fn default_ttl() -> String {
+    "8760h".to_string()
+}
+fn default_kv_version() -> u8 {
+    1
+}
+fn default_cert_key_name() -> String {
+    "cert".to_string()
+}
+fn default_key_key_name() -> String {
+    "key".to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Vault MCP Parameters
+// ---------------------------------------------------------------------------
+
+/// Authentication and connection parameters shared across all Vault MCP tools.
+///
+/// ## Architecture: MCP client → dcert-mcp (MCP server) → Vault
+///
+/// The MCP server handles Vault authentication so that MCP clients (AI-powered IDEs)
+/// don't need to manage Vault tokens. Three auth methods are supported:
+///
+/// 1. **Token** (default): Uses `vault_token` parameter, or inherits `VAULT_TOKEN`
+///    env var / `~/.vault-token` file from the MCP server process.
+///
+/// 2. **LDAP**: The MCP server authenticates with Vault via
+///    `POST /v1/auth/{ldap_mount}/login/{username}` and extracts a short-lived token.
+///
+/// 3. **AppRole**: The MCP server authenticates with Vault via
+///    `POST /v1/auth/{approle_mount}/login` with `role_id` + `secret_id`.
+///
+/// The resulting token is passed to the `dcert vault` subprocess via the `VAULT_TOKEN`
+/// env var. The `vault_addr` parameter is passed via `VAULT_ADDR`.
+///
+/// This design keeps the dcert CLI stateless (token-based only) while the MCP server
+/// handles the auth handshake, which is the appropriate separation of concerns.
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+struct VaultParams {
+    /// Vault server address (e.g., "https://vault.example.com:8200").
+    /// If omitted, inherits VAULT_ADDR from the MCP server environment.
+    #[serde(default)]
+    vault_addr: Option<String>,
+
+    /// Vault token for authentication. If omitted, inherits from VAULT_TOKEN env var
+    /// or ~/.vault-token file. Ignored when auth_method is "ldap" or "approle".
+    #[serde(default)]
+    vault_token: Option<String>,
+
+    /// Authentication method: "token" (default), "ldap", or "approle"
+    #[serde(default)]
+    auth_method: Option<String>,
+
+    /// LDAP username (required when auth_method is "ldap")
+    #[serde(default)]
+    ldap_username: Option<String>,
+
+    /// LDAP password (required when auth_method is "ldap")
+    #[serde(default)]
+    ldap_password: Option<String>,
+
+    /// LDAP auth mount point (default: "ldap")
+    #[serde(default)]
+    ldap_mount: Option<String>,
+
+    /// AppRole role_id (required when auth_method is "approle")
+    #[serde(default)]
+    approle_role_id: Option<String>,
+
+    /// AppRole secret_id (required when auth_method is "approle")
+    #[serde(default)]
+    approle_secret_id: Option<String>,
+
+    /// AppRole auth mount point (default: "approle")
+    #[serde(default)]
+    approle_mount: Option<String>,
+
+    /// Custom CA certificate PEM file for Vault TLS verification.
+    /// Also reads VAULT_CACERT env var from the MCP server environment.
+    #[serde(default)]
+    vault_cacert: Option<String>,
+
+    /// Skip TLS certificate verification for Vault (insecure).
+    /// Also reads VAULT_SKIP_VERIFY env var from the MCP server environment.
+    #[serde(default)]
+    skip_verify: Option<bool>,
+}
+
+impl VaultParams {
+    fn validate(&self) -> Result<(), String> {
+        let method = self.auth_method.as_deref().unwrap_or("token");
+        match method {
+            "token" => {} // token is optional (falls back to env/file)
+            "ldap" => {
+                if self.ldap_username.is_none() {
+                    return Err("ldap_username is required when auth_method is \"ldap\"".to_string());
+                }
+                if self.ldap_password.is_none() {
+                    return Err("ldap_password is required when auth_method is \"ldap\"".to_string());
+                }
+                // vault_addr is required for LDAP auth (can't auth without knowing Vault URL)
+                if self.vault_addr.is_none() && std::env::var("VAULT_ADDR").is_err() {
+                    return Err(
+                        "vault_addr is required for LDAP auth (or set VAULT_ADDR env var on the MCP server)"
+                            .to_string(),
+                    );
+                }
+            }
+            "approle" => {
+                if self.approle_role_id.is_none() {
+                    return Err("approle_role_id is required when auth_method is \"approle\"".to_string());
+                }
+                if self.approle_secret_id.is_none() {
+                    return Err("approle_secret_id is required when auth_method is \"approle\"".to_string());
+                }
+                if self.vault_addr.is_none() && std::env::var("VAULT_ADDR").is_err() {
+                    return Err(
+                        "vault_addr is required for AppRole auth (or set VAULT_ADDR env var on the MCP server)"
+                            .to_string(),
+                    );
+                }
+            }
+            _ => {
+                return Err(format!(
+                    "Invalid auth_method '{}': must be \"token\", \"ldap\", or \"approle\"",
+                    method
+                ))
+            }
+        }
+        if let Some(ref p) = self.vault_cacert {
+            validate_path(p, "vault_cacert")?;
+        }
+        Ok(())
+    }
+
+    /// Resolve the Vault address from params or environment.
+    fn resolve_addr(&self) -> Option<String> {
+        self.vault_addr
+            .clone()
+            .or_else(|| std::env::var("VAULT_ADDR").ok())
+            .map(|s| s.trim_end_matches('/').to_string())
+    }
+}
+
+/// Authenticate with Vault using LDAP or AppRole and return a client token.
+/// The MCP server performs the auth handshake so the dcert subprocess only needs a token.
+async fn vault_authenticate(vault_params: &VaultParams) -> Result<String, String> {
+    let method = vault_params.auth_method.as_deref().unwrap_or("token");
+    let vault_addr = vault_params
+        .resolve_addr()
+        .ok_or_else(|| "vault_addr is required for authentication".to_string())?;
+
+    let skip_verify = vault_params.skip_verify.unwrap_or(false)
+        || std::env::var("VAULT_SKIP_VERIFY")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(skip_verify)
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    match method {
+        "ldap" => {
+            let username = vault_params.ldap_username.as_deref().unwrap();
+            let password = vault_params.ldap_password.as_deref().unwrap();
+            let mount = vault_params.ldap_mount.as_deref().unwrap_or("ldap");
+            let url = format!("{}/v1/auth/{}/login/{}", vault_addr, mount, username);
+
+            let resp = client
+                .post(&url)
+                .json(&serde_json::json!({"password": password}))
+                .send()
+                .await
+                .map_err(|e| format!("LDAP auth request failed: {}", e))?;
+
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                return Err(format!("LDAP auth failed (HTTP {}): {}", status, body));
+            }
+
+            let json: serde_json::Value = resp
+                .json()
+                .await
+                .map_err(|e| format!("Failed to parse LDAP auth response: {}", e))?;
+
+            json["auth"]["client_token"]
+                .as_str()
+                .map(String::from)
+                .ok_or_else(|| "LDAP auth response did not contain a client_token".to_string())
+        }
+        "approle" => {
+            let role_id = vault_params.approle_role_id.as_deref().unwrap();
+            let secret_id = vault_params.approle_secret_id.as_deref().unwrap();
+            let mount = vault_params.approle_mount.as_deref().unwrap_or("approle");
+            let url = format!("{}/v1/auth/{}/login", vault_addr, mount);
+
+            let resp = client
+                .post(&url)
+                .json(&serde_json::json!({"role_id": role_id, "secret_id": secret_id}))
+                .send()
+                .await
+                .map_err(|e| format!("AppRole auth request failed: {}", e))?;
+
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                return Err(format!("AppRole auth failed (HTTP {}): {}", status, body));
+            }
+
+            let json: serde_json::Value = resp
+                .json()
+                .await
+                .map_err(|e| format!("Failed to parse AppRole auth response: {}", e))?;
+
+            json["auth"]["client_token"]
+                .as_str()
+                .map(String::from)
+                .ok_or_else(|| "AppRole auth response did not contain a client_token".to_string())
+        }
+        _ => Err(format!("Unsupported auth method for authentication: {}", method)),
+    }
+}
+
+/// Run dcert vault with vault-specific environment variables.
+/// Resolves vault_addr, handles auth (LDAP/AppRole → token), and passes
+/// configuration to the subprocess via env vars and CLI flags.
+async fn run_dcert_vault(
+    vault_args: &[&str],
+    vault_params: &VaultParams,
+    config: &McpConfig,
+) -> Result<(String, String, i32), String> {
+    let _permit = SUBPROCESS_SEMAPHORE
+        .acquire()
+        .await
+        .map_err(|_| "Subprocess semaphore closed".to_string())?;
+
+    // Resolve vault token: explicit param → LDAP/AppRole auth → inherited from env
+    let method = vault_params.auth_method.as_deref().unwrap_or("token");
+    let resolved_token: Option<String> = match method {
+        "ldap" | "approle" => Some(vault_authenticate(vault_params).await?),
+        _ => vault_params.vault_token.clone(),
+    };
+
+    // Build CLI args: "vault" <subcommand> [flags] --format json
+    let mut full_args: Vec<String> = vec!["vault".to_string()];
+    // Add vault global flags before subcommand
+    if vault_params.skip_verify == Some(true) {
+        full_args.push("--skip-verify".to_string());
+    }
+    if let Some(ref cacert) = vault_params.vault_cacert {
+        full_args.push("--vault-cacert".to_string());
+        full_args.push(cacert.clone());
+    }
+    full_args.push("--debug".to_string());
+    // Add subcommand-specific args
+    for arg in vault_args {
+        full_args.push(arg.to_string());
+    }
+
+    let mut cmd = Command::new(&config.dcert_binary);
+    let args_refs: Vec<&str> = full_args.iter().map(|s| s.as_str()).collect();
+    cmd.args(&args_refs);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    // Set vault env vars on the subprocess
+    if let Some(ref addr) = vault_params.resolve_addr() {
+        cmd.env("VAULT_ADDR", addr);
+    }
+    if let Some(ref token) = resolved_token {
+        cmd.env("VAULT_TOKEN", token);
+    }
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to run dcert at {}: {}", config.dcert_binary.display(), e))?;
+
+    run_child_with_timeout(&mut child, config).await
+}
+
+// ---------------------------------------------------------------------------
+// Vault MCP Tool Parameter Types
+// ---------------------------------------------------------------------------
+
+/// Parameters for the vault_issue tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct VaultIssueParams {
+    /// Common Name (CN) for the certificate (e.g., "api.example.com")
+    common_name: String,
+    /// Subject Alternative Names (e.g., ["DNS:*.example.com", "DNS:api.example.com"])
+    #[serde(default)]
+    sans: Vec<String>,
+    /// IP Subject Alternative Names (e.g., ["10.0.0.1", "192.168.1.1"])
+    #[serde(default)]
+    ip_sans: Vec<String>,
+    /// Certificate TTL (e.g., "8760h" for 1 year, "720h" for 30 days)
+    #[serde(default = "default_ttl")]
+    ttl: String,
+    /// Vault PKI role name. If omitted, dcert infers from token policies.
+    #[serde(default)]
+    role: Option<String>,
+    /// Vault PKI mount point (default: "vault_intermediate")
+    #[serde(default = "default_vault_mount")]
+    mount: String,
+    /// Output file base name (without extension). Defaults to sanitised CN.
+    #[serde(default)]
+    output: Option<String>,
+    /// PFX password — if provided, output is PKCS12/PFX instead of PEM
+    #[serde(default)]
+    pfx_password: Option<String>,
+    /// Store cert and key in Vault KV at this path after issuance
+    #[serde(default)]
+    store_path: Option<String>,
+    /// Vault KV version (1 or 2) for --store-path
+    #[serde(default = "default_kv_version")]
+    kv_version: u8,
+    /// Vault connection and authentication parameters
+    #[serde(flatten, default)]
+    vault: VaultParams,
+}
+
+/// Parameters for the vault_sign tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct VaultSignParams {
+    /// Path to CSR PEM file to sign
+    csr_file: String,
+    /// Common Name override (defaults to CN from CSR)
+    #[serde(default)]
+    common_name: Option<String>,
+    /// Subject Alternative Names
+    #[serde(default)]
+    sans: Vec<String>,
+    /// IP Subject Alternative Names
+    #[serde(default)]
+    ip_sans: Vec<String>,
+    /// Certificate TTL
+    #[serde(default = "default_ttl")]
+    ttl: String,
+    /// Vault PKI role name
+    #[serde(default)]
+    role: Option<String>,
+    /// Vault PKI mount point
+    #[serde(default = "default_vault_mount")]
+    mount: String,
+    /// Output file base name
+    #[serde(default)]
+    output: Option<String>,
+    /// Store cert in Vault KV at this path after signing
+    #[serde(default)]
+    store_path: Option<String>,
+    /// Vault KV version (1 or 2) for --store-path
+    #[serde(default = "default_kv_version")]
+    kv_version: u8,
+    /// Vault connection and authentication parameters
+    #[serde(flatten, default)]
+    vault: VaultParams,
+}
+
+/// Parameters for the vault_revoke tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct VaultRevokeParams {
+    /// Certificate serial number (colon or hyphen-separated hex)
+    #[serde(default)]
+    serial: Option<String>,
+    /// PEM certificate file path to revoke (alternative to serial)
+    #[serde(default)]
+    cert_file: Option<String>,
+    /// Vault PKI mount point
+    #[serde(default = "default_vault_mount")]
+    mount: String,
+    /// Vault connection and authentication parameters
+    #[serde(flatten, default)]
+    vault: VaultParams,
+}
+
+/// Parameters for the vault_list tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct VaultListParams {
+    /// Vault PKI mount point
+    #[serde(default = "default_vault_mount")]
+    mount: String,
+    /// Fetch and display details for each certificate (slower for large lists)
+    #[serde(default)]
+    show_details: bool,
+    /// Show only expired certificates
+    #[serde(default)]
+    expired_only: bool,
+    /// Show only valid (non-expired) certificates
+    #[serde(default)]
+    valid_only: bool,
+    /// Export results to a file (JSON, CSV, or XLSX based on extension)
+    #[serde(default)]
+    export: Option<String>,
+    /// Vault connection and authentication parameters
+    #[serde(flatten, default)]
+    vault: VaultParams,
+}
+
+/// Parameters for the vault_store tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct VaultStoreParams {
+    /// Local PEM certificate file to store
+    cert_file: String,
+    /// Local PEM private key file to store
+    key_file: String,
+    /// Vault KV path (e.g., "secret/certs/my-cert")
+    path: String,
+    /// Key name for the certificate in Vault KV
+    #[serde(default = "default_cert_key_name")]
+    cert_key: String,
+    /// Key name for the private key in Vault KV
+    #[serde(default = "default_key_key_name")]
+    key_key: String,
+    /// Vault KV version (1 or 2)
+    #[serde(default = "default_kv_version")]
+    kv_version: u8,
+    /// Vault connection and authentication parameters
+    #[serde(flatten, default)]
+    vault: VaultParams,
+}
+
+/// Parameters for the vault_validate tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct VaultValidateParams {
+    /// Vault KV path to read certificate from
+    path: String,
+    /// Key name for the certificate in Vault KV
+    #[serde(default = "default_cert_key_name")]
+    cert_key: String,
+    /// Key name for the private key in Vault KV
+    #[serde(default = "default_key_key_name")]
+    key_key: String,
+    /// Vault KV version (1 or 2)
+    #[serde(default = "default_kv_version")]
+    kv_version: u8,
+    /// Vault connection and authentication parameters
+    #[serde(flatten, default)]
+    vault: VaultParams,
+}
+
+/// Parameters for the vault_renew tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct VaultRenewParams {
+    /// Vault KV path containing the existing certificate to renew
+    path: String,
+    /// Vault PKI role name for issuing the new certificate
+    #[serde(default)]
+    role: Option<String>,
+    /// Vault PKI mount point
+    #[serde(default = "default_vault_mount")]
+    mount: String,
+    /// TTL for the new certificate
+    #[serde(default = "default_ttl")]
+    ttl: String,
+    /// Key name for the certificate in Vault KV
+    #[serde(default = "default_cert_key_name")]
+    cert_key: String,
+    /// Key name for the private key in Vault KV
+    #[serde(default = "default_key_key_name")]
+    key_key: String,
+    /// Vault KV version (1 or 2)
+    #[serde(default = "default_kv_version")]
+    kv_version: u8,
+    /// Additional Subject Alternative Names (override existing SANs if provided)
+    #[serde(default)]
+    sans: Vec<String>,
+    /// Additional IP Subject Alternative Names
+    #[serde(default)]
+    ip_sans: Vec<String>,
+    /// Vault connection and authentication parameters
+    #[serde(flatten, default)]
+    vault: VaultParams,
+}
 
 /// Validate that a key algorithm string is one of the accepted values.
 fn validate_key_algorithm(algo: &str) -> Result<(), String> {
@@ -1536,6 +2016,395 @@ impl DcertMcpServer {
                 let mut output = stdout;
                 if !stderr.is_empty() {
                     output.push_str("\n--- stderr ---\n");
+                    output.push_str(&stderr);
+                }
+                if code != 0 {
+                    output.push_str(&format!("\n--- exit code: {} ---", code));
+                }
+                ok_text(output)
+            }
+            Err(e) => ok_error(e),
+        }
+    }
+
+    // ===================================================================
+    // Vault PKI Tools
+    // ===================================================================
+
+    /// Issue a new TLS certificate from HashiCorp Vault PKI.
+    #[tool(
+        description = "Issue a new TLS certificate from HashiCorp Vault PKI. Generates a private key and certificate signed by the Vault PKI CA. Supports DNS and IP SANs, configurable TTL, PEM or PFX output, and optional KV storage. Requires Vault connectivity (vault_addr + authentication). Supports token, LDAP, and AppRole auth methods."
+    )]
+    pub async fn vault_issue(
+        &self,
+        Parameters(params): Parameters<VaultIssueParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if let Err(e) = params.vault.validate() {
+            return ok_error(e);
+        }
+        if params.common_name.trim().is_empty() {
+            return ok_error("common_name must not be empty".to_string());
+        }
+
+        let mut args: Vec<String> = vec![
+            "issue".to_string(),
+            "--cn".to_string(),
+            params.common_name.clone(),
+            "--mount".to_string(),
+            params.mount,
+            "--ttl".to_string(),
+            params.ttl,
+            "--format".to_string(),
+            "json".to_string(),
+        ];
+        if let Some(ref role) = params.role {
+            args.push("--role".to_string());
+            args.push(role.clone());
+        }
+        for san in &params.sans {
+            args.push("--san".to_string());
+            args.push(san.clone());
+        }
+        for ip in &params.ip_sans {
+            args.push("--ip-san".to_string());
+            args.push(ip.clone());
+        }
+        if let Some(ref output) = params.output {
+            args.push("--output".to_string());
+            args.push(output.clone());
+        }
+        if let Some(ref pfx_pw) = params.pfx_password {
+            args.push("--pfx-password".to_string());
+            args.push(pfx_pw.clone());
+        }
+        if let Some(ref store_path) = params.store_path {
+            args.push("--store-path".to_string());
+            args.push(store_path.clone());
+            args.push("--kv-version".to_string());
+            args.push(params.kv_version.to_string());
+        }
+
+        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        match run_dcert_vault(&args_refs, &params.vault, &self.config).await {
+            Ok((stdout, stderr, code)) => {
+                let mut output = stdout;
+                if !stderr.is_empty() {
+                    output.push_str("\n--- debug/stderr ---\n");
+                    output.push_str(&stderr);
+                }
+                if code != 0 {
+                    output.push_str(&format!("\n--- exit code: {} ---", code));
+                }
+                ok_text(output)
+            }
+            Err(e) => ok_error(e),
+        }
+    }
+
+    /// Sign a Certificate Signing Request (CSR) using Vault PKI.
+    #[tool(
+        description = "Sign a Certificate Signing Request (CSR) using HashiCorp Vault PKI. Takes a PEM-encoded CSR file and returns a signed certificate with the full CA chain. Supports CN override, SANs, and optional KV storage. Requires Vault connectivity. Supports token, LDAP, and AppRole auth methods."
+    )]
+    pub async fn vault_sign(
+        &self,
+        Parameters(params): Parameters<VaultSignParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if let Err(e) = params.vault.validate() {
+            return ok_error(e);
+        }
+        if let Err(e) = validate_path(&params.csr_file, "csr_file") {
+            return ok_error(e);
+        }
+
+        let mut args: Vec<String> = vec![
+            "sign".to_string(),
+            "--csr-file".to_string(),
+            params.csr_file,
+            "--mount".to_string(),
+            params.mount,
+            "--ttl".to_string(),
+            params.ttl,
+            "--format".to_string(),
+            "json".to_string(),
+        ];
+        if let Some(ref role) = params.role {
+            args.push("--role".to_string());
+            args.push(role.clone());
+        }
+        if let Some(ref cn) = params.common_name {
+            args.push("--cn".to_string());
+            args.push(cn.clone());
+        }
+        for san in &params.sans {
+            args.push("--san".to_string());
+            args.push(san.clone());
+        }
+        for ip in &params.ip_sans {
+            args.push("--ip-san".to_string());
+            args.push(ip.clone());
+        }
+        if let Some(ref output) = params.output {
+            args.push("--output".to_string());
+            args.push(output.clone());
+        }
+        if let Some(ref store_path) = params.store_path {
+            args.push("--store-path".to_string());
+            args.push(store_path.clone());
+            args.push("--kv-version".to_string());
+            args.push(params.kv_version.to_string());
+        }
+
+        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        match run_dcert_vault(&args_refs, &params.vault, &self.config).await {
+            Ok((stdout, stderr, code)) => {
+                let mut output = stdout;
+                if !stderr.is_empty() {
+                    output.push_str("\n--- debug/stderr ---\n");
+                    output.push_str(&stderr);
+                }
+                if code != 0 {
+                    output.push_str(&format!("\n--- exit code: {} ---", code));
+                }
+                ok_text(output)
+            }
+            Err(e) => ok_error(e),
+        }
+    }
+
+    /// Revoke a certificate in Vault PKI by serial number or PEM file.
+    #[tool(
+        description = "Revoke a TLS certificate in HashiCorp Vault PKI. Specify either the serial number (hex) or a PEM certificate file path. The certificate is added to the CRL. Requires Vault connectivity. Supports token, LDAP, and AppRole auth methods."
+    )]
+    pub async fn vault_revoke(
+        &self,
+        Parameters(params): Parameters<VaultRevokeParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if let Err(e) = params.vault.validate() {
+            return ok_error(e);
+        }
+        if params.serial.is_none() && params.cert_file.is_none() {
+            return ok_error("Either serial or cert_file must be provided".to_string());
+        }
+
+        let mut args: Vec<String> = vec!["revoke".to_string(), "--mount".to_string(), params.mount];
+        if let Some(ref serial) = params.serial {
+            args.push("--serial".to_string());
+            args.push(serial.clone());
+        }
+        if let Some(ref cert) = params.cert_file {
+            if let Err(e) = validate_path(cert, "cert_file") {
+                return ok_error(e);
+            }
+            args.push("--cert-file".to_string());
+            args.push(cert.clone());
+        }
+
+        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        match run_dcert_vault(&args_refs, &params.vault, &self.config).await {
+            Ok((stdout, stderr, code)) => {
+                let mut output = stdout;
+                if !stderr.is_empty() {
+                    output.push_str("\n--- debug/stderr ---\n");
+                    output.push_str(&stderr);
+                }
+                if code != 0 {
+                    output.push_str(&format!("\n--- exit code: {} ---", code));
+                }
+                ok_text(output)
+            }
+            Err(e) => ok_error(e),
+        }
+    }
+
+    /// List all certificates issued by Vault PKI.
+    #[tool(
+        description = "List all certificates issued by HashiCorp Vault PKI with optional filtering by expired/valid status. Supports export to JSON, CSV, or XLSX files. Returns serial numbers, common names, expiry dates, and status. Requires Vault connectivity. Supports token, LDAP, and AppRole auth methods."
+    )]
+    pub async fn vault_list(
+        &self,
+        Parameters(params): Parameters<VaultListParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if let Err(e) = params.vault.validate() {
+            return ok_error(e);
+        }
+
+        let mut args: Vec<String> = vec![
+            "list".to_string(),
+            "--mount".to_string(),
+            params.mount,
+            "--format".to_string(),
+            "json".to_string(),
+        ];
+        if params.show_details {
+            args.push("--show-details".to_string());
+        }
+        if params.expired_only {
+            args.push("--expired-only".to_string());
+        }
+        if params.valid_only {
+            args.push("--valid-only".to_string());
+        }
+        if let Some(ref export) = params.export {
+            if let Err(e) = validate_path(export, "export") {
+                return ok_error(e);
+            }
+            args.push("--export".to_string());
+            args.push(export.clone());
+        }
+
+        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        match run_dcert_vault(&args_refs, &params.vault, &self.config).await {
+            Ok((stdout, stderr, code)) => {
+                let mut output = stdout;
+                if !stderr.is_empty() {
+                    output.push_str("\n--- debug/stderr ---\n");
+                    output.push_str(&stderr);
+                }
+                if code != 0 {
+                    output.push_str(&format!("\n--- exit code: {} ---", code));
+                }
+                ok_text(output)
+            }
+            Err(e) => ok_error(e),
+        }
+    }
+
+    /// Store a local certificate and private key in Vault KV.
+    #[tool(
+        description = "Store a local PEM certificate and private key in HashiCorp Vault KV secret store. Supports KV v1 and v2. Configurable key names for the certificate and private key within the secret. Requires Vault connectivity. Supports token, LDAP, and AppRole auth methods."
+    )]
+    pub async fn vault_store(
+        &self,
+        Parameters(params): Parameters<VaultStoreParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if let Err(e) = params.vault.validate() {
+            return ok_error(e);
+        }
+        if let Err(e) = validate_path(&params.cert_file, "cert_file") {
+            return ok_error(e);
+        }
+        if let Err(e) = validate_path(&params.key_file, "key_file") {
+            return ok_error(e);
+        }
+
+        let kv_version_str = params.kv_version.to_string();
+        let args: Vec<&str> = vec![
+            "store",
+            "--cert-file",
+            &params.cert_file,
+            "--key-file",
+            &params.key_file,
+            &params.path,
+            "--cert-key",
+            &params.cert_key,
+            "--key-key",
+            &params.key_key,
+            "--kv-version",
+            &kv_version_str,
+        ];
+
+        match run_dcert_vault(&args, &params.vault, &self.config).await {
+            Ok((stdout, stderr, code)) => {
+                let mut output = stdout;
+                if !stderr.is_empty() {
+                    output.push_str("\n--- debug/stderr ---\n");
+                    output.push_str(&stderr);
+                }
+                if code != 0 {
+                    output.push_str(&format!("\n--- exit code: {} ---", code));
+                }
+                ok_text(output)
+            }
+            Err(e) => ok_error(e),
+        }
+    }
+
+    /// Read and validate a certificate stored in Vault KV.
+    #[tool(
+        description = "Read and validate a TLS certificate stored in HashiCorp Vault KV. Checks expiry, key match, and displays certificate details. Supports KV v1 and v2. Requires Vault connectivity. Supports token, LDAP, and AppRole auth methods."
+    )]
+    pub async fn vault_validate(
+        &self,
+        Parameters(params): Parameters<VaultValidateParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if let Err(e) = params.vault.validate() {
+            return ok_error(e);
+        }
+
+        let kv_version_str = params.kv_version.to_string();
+        let args: Vec<&str> = vec![
+            "validate",
+            &params.path,
+            "--cert-key",
+            &params.cert_key,
+            "--key-key",
+            &params.key_key,
+            "--kv-version",
+            &kv_version_str,
+        ];
+
+        match run_dcert_vault(&args, &params.vault, &self.config).await {
+            Ok((stdout, stderr, code)) => {
+                let mut output = stdout;
+                if !stderr.is_empty() {
+                    output.push_str("\n--- debug/stderr ---\n");
+                    output.push_str(&stderr);
+                }
+                if code != 0 {
+                    output.push_str(&format!("\n--- exit code: {} ---", code));
+                }
+                ok_text(output)
+            }
+            Err(e) => ok_error(e),
+        }
+    }
+
+    /// Renew an existing certificate in Vault KV by re-issuing from Vault PKI.
+    #[tool(
+        description = "Renew a TLS certificate stored in HashiCorp Vault KV by re-issuing from Vault PKI. Reads the existing cert to preserve CN and SANs, issues a new cert with a fresh TTL, and updates the KV secret. Optionally override SANs. Requires Vault connectivity. Supports token, LDAP, and AppRole auth methods."
+    )]
+    pub async fn vault_renew(
+        &self,
+        Parameters(params): Parameters<VaultRenewParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if let Err(e) = params.vault.validate() {
+            return ok_error(e);
+        }
+
+        let kv_version_str = params.kv_version.to_string();
+        let mut args: Vec<String> = vec![
+            "renew".to_string(),
+            params.path,
+            "--mount".to_string(),
+            params.mount,
+            "--ttl".to_string(),
+            params.ttl,
+            "--cert-key".to_string(),
+            params.cert_key,
+            "--key-key".to_string(),
+            params.key_key,
+            "--kv-version".to_string(),
+            kv_version_str,
+        ];
+        if let Some(ref role) = params.role {
+            args.push("--role".to_string());
+            args.push(role.clone());
+        }
+        for san in &params.sans {
+            args.push("--san".to_string());
+            args.push(san.clone());
+        }
+        for ip in &params.ip_sans {
+            args.push("--ip-san".to_string());
+            args.push(ip.clone());
+        }
+
+        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        match run_dcert_vault(&args_refs, &params.vault, &self.config).await {
+            Ok((stdout, stderr, code)) => {
+                let mut output = stdout;
+                if !stderr.is_empty() {
+                    output.push_str("\n--- debug/stderr ---\n");
                     output.push_str(&stderr);
                 }
                 if code != 0 {
@@ -2734,5 +3603,138 @@ mod tests {
             msg
         );
         assert!(msg.contains("HTTPS_PROXY"));
+    }
+
+    // ---------------------------------------------------------------
+    // VaultParams validation tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_vault_params_token_default_valid() {
+        let params = VaultParams::default();
+        // Token method with no explicit token is valid (falls back to env/file)
+        assert!(params.validate().is_ok());
+    }
+
+    #[test]
+    fn test_vault_params_ldap_missing_username() {
+        let params = VaultParams {
+            auth_method: Some("ldap".to_string()),
+            ldap_password: Some("pass".to_string()),
+            vault_addr: Some("https://vault.example.com:8200".to_string()),
+            ..Default::default()
+        };
+        let err = params.validate().unwrap_err();
+        assert!(
+            err.contains("ldap_username"),
+            "Error should mention ldap_username: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_vault_params_ldap_missing_password() {
+        let params = VaultParams {
+            auth_method: Some("ldap".to_string()),
+            ldap_username: Some("user".to_string()),
+            vault_addr: Some("https://vault.example.com:8200".to_string()),
+            ..Default::default()
+        };
+        let err = params.validate().unwrap_err();
+        assert!(
+            err.contains("ldap_password"),
+            "Error should mention ldap_password: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_vault_params_ldap_valid() {
+        let params = VaultParams {
+            auth_method: Some("ldap".to_string()),
+            ldap_username: Some("user".to_string()),
+            ldap_password: Some("pass".to_string()),
+            vault_addr: Some("https://vault.example.com:8200".to_string()),
+            ..Default::default()
+        };
+        assert!(params.validate().is_ok());
+    }
+
+    #[test]
+    fn test_vault_params_approle_missing_role_id() {
+        let params = VaultParams {
+            auth_method: Some("approle".to_string()),
+            approle_secret_id: Some("secret".to_string()),
+            vault_addr: Some("https://vault.example.com:8200".to_string()),
+            ..Default::default()
+        };
+        let err = params.validate().unwrap_err();
+        assert!(
+            err.contains("approle_role_id"),
+            "Error should mention approle_role_id: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_vault_params_approle_missing_secret_id() {
+        let params = VaultParams {
+            auth_method: Some("approle".to_string()),
+            approle_role_id: Some("role-id".to_string()),
+            vault_addr: Some("https://vault.example.com:8200".to_string()),
+            ..Default::default()
+        };
+        let err = params.validate().unwrap_err();
+        assert!(
+            err.contains("approle_secret_id"),
+            "Error should mention approle_secret_id: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_vault_params_approle_valid() {
+        let params = VaultParams {
+            auth_method: Some("approle".to_string()),
+            approle_role_id: Some("role-id".to_string()),
+            approle_secret_id: Some("secret-id".to_string()),
+            vault_addr: Some("https://vault.example.com:8200".to_string()),
+            ..Default::default()
+        };
+        assert!(params.validate().is_ok());
+    }
+
+    #[test]
+    fn test_vault_params_invalid_method() {
+        let params = VaultParams {
+            auth_method: Some("invalid".to_string()),
+            ..Default::default()
+        };
+        let err = params.validate().unwrap_err();
+        assert!(err.contains("Invalid auth_method"), "Error: {}", err);
+    }
+
+    #[test]
+    fn test_vault_params_resolve_addr() {
+        let params = VaultParams {
+            vault_addr: Some("https://vault.example.com:8200/".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            params.resolve_addr(),
+            Some("https://vault.example.com:8200".to_string())
+        );
+    }
+
+    #[test]
+    fn test_vault_params_resolve_addr_no_trailing_slash() {
+        let params = VaultParams {
+            vault_addr: Some("https://vault.example.com:8200".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            params.resolve_addr(),
+            Some("https://vault.example.com:8200".to_string())
+        );
     }
 }
