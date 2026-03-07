@@ -772,9 +772,16 @@ fn run_vault(args: cli::VaultArgs) -> Result<i32> {
     // Discover Vault token and address
     let token = vault::discover_vault_token()?;
     let addr = vault::vault_addr()?;
-    let client = vault::VaultClient::new(&addr, &token)?;
 
-    vault::print_vault_connectivity(&addr, &token);
+    let config = vault::VaultClientConfig {
+        cacert: args.vault_cacert.clone(),
+        skip_verify: args.skip_verify,
+        debug: args.debug,
+    };
+
+    let client = vault::VaultClient::new(&addr, &token, &config)?;
+
+    vault::print_vault_connectivity(&client, &addr, &token);
 
     match args.mode {
         cli::VaultMode::Issue(args) => run_vault_issue(&client, *args),
