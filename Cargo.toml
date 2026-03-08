@@ -33,10 +33,10 @@ lazy_static = "1.5"
 serde_yaml_ng = "0.10"
 ctrlc = "3.4"
 openssl-probe = "0.2"
-rmcp = { version = "0.15", features = ["server", "transport-io", "client"] }
+rmcp = { version = "1.1", features = ["server", "transport-io", "client"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-std", "sync", "time"] }
-schemars = "1.0"
-jsonwebtoken = "9"
+schemars = "1.2"
+jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls-native-roots", "blocking"], default-features = false }
 axum = "0.8"
 tower = "0.5"
@@ -47,7 +47,7 @@ regex-lite = "0.1"
 subtle = "2.6"
 tempfile = "3.25"
 percent-encoding = "2.3"
-rust_xlsxwriter = "0.90"
+rust_xlsxwriter = "0.94"
 
 [dev-dependencies]
 wiremock = "0.6"

@@ -189,14 +189,12 @@ pub fn create_csr(opts: &CsrCreateOptions, csr_path: &str, key_path: &str) -> Re
     }
 
     // Sign the CSR
-    // Ed25519 uses a built-in hash, so we pass MessageDigest from a null pointer
     match select_digest(opts.key_algo) {
         Some(digest) => req_builder.sign(&pkey, digest).with_context(|| "Failed to sign CSR")?,
         None => {
             // For Ed25519/Ed448, OpenSSL expects a null digest
-            // The openssl crate handles this via sign() with a special digest
             req_builder
-                .sign(&pkey, unsafe { MessageDigest::from_ptr(std::ptr::null()) })
+                .sign(&pkey, MessageDigest::null())
                 .with_context(|| "Failed to sign CSR with Ed25519")?
         }
     };
