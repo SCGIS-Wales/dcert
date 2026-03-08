@@ -280,7 +280,7 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
             };
             map.insert(result.target.clone(), output);
         }
-        println!("{}", serde_yml::to_string(&map)?);
+        println!("{}", serde_yaml_ng::to_string(&map)?);
     } else {
         for result in &all_results {
             output_results(result, args.format, &args.http_protocol, multi_target, &args)?;
@@ -481,7 +481,7 @@ fn run_verify_key(args: cli::VerifyKeyArgs) -> Result<i32> {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             }
             OutputFormat::Yaml => {
-                println!("{}", serde_yml::to_string(&result)?);
+                println!("{}", serde_yaml_ng::to_string(&result)?);
             }
             OutputFormat::Pretty => {
                 print_single_result(&result, None, None);
@@ -555,7 +555,7 @@ fn run_verify_key(args: cli::VerifyKeyArgs) -> Result<i32> {
             println!("{}", serde_json::to_string_pretty(&all_results)?);
         }
         OutputFormat::Yaml => {
-            println!("{}", serde_yml::to_string(&all_results)?);
+            println!("{}", serde_yaml_ng::to_string(&all_results)?);
         }
         OutputFormat::Pretty => {} // already printed
     }
@@ -650,7 +650,7 @@ fn run_csr_create(args: cli::CsrCreateArgs) -> Result<i32> {
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
         OutputFormat::Yaml => {
-            println!("{}", serde_yml::to_string(&result)?);
+            println!("{}", serde_yaml_ng::to_string(&result)?);
         }
         OutputFormat::Pretty => {
             println!("{}", "CSR created successfully".green().bold());
@@ -684,7 +684,7 @@ fn run_csr_validate(args: cli::CsrValidateArgs) -> Result<i32> {
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
         OutputFormat::Yaml => {
-            println!("{}", serde_yml::to_string(&result)?);
+            println!("{}", serde_yaml_ng::to_string(&result)?);
         }
         OutputFormat::Pretty => {
             println!("{}", "=== CSR Validation Report ===".bold());
@@ -965,7 +965,7 @@ fn run_vault_list(client: &vault::VaultClient, args: cli::VaultListArgs) -> Resu
             println!("{}", serde_json::to_string_pretty(&entries)?);
         }
         OutputFormat::Yaml => {
-            println!("{}", serde_yml::to_string(&entries)?);
+            println!("{}", serde_yaml_ng::to_string(&entries)?);
         }
         OutputFormat::Pretty => {
             println!("{} {} certificates", "Vault PKI:".bold(), entries.len());

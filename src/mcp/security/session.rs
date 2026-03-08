@@ -72,8 +72,10 @@ impl SessionCache {
     }
 
     /// Generates a cache key from principal ID and session ID.
+    /// Uses length-prefix encoding to prevent collisions when either
+    /// component contains the separator character.
     pub fn cache_key(principal_id: &str, session_id: &str) -> String {
-        format!("{principal_id}:{session_id}")
+        format!("{}|{}|{}", principal_id.len(), principal_id, session_id)
     }
 
     /// Retrieves cached claims if the entry exists, is not expired by inactivity,
@@ -254,8 +256,16 @@ mod tests {
     fn test_cache_key() {
         assert_eq!(
             SessionCache::cache_key("principal-1", "session-2"),
-            "principal-1:session-2"
+            "11|principal-1|session-2"
         );
+    }
+
+    #[test]
+    fn test_cache_key_no_collision() {
+        // These previously collided when using simple colon separator
+        let key1 = SessionCache::cache_key("a:b", "c");
+        let key2 = SessionCache::cache_key("a", "b:c");
+        assert_ne!(key1, key2);
     }
 
     #[tokio::test]

@@ -1254,7 +1254,7 @@ MIT. See [LICENSE](LICENSE).
 - CLI framework by [clap]
 - Terminal colors by [colored]
 - TLS connections and OCSP by [openssl]
-- YAML serialization by [serde_yml]
+- YAML serialization by [serde_yaml_ng]
 - Signal handling by [ctrlc]
 - MCP server by [rmcp]
 
@@ -1262,6 +1262,6 @@ MIT. See [LICENSE](LICENSE).
 [clap]: https://crates.io/crates/clap
 [colored]: https://crates.io/crates/colored
 [openssl]: https://crates.io/crates/openssl
-[serde_yml]: https://crates.io/crates/serde_yml
+[serde_yaml_ng]: https://crates.io/crates/serde_yaml_ng
 [ctrlc]: https://crates.io/crates/ctrlc
 [rmcp]: https://crates.io/crates/rmcp

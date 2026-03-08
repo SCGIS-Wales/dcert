@@ -64,10 +64,13 @@ fn home_dir() -> Option<std::path::PathBuf> {
 
 /// Mask a token for display: show first 4 and last 4 chars.
 fn mask_token(token: &str) -> String {
-    if token.len() <= 8 {
+    let chars: Vec<char> = token.chars().collect();
+    if chars.len() <= 8 {
         "****".to_string()
     } else {
-        format!("{}****{}", &token[..4], &token[token.len() - 4..])
+        let prefix: String = chars[..4].iter().collect();
+        let suffix: String = chars[chars.len() - 4..].iter().collect();
+        format!("{prefix}****{suffix}")
     }
 }
 
@@ -757,6 +760,27 @@ pub fn list_certificates(
     Ok(entries)
 }
 
+/// Escape a field value for RFC 4180 CSV output.
+///
+/// Quotes the field if it contains commas, quotes, newlines, or starts with
+/// characters that could trigger formula injection in spreadsheet applications
+/// (=, +, -, @).
+fn csv_escape(field: &str) -> String {
+    let needs_quoting = field.contains(',')
+        || field.contains('"')
+        || field.contains('\n')
+        || field.contains('\r')
+        || field.starts_with('=')
+        || field.starts_with('+')
+        || field.starts_with('-')
+        || field.starts_with('@');
+    if needs_quoting {
+        format!("\"{}\"", field.replace('"', "\"\""))
+    } else {
+        field.to_string()
+    }
+}
+
 pub fn export_cert_list(entries: &[VaultCertListEntry], export_path: &str) -> Result<()> {
     if export_path.ends_with(".xlsx") {
         export_cert_list_xlsx(entries, export_path)?;
@@ -765,11 +789,11 @@ pub fn export_cert_list(entries: &[VaultCertListEntry], export_path: &str) -> Re
         for entry in entries {
             csv.push_str(&format!(
                 "{},{},{},{},{}\n",
-                entry.serial_number,
-                entry.common_name.as_deref().unwrap_or(""),
-                entry.not_before,
-                entry.not_after,
-                entry.status,
+                csv_escape(&entry.serial_number),
+                csv_escape(entry.common_name.as_deref().unwrap_or("")),
+                csv_escape(&entry.not_before),
+                csv_escape(&entry.not_after),
+                csv_escape(&entry.status),
             ));
         }
         fs::write(export_path, &csv).with_context(|| format!("Failed to write CSV file: {}", export_path))?;
