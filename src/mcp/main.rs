@@ -391,19 +391,32 @@ async fn run_dcert_with_env(
 /// Run dcert without --debug and without --timeout/--read-timeout flags.
 /// Used for subcommands (convert, verify-key) that don't support connection timeouts.
 /// Acquires a semaphore permit to limit concurrent subprocess invocations.
+/// Optionally accepts environment variables (e.g., for passing passwords securely).
 ///
 /// Note: The subprocess inherits all parent environment variables including proxy
 /// settings. See `run_dcert()` for details.
-async fn run_dcert_raw(args: &[&str], config: &McpConfig) -> Result<(String, String, i32), String> {
+async fn run_dcert_raw(
+    args: &[&str],
+    config: &McpConfig,
+    env_vars: Option<&[(&str, &str)]>,
+) -> Result<(String, String, i32), String> {
     let _permit = SUBPROCESS_SEMAPHORE
         .acquire()
         .await
         .map_err(|_| "Subprocess semaphore closed".to_string())?;
 
-    let mut child = Command::new(&config.dcert_binary)
-        .args(args)
+    let mut cmd = Command::new(&config.dcert_binary);
+    cmd.args(args)
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    if let Some(vars) = env_vars {
+        for (key, value) in vars {
+            cmd.env(key, value);
+        }
+    }
+
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to run dcert at {}: {}", config.dcert_binary.display(), e))?;
 
@@ -961,10 +974,12 @@ async fn vault_authenticate(vault_params: &VaultParams) -> Result<String, String
                 .ok_or_else(|| "LDAP auth response did not contain a client_token".to_string())
         }
         "approle" => {
+            use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
             let role_id = vault_params.approle_role_id.as_deref().unwrap();
             let secret_id = vault_params.approle_secret_id.as_deref().unwrap();
             let mount = vault_params.approle_mount.as_deref().unwrap_or("approle");
-            let url = format!("{}/v1/auth/{}/login", vault_addr, mount);
+            let encoded_mount = utf8_percent_encode(mount, NON_ALPHANUMERIC).to_string();
+            let url = format!("{}/v1/auth/{}/login", vault_addr, encoded_mount);
 
             let resp = client
                 .post(&url)
@@ -1645,7 +1660,7 @@ impl DcertMcpServer {
             "json",
         ];
 
-        match run_dcert_raw(&args, &self.config).await {
+        match run_dcert_raw(&args, &self.config, None).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = stdout;
                 if !stderr.is_empty() {
@@ -1683,13 +1698,13 @@ impl DcertMcpServer {
             "convert",
             "pfx-to-pem",
             params.pkcs12_path.as_str(),
-            "--password",
-            params.password.as_str(),
             "--output-dir",
             params.output_dir.as_str(),
         ];
+        // Pass password via env var to avoid exposure in process listings
+        let env_vars = [("DCERT_CERT_PASSWORD", params.password.as_str())];
 
-        match run_dcert_raw(&args, &self.config).await {
+        match run_dcert_raw(&args, &self.config, Some(&env_vars)).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = stdout;
                 if !stderr.is_empty() {
@@ -1740,16 +1755,16 @@ impl DcertMcpServer {
             params.key_path,
             "--output".to_string(),
             params.output_path,
-            "--password".to_string(),
-            params.password,
         ];
         if let Some(ca) = params.ca_path {
             args.push("--ca".to_string());
             args.push(ca);
         }
+        // Pass password via env var to avoid exposure in process listings
+        let env_vars = [("DCERT_CERT_PASSWORD", params.password.as_str())];
 
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        match run_dcert_raw(&args_refs, &self.config).await {
+        match run_dcert_raw(&args_refs, &self.config, Some(&env_vars)).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = stdout;
                 if !stderr.is_empty() {
@@ -1798,13 +1813,13 @@ impl DcertMcpServer {
             params.key_path.as_str(),
             "--output",
             params.output_path.as_str(),
-            "--password",
-            params.password.as_str(),
             "--alias",
             params.alias.as_str(),
         ];
+        // Pass password via env var to avoid exposure in process listings
+        let env_vars = [("DCERT_KEYSTORE_PASSWORD", params.password.as_str())];
 
-        match run_dcert_raw(&args, &self.config).await {
+        match run_dcert_raw(&args, &self.config, Some(&env_vars)).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = stdout;
                 if !stderr.is_empty() {
@@ -1915,7 +1930,7 @@ impl DcertMcpServer {
         }
 
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        match run_dcert_raw(&args_refs, &self.config).await {
+        match run_dcert_raw(&args_refs, &self.config, None).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = stdout;
                 if !stderr.is_empty() {
@@ -1955,7 +1970,7 @@ impl DcertMcpServer {
         }
 
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        match run_dcert_raw(&args_refs, &self.config).await {
+        match run_dcert_raw(&args_refs, &self.config, None).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = stdout;
                 if !stderr.is_empty() {
@@ -2053,7 +2068,7 @@ impl DcertMcpServer {
         args.push(params.password);
 
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        match run_dcert_raw(&args_refs, &self.config).await {
+        match run_dcert_raw(&args_refs, &self.config, None).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = stdout;
                 if !stderr.is_empty() {
@@ -2462,18 +2477,14 @@ impl DcertMcpServer {
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for DcertMcpServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            server_info: Implementation {
-                name: "dcert-mcp".to_string(),
-                version: dcert_mcp_version().to_string(),
-                title: Some("dcert MCP Server".to_string()),
-                description: Some(MCP_DESCRIPTION.to_string()),
-                icons: None,
-                website_url: Some("https://github.com/SCGIS-Wales/dcert".to_string()),
-            },
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            ..Default::default()
-        }
+        let impl_info = Implementation::new("dcert-mcp", dcert_mcp_version())
+            .with_title("dcert MCP Server")
+            .with_description(MCP_DESCRIPTION)
+            .with_website_url("https://github.com/SCGIS-Wales/dcert");
+
+        let mut info = ServerInfo::default().with_server_info(impl_info);
+        info.capabilities = ServerCapabilities::builder().enable_tools().build();
+        info
     }
 }
 
@@ -3066,10 +3077,8 @@ mod tests {
         let client = TestClient.serve(client_transport).await.unwrap();
 
         let result = client
-            .call_tool(CallToolRequestParams {
-                meta: None,
-                name: "analyze_certificate".into(),
-                arguments: Some(
+            .call_tool(
+                CallToolRequestParams::new("analyze_certificate").with_arguments(
                     serde_json::json!({
                         "target": "tests/data/valid.pem",
                         "fingerprint": true,
@@ -3080,8 +3089,7 @@ mod tests {
                     .unwrap()
                     .clone(),
                 ),
-                task: None,
-            })
+            )
             .await;
 
         assert!(result.is_ok(), "Tool call should succeed: {:?}", result);
@@ -3122,10 +3130,8 @@ mod tests {
         let client = TestClient.serve(client_transport).await.unwrap();
 
         let result = client
-            .call_tool(CallToolRequestParams {
-                meta: None,
-                name: "analyze_certificate".into(),
-                arguments: Some(
+            .call_tool(
+                CallToolRequestParams::new("analyze_certificate").with_arguments(
                     serde_json::json!({
                         "target": "--no-verify"
                     })
@@ -3133,8 +3139,7 @@ mod tests {
                     .unwrap()
                     .clone(),
                 ),
-                task: None,
-            })
+            )
             .await;
 
         assert!(result.is_ok(), "Tool call should return error result, not fail");
@@ -3180,10 +3185,8 @@ mod tests {
         let client = TestClient.serve(client_transport).await.unwrap();
 
         let result = client
-            .call_tool(CallToolRequestParams {
-                meta: None,
-                name: "tls_connection_info".into(),
-                arguments: Some(
+            .call_tool(
+                CallToolRequestParams::new("tls_connection_info").with_arguments(
                     serde_json::json!({
                         "target": "example.com",
                         "min_tls": "1.0"
@@ -3192,8 +3195,7 @@ mod tests {
                     .unwrap()
                     .clone(),
                 ),
-                task: None,
-            })
+            )
             .await;
 
         assert!(result.is_ok());
@@ -3247,10 +3249,8 @@ mod tests {
         let client = TestClient.serve(client_transport).await.unwrap();
 
         let result = client
-            .call_tool(CallToolRequestParams {
-                meta: None,
-                name: "check_expiry".into(),
-                arguments: Some(
+            .call_tool(
+                CallToolRequestParams::new("check_expiry").with_arguments(
                     serde_json::json!({
                         "target": "tests/data/valid.pem",
                         "days": 30
@@ -3259,8 +3259,7 @@ mod tests {
                     .unwrap()
                     .clone(),
                 ),
-                task: None,
-            })
+            )
             .await;
 
         assert!(result.is_ok(), "Tool call should succeed: {:?}", result);
@@ -3301,10 +3300,8 @@ mod tests {
         let client = TestClient.serve(client_transport).await.unwrap();
 
         let result = client
-            .call_tool(CallToolRequestParams {
-                meta: None,
-                name: "compare_certificates".into(),
-                arguments: Some(
+            .call_tool(
+                CallToolRequestParams::new("compare_certificates").with_arguments(
                     serde_json::json!({
                         "target_a": "",
                         "target_b": "example.com"
@@ -3313,8 +3310,7 @@ mod tests {
                     .unwrap()
                     .clone(),
                 ),
-                task: None,
-            })
+            )
             .await;
 
         assert!(result.is_ok());
@@ -3430,10 +3426,8 @@ mod tests {
         let client = TestClient.serve(client_transport).await.unwrap();
 
         let result = client
-            .call_tool(CallToolRequestParams {
-                meta: None,
-                name: "tls_connection_info".into(),
-                arguments: Some(
+            .call_tool(
+                CallToolRequestParams::new("tls_connection_info").with_arguments(
                     serde_json::json!({
                         "target": "example.com",
                         "min_tls": "1.3",
@@ -3443,8 +3437,7 @@ mod tests {
                     .unwrap()
                     .clone(),
                 ),
-                task: None,
-            })
+            )
             .await;
 
         assert!(result.is_ok());
@@ -3490,10 +3483,8 @@ mod tests {
         let client = TestClient.serve(client_transport).await.unwrap();
 
         let result = client
-            .call_tool(CallToolRequestParams {
-                meta: None,
-                name: "check_expiry".into(),
-                arguments: Some(
+            .call_tool(
+                CallToolRequestParams::new("check_expiry").with_arguments(
                     serde_json::json!({
                         "target": "example.com",
                         "days": 9999
@@ -3502,8 +3493,7 @@ mod tests {
                     .unwrap()
                     .clone(),
                 ),
-                task: None,
-            })
+            )
             .await;
 
         assert!(result.is_ok());
