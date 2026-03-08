@@ -334,15 +334,26 @@ fn truncate_output(output: String) -> String {
 /// HTTPS_PROXY, HTTP_PROXY, NO_PROXY, SSL_CERT_FILE, and SSL_CERT_DIR are forwarded
 /// automatically to the dcert CLI subprocess.
 async fn run_dcert(args: &[&str], config: &McpConfig) -> Result<(String, String, i32), String> {
+    run_dcert_with_env(args, config, None).await
+}
+
+/// Run dcert with optional environment variables for passing secrets securely.
+/// Secrets like cert_password are passed via env vars instead of CLI args to avoid
+/// exposing them in process listings (ps aux, /proc/<pid>/cmdline).
+async fn run_dcert_with_env(
+    args: &[&str],
+    config: &McpConfig,
+    env_vars: Option<&[(&str, &str)]>,
+) -> Result<(String, String, i32), String> {
     let _permit = SUBPROCESS_SEMAPHORE
         .acquire()
         .await
         .map_err(|_| "Subprocess semaphore closed".to_string())?;
 
-    // Always include --debug for richer diagnostic output
+    // Only include --debug when explicitly enabled via DCERT_MCP_DEBUG env var
     let mut full_args: Vec<&str> = Vec::with_capacity(args.len() + 5);
     full_args.extend_from_slice(args);
-    if !full_args.contains(&"--debug") {
+    if std::env::var("DCERT_MCP_DEBUG").is_ok() && !full_args.contains(&"--debug") {
         full_args.push("--debug");
     }
 
@@ -358,10 +369,19 @@ async fn run_dcert(args: &[&str], config: &McpConfig) -> Result<(String, String,
         full_args.push(&read_timeout_str);
     }
 
-    let mut child = Command::new(&config.dcert_binary)
-        .args(&full_args)
+    let mut cmd = Command::new(&config.dcert_binary);
+    cmd.args(&full_args)
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    // Set additional env vars (e.g., DCERT_CERT_PASSWORD for mTLS)
+    if let Some(vars) = env_vars {
+        for (key, value) in vars {
+            cmd.env(key, value);
+        }
+    }
+
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to run dcert at {}: {}", config.dcert_binary.display(), e))?;
 
@@ -492,15 +512,22 @@ impl MtlsParams {
             args.push("--pkcs12".to_string());
             args.push(p.clone());
         }
-        if let Some(ref p) = self.cert_password {
-            args.push("--cert-password".to_string());
-            args.push(p.clone());
-        }
+        // cert_password is passed via DCERT_CERT_PASSWORD env var (see run_dcert_with_env)
+        // to avoid exposing it in process listings.
         if let Some(ref p) = self.ca_cert {
             args.push("--ca-cert".to_string());
             args.push(p.clone());
         }
         args
+    }
+
+    /// Returns env vars to set on the subprocess for secret parameters.
+    fn env_vars(&self) -> Vec<(&str, &str)> {
+        let mut vars = Vec::new();
+        if let Some(ref p) = self.cert_password {
+            vars.push(("DCERT_CERT_PASSWORD", p.as_str()));
+        }
+        vars
     }
 }
 
@@ -902,10 +929,13 @@ async fn vault_authenticate(vault_params: &VaultParams) -> Result<String, String
 
     match method {
         "ldap" => {
+            use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
             let username = vault_params.ldap_username.as_deref().unwrap();
             let password = vault_params.ldap_password.as_deref().unwrap();
             let mount = vault_params.ldap_mount.as_deref().unwrap_or("ldap");
-            let url = format!("{}/v1/auth/{}/login/{}", vault_addr, mount, username);
+            let encoded_mount = utf8_percent_encode(mount, NON_ALPHANUMERIC).to_string();
+            let encoded_username = utf8_percent_encode(username, NON_ALPHANUMERIC).to_string();
+            let url = format!("{}/v1/auth/{}/login/{}", vault_addr, encoded_mount, encoded_username);
 
             let resp = client
                 .post(&url)
@@ -1300,9 +1330,11 @@ impl DcertMcpServer {
             args.push("--check-revocation".to_string());
         }
         args.extend(params.mtls.to_args());
+        let mtls_env = params.mtls.env_vars();
+        let env_refs = mtls_env.to_vec();
 
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        match run_dcert(&args_refs, &self.config).await {
+        match run_dcert_with_env(&args_refs, &self.config, Some(&env_refs)).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = stdout;
                 if !stderr.is_empty() {
@@ -1346,9 +1378,11 @@ impl DcertMcpServer {
             days_str,
         ];
         args.extend(params.mtls.to_args());
+        let mtls_env = params.mtls.env_vars();
+        let env_refs = mtls_env.to_vec();
 
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        match run_dcert(&args_refs, &self.config).await {
+        match run_dcert_with_env(&args_refs, &self.config, Some(&env_refs)).await {
             Ok((stdout, stderr, code)) => {
                 let status = match code {
                     0 => "ALL_VALID",
@@ -1391,9 +1425,11 @@ impl DcertMcpServer {
             "--extensions".to_string(),
         ];
         args.extend(params.mtls.to_args());
+        let mtls_env = params.mtls.env_vars();
+        let env_refs = mtls_env.to_vec();
 
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        match run_dcert(&args_refs, &self.config).await {
+        match run_dcert_with_env(&args_refs, &self.config, Some(&env_refs)).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = stdout;
                 if code == 5 {
@@ -1505,9 +1541,11 @@ impl DcertMcpServer {
             }
         }
         args.extend(params.mtls.to_args());
+        let mtls_env = params.mtls.env_vars();
+        let env_refs = mtls_env.to_vec();
 
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        match run_dcert(&args_refs, &self.config).await {
+        match run_dcert_with_env(&args_refs, &self.config, Some(&env_refs)).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = stdout;
                 if !stderr.is_empty() {
@@ -1552,9 +1590,11 @@ impl DcertMcpServer {
             args.push("--exclude-expired".to_string());
         }
         args.extend(params.mtls.to_args());
+        let mtls_env = params.mtls.env_vars();
+        let env_refs = mtls_env.to_vec();
 
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        match run_dcert(&args_refs, &self.config).await {
+        match run_dcert_with_env(&args_refs, &self.config, Some(&env_refs)).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = String::new();
 
@@ -1953,9 +1993,11 @@ impl DcertMcpServer {
             "--compliance".to_string(),
         ];
         args.extend(params.mtls.to_args());
+        let mtls_env = params.mtls.env_vars();
+        let env_refs = mtls_env.to_vec();
 
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        match run_dcert(&args_refs, &self.config).await {
+        match run_dcert_with_env(&args_refs, &self.config, Some(&env_refs)).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = stdout;
                 if !stderr.is_empty() {

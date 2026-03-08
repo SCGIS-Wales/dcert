@@ -555,7 +555,7 @@ pub fn output_results(
                 connection: result.conn_info.clone(),
                 compliance: result.compliance_report.clone(),
             };
-            println!("{}", serde_yml::to_string(&output)?);
+            println!("{}", serde_yaml_ng::to_string(&output)?);
         }
     }
     Ok(())
