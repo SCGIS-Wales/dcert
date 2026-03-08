@@ -183,7 +183,33 @@ pub fn process_certificate(
             "1.3.101.113" => "Ed448".to_string(),
             other => other.to_string(),
         };
-        let key_bits = (spki.subject_public_key.data.len() * 8) as u32;
+        // Compute key size correctly based on algorithm type:
+        // - RSA: parse the DER-encoded RSAPublicKey to get the modulus bit length
+        // - EC: derive from the curve parameters OID or uncompressed point size
+        // - Ed25519/Ed448/X25519: fixed key sizes
+        let key_bits = match alg_oid.as_str() {
+            "1.2.840.113549.1.1.1" => {
+                // RSA: SubjectPublicKey contains DER-encoded RSAPublicKey (SEQUENCE { modulus, exponent })
+                // Parse the modulus length from the DER encoding
+                openssl::rsa::Rsa::public_key_from_der(&spki.subject_public_key.data)
+                    .map(|rsa| rsa.size() * 8)
+                    .unwrap_or(spki.subject_public_key.data.len() as u32 * 8)
+            }
+            "1.2.840.10045.2.1" => {
+                // EC: uncompressed point is 1 + 2*field_size bytes; field_size = (key_bits + 7) / 8
+                // For P-256: 65 bytes → 256 bits, P-384: 97 bytes → 384 bits, P-521: 133 bytes → 521 bits
+                let point_len = spki.subject_public_key.data.len();
+                if point_len > 1 {
+                    (((point_len - 1) / 2) * 8) as u32
+                } else {
+                    0
+                }
+            }
+            "1.3.101.112" => 256,  // Ed25519
+            "1.3.101.113" => 456,  // Ed448
+            "1.3.101.110" => 256,  // X25519
+            _ => (spki.subject_public_key.data.len() * 8) as u32,
+        };
         (Some(alg_name), Some(key_bits))
     } else {
         (None, None)
@@ -889,7 +915,7 @@ pub mod tests {
     #[test]
     fn test_cert_info_yaml_serialization() {
         let info = make_test_cert(Some("test"), vec!["DNS:test.com"]);
-        let yaml = serde_yml::to_string(&info).unwrap();
+        let yaml = serde_yaml_ng::to_string(&info).unwrap();
         assert!(yaml.contains("common_name"), "YAML should contain common_name");
         assert!(yaml.contains("test"), "YAML should contain the CN value");
     }

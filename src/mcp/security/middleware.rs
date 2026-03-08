@@ -45,12 +45,13 @@ pub async fn auth_middleware(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
 
+    // Use the real TCP peer address as the canonical remote_addr.
+    // X-Forwarded-For is logged separately as supplementary info only.
     let remote_addr = request
-        .headers()
-        .get("X-Forwarded-For")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("unknown")
-        .to_string();
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|ci| ci.0.ip().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
 
     // OIDC mode.
     if let Some(ref validator) = state.oidc_validator {
@@ -137,15 +138,10 @@ fn extract_bearer_token(auth_header: &str) -> &str {
 }
 
 /// Constant-time byte comparison to prevent timing attacks on token comparison.
+/// Uses the `subtle` crate to avoid leaking length or content via timing.
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut result = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        result |= x ^ y;
-    }
-    result == 0
+    use subtle::ConstantTimeEq;
+    a.ct_eq(b).into()
 }
 
 /// Extracts token claims from axum request extensions.

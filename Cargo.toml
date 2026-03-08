@@ -30,7 +30,7 @@ x509-parser = "0.18"
 openssl = "0.10"
 pem = "3.0"
 lazy_static = "1.5"
-serde_yml = "0.0.12"
+serde_yaml_ng = "0.10"
 ctrlc = "3.4"
 openssl-probe = "0.2"
 rmcp = { version = "0.15", features = ["server", "transport-io", "client"] }
@@ -44,7 +44,9 @@ tower-http = { version = "0.6", features = ["cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 regex-lite = "0.1"
+subtle = "2.6"
 tempfile = "3.25"
+percent-encoding = "2.3"
 rust_xlsxwriter = "0.90"
 
 [dev-dependencies]

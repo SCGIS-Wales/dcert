@@ -112,12 +112,19 @@ impl OidcValidator {
         // Try to get the key from cache.
         let key = self.get_signing_key(&jwks_url, &kid).await?;
 
-        // Set up validation.
-        let mut validation = Validation::new(header.alg);
+        // Set up validation — allow both RSA and EC signing algorithms
+        // to support OIDC providers that use EC keys (e.g., after key rotation).
+        let mut validation = Validation::default();
         validation.set_issuer(&[&self.config.issuer_url]);
         validation.set_audience(&[&self.config.audience]);
         validation.set_required_spec_claims(&["exp", "iss", "aud"]);
-        validation.algorithms = vec![Algorithm::RS256, Algorithm::RS384, Algorithm::RS512];
+        validation.algorithms = vec![
+            Algorithm::RS256,
+            Algorithm::RS384,
+            Algorithm::RS512,
+            Algorithm::ES256,
+            Algorithm::ES384,
+        ];
 
         // Decode and validate the token.
         let token_data = decode::<HashMap<String, serde_json::Value>>(token_string, &key, &validation)
