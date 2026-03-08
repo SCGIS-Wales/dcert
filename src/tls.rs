@@ -65,18 +65,9 @@ pub fn load_ca_certs(builder: &mut openssl::ssl::SslConnectorBuilder) -> Result<
             loaded = true;
         }
     }
-    if let Some(cert_dir) = probe.cert_dir.first() {
-        if std::path::Path::new(cert_dir).is_dir() {
-            let mut store = openssl::x509::store::X509StoreBuilder::new()
-                .map_err(|e| anyhow::anyhow!("Failed to create X509 store: {}", e))?;
-            store
-                .set_default_paths()
-                .map_err(|e| anyhow::anyhow!("Failed to set default paths: {}", e))?;
-            // Note: OpenSSL's SSL_CTX reads the cert dir via set_default_verify_paths,
-            // so we also call that as a fallback.
-        }
-    }
-
+    // If no cert file was loaded, fall back to OpenSSL's default verify paths.
+    // This covers both the cert_dir case and systems where the cert file path
+    // doesn't exist — OpenSSL will use SSL_CERT_DIR and its compiled-in defaults.
     if !loaded {
         builder
             .set_default_verify_paths()

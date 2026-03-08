@@ -13,6 +13,7 @@ use axum::extract::Request;
 use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
+use base64::Engine as _;
 use std::sync::Arc;
 use tracing::warn;
 
@@ -64,9 +65,12 @@ pub async fn auth_middleware(
         }
 
         // Check session cache first.
+        // Use a hash of the raw token as cache key so get/put use the same key,
+        // while avoiding storing the sensitive bearer token as a map key.
+        let cache_key = token_cache_key(token);
         let mut claims: Option<TokenClaims> = None;
         if let Some(ref cache) = state.session_cache {
-            claims = cache.get(token).await;
+            claims = cache.get(&cache_key).await;
         }
 
         if claims.is_none() {
@@ -75,8 +79,7 @@ pub async fn auth_middleware(
                 Ok(validated) => {
                     // Cache the validated claims.
                     if let Some(ref cache) = state.session_cache {
-                        let key = SessionCache::cache_key(&validated.object_id, &validated.subject);
-                        cache.put(key, validated.clone()).await;
+                        cache.put(cache_key.clone(), validated.clone()).await;
                     }
                     claims = Some(validated);
                 }
@@ -135,6 +138,16 @@ fn extract_bearer_token(auth_header: &str) -> &str {
         return "";
     }
     parts[1].trim()
+}
+
+/// Derives a cache key from a bearer token by hashing it with SHA-256.
+/// This avoids storing the raw token in the cache while ensuring consistent keys.
+fn token_cache_key(token: &str) -> String {
+    use openssl::hash::{hash, MessageDigest};
+    match hash(MessageDigest::sha256(), token.as_bytes()) {
+        Ok(digest) => base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest),
+        Err(_) => token.len().to_string(), // fallback — effectively disables caching
+    }
 }
 
 /// Constant-time byte comparison to prevent timing attacks on token comparison.

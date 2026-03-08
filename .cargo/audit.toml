@@ -1,0 +1,12 @@
+# Ignored advisories for cargo-audit.
+# Each entry must include a reason explaining why it is safe to ignore.
+
+[advisories]
+ignore = [
+    # RUSTSEC-2023-0071: rsa crate — Marvin Attack timing sidechannel.
+    # Transitive dependency via jsonwebtoken 10 (rust_crypto feature).
+    # No fixed version available upstream. We only use RSA for JWT signature
+    # *verification* (not encryption/decryption), so the PKCS#1 v1.5
+    # decryption timing oracle does not apply to our usage.
+    "RUSTSEC-2023-0071",
+]
