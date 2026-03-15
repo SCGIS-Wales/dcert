@@ -689,7 +689,7 @@ _default_client: DcertClient | None = None
 
 async def _get_client() -> DcertClient:
     """Get or create the module-level singleton client."""
-    global _default_client  # noqa: PLW0603
+    global _default_client
     if _default_client is None or not _default_client._connected:
         if _default_client is not None:
             await _default_client._disconnect()
