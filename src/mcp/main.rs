@@ -245,7 +245,7 @@ fn validate_target(target: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Validate a file path parameter to prevent argument injection.
+/// Validate a file path parameter to prevent argument injection and path traversal.
 fn validate_path(path: &str, param_name: &str) -> Result<(), String> {
     if path.is_empty() {
         return Err(format!("{} must not be empty", param_name));
@@ -255,6 +255,10 @@ fn validate_path(path: &str, param_name: &str) -> Result<(), String> {
     }
     if path.contains('\0') {
         return Err(format!("{} must not contain null bytes", param_name));
+    }
+    // Reject path traversal sequences
+    if path.contains("..") {
+        return Err(format!("{} must not contain '..' path traversal sequences", param_name));
     }
     Ok(())
 }
@@ -312,9 +316,11 @@ fn validate_alias(alias: &str) -> Result<(), String> {
 }
 
 /// Truncate subprocess output if it exceeds the maximum allowed size.
+/// Uses `floor_char_boundary` to avoid panicking on multi-byte UTF-8 characters.
 fn truncate_output(output: String) -> String {
     if output.len() > MAX_OUTPUT_SIZE {
-        let mut truncated = output[..MAX_OUTPUT_SIZE].to_string();
+        let boundary = output.floor_char_boundary(MAX_OUTPUT_SIZE);
+        let mut truncated = output[..boundary].to_string();
         truncated.push_str("\n--- output truncated (exceeded 10 MB limit) ---");
         truncated
     } else {
@@ -943,8 +949,14 @@ async fn vault_authenticate(vault_params: &VaultParams) -> Result<String, String
     match method {
         "ldap" => {
             use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
-            let username = vault_params.ldap_username.as_deref().unwrap();
-            let password = vault_params.ldap_password.as_deref().unwrap();
+            let username = vault_params
+                .ldap_username
+                .as_deref()
+                .ok_or_else(|| "ldap_username is required for LDAP auth".to_string())?;
+            let password = vault_params
+                .ldap_password
+                .as_deref()
+                .ok_or_else(|| "ldap_password is required for LDAP auth".to_string())?;
             let mount = vault_params.ldap_mount.as_deref().unwrap_or("ldap");
             let encoded_mount = utf8_percent_encode(mount, NON_ALPHANUMERIC).to_string();
             let encoded_username = utf8_percent_encode(username, NON_ALPHANUMERIC).to_string();
@@ -975,8 +987,14 @@ async fn vault_authenticate(vault_params: &VaultParams) -> Result<String, String
         }
         "approle" => {
             use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
-            let role_id = vault_params.approle_role_id.as_deref().unwrap();
-            let secret_id = vault_params.approle_secret_id.as_deref().unwrap();
+            let role_id = vault_params
+                .approle_role_id
+                .as_deref()
+                .ok_or_else(|| "approle_role_id is required for AppRole auth".to_string())?;
+            let secret_id = vault_params
+                .approle_secret_id
+                .as_deref()
+                .ok_or_else(|| "approle_secret_id is required for AppRole auth".to_string())?;
             let mount = vault_params.approle_mount.as_deref().unwrap_or("approle");
             let encoded_mount = utf8_percent_encode(mount, NON_ALPHANUMERIC).to_string();
             let url = format!("{}/v1/auth/{}/login", vault_addr, encoded_mount);
@@ -2848,6 +2866,13 @@ mod tests {
         assert!(validate_path("--flag", "cert").is_err());
     }
 
+    #[test]
+    fn test_validate_path_rejects_traversal() {
+        assert!(validate_path("../etc/passwd", "cert").is_err());
+        assert!(validate_path("/tmp/../etc/passwd", "cert").is_err());
+        assert!(validate_path("foo/../../bar", "cert").is_err());
+    }
+
     // ---------------------------------------------------------------
     // MtlsParams validation tests
     // ---------------------------------------------------------------
@@ -3400,6 +3425,18 @@ mod tests {
         let result = truncate_output(large);
         assert!(result.len() < MAX_OUTPUT_SIZE + 200); // truncated + message
         assert!(result.contains("output truncated"));
+    }
+
+    #[test]
+    fn test_truncate_output_multibyte_utf8() {
+        // Build a string where MAX_OUTPUT_SIZE falls in the middle of a multi-byte char.
+        // '€' is 3 bytes in UTF-8. Fill up to just before MAX_OUTPUT_SIZE, then add '€'.
+        let padding = "a".repeat(MAX_OUTPUT_SIZE - 1);
+        let input = format!("{}€extra", padding); // '€' starts at MAX_OUTPUT_SIZE-1
+        let result = truncate_output(input);
+        assert!(result.contains("output truncated"));
+        // Must not panic — the key property being tested
+        assert!(result.is_char_boundary(0)); // valid UTF-8
     }
 
     // ---------------------------------------------------------------

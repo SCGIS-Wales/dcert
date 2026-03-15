@@ -1095,7 +1095,13 @@ pub fn validate_from_kv(
         fs::write(&cert_path, &cert_pem)?;
         fs::write(&key_path, key)?;
 
-        match crate::cert::verify_key_matches_cert(key_path.to_str().unwrap(), cert_path.to_str().unwrap(), false) {
+        let key_path_str = key_path
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("Temp key path contains invalid UTF-8"))?;
+        let cert_path_str = cert_path
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("Temp cert path contains invalid UTF-8"))?;
+        match crate::cert::verify_key_matches_cert(key_path_str, cert_path_str, false) {
             Ok(result) => {
                 if result.matches {
                     println!(

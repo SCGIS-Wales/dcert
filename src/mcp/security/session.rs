@@ -203,14 +203,19 @@ async fn cleanup(entries: &Arc<RwLock<HashMap<String, SessionEntry>>>, config: &
     }
 }
 
-/// Evicts the entry with the oldest last access time.
+/// Evicts entries to make room for new sessions.
+/// Removes up to 10% of entries (those with the oldest last access times)
+/// to amortise the O(n) scan and avoid repeated single-entry evictions.
 fn evict_oldest(entries: &mut HashMap<String, SessionEntry>) {
-    let oldest_key = entries
-        .iter()
-        .min_by_key(|(_, entry)| entry.last_access)
-        .map(|(key, _)| key.clone());
+    let evict_count = std::cmp::max(1, entries.len() / 10);
 
-    if let Some(key) = oldest_key {
+    // Collect (key, last_access) pairs and partially sort to find the N oldest.
+    let mut candidates: Vec<(String, Instant)> = entries.iter().map(|(k, v)| (k.clone(), v.last_access)).collect();
+    // Sort ascending by last_access — oldest first
+    candidates.sort_unstable_by_key(|(_, t)| *t);
+    candidates.truncate(evict_count);
+
+    for (key, _) in candidates {
         entries.remove(&key);
     }
 }
