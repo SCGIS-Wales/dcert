@@ -210,7 +210,7 @@ def ensure_binary(version: str) -> str | None:
     try:
         os.close(fd)
         with (
-            urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT) as resp,  # noqa: S310
+            urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT) as resp,
             open(tmp_path, "wb") as out,
         ):
             shutil.copyfileobj(resp, out)
