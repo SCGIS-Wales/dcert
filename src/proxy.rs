@@ -93,10 +93,23 @@ pub fn connect_through_proxy(proxy_url: &str, target_host: &str, target_port: u1
         .set_read_timeout(Some(Duration::from_secs(READ_TIMEOUT_SECS)))
         .map_err(|e| anyhow::anyhow!("Failed to set proxy read timeout: {}", e))?;
 
+    // Build Proxy-Authorization header if credentials are present in the proxy URL
+    let auth_header = match (proxy.username(), proxy.password()) {
+        (username, Some(password)) if !username.is_empty() => {
+            use base64::Engine;
+            let decoded_user = percent_encoding::percent_decode_str(username).decode_utf8_lossy();
+            let decoded_pass = percent_encoding::percent_decode_str(password).decode_utf8_lossy();
+            let credentials =
+                base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", decoded_user, decoded_pass));
+            format!("Proxy-Authorization: Basic {}\r\n", credentials)
+        }
+        _ => String::new(),
+    };
+
     // Send CONNECT request
     let connect_request = format!(
-        "CONNECT {}:{} HTTP/1.1\r\nHost: {}:{}\r\nProxy-Connection: keep-alive\r\n\r\n",
-        target_host, target_port, target_host, target_port
+        "CONNECT {}:{} HTTP/1.1\r\nHost: {}:{}\r\n{}Proxy-Connection: keep-alive\r\n\r\n",
+        target_host, target_port, target_host, target_port, auth_header
     );
 
     debug_log!(debug, "CONNECT {}:{} HTTP/1.1 sent to proxy", target_host, target_port);

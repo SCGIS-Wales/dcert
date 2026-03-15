@@ -837,8 +837,12 @@ fn run_vault_issue(client: &vault::VaultClient, args: cli::VaultIssueArgs) -> Re
         std::fs::write(&cert_path, &full_chain)?;
         std::fs::write(&key_path, key_pem)?;
         convert::pem_to_pfx(
-            cert_path.to_str().unwrap(),
-            key_path.to_str().unwrap(),
+            cert_path
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("Temp cert path contains invalid UTF-8"))?,
+            key_path
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("Temp key path contains invalid UTF-8"))?,
             pfx_pw,
             &pfx_path,
             None,
