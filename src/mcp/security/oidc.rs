@@ -112,13 +112,18 @@ impl OidcValidator {
         // Try to get the key from cache.
         let key = self.get_signing_key(&jwks_url, &kid).await?;
 
-        // Set up validation — only RSA algorithms are currently supported
-        // since the JWKS cache only processes RSA keys.
+        // Set up validation — supports both RSA and ECDSA algorithms.
         let mut validation = Validation::default();
         validation.set_issuer(&[&self.config.issuer_url]);
         validation.set_audience(&[&self.config.audience]);
         validation.set_required_spec_claims(&["exp", "iss", "aud"]);
-        validation.algorithms = vec![Algorithm::RS256, Algorithm::RS384, Algorithm::RS512];
+        validation.algorithms = vec![
+            Algorithm::RS256,
+            Algorithm::RS384,
+            Algorithm::RS512,
+            Algorithm::ES256,
+            Algorithm::ES384,
+        ];
 
         // Decode and validate the token.
         let token_data = decode::<HashMap<String, serde_json::Value>>(token_string, &key, &validation)
@@ -292,12 +297,20 @@ fn validate_required_strings(kind: &str, actual: &[String], required: &[String])
 
 // --- JWKS Cache ---
 
-/// Cached JWKS key data.
-struct JwksCachedKey {
-    /// The RSA modulus (n parameter, base64url-decoded).
-    n: Vec<u8>,
-    /// The RSA exponent (e parameter, base64url-decoded).
-    e: Vec<u8>,
+/// Cached JWKS key data — supports both RSA and EC keys.
+enum JwksCachedKey {
+    Rsa {
+        /// The RSA modulus (n parameter, base64url-decoded).
+        n: Vec<u8>,
+        /// The RSA exponent (e parameter, base64url-decoded).
+        e: Vec<u8>,
+    },
+    Ec {
+        /// The EC x coordinate (base64url string, as expected by jsonwebtoken).
+        x: String,
+        /// The EC y coordinate (base64url string, as expected by jsonwebtoken).
+        y: String,
+    },
 }
 
 /// Thread-safe JWKS key cache with TTL.
@@ -324,9 +337,10 @@ impl JwksCache {
     }
 
     fn get_key(&self, kid: &str) -> Option<DecodingKey> {
-        self.keys
-            .get(kid)
-            .map(|k| DecodingKey::from_rsa_raw_components(&k.n, &k.e))
+        self.keys.get(kid).and_then(|k| match k {
+            JwksCachedKey::Rsa { n, e } => Some(DecodingKey::from_rsa_raw_components(n, e)),
+            JwksCachedKey::Ec { x, y } => DecodingKey::from_ec_components(x, y).ok(),
+        })
     }
 
     fn update(&mut self, keys: HashMap<String, JwksCachedKey>) {
@@ -347,8 +361,16 @@ struct JwkKeyEntry {
     kid: Option<String>,
     #[serde(rename = "use")]
     use_: Option<String>,
+    /// RSA modulus
     n: Option<String>,
+    /// RSA exponent
     e: Option<String>,
+    /// EC x coordinate
+    x: Option<String>,
+    /// EC y coordinate
+    y: Option<String>,
+    /// EC curve name (e.g. "P-256", "P-384")
+    crv: Option<String>,
 }
 
 /// Fetches and parses JWKS from the given URL.
@@ -368,11 +390,15 @@ async fn fetch_jwks(client: &Client, jwks_url: &str) -> Result<HashMap<String, J
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
 
+    let decode_b64 = |s: &str| -> Result<Vec<u8>, base64::DecodeError> {
+        URL_SAFE_NO_PAD.decode(s).or_else(|_| {
+            use base64::engine::general_purpose::URL_SAFE;
+            URL_SAFE.decode(s)
+        })
+    };
+
     let mut keys = HashMap::new();
     for k in jwks.keys {
-        if k.kty != "RSA" {
-            continue;
-        }
         if k.use_.as_deref() != Some("sig") {
             continue;
         }
@@ -380,37 +406,48 @@ async fn fetch_jwks(client: &Client, jwks_url: &str) -> Result<HashMap<String, J
             Some(kid) => kid.clone(),
             None => continue,
         };
-        let n_str = match &k.n {
-            Some(n) => n,
-            None => continue,
-        };
-        let e_str = match &k.e {
-            Some(e) => e,
-            None => continue,
+
+        let cached_key = match k.kty.as_str() {
+            "RSA" => {
+                let (n_str, e_str) = match (&k.n, &k.e) {
+                    (Some(n), Some(e)) => (n, e),
+                    _ => continue,
+                };
+                match (decode_b64(n_str), decode_b64(e_str)) {
+                    (Ok(n), Ok(e)) => JwksCachedKey::Rsa { n, e },
+                    _ => {
+                        warn!(kid = kid.as_str(), "skipping malformed RSA JWKS key");
+                        continue;
+                    }
+                }
+            }
+            "EC" => {
+                let (x_str, y_str) = match (&k.x, &k.y) {
+                    (Some(x), Some(y)) => (x.clone(), y.clone()),
+                    _ => continue,
+                };
+                let crv = k.crv.as_deref().unwrap_or("");
+                if crv != "P-256" && crv != "P-384" {
+                    if !crv.is_empty() {
+                        warn!(kid = kid.as_str(), crv = crv, "unsupported EC curve");
+                    }
+                    continue;
+                }
+                // Validate that x and y are valid base64url before caching
+                if decode_b64(&x_str).is_err() || decode_b64(&y_str).is_err() {
+                    warn!(kid = kid.as_str(), "skipping malformed EC JWKS key");
+                    continue;
+                }
+                JwksCachedKey::Ec { x: x_str, y: y_str }
+            }
+            _ => continue,
         };
 
-        let n_bytes = URL_SAFE_NO_PAD.decode(n_str).or_else(|_| {
-            // Some JWKS endpoints use standard base64 with padding.
-            use base64::engine::general_purpose::URL_SAFE;
-            URL_SAFE.decode(n_str)
-        });
-        let e_bytes = URL_SAFE_NO_PAD.decode(e_str).or_else(|_| {
-            use base64::engine::general_purpose::URL_SAFE;
-            URL_SAFE.decode(e_str)
-        });
-
-        match (n_bytes, e_bytes) {
-            (Ok(n), Ok(e)) => {
-                keys.insert(kid, JwksCachedKey { n, e });
-            }
-            _ => {
-                warn!(kid = kid.as_str(), "skipping malformed JWKS key");
-            }
-        }
+        keys.insert(kid, cached_key);
     }
 
     if keys.is_empty() {
-        return Err("no valid RSA signing keys found in JWKS".to_string());
+        return Err("no valid signing keys found in JWKS".to_string());
     }
 
     Ok(keys)

@@ -307,8 +307,25 @@ pub(crate) fn restrict_file_permissions(path: &str) {
     let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
 }
 
-/// No-op on non-Unix platforms.
-#[cfg(not(unix))]
+/// On Windows, restrict file permissions using icacls.
+/// Removes inherited ACLs and grants access only to the current user.
+#[cfg(windows)]
+pub(crate) fn restrict_file_permissions(path: &str) {
+    use std::process::Command;
+    let username = std::env::var("USERNAME").unwrap_or_default();
+    if username.is_empty() {
+        return;
+    }
+    // Remove inherited permissions, then grant full control only to the current user.
+    // icacls is available on all modern Windows versions (Vista+).
+    let _ = Command::new("icacls").args([path, "/inheritance:r"]).output();
+    let _ = Command::new("icacls")
+        .args([path, "/grant:r", &format!("{}:F", username)])
+        .output();
+}
+
+/// No-op on platforms that are neither Unix nor Windows.
+#[cfg(not(any(unix, windows)))]
 pub(crate) fn restrict_file_permissions(_path: &str) {}
 
 fn key_type_name(pkey: &PKey<openssl::pkey::Private>) -> String {
