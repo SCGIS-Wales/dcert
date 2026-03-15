@@ -142,7 +142,7 @@ class TestClientLifecycle:
             mock_client_cls.return_value = mock_instance
 
             async with DcertClient(binary_path="/fake/dcert-mcp") as client:
-                pass  # noqa: SIM105
+                pass
 
             # Client should be disconnected despite error
             assert client._connected is False
