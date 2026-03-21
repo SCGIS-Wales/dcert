@@ -144,8 +144,22 @@ pub fn dcert_long_version() -> &'static str {
 #[derive(Parser, Debug)]
 #[command(name = "dcert")]
 #[command(about = DCERT_DESCRIPTION)]
+#[command(
+    long_about = "TLS certificate analysis, format conversion, and key verification — CLI and MCP server.\n\n\
+    The 'check' command is the default and can be omitted:\n  \
+    dcert example.com  ≡  dcert check example.com"
+)]
 #[command(version = dcert_version())]
 #[command(long_version = dcert_long_version())]
+#[command(after_help = "\x1b[1mExamples:\x1b[0m
+  dcert example.com                          Check TLS certificate for a domain
+  dcert check cert.pem                       Analyze a local PEM file
+  dcert check example.com -f json            Output as JSON
+  dcert check example.com --compliance       Run CA/B Forum compliance checks
+  dcert convert pfx-to-pem cert.pfx --password secret
+  dcert csr create --cn www.example.com      Generate CSR + private key
+  dcert verify-key cert.pem --key key.pem    Verify key matches certificate
+  dcert vault issue --cn app.example.com     Issue cert from Vault PKI")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -162,7 +176,7 @@ pub enum Command {
     Convert(ConvertArgs),
 
     /// Verify that a private key matches a certificate
-    #[command(name = "verify-key")]
+    #[command(name = "verify-key", alias = "vk")]
     VerifyKey(VerifyKeyArgs),
 
     /// Create or validate Certificate Signing Requests (CSRs)
@@ -180,6 +194,7 @@ pub const KNOWN_SUBCOMMANDS: &[&str] = &[
     "c",
     "convert",
     "verify-key",
+    "vk",
     "csr",
     "vault",
     "help",
@@ -192,6 +207,15 @@ pub const KNOWN_SUBCOMMANDS: &[&str] = &[
 // -- Check subcommand (default) --
 
 #[derive(Args, Debug)]
+#[command(after_help = "\x1b[1mExamples:\x1b[0m
+  dcert check example.com                       Basic TLS certificate check
+  dcert check example.com -f json               JSON output
+  dcert check cert.pem --fingerprint             Show SHA-256 fingerprints
+  dcert check example.com --expiry-warn 30       Warn if expiring within 30 days
+  dcert check a.com b.com --diff                 Compare two certificate chains
+  dcert check example.com --watch 60             Re-check every 60 seconds
+  dcert check example.com --check-revocation     OCSP revocation check
+  cat cert.pem | dcert check -                   Read PEM from stdin")]
 pub struct CheckArgs {
     /// Path(s) to PEM file(s) or HTTPS URL(s). Use '-' to read targets from stdin (one per line)
     #[arg(value_parser = validate_target, num_args = 1..)]
@@ -338,6 +362,11 @@ pub struct CheckArgs {
 // -- Convert subcommand --
 
 #[derive(Args, Debug)]
+#[command(after_help = "\x1b[1mExamples:\x1b[0m
+  dcert convert pfx-to-pem cert.pfx --password secret
+  dcert convert pem-to-pfx --cert cert.pem --key key.pem -o out.pfx --password secret
+  dcert convert create-keystore --cert cert.pem --key key.pem -o keystore.p12 --password secret
+  dcert convert create-truststore ca.pem -o truststore.p12")]
 pub struct ConvertArgs {
     #[command(subcommand)]
     pub mode: ConvertMode,
@@ -416,6 +445,11 @@ pub enum ConvertMode {
 // -- Verify-key subcommand --
 
 #[derive(Args, Debug)]
+#[command(after_help = "\x1b[1mExamples:\x1b[0m
+  dcert verify-key cert.pem --key key.pem    Verify a specific cert/key pair
+  dcert verify-key https://example.com --key key.pem
+  dcert verify-key                           Auto-discover pairs in current directory
+  dcert verify-key --dir /etc/ssl            Auto-discover pairs in a directory")]
 pub struct VerifyKeyArgs {
     /// PEM certificate file or HTTPS URL to verify against.
     /// If omitted (along with --key), scans the current directory for matching cert/key pairs.
@@ -444,6 +478,12 @@ pub struct VerifyKeyArgs {
 // -- CSR subcommand --
 
 #[derive(Args, Debug)]
+#[command(after_help = "\x1b[1mExamples:\x1b[0m
+  dcert csr create                               Interactive wizard
+  dcert csr create --cn www.example.com --san DNS:*.example.com
+  dcert csr create --cn app.local --key-algo ecdsa-p256
+  dcert csr validate request.csr                 Validate against CA/B Forum standards
+  dcert csr validate request.csr --strict        Treat warnings as errors")]
 pub struct CsrArgs {
     #[command(subcommand)]
     pub mode: CsrMode,
@@ -539,6 +579,16 @@ pub struct CsrValidateArgs {
 // -- Vault subcommand --
 
 #[derive(Args, Debug)]
+#[command(after_help = "\x1b[1mExamples:\x1b[0m
+  dcert vault issue --cn app.example.com         Issue cert from Vault PKI
+  dcert vault issue                              Interactive wizard
+  dcert vault sign --csr-file request.csr        Sign a CSR via Vault
+  dcert vault list                               List all PKI certificates
+  dcert vault list --show-details --valid-only   List valid certs with details
+  dcert vault revoke --serial 01:23:AB           Revoke by serial number
+  dcert vault store --cert-file c.pem --key-file k.pem secret/certs/app
+  dcert vault validate secret/certs/app          Validate cert stored in KV
+  dcert vault renew secret/certs/app             Re-issue expiring cert")]
 pub struct VaultArgs {
     /// Skip TLS certificate verification for Vault (insecure). Also: VAULT_SKIP_VERIFY=1
     #[arg(long, global = true)]
@@ -1007,6 +1057,7 @@ mod tests {
         assert!(KNOWN_SUBCOMMANDS.contains(&"check"));
         assert!(KNOWN_SUBCOMMANDS.contains(&"convert"));
         assert!(KNOWN_SUBCOMMANDS.contains(&"verify-key"));
+        assert!(KNOWN_SUBCOMMANDS.contains(&"vk"));
         assert!(KNOWN_SUBCOMMANDS.contains(&"csr"));
         assert!(KNOWN_SUBCOMMANDS.contains(&"help"));
     }

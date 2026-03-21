@@ -2,19 +2,19 @@ use anyhow::{Context, Result};
 use colored::*;
 use pem_rfc7468::LineEnding;
 use std::fs;
-use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 use url::Url;
 use x509_parser::certificate::X509Certificate;
 use x509_parser::prelude::FromDer;
 
-use crate::cert::{extract_ocsp_url, parse_cert_infos_from_pem, CertInfo, CertProcessOpts};
+use crate::cert::{CertInfo, CertProcessOpts, extract_ocsp_url, parse_cert_infos_from_pem};
 use crate::cli::{CheckArgs, CipherNotation, HttpProtocol, OutputFormat, SortOrder};
 use crate::compliance::{self, ChainComplianceReport, Severity};
 use crate::debug::debug_log;
 use crate::ocsp::check_ocsp_status;
 use crate::proxy::ProxyConfig;
-use crate::tls::{fetch_tls_chain_openssl, TlsConnectionInfo, TlsFetchOptions};
+use crate::tls::{TlsConnectionInfo, TlsFetchOptions, fetch_tls_chain_openssl};
 
 /// Debug/connection info for pretty output.
 pub struct PrettyDebugInfo<'a> {
@@ -25,82 +25,82 @@ pub struct PrettyDebugInfo<'a> {
 }
 
 pub fn print_pretty(infos: &[CertInfo], debug: &PrettyDebugInfo<'_>) {
-    if let (Some(host), Some(conn)) = (debug.hostname, debug.conn) {
-        if let Some(leaf) = infos.first() {
-            let matched = cert_matches_hostname(leaf, host);
-            let status = if matched { "true".green() } else { "false".red() };
-            println!();
-            println!("{}", "Debug".bold());
-            // Show the negotiated ALPN protocol if available, otherwise the requested protocol
-            let proto_display = match &conn.negotiated_protocol {
-                Some(proto) => match proto.as_str() {
-                    "h2" => "HTTP/2 (h2)".to_string(),
-                    "http/1.1" => "HTTP/1.1".to_string(),
-                    other => other.to_string(),
-                },
-                None => match debug.http_protocol {
-                    HttpProtocol::Http2 => "HTTP/2 (requested, ALPN not supported by server)".to_string(),
-                    HttpProtocol::Http1_1 => "HTTP/1.1".to_string(),
-                },
+    if let (Some(host), Some(conn)) = (debug.hostname, debug.conn)
+        && let Some(leaf) = infos.first()
+    {
+        let matched = cert_matches_hostname(leaf, host);
+        let status = if matched { "true".green() } else { "false".red() };
+        println!();
+        println!("{}", "Debug".bold());
+        // Show the negotiated ALPN protocol if available, otherwise the requested protocol
+        let proto_display = match &conn.negotiated_protocol {
+            Some(proto) => match proto.as_str() {
+                "h2" => "HTTP/2 (h2)".to_string(),
+                "http/1.1" => "HTTP/1.1".to_string(),
+                other => other.to_string(),
+            },
+            None => match debug.http_protocol {
+                HttpProtocol::Http2 => "HTTP/2 (requested, ALPN not supported by server)".to_string(),
+                HttpProtocol::Http1_1 => "HTTP/1.1".to_string(),
+            },
+        };
+        println!("  HTTP protocol: {}", proto_display);
+        if conn.http_response_code > 0 {
+            let code_color = match conn.http_response_code {
+                200..=299 => conn.http_response_code.to_string().green(),
+                300..=399 => conn.http_response_code.to_string().yellow(),
+                400..=499 => conn.http_response_code.to_string().red(),
+                500..=599 => conn.http_response_code.to_string().red().bold(),
+                _ => conn.http_response_code.to_string().normal(),
             };
-            println!("  HTTP protocol: {}", proto_display);
-            if conn.http_response_code > 0 {
-                let code_color = match conn.http_response_code {
-                    200..=299 => conn.http_response_code.to_string().green(),
-                    300..=399 => conn.http_response_code.to_string().yellow(),
-                    400..=499 => conn.http_response_code.to_string().red(),
-                    500..=599 => conn.http_response_code.to_string().red().bold(),
-                    _ => conn.http_response_code.to_string().normal(),
-                };
-                println!("  HTTP response code: {}", code_color);
-            } else {
-                println!("  HTTP response code: not available");
+            println!("  HTTP response code: {}", code_color);
+        } else {
+            println!("  HTTP response code: not available");
+        }
+        println!("  Hostname matches certificate SANs/CN: {}", status);
+        println!("  TLS version used: {}", conn.tls_version);
+        // Cipher display: always show OpenSSL name in the default line,
+        // but when --ciphers is used, show the requested notation prominently
+        match debug.cipher_notation {
+            Some(CipherNotation::Iana) => {
+                let iana_name = conn
+                    .tls_cipher_iana
+                    .as_deref()
+                    .unwrap_or("unknown (IANA name not available)");
+                println!("  TLS ciphersuite agreed (IANA): {}", iana_name);
             }
-            println!("  Hostname matches certificate SANs/CN: {}", status);
-            println!("  TLS version used: {}", conn.tls_version);
-            // Cipher display: always show OpenSSL name in the default line,
-            // but when --ciphers is used, show the requested notation prominently
-            match debug.cipher_notation {
-                Some(CipherNotation::Iana) => {
-                    let iana_name = conn
-                        .tls_cipher_iana
-                        .as_deref()
-                        .unwrap_or("unknown (IANA name not available)");
-                    println!("  TLS ciphersuite agreed (IANA): {}", iana_name);
-                }
-                Some(CipherNotation::Openssl) => {
-                    println!("  TLS ciphersuite agreed (OpenSSL): {}", conn.tls_cipher);
-                }
-                None => {
-                    println!("  TLS ciphersuite agreed: {}", conn.tls_cipher);
-                }
+            Some(CipherNotation::Openssl) => {
+                println!("  TLS ciphersuite agreed (OpenSSL): {}", conn.tls_cipher);
             }
-            let ct_str = if leaf.ct_present { "true".green() } else { "false".red() };
-            println!("  Certificate transparency: {}", ct_str);
+            None => {
+                println!("  TLS ciphersuite agreed: {}", conn.tls_cipher);
+            }
+        }
+        let ct_str = if leaf.ct_present { "true".green() } else { "false".red() };
+        println!("  Certificate transparency: {}", ct_str);
 
-            // Verification result
-            if let Some(ref err) = conn.verify_result {
-                println!("  Chain verification: {}", err.red());
-                for detail in &conn.chain_validation_errors {
-                    println!("    {}", detail.red());
-                }
-            } else {
-                println!("  Chain verification: {}", "ok".green());
+        // Verification result
+        if let Some(ref err) = conn.verify_result {
+            println!("  Chain verification: {}", err.red());
+            for detail in &conn.chain_validation_errors {
+                println!("    {}", detail.red());
             }
+        } else {
+            println!("  Chain verification: {}", "ok".green());
+        }
 
-            println!();
-            println!("  Network latency (DNS resolution):      {} ms", conn.dns_latency);
-            println!("  Network latency (layer 4/TCP connect): {} ms", conn.l4_latency);
-            println!("  Network latency (layer 7/TLS+HTTP):    {} ms", conn.l7_latency);
-            println!();
-            println!(
-                "Note: DNS, Layer 4, and Layer 7 latencies are measured separately and should not be summed. \
+        println!();
+        println!("  Network latency (DNS resolution):      {} ms", conn.dns_latency);
+        println!("  Network latency (layer 4/TCP connect): {} ms", conn.l4_latency);
+        println!("  Network latency (layer 7/TLS+HTTP):    {} ms", conn.l7_latency);
+        println!();
+        println!(
+            "Note: DNS, Layer 4, and Layer 7 latencies are measured separately and should not be summed. \
 DNS covers name resolution only; Layer 4 covers DNS + TCP connection; \
 Layer 7 covers TLS handshake, sending the HTTP request, and reading the \
 HTTP status line (not the full response body)."
-            );
-            println!();
-        }
+        );
+        println!();
     }
     for info in infos {
         println!("{}", "Certificate".bold());
@@ -319,14 +319,14 @@ pub fn process_target(
 
         for (i, info) in infos.iter_mut().enumerate() {
             // Parse the x509 cert to extract OCSP URL
-            if let Some(der) = cert_ders.get(i) {
-                if let Ok((_, cert)) = X509Certificate::from_der(der) {
-                    if let Some(ocsp_url) = extract_ocsp_url(&cert) {
-                        let issuer_der = cert_ders.get(i + 1).copied();
-                        info.revocation_status = Some(check_ocsp_status(der, issuer_der, &ocsp_url, args.debug));
-                    } else {
-                        info.revocation_status = Some("unknown (no OCSP responder)".to_string());
-                    }
+            if let Some(der) = cert_ders.get(i)
+                && let Ok((_, cert)) = X509Certificate::from_der(der)
+            {
+                if let Some(ocsp_url) = extract_ocsp_url(&cert) {
+                    let issuer_der = cert_ders.get(i + 1).copied();
+                    info.revocation_status = Some(check_ocsp_status(der, issuer_der, &ocsp_url, args.debug));
+                } else {
+                    info.revocation_status = Some("unknown (no OCSP responder)".to_string());
                 }
             }
         }
@@ -404,11 +404,7 @@ pub fn check_expiry_warnings(infos: &[CertInfo], warn_days: u64) -> i32 {
         }
     }
 
-    if has_warning {
-        1
-    } else {
-        0
-    }
+    if has_warning { 1 } else { 0 }
 }
 
 /// Print diff between two sets of certificate infos.
@@ -601,7 +597,7 @@ pub fn print_compliance_pretty(report: &ChainComplianceReport) {
 mod tests {
     use super::*;
     use crate::cert::tests::make_test_cert;
-    use crate::cert::{parse_cert_infos_from_pem, CertProcessOpts};
+    use crate::cert::{CertProcessOpts, parse_cert_infos_from_pem};
     use crate::cli::SortOrder;
 
     // The multi-cert chain from tests/data/test.pem (Microsoft Azure)
