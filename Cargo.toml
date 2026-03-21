@@ -1,11 +1,12 @@
 [package]
 name = "dcert"
 version = "3.0.30"
-edition = "2021"
+edition = "2024"
 license = "MIT"
 repository = "https://github.com/SCGIS-Wales/dcert"
 description = "TLS certificate analysis, format conversion, and key verification — CLI and MCP server"
 readme = "README.md"
+default-run = "dcert"
 
 [[bin]]
 name = "dcert"
@@ -21,7 +22,7 @@ pem-rfc7468 = { version = "1.0", features = ["alloc"] }
 url = "2.5"
 base64 = "0.22"
 anyhow = "1.0"
-clap = { version = "4.5", features = ["derive", "env"] }
+clap = { version = "4.6", features = ["derive", "env"] }
 colored = "3.1"
 time = { version = "0.3", features = ["formatting"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -29,11 +30,10 @@ serde_json = "1.0"
 x509-parser = "0.18"
 openssl = "0.10"
 pem = "3.0"
-lazy_static = "1.5"
 serde_yaml_ng = "0.10"
-ctrlc = "3.4"
+ctrlc = "3.5"
 openssl-probe = "0.2"
-rmcp = { version = "1.1", features = ["server", "transport-io", "client"] }
+rmcp = { version = "1.2", features = ["server", "transport-io", "client"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-std", "sync", "time"] }
 schemars = "1.2"
 jsonwebtoken = { version = "10", features = ["rust_crypto"] }
@@ -45,7 +45,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 regex-lite = "0.1"
 subtle = "2.6"
-tempfile = "3.25"
+tempfile = "3.27"
 percent-encoding = "2.3"
 rust_xlsxwriter = "0.94"
 

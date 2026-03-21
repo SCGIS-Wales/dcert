@@ -25,6 +25,7 @@ impl AuditLogger {
 
     /// Logs a successful authentication event.
     pub fn log_auth_success(&self, claims: &TokenClaims, session_id: &str, remote_addr: &str) {
+        let scopes = claims.scopes.join(" ");
         info!(
             audit.event_type = "auth_success",
             audit.result = "success",
@@ -34,7 +35,7 @@ impl AuditLogger {
             audit.client_app_id = claims.authorized_party.as_str(),
             audit.token_id = claims.token_id.as_str(),
             audit.session_id = session_id,
-            audit.scopes = claims.scopes.join(" ").as_str(),
+            audit.scopes = scopes.as_str(),
             audit.remote_addr = remote_addr,
             "security_audit"
         );
@@ -53,6 +54,7 @@ impl AuditLogger {
 
     /// Logs an authorization denial.
     pub fn log_authz_denied(&self, claims: &TokenClaims, action: &str, reason: &str) {
+        let scopes = claims.scopes.join(" ");
         info!(
             audit.event_type = "authz_denied",
             audit.result = "denied",
@@ -60,7 +62,7 @@ impl AuditLogger {
             audit.principal_name = claims.preferred_username.as_str(),
             audit.tenant_id = claims.tenant_id.as_str(),
             audit.client_app_id = claims.authorized_party.as_str(),
-            audit.scopes = claims.scopes.join(" ").as_str(),
+            audit.scopes = scopes.as_str(),
             audit.action = action,
             audit.error = reason,
             "security_audit"

@@ -5,7 +5,7 @@
 //! - No acceptance of tokens issued for other resources
 //! - Configurable via environment variables
 
-use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
+use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -162,10 +162,10 @@ impl OidcValidator {
         // Try cached keys first.
         {
             let cache = self.jwks_cache.read().await;
-            if !cache.is_expired() {
-                if let Some(key) = cache.get_key(kid) {
-                    return Ok(key);
-                }
+            if !cache.is_expired()
+                && let Some(key) = cache.get_key(kid)
+            {
+                return Ok(key);
             }
         }
 
@@ -239,11 +239,7 @@ fn extract_claims(m: &HashMap<String, serde_json::Value>) -> TokenClaims {
     // azp (OIDC) or appid (v1 tokens).
     let authorized_party = {
         let azp = get_str("azp");
-        if azp.is_empty() {
-            get_str("appid")
-        } else {
-            azp
-        }
+        if azp.is_empty() { get_str("appid") } else { azp }
     };
 
     // scp: space-separated scopes.
@@ -262,11 +258,7 @@ fn extract_claims(m: &HashMap<String, serde_json::Value>) -> TokenClaims {
     // jti or uti (unique token identifier).
     let token_id = {
         let jti = get_str("jti");
-        if jti.is_empty() {
-            get_str("uti")
-        } else {
-            jti
-        }
+        if jti.is_empty() { get_str("uti") } else { jti }
     };
 
     TokenClaims {
@@ -387,8 +379,8 @@ async fn fetch_jwks(client: &Client, jwks_url: &str) -> Result<HashMap<String, J
 
     let jwks: JwksResponse = resp.json().await.map_err(|e| format!("parsing JWKS: {e}"))?;
 
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
     let decode_b64 = |s: &str| -> Result<Vec<u8>, base64::DecodeError> {
         URL_SAFE_NO_PAD.decode(s).or_else(|_| {

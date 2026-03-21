@@ -97,10 +97,10 @@ pub async fn auth_middleware(
             }
         }
 
-        if let Some(ref claims) = claims {
-            if let Some(ref logger) = state.audit_logger {
-                logger.log_auth_success(claims, "", &remote_addr);
-            }
+        if let Some(ref claims) = claims
+            && let Some(ref logger) = state.audit_logger
+        {
+            logger.log_auth_success(claims, "", &remote_addr);
         }
 
         // Inject claims into request extensions.
@@ -143,7 +143,7 @@ fn extract_bearer_token(auth_header: &str) -> &str {
 /// Derives a cache key from a bearer token by hashing it with SHA-256.
 /// This avoids storing the raw token in the cache while ensuring consistent keys.
 fn token_cache_key(token: &str) -> String {
-    use openssl::hash::{hash, MessageDigest};
+    use openssl::hash::{MessageDigest, hash};
     match hash(MessageDigest::sha256(), token.as_bytes()) {
         Ok(digest) => base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest),
         Err(_) => token.len().to_string(), // fallback — effectively disables caching

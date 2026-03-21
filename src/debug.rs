@@ -23,10 +23,10 @@ pub fn sanitize_header_value(name: &str, value: &str) -> String {
         return value.to_string();
     }
     let lower_name = name.to_lowercase();
-    if lower_name == "authorization" || lower_name == "proxy-authorization" {
-        if let Some((scheme, _rest)) = value.trim().split_once(' ') {
-            return format!("{} ****", scheme);
-        }
+    if (lower_name == "authorization" || lower_name == "proxy-authorization")
+        && let Some((scheme, _rest)) = value.trim().split_once(' ')
+    {
+        return format!("{} ****", scheme);
     }
     "****".to_string()
 }
@@ -53,7 +53,7 @@ pub fn dbg_section(enabled: bool, section: &str) {
 
 /// Short-circuit macro that avoids format! allocation when debug is off.
 macro_rules! debug_log {
-    ($enabled:expr, $($arg:tt)*) => {
+    ($enabled:expr_2021, $($arg:tt)*) => {
         if $enabled {
             use colored::Colorize as _;
             eprintln!("{} {}", "*".dimmed(), format!($($arg)*));
