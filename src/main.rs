@@ -771,8 +771,22 @@ fn run_csr_validate(args: cli::CsrValidateArgs) -> Result<i32> {
 
 fn run_vault(args: cli::VaultArgs) -> Result<i32> {
     // Discover Vault token and address
-    let token = vault::discover_vault_token()?;
     let addr = vault::vault_addr()?;
+    let token = match args.auth_method.as_str() {
+        "ldap" | "approle" => vault::vault_authenticate(
+            &addr,
+            &args.auth_method,
+            args.ldap_username.as_deref(),
+            args.ldap_password.as_deref(),
+            &args.ldap_mount,
+            args.approle_role_id.as_deref(),
+            args.approle_secret_id.as_deref(),
+            &args.approle_mount,
+            args.skip_verify,
+            args.vault_cacert.as_deref(),
+        )?,
+        _ => vault::discover_vault_token()?,
+    };
 
     let config = vault::VaultClientConfig {
         cacert: args.vault_cacert.clone(),
@@ -1058,7 +1072,7 @@ fn run() -> Result<i32> {
         Command::Convert(args) => run_convert(args),
         Command::VerifyKey(args) => run_verify_key(args),
         Command::Csr(args) => run_csr(args),
-        Command::Vault(args) => run_vault(args),
+        Command::Vault(args) => run_vault(*args),
     }
 }
 

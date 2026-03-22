@@ -46,6 +46,97 @@ fn discover_vault_token_from(env_token: Option<String>, home: Option<std::path::
     ))
 }
 
+/// Authenticate with Vault using LDAP or AppRole and return a client token.
+/// This mirrors the MCP server's authentication logic for CLI parity.
+#[allow(clippy::too_many_arguments)]
+pub fn vault_authenticate(
+    vault_addr: &str,
+    auth_method: &str,
+    ldap_username: Option<&str>,
+    ldap_password: Option<&str>,
+    ldap_mount: &str,
+    approle_role_id: Option<&str>,
+    approle_secret_id: Option<&str>,
+    approle_mount: &str,
+    skip_verify: bool,
+    vault_cacert: Option<&str>,
+) -> Result<String> {
+    use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
+
+    let mut client_builder = reqwest::blocking::Client::builder()
+        .danger_accept_invalid_certs(skip_verify)
+        .timeout(std::time::Duration::from_secs(30));
+
+    if let Some(ca_path) = vault_cacert {
+        let ca_data = fs::read(ca_path).with_context(|| format!("Failed to read CA cert: {}", ca_path))?;
+        let ca_cert = reqwest::Certificate::from_pem(&ca_data)
+            .with_context(|| format!("Failed to parse CA cert: {}", ca_path))?;
+        client_builder = client_builder.add_root_certificate(ca_cert);
+    }
+
+    let client = client_builder
+        .build()
+        .context("Failed to create HTTP client for Vault auth")?;
+
+    match auth_method {
+        "ldap" => {
+            let username = ldap_username.ok_or_else(|| anyhow::anyhow!("--ldap-username is required for LDAP auth"))?;
+            let password = ldap_password.ok_or_else(|| anyhow::anyhow!("--ldap-password is required for LDAP auth"))?;
+            let encoded_mount = utf8_percent_encode(ldap_mount, NON_ALPHANUMERIC).to_string();
+            let encoded_username = utf8_percent_encode(username, NON_ALPHANUMERIC).to_string();
+            let url = format!("{}/v1/auth/{}/login/{}", vault_addr, encoded_mount, encoded_username);
+
+            let resp = client
+                .post(&url)
+                .json(&serde_json::json!({"password": password}))
+                .send()
+                .with_context(|| "LDAP auth request failed")?;
+
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let body = resp.text().unwrap_or_default();
+                return Err(anyhow::anyhow!("LDAP auth failed (HTTP {}): {}", status, body));
+            }
+
+            let json: serde_json::Value = resp.json().context("Failed to parse LDAP auth response")?;
+            json["auth"]["client_token"]
+                .as_str()
+                .map(String::from)
+                .ok_or_else(|| anyhow::anyhow!("LDAP auth response did not contain a client_token"))
+        }
+        "approle" => {
+            let role_id =
+                approle_role_id.ok_or_else(|| anyhow::anyhow!("--approle-role-id is required for AppRole auth"))?;
+            let secret_id =
+                approle_secret_id.ok_or_else(|| anyhow::anyhow!("--approle-secret-id is required for AppRole auth"))?;
+            let encoded_mount = utf8_percent_encode(approle_mount, NON_ALPHANUMERIC).to_string();
+            let url = format!("{}/v1/auth/{}/login", vault_addr, encoded_mount);
+
+            let resp = client
+                .post(&url)
+                .json(&serde_json::json!({"role_id": role_id, "secret_id": secret_id}))
+                .send()
+                .with_context(|| "AppRole auth request failed")?;
+
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let body = resp.text().unwrap_or_default();
+                return Err(anyhow::anyhow!("AppRole auth failed (HTTP {}): {}", status, body));
+            }
+
+            let json: serde_json::Value = resp.json().context("Failed to parse AppRole auth response")?;
+            json["auth"]["client_token"]
+                .as_str()
+                .map(String::from)
+                .ok_or_else(|| anyhow::anyhow!("AppRole auth response did not contain a client_token"))
+        }
+        _ => Err(anyhow::anyhow!(
+            "Invalid auth method '{}': must be \"token\", \"ldap\", or \"approle\"",
+            auth_method
+        )),
+    }
+}
+
 /// Read the Vault address from VAULT_ADDR environment variable.
 pub fn vault_addr() -> Result<String> {
     std::env::var("VAULT_ADDR")
