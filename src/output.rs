@@ -14,7 +14,9 @@ use crate::compliance::{self, ChainComplianceReport, Severity};
 use crate::debug::debug_log;
 use crate::ocsp::check_ocsp_status;
 use crate::proxy::ProxyConfig;
-use crate::tls::{TlsConnectionInfo, TlsFetchOptions, fetch_tls_chain_openssl};
+use crate::tls::{
+    StarttlsFetchOptions, TlsConnectionInfo, TlsFetchOptions, fetch_tls_chain_openssl, fetch_tls_chain_starttls,
+};
 
 /// Debug/connection info for pretty output.
 pub struct PrettyDebugInfo<'a> {
@@ -268,6 +270,44 @@ pub fn process_target(
             .ok_or_else(|| anyhow::anyhow!("No PEM data received from stdin"))?
             .to_string();
         (pem, None)
+    } else if let Some(protocol) = args.starttls {
+        // STARTTLS mode: target is host[:port]
+        let (host, port) = if let Some(colon_pos) = target.rfind(':') {
+            let port_str = &target[colon_pos + 1..];
+            if let Ok(p) = port_str.parse::<u16>() {
+                (&target[..colon_pos], p)
+            } else {
+                (target, protocol.default_port())
+            }
+        } else {
+            (target, protocol.default_port())
+        };
+
+        if args.no_verify {
+            eprintln!(
+                "{} TLS certificate verification is disabled (--no-verify). \
+                 Chain validation errors will be suppressed.",
+                "Warning:".yellow().bold()
+            );
+        }
+
+        let conn = fetch_tls_chain_starttls(&StarttlsFetchOptions {
+            host,
+            port,
+            protocol,
+            no_verify: args.no_verify,
+            timeout_secs: args.timeout,
+            read_timeout_secs: args.read_timeout,
+            sni_override: args.sni.as_deref(),
+            min_tls: args.min_tls,
+            max_tls: args.max_tls,
+            cipher_list: args.cipher_list.as_deref(),
+            cipher_suites: args.cipher_suites.as_deref(),
+            debug: args.debug,
+            ca_cert_path: args.ca_cert.as_deref(),
+        })?;
+        let pem = conn.pem_data.clone();
+        (pem, Some(conn))
     } else if target.starts_with("https://") {
         if args.no_verify {
             eprintln!(

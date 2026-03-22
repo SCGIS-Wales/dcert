@@ -33,6 +33,45 @@ pub mod exit_code {
 // -- Value enums --
 
 #[derive(ValueEnum, Clone, Copy, Debug)]
+pub enum StarttlsProtocol {
+    /// SMTP STARTTLS (default port: 587)
+    #[value(name = "smtp")]
+    Smtp,
+    /// IMAP STARTTLS (default port: 143)
+    #[value(name = "imap")]
+    Imap,
+    /// POP3 STLS (default port: 110)
+    #[value(name = "pop3")]
+    Pop3,
+    /// FTP AUTH TLS (default port: 21)
+    #[value(name = "ftp")]
+    Ftp,
+}
+
+impl StarttlsProtocol {
+    /// Default port for each STARTTLS protocol.
+    pub fn default_port(self) -> u16 {
+        match self {
+            Self::Smtp => 587,
+            Self::Imap => 143,
+            Self::Pop3 => 110,
+            Self::Ftp => 21,
+        }
+    }
+}
+
+impl std::fmt::Display for StarttlsProtocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Smtp => write!(f, "smtp"),
+            Self::Imap => write!(f, "imap"),
+            Self::Pop3 => write!(f, "pop3"),
+            Self::Ftp => write!(f, "ftp"),
+        }
+    }
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug)]
 pub enum KeyAlgorithmArg {
     /// RSA 4096-bit — strong, widely compatible (default)
     #[value(name = "rsa-4096")]
@@ -185,7 +224,7 @@ pub enum Command {
 
     /// HashiCorp Vault PKI operations (issue, sign, revoke, list, store, validate, renew)
     #[command(name = "vault")]
-    Vault(VaultArgs),
+    Vault(Box<VaultArgs>),
 }
 
 /// Known subcommand names for backward-compatible default routing.
@@ -215,6 +254,7 @@ pub const KNOWN_SUBCOMMANDS: &[&str] = &[
   dcert check a.com b.com --diff                 Compare two certificate chains
   dcert check example.com --watch 60             Re-check every 60 seconds
   dcert check example.com --check-revocation     OCSP revocation check
+  dcert check smtp.gmail.com --starttls smtp     Inspect mail server certificate
   cat cert.pem | dcert check -                   Read PEM from stdin")]
 pub struct CheckArgs {
     /// Path(s) to PEM file(s) or HTTPS URL(s). Use '-' to read targets from stdin (one per line)
@@ -357,6 +397,12 @@ pub struct CheckArgs {
     /// Custom CA certificate bundle PEM file for server verification (overrides system CAs)
     #[arg(long, value_name = "PATH")]
     pub ca_cert: Option<String>,
+
+    // -- STARTTLS --
+    /// Perform STARTTLS negotiation before TLS handshake (for mail/FTP servers).
+    /// Target is treated as host[:port] instead of an HTTPS URL.
+    #[arg(long, value_enum, value_name = "PROTOCOL", conflicts_with_all = ["method", "header", "data", "data_file", "http_protocol"])]
+    pub starttls: Option<StarttlsProtocol>,
 }
 
 // -- Convert subcommand --
@@ -601,6 +647,34 @@ pub struct VaultArgs {
     /// Show verbose debug output for Vault connectivity and API diagnostics
     #[arg(long, global = true)]
     pub debug: bool,
+
+    /// Authentication method: "token" (default), "ldap", or "approle"
+    #[arg(long, global = true, value_name = "METHOD", default_value = "token")]
+    pub auth_method: String,
+
+    /// LDAP username (required when auth_method is "ldap"). Also: DCERT_LDAP_USERNAME
+    #[arg(long, global = true, value_name = "USERNAME", env = "DCERT_LDAP_USERNAME")]
+    pub ldap_username: Option<String>,
+
+    /// LDAP password (required when auth_method is "ldap"). Also: DCERT_LDAP_PASSWORD
+    #[arg(long, global = true, value_name = "PASSWORD", env = "DCERT_LDAP_PASSWORD")]
+    pub ldap_password: Option<String>,
+
+    /// LDAP auth mount point (default: "ldap")
+    #[arg(long, global = true, value_name = "PATH", default_value = "ldap")]
+    pub ldap_mount: String,
+
+    /// AppRole role_id (required when auth_method is "approle"). Also: DCERT_APPROLE_ROLE_ID
+    #[arg(long, global = true, value_name = "ID", env = "DCERT_APPROLE_ROLE_ID")]
+    pub approle_role_id: Option<String>,
+
+    /// AppRole secret_id (required when auth_method is "approle"). Also: DCERT_APPROLE_SECRET_ID
+    #[arg(long, global = true, value_name = "ID", env = "DCERT_APPROLE_SECRET_ID")]
+    pub approle_secret_id: Option<String>,
+
+    /// AppRole auth mount point (default: "approle")
+    #[arg(long, global = true, value_name = "PATH", default_value = "approle")]
+    pub approle_mount: String,
 
     #[command(subcommand)]
     pub mode: VaultMode,

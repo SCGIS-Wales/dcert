@@ -6,7 +6,7 @@ use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::cli::{HttpProtocol, TlsVersionArg};
+use crate::cli::{HttpProtocol, StarttlsProtocol, TlsVersionArg};
 use crate::debug::{dbg_section, debug_log, sanitize_header_value, sanitize_url};
 use crate::proxy::{ProxyConfig, connect_through_proxy};
 
@@ -656,6 +656,355 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
         tls_cipher_iana,
         negotiated_protocol,
         http_response_code,
+        verify_result,
+        chain_validation_errors,
+    })
+}
+
+/// Options for STARTTLS connections.
+pub struct StarttlsFetchOptions<'a> {
+    pub host: &'a str,
+    pub port: u16,
+    pub protocol: StarttlsProtocol,
+    pub no_verify: bool,
+    pub timeout_secs: u64,
+    pub read_timeout_secs: u64,
+    pub sni_override: Option<&'a str>,
+    pub min_tls: Option<TlsVersionArg>,
+    pub max_tls: Option<TlsVersionArg>,
+    pub cipher_list: Option<&'a str>,
+    pub cipher_suites: Option<&'a str>,
+    pub debug: bool,
+    pub ca_cert_path: Option<&'a str>,
+}
+
+/// Read a line from a TCP stream (up to `\n`), with a size limit.
+fn read_line_from_stream(stream: &mut TcpStream) -> Result<String> {
+    let mut buf = Vec::with_capacity(512);
+    let mut byte = [0u8; 1];
+    loop {
+        match stream.read(&mut byte) {
+            Ok(0) => break,
+            Ok(_) => {
+                buf.push(byte[0]);
+                if byte[0] == b'\n' {
+                    break;
+                }
+                if buf.len() > 4096 {
+                    return Err(anyhow::anyhow!("STARTTLS: server response line too long"));
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(e) => return Err(anyhow::anyhow!("STARTTLS: read error: {}", e)),
+        }
+    }
+    String::from_utf8(buf).map_err(|e| anyhow::anyhow!("STARTTLS: invalid UTF-8 response: {}", e))
+}
+
+/// Read a full multi-line response (for SMTP which uses continuation lines like "250-...").
+fn read_response(stream: &mut TcpStream) -> Result<String> {
+    let mut full_response = String::new();
+    loop {
+        let line = read_line_from_stream(stream)?;
+        full_response.push_str(&line);
+        // SMTP multi-line: lines with "-" after code continue, space after code ends
+        // For other protocols, single line responses are expected
+        if line.len() < 4 || line.as_bytes().get(3) != Some(&b'-') {
+            break;
+        }
+    }
+    Ok(full_response)
+}
+
+/// Perform STARTTLS negotiation on a plain TCP stream.
+fn negotiate_starttls(stream: &mut TcpStream, protocol: StarttlsProtocol, debug: bool) -> Result<()> {
+    match protocol {
+        StarttlsProtocol::Smtp => {
+            // Read banner
+            let banner = read_response(stream)?;
+            debug_log!(debug, "SMTP banner: {}", banner.trim());
+            if !banner.starts_with("220") {
+                return Err(anyhow::anyhow!("SMTP: unexpected banner: {}", banner.trim()));
+            }
+
+            // Send EHLO
+            stream.write_all(b"EHLO dcert\r\n")?;
+            stream.flush()?;
+            let ehlo_resp = read_response(stream)?;
+            debug_log!(debug, "SMTP EHLO response: {}", ehlo_resp.trim());
+            if !ehlo_resp.starts_with("250") {
+                return Err(anyhow::anyhow!("SMTP: EHLO rejected: {}", ehlo_resp.trim()));
+            }
+
+            // Send STARTTLS
+            stream.write_all(b"STARTTLS\r\n")?;
+            stream.flush()?;
+            let tls_resp = read_response(stream)?;
+            debug_log!(debug, "SMTP STARTTLS response: {}", tls_resp.trim());
+            if !tls_resp.starts_with("220") {
+                return Err(anyhow::anyhow!("SMTP: STARTTLS rejected: {}", tls_resp.trim()));
+            }
+        }
+        StarttlsProtocol::Imap => {
+            // Read banner
+            let banner = read_line_from_stream(stream)?;
+            debug_log!(debug, "IMAP banner: {}", banner.trim());
+
+            // Send STARTTLS
+            stream.write_all(b"a001 STARTTLS\r\n")?;
+            stream.flush()?;
+            let resp = read_line_from_stream(stream)?;
+            debug_log!(debug, "IMAP STARTTLS response: {}", resp.trim());
+            if !resp.contains("a001 OK") {
+                return Err(anyhow::anyhow!("IMAP: STARTTLS rejected: {}", resp.trim()));
+            }
+        }
+        StarttlsProtocol::Pop3 => {
+            // Read banner
+            let banner = read_line_from_stream(stream)?;
+            debug_log!(debug, "POP3 banner: {}", banner.trim());
+            if !banner.starts_with("+OK") {
+                return Err(anyhow::anyhow!("POP3: unexpected banner: {}", banner.trim()));
+            }
+
+            // Send STLS
+            stream.write_all(b"STLS\r\n")?;
+            stream.flush()?;
+            let resp = read_line_from_stream(stream)?;
+            debug_log!(debug, "POP3 STLS response: {}", resp.trim());
+            if !resp.starts_with("+OK") {
+                return Err(anyhow::anyhow!("POP3: STLS rejected: {}", resp.trim()));
+            }
+        }
+        StarttlsProtocol::Ftp => {
+            // Read banner
+            let banner = read_response(stream)?;
+            debug_log!(debug, "FTP banner: {}", banner.trim());
+
+            // Send AUTH TLS
+            stream.write_all(b"AUTH TLS\r\n")?;
+            stream.flush()?;
+            let resp = read_response(stream)?;
+            debug_log!(debug, "FTP AUTH TLS response: {}", resp.trim());
+            if !resp.starts_with("234") {
+                return Err(anyhow::anyhow!("FTP: AUTH TLS rejected: {}", resp.trim()));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Fetch TLS certificate chain via STARTTLS negotiation.
+pub fn fetch_tls_chain_starttls(opts: &StarttlsFetchOptions<'_>) -> Result<TlsConnectionInfo> {
+    let StarttlsFetchOptions {
+        host,
+        port,
+        protocol,
+        no_verify,
+        timeout_secs,
+        read_timeout_secs,
+        sni_override,
+        min_tls,
+        max_tls,
+        cipher_list,
+        cipher_suites,
+        debug,
+        ca_cert_path,
+    } = *opts;
+
+    let _permit = try_acquire_connection()?;
+
+    debug_log!(debug, "STARTTLS target: {}:{} (protocol: {})", host, port, protocol);
+
+    // Layer 4: TCP connect
+    let connect_timeout = Duration::from_secs(timeout_secs);
+    let l4_start = std::time::Instant::now();
+    let (mut stream, dns_latency, addr) = direct_tcp_connect(host, port, connect_timeout)?;
+
+    if debug {
+        dbg_section(true, "Layer 3 (Network)");
+        debug_log!(true, "Resolved {} -> {} ({} ms)", host, addr.ip(), dns_latency);
+    }
+
+    stream
+        .set_read_timeout(Some(Duration::from_secs(read_timeout_secs)))
+        .map_err(|e| anyhow::anyhow!("Failed to set read timeout: {e}"))?;
+
+    let l4_latency = l4_start.elapsed().as_millis();
+
+    if debug {
+        dbg_section(true, "Layer 4 (Transport)");
+        debug_log!(true, "TCP connection established ({} ms)", l4_latency);
+    }
+
+    // STARTTLS protocol negotiation on plain TCP
+    if debug {
+        dbg_section(true, "STARTTLS Negotiation");
+    }
+    negotiate_starttls(&mut stream, protocol, debug)?;
+
+    // TLS handshake on the upgraded stream
+    let l7_start = std::time::Instant::now();
+    let mut builder =
+        SslConnector::builder(SslMethod::tls()).map_err(|e| anyhow::anyhow!("OpenSSL builder failed: {e}"))?;
+
+    if let Some(ca_path) = ca_cert_path {
+        debug_log!(debug, "Using custom CA bundle: {}", ca_path);
+        builder
+            .set_ca_file(ca_path)
+            .map_err(|e| anyhow::anyhow!("Failed to load custom CA certificate '{}': {}", ca_path, e))?;
+    } else {
+        load_ca_certs(&mut builder)?;
+    }
+
+    if let Some(min) = min_tls {
+        builder
+            .set_min_proto_version(Some(min.to_ssl_version()))
+            .map_err(|e| anyhow::anyhow!("Failed to set minimum TLS version: {}", e))?;
+    }
+    if let Some(max) = max_tls {
+        builder
+            .set_max_proto_version(Some(max.to_ssl_version()))
+            .map_err(|e| anyhow::anyhow!("Failed to set maximum TLS version: {}", e))?;
+    }
+
+    if let Some(ciphers) = cipher_list {
+        builder
+            .set_cipher_list(ciphers)
+            .map_err(|e| anyhow::anyhow!("Invalid cipher list '{}': {}", ciphers, e))?;
+    }
+    if let Some(suites) = cipher_suites {
+        builder
+            .set_ciphersuites(suites)
+            .map_err(|e| anyhow::anyhow!("Invalid TLS 1.3 cipher suites '{}': {}", suites, e))?;
+    }
+
+    // Verification callback
+    let verify_errors: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let errors_clone = verify_errors.clone();
+    let force_accept = no_verify;
+
+    builder.set_verify_callback(SslVerifyMode::PEER, move |preverify, ctx| {
+        if !preverify {
+            let depth = ctx.error_depth();
+            let err = ctx.error();
+            let subject = ctx
+                .current_cert()
+                .map(|c| {
+                    c.subject_name().entries().fold(String::new(), |mut acc, e| {
+                        if !acc.is_empty() {
+                            acc.push_str(", ");
+                        }
+                        if let Ok(data) = e.data().as_utf8() {
+                            acc.push_str(data.as_ref());
+                        }
+                        acc
+                    })
+                })
+                .unwrap_or_else(|| "unknown".to_string());
+            let mut errs = errors_clone.lock().unwrap_or_else(|e| e.into_inner());
+            errs.push(format!("depth {}: {} ({})", depth, err, subject));
+        }
+        if force_accept { true } else { preverify }
+    });
+    let connector = builder.build();
+
+    let sni_host = sni_override.unwrap_or(host);
+    let ssl_stream = connector.connect(sni_host, stream).map_err(|e| {
+        let err_str = e.to_string();
+        if err_str.contains("certificate verify failed") || err_str.contains("unable to get local issuer") {
+            anyhow::anyhow!(
+                "TLS handshake failed: {e}\n\
+                 Hint: Use --no-verify to skip certificate verification"
+            )
+        } else {
+            anyhow::anyhow!("TLS handshake failed: {e}")
+        }
+    })?;
+
+    if debug {
+        dbg_section(true, "Layer 5/6 (Session/Presentation - TLS)");
+        let ssl_ref = ssl_stream.ssl();
+        debug_log!(true, "TLS version: {}", ssl_ref.version_str());
+        if let Some(cipher) = ssl_ref.current_cipher() {
+            debug_log!(true, "Cipher (OpenSSL): {}", cipher.name());
+            if let Some(std_name) = cipher.standard_name() {
+                debug_log!(true, "Cipher (IANA): {}", std_name);
+            }
+        }
+        debug_log!(true, "SNI sent: {}", sni_host);
+        if no_verify {
+            debug_log!(true, "Certificate verification: DISABLED (--no-verify)");
+        }
+    }
+
+    let l7_latency = l7_start.elapsed().as_millis();
+
+    // Get cert chain
+    let certs = ssl_stream
+        .ssl()
+        .peer_cert_chain()
+        .ok_or_else(|| anyhow::anyhow!("No peer certificates presented"))?;
+    if certs.is_empty() {
+        return Err(anyhow::anyhow!("Empty certificate chain"));
+    }
+
+    let mut pem = String::new();
+    for cert in certs {
+        let pem_str = pem_rfc7468::encode_string(
+            "CERTIFICATE",
+            LineEnding::LF,
+            &cert
+                .to_der()
+                .map_err(|e| anyhow::anyhow!("DER conversion failed: {e}"))?,
+        )
+        .map_err(|e| anyhow::anyhow!("PEM encoding failed: {e}"))?;
+        pem.push_str(&pem_str);
+        if !pem.ends_with('\n') {
+            pem.push('\n');
+        }
+    }
+
+    let ssl = ssl_stream.ssl();
+    let tls_version = ssl.version_str().to_string();
+    let current_cipher = ssl.current_cipher();
+    let tls_cipher = current_cipher
+        .map(|c| c.name().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let tls_cipher_iana = current_cipher.and_then(|c| c.standard_name().map(|s| s.to_string()));
+
+    let verify_result = {
+        let result = ssl_stream.ssl().verify_result();
+        if result == openssl::x509::X509VerifyResult::OK {
+            None
+        } else {
+            Some(format!("{}", result))
+        }
+    };
+
+    let chain_validation_errors = verify_errors.lock().unwrap_or_else(|e| e.into_inner()).clone();
+
+    if debug {
+        if let Some(ref result) = verify_result {
+            debug_log!(true, "Verification: {}", result);
+            for err in &chain_validation_errors {
+                debug_log!(true, "  Chain error: {}", err);
+            }
+        } else {
+            debug_log!(true, "Verification: OK");
+        }
+    }
+
+    Ok(TlsConnectionInfo {
+        pem_data: pem,
+        dns_latency,
+        l4_latency,
+        l7_latency,
+        tls_version,
+        tls_cipher,
+        tls_cipher_iana,
+        negotiated_protocol: None,
+        http_response_code: 0,
         verify_result,
         chain_validation_errors,
     })
