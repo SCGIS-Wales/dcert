@@ -550,6 +550,98 @@ impl MtlsParams {
     }
 }
 
+/// Optional HTTP/TLS parameters shared across check-related MCP tools.
+/// These mirror the CLI flags that were previously only available on the command line.
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+struct HttpTlsParams {
+    /// Custom HTTP headers as "Key:Value" strings (repeatable)
+    #[serde(default)]
+    headers: Option<Vec<String>>,
+    /// OpenSSL cipher string for TLS 1.2 and below (e.g. "ECDHE+AESGCM:CHACHA20")
+    #[serde(default)]
+    cipher_list: Option<String>,
+    /// Colon-separated IANA cipher names for TLS 1.3 (e.g. "TLS_AES_256_GCM_SHA384")
+    #[serde(default)]
+    cipher_suites: Option<String>,
+    /// Override SNI hostname for TLS handshake
+    #[serde(default)]
+    sni: Option<String>,
+    /// Connection timeout in seconds (default: 10)
+    #[serde(default)]
+    timeout: Option<u64>,
+    /// Read timeout in seconds (default: 5)
+    #[serde(default)]
+    read_timeout: Option<u64>,
+    /// HTTP method: "GET", "POST", "HEAD", "OPTIONS" (default: GET)
+    #[serde(default)]
+    method: Option<String>,
+    /// Request body data string (implies POST if method is GET)
+    #[serde(default)]
+    data: Option<String>,
+    /// HTTP protocol version: "http1-1" or "http2" (default: http1-1)
+    #[serde(default)]
+    http_protocol: Option<String>,
+    /// Show negotiated cipher in "iana" or "openssl" notation
+    #[serde(default)]
+    ciphers_notation: Option<String>,
+    /// STARTTLS protocol: "smtp", "imap", "pop3", "ftp". When set, target is treated as host[:port]
+    #[serde(default)]
+    starttls: Option<String>,
+}
+
+impl HttpTlsParams {
+    fn to_args(&self) -> Vec<String> {
+        let mut args = Vec::new();
+        if let Some(ref headers) = self.headers {
+            for h in headers {
+                args.push("--header".to_string());
+                args.push(h.clone());
+            }
+        }
+        if let Some(ref v) = self.cipher_list {
+            args.push("--cipher-list".to_string());
+            args.push(v.clone());
+        }
+        if let Some(ref v) = self.cipher_suites {
+            args.push("--cipher-suites".to_string());
+            args.push(v.clone());
+        }
+        if let Some(ref v) = self.sni {
+            args.push("--sni".to_string());
+            args.push(v.clone());
+        }
+        if let Some(v) = self.timeout {
+            args.push("--timeout".to_string());
+            args.push(v.to_string());
+        }
+        if let Some(v) = self.read_timeout {
+            args.push("--read-timeout".to_string());
+            args.push(v.to_string());
+        }
+        if let Some(ref v) = self.method {
+            args.push("--method".to_string());
+            args.push(v.clone());
+        }
+        if let Some(ref v) = self.data {
+            args.push("--data".to_string());
+            args.push(v.clone());
+        }
+        if let Some(ref v) = self.http_protocol {
+            args.push("--http-protocol".to_string());
+            args.push(v.clone());
+        }
+        if let Some(ref v) = self.ciphers_notation {
+            args.push("--ciphers".to_string());
+            args.push(v.clone());
+        }
+        if let Some(ref v) = self.starttls {
+            args.push("--starttls".to_string());
+            args.push(v.clone());
+        }
+        args
+    }
+}
+
 /// Parameters for the analyze_certificate tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 struct AnalyzeCertificateParams {
@@ -567,6 +659,9 @@ struct AnalyzeCertificateParams {
     /// mTLS and CA configuration
     #[serde(flatten, default)]
     mtls: MtlsParams,
+    /// HTTP/TLS connection options
+    #[serde(flatten, default)]
+    http_tls: HttpTlsParams,
 }
 
 /// Parameters for the check_expiry tool.
@@ -580,6 +675,9 @@ struct CheckExpiryParams {
     /// mTLS and CA configuration
     #[serde(flatten, default)]
     mtls: MtlsParams,
+    /// HTTP/TLS connection options
+    #[serde(flatten, default)]
+    http_tls: HttpTlsParams,
 }
 
 /// Parameters for the check_revocation tool.
@@ -590,6 +688,9 @@ struct CheckRevocationParams {
     /// mTLS and CA configuration
     #[serde(flatten, default)]
     mtls: MtlsParams,
+    /// HTTP/TLS connection options
+    #[serde(flatten, default)]
+    http_tls: HttpTlsParams,
 }
 
 /// Parameters for the compare_certificates tool.
@@ -613,6 +714,9 @@ struct TlsConnectionInfoParams {
     /// mTLS and CA configuration
     #[serde(flatten, default)]
     mtls: MtlsParams,
+    /// HTTP/TLS connection options
+    #[serde(flatten, default)]
+    http_tls: HttpTlsParams,
 }
 
 /// Parameters for the export_pem tool.
@@ -629,6 +733,9 @@ struct ExportPemParams {
     /// mTLS and CA configuration
     #[serde(flatten, default)]
     mtls: MtlsParams,
+    /// HTTP/TLS connection options
+    #[serde(flatten, default)]
+    http_tls: HttpTlsParams,
 }
 
 /// Parameters for the verify_key_match tool.
@@ -638,6 +745,14 @@ struct VerifyKeyMatchParams {
     target: String,
     /// Private key PEM file path
     key_path: String,
+}
+
+/// Parameters for the verify_key_auto_discover tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct VerifyKeyAutoDiscoverParams {
+    /// Directory to scan for matching cert/key pairs (default: current directory)
+    #[serde(default = "default_dot")]
+    dir: String,
 }
 
 /// Parameters for the convert_pfx_to_pem tool.
@@ -1363,6 +1478,7 @@ impl DcertMcpServer {
             args.push("--check-revocation".to_string());
         }
         args.extend(params.mtls.to_args());
+        args.extend(params.http_tls.to_args());
         let mtls_env = params.mtls.env_vars();
         let env_refs = mtls_env.to_vec();
 
@@ -1411,6 +1527,7 @@ impl DcertMcpServer {
             days_str,
         ];
         args.extend(params.mtls.to_args());
+        args.extend(params.http_tls.to_args());
         let mtls_env = params.mtls.env_vars();
         let env_refs = mtls_env.to_vec();
 
@@ -1458,6 +1575,7 @@ impl DcertMcpServer {
             "--extensions".to_string(),
         ];
         args.extend(params.mtls.to_args());
+        args.extend(params.http_tls.to_args());
         let mtls_env = params.mtls.env_vars();
         let env_refs = mtls_env.to_vec();
 
@@ -1575,6 +1693,7 @@ impl DcertMcpServer {
             return ok_error("min_tls (1.3) must not be greater than max_tls (1.2)".to_string());
         }
         args.extend(params.mtls.to_args());
+        args.extend(params.http_tls.to_args());
         let mtls_env = params.mtls.env_vars();
         let env_refs = mtls_env.to_vec();
 
@@ -1624,6 +1743,7 @@ impl DcertMcpServer {
             args.push("--exclude-expired".to_string());
         }
         args.extend(params.mtls.to_args());
+        args.extend(params.http_tls.to_args());
         let mtls_env = params.mtls.env_vars();
         let env_refs = mtls_env.to_vec();
 
@@ -1678,6 +1798,36 @@ impl DcertMcpServer {
             "--format",
             "json",
         ];
+
+        match run_dcert_raw(&args, &self.config, None).await {
+            Ok((stdout, stderr, code)) => {
+                let mut output = stdout;
+                if !stderr.is_empty() {
+                    output.push_str("\n--- stderr ---\n");
+                    output.push_str(&stderr);
+                }
+                if code != 0 && code != 7 {
+                    output.push_str(&format!("\n--- exit code: {} ---", code));
+                }
+                ok_text(output)
+            }
+            Err(e) => ok_error(e),
+        }
+    }
+
+    /// Scan a directory for matching certificate/key pairs and verify they match.
+    #[tool(
+        description = "Scan a directory for matching certificate and private key file pairs (.pem/.crt + .key) and verify they match. Returns match status, key type/size, and certificate subject for each discovered pair. Useful for auditing certificate deployments."
+    )]
+    pub async fn verify_key_auto_discover(
+        &self,
+        Parameters(params): Parameters<VerifyKeyAutoDiscoverParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if let Err(e) = validate_path(&params.dir, "dir") {
+            return ok_error(e);
+        }
+
+        let args = vec!["verify-key", "--dir", params.dir.as_str(), "--format", "json"];
 
         match run_dcert_raw(&args, &self.config, None).await {
             Ok((stdout, stderr, code)) => {
@@ -2761,6 +2911,44 @@ async fn dispatch_tool_call(config: &McpConfig, tool_name: &str, arguments: &ser
             }
             if arguments.get("check_revocation").and_then(|v| v.as_bool()) == Some(true) {
                 args.push("--check-revocation".to_string());
+            }
+            // HTTP/TLS params
+            if let Some(headers) = arguments.get("headers").and_then(|v| v.as_array()) {
+                for h in headers {
+                    if let Some(s) = h.as_str() {
+                        args.extend(["--header".to_string(), s.to_string()]);
+                    }
+                }
+            }
+            if let Some(v) = arguments.get("cipher_list").and_then(|v| v.as_str()) {
+                args.extend(["--cipher-list".to_string(), v.to_string()]);
+            }
+            if let Some(v) = arguments.get("cipher_suites").and_then(|v| v.as_str()) {
+                args.extend(["--cipher-suites".to_string(), v.to_string()]);
+            }
+            if let Some(v) = arguments.get("sni").and_then(|v| v.as_str()) {
+                args.extend(["--sni".to_string(), v.to_string()]);
+            }
+            if let Some(v) = arguments.get("timeout").and_then(|v| v.as_u64()) {
+                args.extend(["--timeout".to_string(), v.to_string()]);
+            }
+            if let Some(v) = arguments.get("read_timeout").and_then(|v| v.as_u64()) {
+                args.extend(["--read-timeout".to_string(), v.to_string()]);
+            }
+            if let Some(v) = arguments.get("method").and_then(|v| v.as_str()) {
+                args.extend(["--method".to_string(), v.to_string()]);
+            }
+            if let Some(v) = arguments.get("data").and_then(|v| v.as_str()) {
+                args.extend(["--data".to_string(), v.to_string()]);
+            }
+            if let Some(v) = arguments.get("http_protocol").and_then(|v| v.as_str()) {
+                args.extend(["--http-protocol".to_string(), v.to_string()]);
+            }
+            if let Some(v) = arguments.get("ciphers_notation").and_then(|v| v.as_str()) {
+                args.extend(["--ciphers".to_string(), v.to_string()]);
+            }
+            if let Some(v) = arguments.get("starttls").and_then(|v| v.as_str()) {
+                args.extend(["--starttls".to_string(), v.to_string()]);
             }
         }
         "validate_certificate" => {
