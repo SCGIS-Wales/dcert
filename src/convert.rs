@@ -67,19 +67,19 @@ pub fn pfx_to_pem(input: &str, password: &str, output_dir: &str) -> Result<Conve
 
     // Write CA certificates
     let ca_count = parsed.ca.as_ref().map(|c| c.len()).unwrap_or(0);
-    if let Some(ref ca_chain) = parsed.ca {
-        if !ca_chain.is_empty() {
-            let mut ca_pem = String::new();
-            for ca_cert in ca_chain {
-                let pem_bytes = ca_cert
-                    .to_pem()
-                    .with_context(|| "Failed to encode CA certificate as PEM")?;
-                ca_pem.push_str(&String::from_utf8_lossy(&pem_bytes));
-            }
-            let ca_path = format!("{}/ca.pem", output_dir);
-            fs::write(&ca_path, &ca_pem).with_context(|| format!("Failed to write CA certificates: {}", ca_path))?;
-            output_files.push(ca_path);
+    if let Some(ref ca_chain) = parsed.ca
+        && !ca_chain.is_empty()
+    {
+        let mut ca_pem = String::new();
+        for ca_cert in ca_chain {
+            let pem_bytes = ca_cert
+                .to_pem()
+                .with_context(|| "Failed to encode CA certificate as PEM")?;
+            ca_pem.push_str(&String::from_utf8_lossy(&pem_bytes));
         }
+        let ca_path = format!("{}/ca.pem", output_dir);
+        fs::write(&ca_path, &ca_pem).with_context(|| format!("Failed to write CA certificates: {}", ca_path))?;
+        output_files.push(ca_path);
     }
 
     Ok(ConvertResult {
@@ -347,7 +347,7 @@ mod tests {
     use openssl::pkey::PKey;
     use openssl::rsa::Rsa;
     use openssl::x509::extension::{BasicConstraints, SubjectAlternativeName};
-    use openssl::x509::{X509NameBuilder, X509};
+    use openssl::x509::{X509, X509NameBuilder};
     use tempfile::TempDir;
 
     /// Generate a self-signed test certificate and private key.

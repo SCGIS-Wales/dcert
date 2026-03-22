@@ -1,17 +1,16 @@
 use anyhow::Result;
 use openssl::hash::MessageDigest;
 use std::net::IpAddr;
-use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 use x509_parser::certificate::X509Certificate;
 use x509_parser::extensions::{GeneralName, ParsedExtension};
 use x509_parser::prelude::FromDer;
 
-lazy_static::lazy_static! {
-    pub static ref OID_X509_SCT_LIST: x509_parser::asn1_rs::Oid<'static> =
-        x509_parser::asn1_rs::Oid::from(&[1, 3, 6, 1, 4, 1, 11129, 2, 4, 2])
-            .expect("hardcoded SCT list OID is valid");
-}
+pub static OID_X509_SCT_LIST: std::sync::LazyLock<x509_parser::asn1_rs::Oid<'static>> =
+    std::sync::LazyLock::new(|| {
+        x509_parser::asn1_rs::Oid::from(&[1, 3, 6, 1, 4, 1, 11129, 2, 4, 2]).expect("hardcoded SCT list OID is valid")
+    });
 
 #[derive(Debug, serde::Serialize, Clone)]
 pub struct CertInfo {
@@ -112,18 +111,10 @@ pub fn process_certificate(
                     &data[2..2 + len_byte]
                 } else if len_byte == 0x81 && data.len() > 3 {
                     let len = data[2] as usize;
-                    if data.len() >= 3 + len {
-                        &data[3..3 + len]
-                    } else {
-                        data
-                    }
+                    if data.len() >= 3 + len { &data[3..3 + len] } else { data }
                 } else if len_byte == 0x82 && data.len() > 4 {
                     let len = ((data[2] as usize) << 8) | (data[3] as usize);
-                    if data.len() >= 4 + len {
-                        &data[4..4 + len]
-                    } else {
-                        data
-                    }
+                    if data.len() >= 4 + len { &data[4..4 + len] } else { data }
                 } else {
                     data
                 }
@@ -560,10 +551,10 @@ pub fn extract_ocsp_url(cert: &X509Certificate<'_>) -> Option<String> {
         if let ParsedExtension::AuthorityInfoAccess(aia) = ext.parsed_extension() {
             for desc in aia.iter() {
                 // OID 1.3.6.1.5.5.7.48.1 = id-ad-ocsp
-                if desc.access_method.to_id_string() == "1.3.6.1.5.5.7.48.1" {
-                    if let GeneralName::URI(uri) = &desc.access_location {
-                        return Some(uri.to_string());
-                    }
+                if desc.access_method.to_id_string() == "1.3.6.1.5.5.7.48.1"
+                    && let GeneralName::URI(uri) = &desc.access_location
+                {
+                    return Some(uri.to_string());
                 }
             }
         }
@@ -575,8 +566,8 @@ pub fn extract_ocsp_url(cert: &X509Certificate<'_>) -> Option<String> {
 pub mod tests {
     use super::*;
     use std::path::PathBuf;
-    use time::format_description::well_known::Rfc3339;
     use time::OffsetDateTime;
+    use time::format_description::well_known::Rfc3339;
 
     // A self-signed test certificate with CN=test.example.com and SANs
     const VALID_PEM: &str = include_str!("../tests/data/valid.pem");

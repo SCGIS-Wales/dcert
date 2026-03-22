@@ -3,10 +3,10 @@ use colored::*;
 use serde::{Deserialize, Serialize};
 use std::fs;
 
-use crate::cert::{parse_cert_infos_from_pem, CertProcessOpts};
+use crate::cert::{CertProcessOpts, parse_cert_infos_from_pem};
 use crate::convert;
 use crate::csr::{prompt_optional, prompt_required, prompt_with_default};
-use crate::output::{print_pretty, PrettyDebugInfo};
+use crate::output::{PrettyDebugInfo, print_pretty};
 
 // ---------------------------------------------------------------------------
 // Vault Token & Address Discovery
@@ -176,13 +176,12 @@ impl VaultClient {
                 let entry = entry?;
                 let path = entry.path();
                 let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                if ext == "pem" || ext == "crt" || ext == "cer" {
-                    if let Ok(pem_data) = fs::read(&path) {
-                        if let Ok(cert) = reqwest::Certificate::from_pem(&pem_data) {
-                            builder = builder.add_root_certificate(cert);
-                            loaded += 1;
-                        }
-                    }
+                if (ext == "pem" || ext == "crt" || ext == "cer")
+                    && let Ok(pem_data) = fs::read(&path)
+                    && let Ok(cert) = reqwest::Certificate::from_pem(&pem_data)
+                {
+                    builder = builder.add_root_certificate(cert);
+                    loaded += 1;
                 }
             }
             if config.debug {
@@ -718,30 +717,30 @@ pub fn list_certificates(
                         fingerprint: false,
                         extensions: false,
                     };
-                    if let Ok(infos) = parse_cert_infos_from_pem(cert_pem, &opts) {
-                        if let Some(info) = infos.first() {
-                            let status = if info.is_expired {
-                                "expired".to_string()
-                            } else {
-                                "valid".to_string()
-                            };
+                    if let Ok(infos) = parse_cert_infos_from_pem(cert_pem, &opts)
+                        && let Some(info) = infos.first()
+                    {
+                        let status = if info.is_expired {
+                            "expired".to_string()
+                        } else {
+                            "valid".to_string()
+                        };
 
-                            // Apply filters
-                            if expired_only && !info.is_expired {
-                                continue;
-                            }
-                            if valid_only && info.is_expired {
-                                continue;
-                            }
-
-                            entries.push(VaultCertListEntry {
-                                serial_number: serial.clone(),
-                                common_name: info.common_name.clone(),
-                                not_before: info.not_before.clone(),
-                                not_after: info.not_after.clone(),
-                                status,
-                            });
+                        // Apply filters
+                        if expired_only && !info.is_expired {
+                            continue;
                         }
+                        if valid_only && info.is_expired {
+                            continue;
+                        }
+
+                        entries.push(VaultCertListEntry {
+                            serial_number: serial.clone(),
+                            common_name: info.common_name.clone(),
+                            not_before: info.not_before.clone(),
+                            not_after: info.not_after.clone(),
+                            status,
+                        });
                     }
                 }
             }
@@ -1588,11 +1587,14 @@ mod tests {
     #[test]
     fn test_vault_addr_from_env() {
         let prev = std::env::var("VAULT_ADDR").ok();
-        std::env::set_var("VAULT_ADDR", "https://vault.example.com:8200");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("VAULT_ADDR", "https://vault.example.com:8200") };
         let result = vault_addr();
         match prev {
-            Some(v) => std::env::set_var("VAULT_ADDR", v),
-            None => std::env::remove_var("VAULT_ADDR"),
+            // TODO: Audit that the environment access only happens in single-threaded code.
+            Some(v) => unsafe { std::env::set_var("VAULT_ADDR", v) },
+            // TODO: Audit that the environment access only happens in single-threaded code.
+            None => unsafe { std::env::remove_var("VAULT_ADDR") },
         }
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "https://vault.example.com:8200");
@@ -1601,11 +1603,14 @@ mod tests {
     #[test]
     fn test_vault_addr_strips_trailing_slash() {
         let prev = std::env::var("VAULT_ADDR").ok();
-        std::env::set_var("VAULT_ADDR", "https://vault.example.com:8200/");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("VAULT_ADDR", "https://vault.example.com:8200/") };
         let result = vault_addr();
         match prev {
-            Some(v) => std::env::set_var("VAULT_ADDR", v),
-            None => std::env::remove_var("VAULT_ADDR"),
+            // TODO: Audit that the environment access only happens in single-threaded code.
+            Some(v) => unsafe { std::env::set_var("VAULT_ADDR", v) },
+            // TODO: Audit that the environment access only happens in single-threaded code.
+            None => unsafe { std::env::remove_var("VAULT_ADDR") },
         }
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "https://vault.example.com:8200");
@@ -1614,10 +1619,12 @@ mod tests {
     #[test]
     fn test_vault_addr_missing_error() {
         let prev = std::env::var("VAULT_ADDR").ok();
-        std::env::remove_var("VAULT_ADDR");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("VAULT_ADDR") };
         let result = vault_addr();
         if let Some(v) = prev {
-            std::env::set_var("VAULT_ADDR", v);
+            // TODO: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::set_var("VAULT_ADDR", v) };
         }
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();

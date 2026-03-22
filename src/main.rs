@@ -14,15 +14,15 @@ use anyhow::{Context, Result};
 use clap::CommandFactory;
 use clap::Parser;
 use colored::*;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 
-use cli::{exit_code, CheckArgs, Cli, Command, HttpMethod, OutputFormat, KNOWN_SUBCOMMANDS};
+use cli::{CheckArgs, Cli, Command, HttpMethod, KNOWN_SUBCOMMANDS, OutputFormat, exit_code};
 use output::{
-    check_expiry_warnings, export_pem_chain, output_results, print_diff, process_target, StructuredOutput, TargetResult,
+    StructuredOutput, TargetResult, check_expiry_warnings, export_pem_chain, output_results, print_diff, process_target,
 };
 use proxy::ProxyConfig;
 
@@ -192,10 +192,10 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
                         let current_fps: Vec<Option<String>> =
                             result.infos.iter().map(|c| c.sha256_fingerprint.clone()).collect();
 
-                        if let Some(prev) = prev_fingerprints.get(target) {
-                            if prev != &current_fps {
-                                println!("{}", format!("CHANGE DETECTED for {}", target).red().bold());
-                            }
+                        if let Some(prev) = prev_fingerprints.get(target)
+                            && prev != &current_fps
+                        {
+                            println!("{}", format!("CHANGE DETECTED for {}", target).red().bold());
                         }
                         prev_fingerprints.insert(target.clone(), current_fps);
 
@@ -226,10 +226,11 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
         match process_target(target, &args, &proxy_config, body_data.as_deref(), stdin_pem.as_deref()) {
             Ok(result) => {
                 // Check for verification failure
-                if let Some(ref conn) = result.conn_info {
-                    if conn.verify_result.is_some() && exit_code < exit_code::VERIFY_FAILED {
-                        exit_code = exit_code::VERIFY_FAILED;
-                    }
+                if let Some(ref conn) = result.conn_info
+                    && conn.verify_result.is_some()
+                    && exit_code < exit_code::VERIFY_FAILED
+                {
+                    exit_code = exit_code::VERIFY_FAILED;
                 }
                 all_results.push(result);
             }
@@ -473,7 +474,7 @@ fn print_single_result(result: &cert::KeyMatchResult, cert_path: Option<&str>, k
 
 fn run_verify_key(args: cli::VerifyKeyArgs) -> Result<i32> {
     // If both target and key are provided, run single-pair verification
-    if let (Some(ref target), Some(ref key)) = (&args.target, &args.key) {
+    if let (Some(target), Some(key)) = (&args.target, &args.key) {
         let result = cert::verify_key_matches_cert(key, target, args.debug)?;
 
         match args.format {

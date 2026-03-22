@@ -244,9 +244,9 @@ pub fn create_csr(opts: &CsrCreateOptions, csr_path: &str, key_path: &str) -> Re
 
 /// Parse and validate a CSR from PEM data.
 pub fn validate_csr(pem_data: &str) -> Result<CsrValidationResult> {
-    let req = X509Req::from_pem(pem_data.as_bytes()).with_context(|| {
-        "Failed to parse CSR PEM data. Ensure the file contains a valid PKCS#10 certificate request."
-    })?;
+    let req = X509Req::from_pem(pem_data.as_bytes()).with_context(
+        || "Failed to parse CSR PEM data. Ensure the file contains a valid PKCS#10 certificate request.",
+    )?;
 
     // Verify the CSR's self-signature
     let pubkey = req
@@ -412,13 +412,13 @@ pub fn interactive_create() -> Result<(CsrCreateOptions, String, String)> {
     let key_path = prompt_with_default("Key output file", &default_key)?;
 
     // Validate country code
-    if let Some(ref c) = country {
-        if c.len() != 2 || !c.chars().all(|ch| ch.is_ascii_uppercase()) {
-            eprintln!(
-                "\nWARNING: Country code '{}' should be a 2-letter ISO 3166 code (e.g., GB, US)",
-                c
-            );
-        }
+    if let Some(ref c) = country
+        && (c.len() != 2 || !c.chars().all(|ch| ch.is_ascii_uppercase()))
+    {
+        eprintln!(
+            "\nWARNING: Country code '{}' should be a 2-letter ISO 3166 code (e.g., GB, US)",
+            c
+        );
     }
 
     let subject = CsrSubject {
@@ -468,11 +468,7 @@ pub(crate) fn prompt_optional(label: &str) -> Result<Option<String>> {
         .read_line(&mut input)
         .with_context(|| "Failed to read input")?;
     let input = input.trim().to_string();
-    if input.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(input))
-    }
+    if input.is_empty() { Ok(None) } else { Ok(Some(input)) }
 }
 
 pub(crate) fn prompt_with_default(label: &str, default: &str) -> Result<String> {
@@ -773,17 +769,17 @@ fn check_subject_compliance(subject: &CsrSubjectInfo, findings: &mut Vec<CsrFind
         });
     }
 
-    if let Some(ref country) = subject.country {
-        if country.len() != 2 || !country.chars().all(|c| c.is_ascii_uppercase()) {
-            findings.push(CsrFinding {
-                severity: Severity::Error,
-                category: "Subject".to_string(),
-                message: format!(
-                    "Country code '{}' is not a valid 2-letter ISO 3166 code (e.g., GB, US, DE)",
-                    country
-                ),
-            });
-        }
+    if let Some(ref country) = subject.country
+        && (country.len() != 2 || !country.chars().all(|c| c.is_ascii_uppercase()))
+    {
+        findings.push(CsrFinding {
+            severity: Severity::Error,
+            category: "Subject".to_string(),
+            message: format!(
+                "Country code '{}' is not a valid 2-letter ISO 3166 code (e.g., GB, US, DE)",
+                country
+            ),
+        });
     }
 
     if !subject.organizational_units.is_empty() {
@@ -813,7 +809,7 @@ fn check_san_compliance(sans: &[String], cn: &Option<String>, findings: &mut Vec
         });
     } else {
         // Check if CN is included in SANs
-        if let Some(ref cn_val) = cn {
+        if let Some(cn_val) = cn {
             let cn_in_sans = sans
                 .iter()
                 .any(|s| s.strip_prefix("DNS:").map(|dns| dns == cn_val).unwrap_or(false));
@@ -1026,10 +1022,12 @@ mod tests {
         assert!(!validation.subject_alternative_names.is_empty());
 
         // Signature should be valid
-        assert!(validation
-            .findings
-            .iter()
-            .any(|f| f.message.contains("signature is valid")));
+        assert!(
+            validation
+                .findings
+                .iter()
+                .any(|f| f.message.contains("signature is valid"))
+        );
     }
 
     #[test]
@@ -1056,10 +1054,12 @@ mod tests {
         let validation = validate_csr(&csr_pem).unwrap();
 
         // Should have OU deprecation warning
-        assert!(validation
-            .findings
-            .iter()
-            .any(|f| f.severity == Severity::Warning && f.message.contains("OU")));
+        assert!(
+            validation
+                .findings
+                .iter()
+                .any(|f| f.severity == Severity::Warning && f.message.contains("OU"))
+        );
 
         // Should be compliant (warnings don't break compliance, only errors do)
         assert!(validation.compliant);
@@ -1188,10 +1188,12 @@ mod tests {
         // Validate should flag missing SANs
         let csr_pem = fs::read_to_string(&csr_path).unwrap();
         let validation = validate_csr(&csr_pem).unwrap();
-        assert!(validation
-            .findings
-            .iter()
-            .any(|f| f.severity == Severity::Error && f.message.contains("SAN")));
+        assert!(
+            validation
+                .findings
+                .iter()
+                .any(|f| f.severity == Severity::Error && f.message.contains("SAN"))
+        );
         assert!(!validation.compliant);
     }
 }
