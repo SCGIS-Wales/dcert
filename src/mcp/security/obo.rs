@@ -254,11 +254,10 @@ fn scrub_error(msg: &str) -> String {
         .unwrap_or_else(|_| msg.to_string());
 
     // Scrub URL credentials (user:pass@host).
-    let result = regex_lite::Regex::new(r"://[^@\s]+@")
-        .map(|re| re.replace_all(&result, "://***:***@").to_string())
-        .unwrap_or(result);
 
-    result
+    regex_lite::Regex::new(r"://[^@\s]+@")
+        .map(|re| re.replace_all(&result, "://***:***@").to_string())
+        .unwrap_or(result)
 }
 
 #[cfg(test)]

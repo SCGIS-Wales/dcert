@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use crate::cli::{HttpProtocol, TlsVersionArg};
 use crate::debug::{dbg_section, debug_log, sanitize_header_value, sanitize_url};
-use crate::proxy::{connect_through_proxy, ProxyConfig};
+use crate::proxy::{ProxyConfig, connect_through_proxy};
 
 pub const MAX_CONNECTIONS: usize = 10;
 pub const CONNECTION_TIMEOUT_SECS: u64 = 10;
@@ -57,13 +57,13 @@ pub fn load_ca_certs(builder: &mut openssl::ssl::SslConnectorBuilder) -> Result<
     let probe = openssl_probe::probe();
     let mut loaded = false;
 
-    if let Some(ref cert_file) = probe.cert_file {
-        if std::path::Path::new(cert_file).exists() {
-            builder
-                .set_ca_file(cert_file)
-                .map_err(|e| anyhow::anyhow!("Failed to load CA file '{}': {}", cert_file.display(), e))?;
-            loaded = true;
-        }
+    if let Some(ref cert_file) = probe.cert_file
+        && std::path::Path::new(cert_file).exists()
+    {
+        builder
+            .set_ca_file(cert_file)
+            .map_err(|e| anyhow::anyhow!("Failed to load CA file '{}': {}", cert_file.display(), e))?;
+        loaded = true;
     }
     // If no cert file was loaded, fall back to OpenSSL's default verify paths.
     // This covers both the cert_dir case and systems where the cert file path
@@ -382,11 +382,7 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
             let mut errs = errors_clone.lock().unwrap_or_else(|e| e.into_inner());
             errs.push(format!("depth {}: {} ({})", depth, err, subject));
         }
-        if force_accept {
-            true
-        } else {
-            preverify
-        }
+        if force_accept { true } else { preverify }
     });
     let connector = builder.build();
 
@@ -417,10 +413,10 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
                 debug_log!(true, "Cipher (IANA): {}", std_name);
             }
         }
-        if let Some(proto) = ssl_ref.selected_alpn_protocol() {
-            if let Ok(proto_str) = std::str::from_utf8(proto) {
-                debug_log!(true, "ALPN negotiated: {}", proto_str);
-            }
+        if let Some(proto) = ssl_ref.selected_alpn_protocol()
+            && let Ok(proto_str) = std::str::from_utf8(proto)
+        {
+            debug_log!(true, "ALPN negotiated: {}", proto_str);
         }
         debug_log!(true, "SNI sent: {}", sni_host);
         if no_verify {
@@ -433,13 +429,13 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
 
     // Warn if the server negotiated h2 — we only send HTTP/1.1 framing,
     // so the HTTP response parsing below may fail or produce incorrect results.
-    if let Some(proto) = ssl_stream.ssl().selected_alpn_protocol() {
-        if proto == b"h2" {
-            eprintln!(
-                "Warning: Server negotiated HTTP/2 but dcert only implements HTTP/1.1 framing. \
+    if let Some(proto) = ssl_stream.ssl().selected_alpn_protocol()
+        && proto == b"h2"
+    {
+        eprintln!(
+            "Warning: Server negotiated HTTP/2 but dcert only implements HTTP/1.1 framing. \
                  The HTTP status code may be incorrect. Use --http1.1 to force HTTP/1.1."
-            );
-        }
+        );
     }
 
     // Build HTTP request

@@ -2,7 +2,7 @@ use clap::Parser;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo};
-use rmcp::{tool, tool_handler, tool_router, ServerHandler, ServiceExt};
+use rmcp::{ServerHandler, ServiceExt, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -909,7 +909,7 @@ impl VaultParams {
                 return Err(format!(
                     "Invalid auth_method '{}': must be \"token\", \"ldap\", or \"approle\"",
                     method
-                ))
+                ));
             }
         }
         if let Some(ref p) = self.vault_cacert {
@@ -948,7 +948,7 @@ async fn vault_authenticate(vault_params: &VaultParams) -> Result<String, String
 
     match method {
         "ldap" => {
-            use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+            use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
             let username = vault_params
                 .ldap_username
                 .as_deref()
@@ -986,7 +986,7 @@ async fn vault_authenticate(vault_params: &VaultParams) -> Result<String, String
                 .ok_or_else(|| "LDAP auth response did not contain a client_token".to_string())
         }
         "approle" => {
-            use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+            use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
             let role_id = vault_params
                 .approle_role_id
                 .as_deref()
@@ -1568,10 +1568,11 @@ impl DcertMcpServer {
             args.push(max.clone());
         }
         // Validate min_tls <= max_tls ordering
-        if let (Some(ref min), Some(ref max)) = (&params.min_tls, &params.max_tls) {
-            if min == "1.3" && max == "1.2" {
-                return ok_error("min_tls (1.3) must not be greater than max_tls (1.2)".to_string());
-            }
+        if let (Some(min), Some(max)) = (&params.min_tls, &params.max_tls)
+            && min == "1.3"
+            && max == "1.2"
+        {
+            return ok_error("min_tls (1.3) must not be greater than max_tls (1.2)".to_string());
         }
         args.extend(params.mtls.to_args());
         let mtls_env = params.mtls.env_vars();
@@ -1608,10 +1609,10 @@ impl DcertMcpServer {
         if let Err(e) = params.mtls.validate() {
             return ok_error(e);
         }
-        if let Some(ref p) = params.output_path {
-            if let Err(e) = validate_path(p, "output_path") {
-                return ok_error(e);
-            }
+        if let Some(ref p) = params.output_path
+            && let Err(e) = validate_path(p, "output_path")
+        {
+            return ok_error(e);
         }
 
         let mut args = vec![params.target.clone(), "--format".to_string(), "json".to_string()];
@@ -1758,10 +1759,10 @@ impl DcertMcpServer {
         if let Err(e) = validate_password(&params.password) {
             return ok_error(e);
         }
-        if let Some(ref ca) = params.ca_path {
-            if let Err(e) = validate_path(ca, "ca_path") {
-                return ok_error(e);
-            }
+        if let Some(ref ca) = params.ca_path
+            && let Err(e) = validate_path(ca, "ca_path")
+        {
+            return ok_error(e);
         }
 
         let mut args = vec![
@@ -1880,18 +1881,18 @@ impl DcertMcpServer {
         if params.encrypt_key && params.key_password.is_none() {
             return ok_error("key_password is required when encrypt_key is true".to_string());
         }
-        if let Some(ref pw) = params.key_password {
-            if let Err(e) = validate_password(pw) {
-                return ok_error(e);
-            }
+        if let Some(ref pw) = params.key_password
+            && let Err(e) = validate_password(pw)
+        {
+            return ok_error(e);
         }
-        if let Some(ref country) = params.country {
-            if country.len() != 2 || !country.chars().all(|c| c.is_ascii_uppercase()) {
-                return ok_error(format!(
-                    "country must be a 2-letter ISO 3166-1 alpha-2 code (e.g., 'GB', 'US'), got '{}'",
-                    country
-                ));
-            }
+        if let Some(ref country) = params.country
+            && (country.len() != 2 || !country.chars().all(|c| c.is_ascii_uppercase()))
+        {
+            return ok_error(format!(
+                "country must be a 2-letter ISO 3166-1 alpha-2 code (e.g., 'GB', 'US'), got '{}'",
+                country
+            ));
         }
         if params.subject_alternative_names.len() > 100 {
             return ok_error("subject_alternative_names must not exceed 100 entries".to_string());
@@ -2544,7 +2545,7 @@ struct HttpAppState {
 async fn run_http_mode(config: McpConfig, addr: &str) -> Result<(), Box<dyn std::error::Error>> {
     use axum::routing::{get, post};
     use security::audit::AuditLogger;
-    use security::middleware::{auth_middleware, AuthState};
+    use security::middleware::{AuthState, auth_middleware};
     use security::session::{SessionCache, SessionConfig};
     use tower_http::cors::CorsLayer;
 
