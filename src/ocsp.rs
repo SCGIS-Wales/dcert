@@ -1,11 +1,67 @@
 use openssl::hash::MessageDigest;
 use openssl::x509::X509;
 use std::io::{Read, Write};
+use std::net::IpAddr;
 use std::time::Duration;
 use url::Url;
 
 use crate::debug::debug_log;
 use crate::tls::direct_tcp_connect;
+
+/// Determine whether an OCSP responder host is safe to contact.
+///
+/// The OCSP URL comes from the certificate's AIA extension and is therefore
+/// **attacker-controlled** when we're checking a certificate from an untrusted
+/// source. Without a guard, a malicious cert can specify
+/// `http://169.254.169.254/...` (cloud metadata), `http://127.0.0.1:8200/...`
+/// (local Vault/services), or any RFC 1918 address — turning `dcert` into an
+/// SSRF probe. We reject IP literals that target loopback, link-local,
+/// private (RFC 1918), or unique-local-IPv6 ranges.
+///
+/// Hostnames are accepted at parse time (we cannot prevent DNS rebinding here
+/// without a full resolver dance); the destination IP appears in the debug
+/// output of `direct_tcp_connect` and an external SSRF allow-list at the
+/// network layer remains the strongest defence.
+pub(crate) fn is_safe_ocsp_host(host: &str) -> bool {
+    // Strip optional surrounding `[` `]` for IPv6 literals.
+    let trimmed = host.trim_start_matches('[').trim_end_matches(']');
+    match trimmed.parse::<IpAddr>() {
+        Ok(IpAddr::V4(v4)) => {
+            if v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_broadcast() || v4.is_unspecified() {
+                return false;
+            }
+            // Documentation-only and reserved future ranges.
+            if v4.is_documentation() {
+                return false;
+            }
+            true
+        }
+        Ok(IpAddr::V6(v6)) => {
+            if v6.is_loopback() || v6.is_unspecified() {
+                return false;
+            }
+            // Link-local: fe80::/10
+            let segs = v6.segments();
+            if (segs[0] & 0xffc0) == 0xfe80 {
+                return false;
+            }
+            // Unique local addresses (ULA): fc00::/7
+            if (segs[0] & 0xfe00) == 0xfc00 {
+                return false;
+            }
+            // IPv4-mapped IPv6 (::ffff:0:0/96) — recheck as v4.
+            if let Some(v4) = v6.to_ipv4_mapped()
+                && (v4.is_loopback() || v4.is_private() || v4.is_link_local())
+            {
+                return false;
+            }
+            true
+        }
+        // Hostnames are accepted; resolution (and the resulting safety check
+        // at the network layer) is logged via debug output.
+        Err(_) => true,
+    }
+}
 
 /// Check OCSP revocation status for a certificate.
 /// Returns "good", "revoked", "unknown", or an error description.
@@ -49,10 +105,24 @@ pub fn check_ocsp_status(cert_der: &[u8], issuer_der: Option<&[u8]>, ocsp_url: &
         Err(e) => return format!("error: invalid OCSP URL: {}", e),
     };
 
+    // Defence-in-depth against SSRF via attacker-controlled AIA extension:
+    // refuse non-HTTP schemes and refuse private/loopback/link-local IPs.
+    // OCSP responders are public services by definition; an OCSP URL
+    // pointing at `127.0.0.1` or `169.254.169.254` is suspicious by itself.
+    if url.scheme() != "http" && url.scheme() != "https" {
+        return format!(
+            "unknown (OCSP responder rejected: unsupported scheme '{}')",
+            url.scheme()
+        );
+    }
+
     let host = match url.host_str() {
         Some(h) => h.to_string(),
         None => return "error: OCSP URL has no host".to_string(),
     };
+    if !is_safe_ocsp_host(&host) {
+        return "unknown (OCSP responder rejected: private/loopback address)".to_string();
+    }
     let default_port = match url.scheme() {
         "https" => 443,
         _ => 80,
@@ -199,4 +269,59 @@ pub fn check_ocsp_status(cert_der: &[u8], issuer_der: Option<&[u8]>, ocsp_url: &
 
     debug_log!(debug, "OCSP status: {}", result);
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_safe_ocsp_host;
+
+    #[test]
+    fn rejects_ipv4_loopback() {
+        assert!(!is_safe_ocsp_host("127.0.0.1"));
+        assert!(!is_safe_ocsp_host("127.255.255.254"));
+    }
+
+    #[test]
+    fn rejects_ipv4_private() {
+        assert!(!is_safe_ocsp_host("10.0.0.1"));
+        assert!(!is_safe_ocsp_host("172.16.0.1"));
+        assert!(!is_safe_ocsp_host("172.31.255.255"));
+        assert!(!is_safe_ocsp_host("192.168.1.1"));
+    }
+
+    #[test]
+    fn rejects_link_local_metadata_endpoint() {
+        // The classic cloud-metadata SSRF target.
+        assert!(!is_safe_ocsp_host("169.254.169.254"));
+    }
+
+    #[test]
+    fn rejects_ipv6_loopback_and_link_local() {
+        assert!(!is_safe_ocsp_host("::1"));
+        assert!(!is_safe_ocsp_host("[::1]"));
+        assert!(!is_safe_ocsp_host("fe80::1"));
+        // Unique-local IPv6
+        assert!(!is_safe_ocsp_host("fd00::1"));
+    }
+
+    #[test]
+    fn rejects_ipv4_mapped_loopback_in_ipv6() {
+        // ::ffff:127.0.0.1 — IPv6 wrapper around a loopback IPv4.
+        assert!(!is_safe_ocsp_host("::ffff:127.0.0.1"));
+    }
+
+    #[test]
+    fn accepts_public_ipv4() {
+        assert!(is_safe_ocsp_host("8.8.8.8"));
+        assert!(is_safe_ocsp_host("1.1.1.1"));
+    }
+
+    #[test]
+    fn accepts_hostnames() {
+        // We cannot resolve here without DNS, so hostnames are accepted at
+        // parse time. The defence relies on the IP literal check above for
+        // attacker-controlled OCSP URLs that point directly at private IPs.
+        assert!(is_safe_ocsp_host("ocsp.digicert.com"));
+        assert!(is_safe_ocsp_host("ocsp.example.com"));
+    }
 }

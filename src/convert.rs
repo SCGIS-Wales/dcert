@@ -511,26 +511,43 @@ pub fn create_truststore(
     let rsa = openssl::rsa::Rsa::generate(2048).with_context(|| "Failed to generate ephemeral key for truststore")?;
     let pkey = PKey::from_rsa(rsa).with_context(|| "Failed to wrap ephemeral key")?;
 
-    // Create a minimal self-signed cert for the ephemeral key
+    // Create a minimal self-signed cert for the ephemeral key. Each builder
+    // call is `?`-propagated with context so a malformed placeholder produces
+    // a precise OpenSSL error instead of a silently-corrupted truststore that
+    // Java would later reject with a confusing message.
     let mut x509_builder = openssl::x509::X509::builder().with_context(|| "Failed to create X509 builder")?;
-    x509_builder.set_version(2).ok();
+    x509_builder
+        .set_version(2)
+        .with_context(|| "Failed to set placeholder cert version")?;
     let serial = openssl::bn::BigNum::from_u32(1)
         .and_then(|bn| bn.to_asn1_integer())
         .with_context(|| "Failed to create serial number")?;
-    x509_builder.set_serial_number(&serial).ok();
+    x509_builder
+        .set_serial_number(&serial)
+        .with_context(|| "Failed to set placeholder cert serial number")?;
     let mut name_builder =
         openssl::x509::X509NameBuilder::new().with_context(|| "Failed to create X509 name builder")?;
     name_builder
         .append_entry_by_text("CN", "dcert-truststore-placeholder")
-        .ok();
+        .with_context(|| "Failed to set placeholder cert CN")?;
     let name = name_builder.build();
-    x509_builder.set_subject_name(&name).ok();
-    x509_builder.set_issuer_name(&name).ok();
+    x509_builder
+        .set_subject_name(&name)
+        .with_context(|| "Failed to set placeholder cert subject name")?;
+    x509_builder
+        .set_issuer_name(&name)
+        .with_context(|| "Failed to set placeholder cert issuer name")?;
     let not_before = openssl::asn1::Asn1Time::days_from_now(0).with_context(|| "Failed to create not_before")?;
     let not_after = openssl::asn1::Asn1Time::days_from_now(3650).with_context(|| "Failed to create not_after")?;
-    x509_builder.set_not_before(&not_before).ok();
-    x509_builder.set_not_after(&not_after).ok();
-    x509_builder.set_pubkey(&pkey).ok();
+    x509_builder
+        .set_not_before(&not_before)
+        .with_context(|| "Failed to set placeholder cert not_before")?;
+    x509_builder
+        .set_not_after(&not_after)
+        .with_context(|| "Failed to set placeholder cert not_after")?;
+    x509_builder
+        .set_pubkey(&pkey)
+        .with_context(|| "Failed to set placeholder cert public key")?;
     x509_builder
         .sign(&pkey, openssl::hash::MessageDigest::sha256())
         .with_context(|| "Failed to sign ephemeral certificate")?;

@@ -251,6 +251,16 @@ dcert https://internal.server --ca-cert corporate-ca.pem
 dcert https://api.internal.com --client-cert client.pem --client-key client-key.pem --ca-cert corporate-ca.pem
 ```
 
+**When the server demands a client certificate and you didn't supply one:**
+
+```text
+[mTLS REQUIRED] This server requires client certificate authentication.
+  Re-run with --client-cert <pem> --client-key <pem>  or  --pkcs12 <p12> --cert-password ...
+  The server's certificate chain is shown below for reference.
+```
+
+`dcert` detects the `tlsv13 alert certificate required` (and the equivalent legacy alerts), captures the server's certificate chain from inside the TLS handshake — so you can still inspect the server identity even though the handshake aborted — and exits with code `6`.
+
 #### HTTP Options
 
 ```bash
@@ -322,7 +332,7 @@ Options:
 | 3 | TLS verification failed |
 | 4 | Certificate expired |
 | 5 | Certificate revoked (OCSP) |
-| 6 | Client certificate error (invalid, unreadable, wrong password) |
+| 6 | Client certificate error (invalid, unreadable, wrong password) — also returned when the **server requires mTLS** but no `--client-cert` / `--pkcs12` was supplied |
 | 7 | Key mismatch (private key doesn't match certificate) |
 
 ---
@@ -451,7 +461,13 @@ Create a PKCS12 keystore from PEM certificate and key (Java-compatible since JDK
 
 ```bash
 dcert convert create-keystore --cert server.pem --key server-key.pem --output keystore.p12 --password changeit --alias myserver
+
+# Print a beginner primer about keystores before creating one (useful when
+# handing instructions to external partners)
+dcert convert create-keystore --explain --cert server.pem --key server-key.pem --output keystore.p12 --password changeit
 ```
+
+`dcert` warns if the cert PEM contains only a leaf with no intermediates (Java clients usually need the full chain), or if the first cert is a CA rather than the leaf (wrong order).
 
 To convert to JKS format if needed:
 
@@ -461,11 +477,23 @@ keytool -importkeystore -srckeystore keystore.p12 -srcstoretype PKCS12 -destkeys
 
 #### create-truststore
 
-Create a PKCS12 truststore from CA certificate PEM files.
+Create a PKCS12 truststore from CA certificate PEM files. **By default `dcert` rejects leaf (server) certificates** — a truststore should hold trust anchors (CAs), not the server's own cert. The error message points to `--allow-non-ca` if you really need to override.
 
 ```bash
+# Standard truststore from CA chain
 dcert convert create-truststore ca1.pem ca2.pem --output truststore.p12 --password changeit
+
+# Beginner primer (six-line explanation of truststores + CA rotation)
+dcert convert create-truststore --explain ca1.pem --output truststore.p12
+
+# Override the leaf-rejection guard (advanced, rarely correct)
+dcert convert create-truststore --allow-non-ca cert-with-leaf.pem --output truststore.p12
+
+# Machine-readable JSON output (for scripts and the MCP layer)
+dcert convert --format json create-truststore ca1.pem --output truststore.p12
 ```
+
+The pretty default output prints a pre-flight table with each cert's role (`[ROOT]` / `[INTERMEDIATE]` / `[LEAF]`), expiry, and SHA-256 fingerprint, plus warnings for duplicates, expired CAs, and CA-rotation cases (two CAs with the same subject CN but different fingerprints).
 
 ---
 

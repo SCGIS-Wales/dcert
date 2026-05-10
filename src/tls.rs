@@ -356,12 +356,16 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
         debug_log!(debug, "PKCS12 client identity loaded and verified");
     }
 
-    // Apply TLS version constraints
-    if let Some(min) = min_tls {
-        builder
-            .set_min_proto_version(Some(min.to_ssl_version()))
-            .map_err(|e| anyhow::anyhow!("Failed to set minimum TLS version to {}: {}", min, e))?;
-    }
+    // Apply TLS version constraints. Default the minimum to TLS 1.2 when
+    // the user hasn't passed --min-tls, so the floor is independent of the
+    // linked OpenSSL version (older OpenSSL still accepts TLS 1.0/1.1 by
+    // default; modern 3.x uses 1.2). Users who explicitly need TLS 1.0 or
+    // 1.1 can pass `--min-tls 1.2` (current minimum supported flag value)
+    // — to lower further, additional CLI surface would be needed.
+    let effective_min = min_tls.unwrap_or(TlsVersionArg::Tls1_2);
+    builder
+        .set_min_proto_version(Some(effective_min.to_ssl_version()))
+        .map_err(|e| anyhow::anyhow!("Failed to set minimum TLS version to {}: {}", effective_min, e))?;
     if let Some(max) = max_tls {
         builder
             .set_max_proto_version(Some(max.to_ssl_version()))
@@ -936,11 +940,12 @@ pub fn fetch_tls_chain_starttls(opts: &StarttlsFetchOptions<'_>) -> Result<TlsCo
         load_ca_certs(&mut builder)?;
     }
 
-    if let Some(min) = min_tls {
-        builder
-            .set_min_proto_version(Some(min.to_ssl_version()))
-            .map_err(|e| anyhow::anyhow!("Failed to set minimum TLS version: {}", e))?;
-    }
+    // Default minimum to TLS 1.2 when not specified — matches the HTTPS path
+    // and protects against legacy OpenSSL builds that still allow TLS 1.0/1.1.
+    let effective_min = min_tls.unwrap_or(TlsVersionArg::Tls1_2);
+    builder
+        .set_min_proto_version(Some(effective_min.to_ssl_version()))
+        .map_err(|e| anyhow::anyhow!("Failed to set minimum TLS version: {}", e))?;
     if let Some(max) = max_tls {
         builder
             .set_max_proto_version(Some(max.to_ssl_version()))

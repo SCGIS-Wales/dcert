@@ -256,8 +256,15 @@ fn validate_path(path: &str, param_name: &str) -> Result<(), String> {
     if path.contains('\0') {
         return Err(format!("{} must not contain null bytes", param_name));
     }
-    // Reject path traversal sequences
-    if path.contains("..") {
+    // Reject path traversal precisely. The previous implementation used
+    // `path.contains("..")` which both false-negatived on URL-encoded forms
+    // and false-positived on benign filenames like `my..config.pem`. Use
+    // `Path::components()` to walk the resolved structural elements and
+    // reject only `Component::ParentDir` (i.e. an actual `..` segment).
+    if std::path::Path::new(path)
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
         return Err(format!("{} must not contain '..' path traversal sequences", param_name));
     }
     Ok(())
@@ -411,6 +418,12 @@ async fn run_dcert_raw(
     config: &McpConfig,
     env_vars: Option<&[(&str, &str)]>,
 ) -> Result<(String, String, i32), String> {
+    // The semaphore permit binds to `_permit` and is released when this
+    // function returns (success, error, or `?` propagation). It bounds
+    // concurrent subprocesses to `MAX_CONCURRENT_SUBPROCESSES` so a flood
+    // of MCP tool calls cannot exhaust the host's process table. All
+    // parameter validation (paths, passwords, aliases) happens in the
+    // caller before we get here, so failed validation never holds a permit.
     let _permit = SUBPROCESS_SEMAPHORE
         .acquire()
         .await
@@ -3110,6 +3123,19 @@ mod tests {
         assert!(validate_path("../etc/passwd", "cert").is_err());
         assert!(validate_path("/tmp/../etc/passwd", "cert").is_err());
         assert!(validate_path("foo/../../bar", "cert").is_err());
+        assert!(validate_path("..", "cert").is_err());
+    }
+
+    #[test]
+    fn test_validate_path_accepts_filename_with_dots() {
+        // The previous substring-based check false-positived on filenames
+        // that happened to contain '..' as part of the name (e.g. backup
+        // files or chained extensions). The component-based check accepts
+        // these; only an actual `..` path segment is rejected.
+        assert!(validate_path("/tmp/my..config.pem", "cert").is_ok());
+        assert!(validate_path("backup..2025.pem", "cert").is_ok());
+        assert!(validate_path("foo./bar", "cert").is_ok());
+        assert!(validate_path("foo/./bar", "cert").is_ok());
     }
 
     // ---------------------------------------------------------------
