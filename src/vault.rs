@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use colored::*;
+use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
 use std::fs;
 
@@ -7,6 +8,16 @@ use crate::cert::{CertProcessOpts, parse_cert_infos_from_pem};
 use crate::convert;
 use crate::csr::{prompt_optional, prompt_required, prompt_with_default};
 use crate::output::{PrettyDebugInfo, print_pretty};
+
+/// Percent-encode an arbitrary string for use as a single Vault API path
+/// segment. Vault treats `/`, `?`, `#` as path/query/fragment delimiters, so
+/// any user-provided segment (mount point, role name, certificate serial,
+/// CN-derived value, …) must be encoded before being interpolated into a
+/// path. Uses the `NON_ALPHANUMERIC` set (RFC 3986 unreserved characters
+/// passed through, everything else encoded) for maximum safety.
+fn encode_path_segment(s: &str) -> String {
+    utf8_percent_encode(s, NON_ALPHANUMERIC).to_string()
+}
 
 // ---------------------------------------------------------------------------
 // Vault Token & Address Discovery
@@ -678,7 +689,7 @@ pub fn issue_certificate(
         body["ip_sans"] = serde_json::json!(ip_sans.join(","));
     }
 
-    let path = format!("{}/issue/{}", mount, role);
+    let path = format!("{}/issue/{}", encode_path_segment(mount), encode_path_segment(role));
     let resp = client.post(&path, &body)?;
     let data: VaultPkiIssueData =
         serde_json::from_value(resp["data"].clone()).with_context(|| "Failed to parse Vault PKI issue response")?;
@@ -716,7 +727,7 @@ pub fn sign_csr(
         body["ip_sans"] = serde_json::json!(ip_sans.join(","));
     }
 
-    let path = format!("{}/sign/{}", mount, role);
+    let path = format!("{}/sign/{}", encode_path_segment(mount), encode_path_segment(role));
     let resp = client.post(&path, &body)?;
     let data: VaultPkiIssueData =
         serde_json::from_value(resp["data"].clone()).with_context(|| "Failed to parse Vault PKI sign response")?;
@@ -741,7 +752,7 @@ pub fn revoke_certificate(
         return Err(anyhow::anyhow!("Either --serial or --cert-file must be provided"));
     };
 
-    let path = format!("{}/revoke", mount);
+    let path = format!("{}/revoke", encode_path_segment(mount));
     let resp = client.post(&path, &body)?;
 
     let revocation_time = resp["data"]["revocation_time"].as_f64();
@@ -770,7 +781,7 @@ pub fn list_certificates(
     expired_only: bool,
     valid_only: bool,
 ) -> Result<Vec<VaultCertListEntry>> {
-    let path = format!("{}/certs", mount);
+    let path = format!("{}/certs", encode_path_segment(mount));
     let resp = client.list(&path)?;
 
     let serials: Vec<String> = resp["data"]["keys"]
@@ -799,7 +810,7 @@ pub fn list_certificates(
 
     let mut entries = Vec::new();
     for serial in &serials {
-        let cert_path = format!("{}/cert/{}", mount, serial);
+        let cert_path = format!("{}/cert/{}", encode_path_segment(mount), encode_path_segment(serial));
         match client.get(&cert_path) {
             Ok(cert_resp) => {
                 if let Some(cert_pem) = cert_resp["data"]["certificate"].as_str() {
@@ -963,7 +974,7 @@ pub fn build_full_chain(client: &VaultClient, leaf_cert: &str, ca_chain: &[Strin
         }
     } else {
         // Fallback: read intermediate CA from mount
-        let intermediate_path = format!("{}/cert/ca", mount);
+        let intermediate_path = format!("{}/cert/ca", encode_path_segment(mount));
         if let Ok(intermediate_pem) = client.read_pki_cert(&intermediate_path) {
             full_pem.push_str(intermediate_pem.trim());
             full_pem.push('\n');
@@ -2221,5 +2232,33 @@ mod tests {
         let parsed: Vec<VaultCertListEntry> = serde_json::from_str(&content).unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].serial_number, "aa:bb:cc");
+    }
+
+    #[test]
+    fn test_encode_path_segment_passes_through_unreserved() {
+        // RFC 3986 unreserved characters: A-Z a-z 0-9 - . _ ~
+        // NON_ALPHANUMERIC encodes everything except A-Z a-z 0-9 — this is
+        // stricter than RFC 3986 but safer for Vault's path semantics.
+        assert_eq!(super::encode_path_segment("abcXYZ123"), "abcXYZ123");
+    }
+
+    #[test]
+    fn test_encode_path_segment_escapes_path_delimiters() {
+        // The whole reason this helper exists: prevent injection via /, ?, #.
+        let encoded = super::encode_path_segment("aa/bb?cc#dd");
+        assert!(!encoded.contains('/'), "/ must be encoded: got {}", encoded);
+        assert!(!encoded.contains('?'), "? must be encoded: got {}", encoded);
+        assert!(!encoded.contains('#'), "# must be encoded: got {}", encoded);
+        assert_eq!(encoded, "aa%2Fbb%3Fcc%23dd");
+    }
+
+    #[test]
+    fn test_encode_path_segment_handles_colon_separated_serial() {
+        // Vault PKI returns serials like "aa:bb:cc:dd". Colons need
+        // encoding because some HTTP clients and proxies treat them
+        // specially in paths.
+        let encoded = super::encode_path_segment("aa:bb:cc:dd:ee:ff");
+        assert!(!encoded.contains(':'), ": must be encoded: got {}", encoded);
+        assert_eq!(encoded, "aa%3Abb%3Acc%3Add%3Aee%3Aff");
     }
 }

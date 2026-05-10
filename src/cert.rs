@@ -62,6 +62,65 @@ pub struct CertProcessOpts {
     pub extensions: bool,
 }
 
+/// Count individual SCTs (Signed Certificate Timestamps) inside the value of
+/// an X.509 SCT-list extension (OID 1.3.6.1.4.1.11129.2.4.2).
+///
+/// The extension value is an ASN.1 OCTET STRING wrapping a TLS-encoded
+/// `SignedCertificateTimestampList` (RFC 6962 §3.3): a 2-byte total length
+/// followed by length-prefixed SCT entries (2-byte length each).
+///
+/// Returns `Some(count)` on success or `None` when the value is too short
+/// or structurally invalid. Uses `checked_add` throughout so a malformed
+/// list claiming a huge `sct_len` cannot wrap `usize` and trigger
+/// out-of-bounds panics or denial-of-service via infinite loops.
+fn count_scts(data: &[u8]) -> Option<usize> {
+    // The outer layer is an ASN.1 OCTET STRING; parse it to get inner bytes.
+    let inner = if data.len() > 2 && data[0] == 0x04 {
+        // Simple DER OCTET STRING: tag=0x04, length, value
+        let len_byte = data[1] as usize;
+        if len_byte < 0x80 && data.len() >= 2 + len_byte {
+            &data[2..2 + len_byte]
+        } else if len_byte == 0x81 && data.len() > 3 {
+            let len = data[2] as usize;
+            if data.len() >= 3 + len { &data[3..3 + len] } else { data }
+        } else if len_byte == 0x82 && data.len() > 4 {
+            let len = ((data[2] as usize) << 8) | (data[3] as usize);
+            if data.len() >= 4 + len { &data[4..4 + len] } else { data }
+        } else {
+            data
+        }
+    } else {
+        data
+    };
+    // Now inner is the TLS-encoded list: 2-byte total length, then SCTs
+    if inner.len() < 2 {
+        return None;
+    }
+    let total_len = ((inner[0] as usize) << 8) | (inner[1] as usize);
+    let mut offset: usize = 2;
+    let end = 2usize
+        .checked_add(total_len)
+        .map(|e| e.min(inner.len()))
+        .unwrap_or(inner.len());
+    let mut count = 0usize;
+    // Guard against malformed SCT lists that claim huge lengths.
+    // `checked_add` prevents wrap-around when `sct_len` is near `usize::MAX`
+    // on a malicious input; on overflow we stop counting cleanly.
+    while offset.checked_add(2).is_some_and(|o| o <= end) {
+        let sct_len = ((inner[offset] as usize) << 8) | (inner[offset + 1] as usize);
+        let next = match offset.checked_add(2).and_then(|o| o.checked_add(sct_len)) {
+            Some(n) => n,
+            None => break,
+        };
+        if next > end {
+            break;
+        }
+        offset = next;
+        count += 1;
+    }
+    Some(count)
+}
+
 /// Process a single certificate into CertInfo
 pub fn process_certificate(
     cert: X509Certificate<'_>,
@@ -96,46 +155,8 @@ pub fn process_certificate(
     let sct_ext = cert.extensions().iter().find(|ext| ext.oid == *OID_X509_SCT_LIST);
     let ct_present = sct_ext.is_some();
 
-    // Try to count individual SCTs in the extension.
-    // The SCT list is an ASN.1 OCTET STRING wrapping a TLS-encoded SignedCertificateTimestampList:
-    //   - 2 bytes: total list length
-    //   - each SCT: 2 bytes length + SCT data
     let sct_count: Option<usize> = if opts.extensions {
-        sct_ext.and_then(|ext| {
-            let data = ext.value;
-            // The outer layer is an ASN.1 OCTET STRING; parse it to get inner bytes
-            let inner = if data.len() > 2 && data[0] == 0x04 {
-                // Simple DER OCTET STRING: tag=0x04, length, value
-                let len_byte = data[1] as usize;
-                if len_byte < 0x80 && data.len() >= 2 + len_byte {
-                    &data[2..2 + len_byte]
-                } else if len_byte == 0x81 && data.len() > 3 {
-                    let len = data[2] as usize;
-                    if data.len() >= 3 + len { &data[3..3 + len] } else { data }
-                } else if len_byte == 0x82 && data.len() > 4 {
-                    let len = ((data[2] as usize) << 8) | (data[3] as usize);
-                    if data.len() >= 4 + len { &data[4..4 + len] } else { data }
-                } else {
-                    data
-                }
-            } else {
-                data
-            };
-            // Now inner is the TLS-encoded list: 2-byte total length, then SCTs
-            if inner.len() < 2 {
-                return None;
-            }
-            let total_len = ((inner[0] as usize) << 8) | (inner[1] as usize);
-            let mut offset = 2;
-            let end = (2 + total_len).min(inner.len());
-            let mut count = 0usize;
-            while offset + 2 <= end {
-                let sct_len = ((inner[offset] as usize) << 8) | (inner[offset + 1] as usize);
-                offset += 2 + sct_len;
-                count += 1;
-            }
-            Some(count)
-        })
+        sct_ext.and_then(|ext| count_scts(ext.value))
     } else {
         None
     };
@@ -909,5 +930,56 @@ pub mod tests {
         let yaml = serde_yaml_ng::to_string(&info).unwrap();
         assert!(yaml.contains("common_name"), "YAML should contain common_name");
         assert!(yaml.contains("test"), "YAML should contain the CN value");
+    }
+
+    // ---------------------------------------------------------------
+    // count_scts: malformed input must not panic or hang
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn count_scts_handles_empty_input() {
+        assert_eq!(super::count_scts(&[]), None);
+    }
+
+    #[test]
+    fn count_scts_handles_too_short_for_total_length() {
+        // OCTET STRING tag + length byte but no value: parser falls through to
+        // treating the raw bytes as the TLS list, total_len exceeds the slice
+        // so end clamps and the loop yields zero SCTs without panicking.
+        assert_eq!(super::count_scts(&[0x04, 0x01]), Some(0));
+    }
+
+    #[test]
+    fn count_scts_counts_simple_two_sct_list() {
+        // OCTET STRING (0x04) of len 8: total_len=6, SCT1 len=1, SCT2 len=1
+        let data = &[0x04, 0x08, 0x00, 0x06, 0x00, 0x01, b'A', 0x00, 0x01, b'B'];
+        assert_eq!(super::count_scts(data), Some(2));
+    }
+
+    #[test]
+    fn count_scts_does_not_panic_on_malicious_huge_sct_len() {
+        // Synthetic SCT extension where sct_len claims 0xFFFF but only 1 byte
+        // of payload is actually present. A naive `offset += 2 + sct_len`
+        // would wrap on 32-bit hosts and could mis-index on any host;
+        // `checked_add` + `next > end` makes us stop cleanly.
+        let data = &[
+            0x04, 0x05, // OCTET STRING, length 5
+            0x00, 0x03, // total_len = 3 (claimed)
+            0xff, 0xff, // sct_len = 0xFFFF (much larger than payload)
+            b'X', // 1 byte of payload
+        ];
+        // Should return Some(0) — we couldn't fit the claimed SCT and bailed.
+        let result = super::count_scts(data);
+        assert!(result.is_some(), "must return Some, got {:?}", result);
+        assert!(result.unwrap() < 100, "must not loop into a huge count: {:?}", result);
+    }
+
+    #[test]
+    fn count_scts_handles_total_len_overflow_against_inner_slice() {
+        // total_len far exceeds the inner slice — `end` clamps to inner.len()
+        // and the loop terminates immediately.
+        let data = &[0x04, 0x04, 0xff, 0xff, 0x00, 0x00];
+        let result = super::count_scts(data);
+        assert!(result.is_some());
     }
 }
