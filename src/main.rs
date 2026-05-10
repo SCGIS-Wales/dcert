@@ -1176,7 +1176,18 @@ fn main() {
                             std::process::exit(exit_code::ERROR);
                         }
                     },
-                    _ => unreachable!(),
+                    // The stdin-pipe path injects `check -` above, so any other
+                    // variant here would mean a clap mis-parse. Surface that
+                    // as a friendly error rather than an `unreachable!()` panic
+                    // so future subcommand additions don't crash users.
+                    other => {
+                        eprintln!(
+                            "{} stdin pipe is only supported for `dcert check ...`; got: {:?}",
+                            "Error:".red().bold(),
+                            other
+                        );
+                        std::process::exit(exit_code::ERROR);
+                    }
                 }
             }
         }
