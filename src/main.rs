@@ -31,6 +31,36 @@ use proxy::ProxyConfig;
 /// containing 50+ certificates.
 const MAX_STDIN_SIZE: usize = 10 * 1024 * 1024;
 
+/// Conventional Unix exit code for SIGINT-terminated processes (128 + SIGINT(2)).
+const EXIT_INTERRUPTED: i32 = 130;
+
+/// Register a single, process-wide Ctrl+C handler that prints a friendly
+/// message and exits with code 130. Returns an `AtomicBool` that long-running
+/// loops (e.g. `--watch`) can poll for graceful shutdown — the handler also
+/// flips this bool to false before exiting, so cooperative loops still work.
+///
+/// Most dcert flows are blocked inside OpenSSL `connect()` or TCP I/O when
+/// SIGINT arrives — they cannot poll the bool until the syscall returns.
+/// Calling `process::exit()` from the handler is the only way to make Ctrl+C
+/// feel responsive there. Watch mode owns its own polling loop and benefits
+/// from the bool too: see `run_check_with_stdin` watch branch.
+fn register_sigint_handler() -> Arc<AtomicBool> {
+    let running = Arc::new(AtomicBool::new(true));
+    let r = running.clone();
+    if let Err(e) = ctrlc::set_handler(move || {
+        r.store(false, Ordering::SeqCst);
+        eprintln!("\n{} Interrupted (Ctrl+C). Exiting cleanly.", "^C".yellow().bold());
+        std::process::exit(EXIT_INTERRUPTED);
+    }) {
+        eprintln!(
+            "{} Failed to register Ctrl+C handler: {}. Ctrl+C may not exit cleanly.",
+            "WARNING:".yellow().bold(),
+            e
+        );
+    }
+    running
+}
+
 fn run_check(args: CheckArgs) -> Result<i32> {
     run_check_with_stdin(args, None)
 }
@@ -157,19 +187,16 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
             args.fingerprint = true;
         }
 
+        // The global SIGINT handler (registered in `run()`) flips this bool to
+        // false before exiting, but we re-register here for the rare case where
+        // run() wasn't entered (e.g. tests calling run_check_with_stdin directly).
+        // ctrlc::set_handler() returns an error on second registration, which is
+        // fine — the global handler is already in place.
         let running = Arc::new(AtomicBool::new(true));
         let r = running.clone();
-
-        // Handle Ctrl+C gracefully
-        if let Err(e) = ctrlc::set_handler(move || {
+        let _ = ctrlc::set_handler(move || {
             r.store(false, Ordering::SeqCst);
-        }) {
-            eprintln!(
-                "{} Failed to register Ctrl+C handler: {}. Watch mode may not stop gracefully.",
-                "WARNING:".yellow().bold(),
-                e
-            );
-        }
+        });
 
         let mut iteration = 0u64;
         let mut prev_fingerprints: std::collections::HashMap<String, Vec<Option<String>>> =
@@ -225,8 +252,15 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
     for target in &targets {
         match process_target(target, &args, &proxy_config, body_data.as_deref(), stdin_pem.as_deref()) {
             Ok(result) => {
-                // Check for verification failure
+                // Promote to CLIENT_CERT_ERROR when the server demanded an mTLS
+                // client cert we didn't supply. This is more specific than the
+                // generic VERIFY_FAILED and tells callers what to fix.
                 if let Some(ref conn) = result.conn_info
+                    && conn.client_auth_required
+                    && exit_code < exit_code::CLIENT_CERT_ERROR
+                {
+                    exit_code = exit_code::CLIENT_CERT_ERROR;
+                } else if let Some(ref conn) = result.conn_info
                     && conn.verify_result.is_some()
                     && exit_code < exit_code::VERIFY_FAILED
                 {
@@ -335,6 +369,26 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
     Ok(exit_code)
 }
 
+/// Beginner primer printed by `--explain` on `create-truststore`.
+const TRUSTSTORE_EXPLAIN: &str = "About truststores\n  \
+- A truststore holds the CA certificates you trust (root + intermediates).\n  \
+- It does NOT contain the website's own (leaf) certificate, and it never\n    \
+  contains a private key.\n  \
+- Java picks server identity from the keystore, and decides whether to\n    \
+  trust a server's CA chain by checking against the truststore.\n  \
+- To rotate CAs: add the new CA, deploy, verify, then remove the old one.\n";
+
+/// Beginner primer printed by `--explain` on `create-keystore`.
+const KEYSTORE_EXPLAIN: &str = "About keystores\n  \
+- A keystore holds an identity: a private key plus the matching certificate\n    \
+  (and its issuer chain).\n  \
+- The leaf certificate must be FIRST in the cert PEM, followed by the\n    \
+  intermediate CAs that issued it. Java needs the chain to present to\n    \
+  remote clients.\n  \
+- The keystore password protects the private key — keep it private.\n  \
+- A keystore is NOT a truststore: that's a separate file that lists which\n    \
+  CAs you trust.\n";
+
 fn run_convert(args: cli::ConvertArgs) -> Result<i32> {
     // Warn when passwords are passed via CLI args (visible in process listing)
     let password_via_cli = match &args.mode {
@@ -352,6 +406,7 @@ fn run_convert(args: cli::ConvertArgs) -> Result<i32> {
         );
     }
 
+    let format = args.format;
     match args.mode {
         cli::ConvertMode::PfxToPem {
             input,
@@ -359,7 +414,7 @@ fn run_convert(args: cli::ConvertArgs) -> Result<i32> {
             output_dir,
         } => {
             let result = convert::pfx_to_pem(&input, &password, &output_dir)?;
-            println!("{}", serde_json::to_string_pretty(&result)?);
+            output::render_convert_result(&result, format)?;
             Ok(exit_code::SUCCESS)
         }
         cli::ConvertMode::PemToPfx {
@@ -370,7 +425,7 @@ fn run_convert(args: cli::ConvertArgs) -> Result<i32> {
             ca,
         } => {
             let result = convert::pem_to_pfx(&cert, &key, &password, &output, ca.as_deref())?;
-            println!("{}", serde_json::to_string_pretty(&result)?);
+            output::render_convert_result(&result, format)?;
             Ok(exit_code::SUCCESS)
         }
         cli::ConvertMode::CreateKeystore {
@@ -379,18 +434,27 @@ fn run_convert(args: cli::ConvertArgs) -> Result<i32> {
             output,
             password,
             alias,
+            explain,
         } => {
+            if explain && matches!(format, OutputFormat::Pretty) {
+                eprintln!("{}", KEYSTORE_EXPLAIN);
+            }
             let result = convert::create_keystore(&cert, &key, &password, &output, &alias)?;
-            println!("{}", serde_json::to_string_pretty(&result)?);
+            output::render_convert_result(&result, format)?;
             Ok(exit_code::SUCCESS)
         }
         cli::ConvertMode::CreateTruststore {
             certs,
             output,
             password,
+            allow_non_ca,
+            explain,
         } => {
-            let result = convert::create_truststore(&certs, &password, &output)?;
-            println!("{}", serde_json::to_string_pretty(&result)?);
+            if explain && matches!(format, OutputFormat::Pretty) {
+                eprintln!("{}", TRUSTSTORE_EXPLAIN);
+            }
+            let result = convert::create_truststore(&certs, &password, &output, allow_non_ca)?;
+            output::render_convert_result(&result, format)?;
             Ok(exit_code::SUCCESS)
         }
     }
@@ -1077,6 +1141,10 @@ fn run() -> Result<i32> {
 }
 
 fn main() {
+    // Register process-wide SIGINT handler for the stdin-pipe path too —
+    // run() registers it for everything else, but stdin-pipe never enters run().
+    let _running = register_sigint_handler();
+
     // When no arguments are provided and stdin has piped data, treat it as PEM input
     if std::env::args().len() == 1 {
         use std::io::{IsTerminal, Read as _};

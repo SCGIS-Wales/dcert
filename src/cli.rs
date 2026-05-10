@@ -23,8 +23,10 @@ pub mod exit_code {
     pub const CERT_EXPIRED: i32 = 4;
     /// At least one certificate has been revoked (OCSP).
     pub const CERT_REVOKED: i32 = 5;
-    /// Client certificate error (invalid, unreadable, wrong password).
-    #[allow(dead_code)]
+    /// Client certificate error (invalid, unreadable, wrong password) or the
+    /// remote server requires client-certificate authentication and none was
+    /// supplied. Returned by `dcert <host>` when the TLS handshake aborts due
+    /// to the server's `CertificateRequest` going unanswered.
     pub const CLIENT_CERT_ERROR: i32 = 6;
     /// Private key does not match the certificate.
     pub const KEY_MISMATCH: i32 = 7;
@@ -412,8 +414,15 @@ pub struct CheckArgs {
   dcert convert pfx-to-pem cert.pfx --password secret
   dcert convert pem-to-pfx --cert cert.pem --key key.pem -o out.pfx --password secret
   dcert convert create-keystore --cert cert.pem --key key.pem -o keystore.p12 --password secret
-  dcert convert create-truststore ca.pem -o truststore.p12")]
+  dcert convert create-truststore ca.pem -o truststore.p12
+  dcert convert create-truststore --explain ca.pem -o truststore.p12   # beginner primer
+  dcert convert --format json create-truststore ca.pem -o truststore.p12  # machine-readable")]
 pub struct ConvertArgs {
+    /// Output format. `pretty` (default) prints a human-readable summary with
+    /// warnings and trust-anchor labels. `json` keeps the original
+    /// machine-readable shape used by scripts and the MCP layer.
+    #[arg(long, value_enum, default_value = "pretty", global = true)]
+    pub format: OutputFormat,
     #[command(subcommand)]
     pub mode: ConvertMode,
 }
@@ -471,6 +480,11 @@ pub enum ConvertMode {
         /// Alias for the key entry
         #[arg(long, default_value = "server")]
         alias: String,
+        /// Print a beginner primer explaining what a keystore is before
+        /// creating it. Aimed at users new to Java keystore/truststore
+        /// concepts (e.g. external partners receiving a CA rotation request).
+        #[arg(long)]
+        explain: bool,
     },
 
     /// Create a PKCS12 truststore from CA certificates (Java-compatible since JDK 9)
@@ -485,6 +499,19 @@ pub enum ConvertMode {
         /// TrustStore password
         #[arg(long, default_value = "changeit")]
         password: String,
+        /// Allow non-CA (leaf/server) certificates in the truststore. By
+        /// default dcert rejects leaf certs and prints guidance, because a
+        /// truststore is meant to hold trust anchors (CAs) — the server's own
+        /// cert does not belong here. Use this flag only if you know exactly
+        /// why you want a leaf in your truststore.
+        #[arg(long)]
+        allow_non_ca: bool,
+        /// Print a beginner primer explaining what a truststore is, what
+        /// belongs in it, and how to rotate CAs safely. Useful when handing
+        /// instructions to external partners who are unfamiliar with Java
+        /// keystore/truststore concepts.
+        #[arg(long)]
+        explain: bool,
     },
 }
 

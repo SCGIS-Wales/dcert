@@ -135,6 +135,51 @@ pub struct TlsConnectionInfo {
     pub verify_result: Option<String>,
     /// Per-certificate chain validation errors (depth, error, subject).
     pub chain_validation_errors: Vec<String>,
+    /// `true` when the server requested a client certificate and the handshake
+    /// failed because none was supplied (mTLS-required server). When set, the
+    /// chain in `pem_data` was captured from the verify callback before the
+    /// handshake aborted, so the user can still inspect the server identity.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub client_auth_required: bool,
+}
+
+/// Detect whether an OpenSSL handshake failure is caused by the server
+/// requiring client-certificate authentication that the client did not
+/// supply.
+///
+/// Matches on the rendered error string against the well-known TLS alerts
+/// for missing client cert: TLS 1.3 sends `tlsv13 alert certificate required`
+/// (RFC 8446 §6.2 alert 116), TLS 1.2 typically sends a generic handshake
+/// failure but the OpenSSL message includes `peer did not return a certificate`
+/// when the local stack saw the CertificateRequest and we had nothing to
+/// present.
+pub fn is_client_auth_required(err_msg: &str) -> bool {
+    let msg = err_msg.to_ascii_lowercase();
+    msg.contains("certificate required")
+        || msg.contains("peer did not return a certificate")
+        || msg.contains("sslv3 alert certificate required")
+        || msg.contains("tlsv13 alert certificate required")
+        || msg.contains("tlsv1 alert handshake failure") && msg.contains("client_certificate")
+}
+
+/// Encode a sequence of OpenSSL `X509` certificates as a single
+/// concatenated PEM string. Used both on the success path (after a full
+/// handshake) and on the mTLS-required failure path (chain captured during
+/// verification).
+fn chain_to_pem(certs: &[openssl::x509::X509]) -> Result<String> {
+    let mut pem = String::new();
+    for cert in certs {
+        let der = cert
+            .to_der()
+            .map_err(|e| anyhow::anyhow!("DER conversion failed: {e}"))?;
+        let pem_str = pem_rfc7468::encode_string("CERTIFICATE", LineEnding::LF, &der)
+            .map_err(|e| anyhow::anyhow!("PEM encoding failed: {e}"))?;
+        pem.push_str(&pem_str);
+        if !pem.ends_with('\n') {
+            pem.push('\n');
+        }
+    }
+    Ok(pem)
 }
 
 /// Options for `fetch_tls_chain_openssl`, grouped to avoid an unwieldy
@@ -359,9 +404,24 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
     // rather than panicking again inside the OpenSSL callback.
     let verify_errors: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
     let errors_clone = verify_errors.clone();
+    // Capture the server's certificate chain from inside the verify callback.
+    // The callback fires once per cert as the server's Certificate flight is
+    // processed — well before any CertificateRequest the server may send. So
+    // even if the handshake later aborts because the server requires mTLS, we
+    // already have the chain and can show it to the user.
+    let captured_chain: Arc<std::sync::Mutex<Vec<openssl::x509::X509>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let chain_clone = captured_chain.clone();
     let force_accept = no_verify;
 
     builder.set_verify_callback(SslVerifyMode::PEER, move |preverify, ctx| {
+        if let Some(cert) = ctx.current_cert() {
+            let mut chain = chain_clone.lock().unwrap_or_else(|e| e.into_inner());
+            let owned: openssl::x509::X509 = cert.to_owned();
+            // Avoid duplicates if the callback fires multiple times for the same depth.
+            if !chain.iter().any(|c| c == &owned) {
+                chain.push(owned);
+            }
+        }
         if !preverify {
             let depth = ctx.error_depth();
             let err = ctx.error();
@@ -387,20 +447,50 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
     let connector = builder.build();
 
     let sni_host = sni_override.unwrap_or(host);
-    let mut ssl_stream = connector.connect(sni_host, stream).map_err(|e| {
-        let err_str = e.to_string();
-        if err_str.contains("certificate verify failed") || err_str.contains("unable to get local issuer") {
-            anyhow::anyhow!(
-                "TLS handshake failed: {e}\n\
-                 Hint: OpenSSL could not find CA certificates. Try one of:\n  \
-                 - Set SSL_CERT_FILE to point to your CA bundle (e.g. /etc/ssl/certs/ca-certificates.crt)\n  \
-                 - Set SSL_CERT_DIR to your certificates directory\n  \
-                 - Use --no-verify to skip certificate verification"
-            )
-        } else {
-            anyhow::anyhow!("TLS handshake failed: {e}")
+    let mut ssl_stream = match connector.connect(sni_host, stream) {
+        Ok(s) => s,
+        Err(e) => {
+            let err_str = e.to_string();
+            // Surface mTLS-required failures to the caller with the chain we
+            // captured during verification, so the user gets the server
+            // identity even though the handshake aborted.
+            if is_client_auth_required(&err_str) {
+                let chain = captured_chain.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                if !chain.is_empty() {
+                    let pem = chain_to_pem(&chain)?;
+                    let l7_latency = l7_start.elapsed().as_millis();
+                    return Ok(TlsConnectionInfo {
+                        pem_data: pem,
+                        dns_latency,
+                        l4_latency,
+                        l7_latency,
+                        tls_version: "unknown (handshake aborted)".to_string(),
+                        tls_cipher: "unknown".to_string(),
+                        tls_cipher_iana: None,
+                        negotiated_protocol: None,
+                        http_response_code: 0,
+                        verify_result: Some("client certificate required (mTLS)".to_string()),
+                        chain_validation_errors: verify_errors.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+                        client_auth_required: true,
+                    });
+                }
+                // Fall through to the regular error path if no chain was captured.
+            }
+            return Err(
+                if err_str.contains("certificate verify failed") || err_str.contains("unable to get local issuer") {
+                    anyhow::anyhow!(
+                        "TLS handshake failed: {e}\n\
+                     Hint: OpenSSL could not find CA certificates. Try one of:\n  \
+                     - Set SSL_CERT_FILE to point to your CA bundle (e.g. /etc/ssl/certs/ca-certificates.crt)\n  \
+                     - Set SSL_CERT_DIR to your certificates directory\n  \
+                     - Use --no-verify to skip certificate verification"
+                    )
+                } else {
+                    anyhow::anyhow!("TLS handshake failed: {e}")
+                },
+            );
         }
-    })?;
+    };
 
     // Debug: Layer 5/6 - TLS session details
     if debug {
@@ -591,22 +681,10 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
         return Err(anyhow::anyhow!("Empty certificate chain"));
     }
 
-    // Convert DER to concatenated PEM
-    let mut pem = String::new();
-    for cert in certs {
-        let pem_str = pem_rfc7468::encode_string(
-            "CERTIFICATE",
-            LineEnding::LF,
-            &cert
-                .to_der()
-                .map_err(|e| anyhow::anyhow!("DER conversion failed: {e}"))?,
-        )
-        .map_err(|e| anyhow::anyhow!("PEM encoding failed: {e}"))?;
-        pem.push_str(&pem_str);
-        if !pem.ends_with('\n') {
-            pem.push('\n');
-        }
-    }
+    // Convert DER to concatenated PEM (reusing the helper used by the
+    // mTLS-required failure path so encoding stays consistent).
+    let owned_chain: Vec<openssl::x509::X509> = certs.iter().map(|c| c.to_owned()).collect();
+    let pem = chain_to_pem(&owned_chain)?;
 
     let ssl = ssl_stream.ssl();
     let tls_version = ssl.version_str().to_string();
@@ -658,6 +736,7 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
         http_response_code,
         verify_result,
         chain_validation_errors,
+        client_auth_required: false,
     })
 }
 
@@ -1007,5 +1086,40 @@ pub fn fetch_tls_chain_starttls(opts: &StarttlsFetchOptions<'_>) -> Result<TlsCo
         http_response_code: 0,
         verify_result,
         chain_validation_errors,
+        client_auth_required: false,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_client_auth_required;
+
+    #[test]
+    fn detects_tls13_certificate_required_alert() {
+        let msg = "TLS connect failed: tlsv13 alert certificate required";
+        assert!(is_client_auth_required(msg));
+    }
+
+    #[test]
+    fn detects_legacy_certificate_required_alert() {
+        let msg = "TLS connect failed: sslv3 alert certificate required";
+        assert!(is_client_auth_required(msg));
+    }
+
+    #[test]
+    fn detects_peer_did_not_return_a_certificate() {
+        let msg = "TLS read error: peer did not return a certificate";
+        assert!(is_client_auth_required(msg));
+    }
+
+    #[test]
+    fn does_not_match_unrelated_handshake_failures() {
+        assert!(!is_client_auth_required(
+            "TLS handshake failed: certificate verify failed: self-signed cert"
+        ));
+        assert!(!is_client_auth_required(
+            "TLS handshake failed: unable to get local issuer certificate"
+        ));
+        assert!(!is_client_auth_required("TCP connection refused"));
+    }
 }

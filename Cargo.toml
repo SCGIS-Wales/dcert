@@ -2,6 +2,7 @@
 name = "dcert"
 version = "3.0.32"
 edition = "2024"
+rust-version = "1.85"
 license = "MIT"
 repository = "https://github.com/SCGIS-Wales/dcert"
 description = "TLS certificate analysis, format conversion, and key verification — CLI and MCP server"
@@ -33,7 +34,7 @@ pem = "3.0"
 serde_yaml_ng = "0.10"
 ctrlc = "3.5"
 openssl-probe = "0.2"
-rmcp = { version = "1.2", features = ["server", "transport-io", "client"] }
+rmcp = { version = "1.6", features = ["server", "transport-io", "client"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-std", "sync", "time"] }
 schemars = "1.2"
 jsonwebtoken = { version = "10", features = ["rust_crypto"] }

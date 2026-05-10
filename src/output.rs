@@ -11,6 +11,7 @@ use x509_parser::prelude::FromDer;
 use crate::cert::{CertInfo, CertProcessOpts, extract_ocsp_url, parse_cert_infos_from_pem};
 use crate::cli::{CheckArgs, CipherNotation, HttpProtocol, OutputFormat, SortOrder};
 use crate::compliance::{self, ChainComplianceReport, Severity};
+use crate::convert::{CertRole, ConvertResult};
 use crate::debug::debug_log;
 use crate::ocsp::check_ocsp_status;
 use crate::proxy::ProxyConfig;
@@ -27,8 +28,32 @@ pub struct PrettyDebugInfo<'a> {
 }
 
 pub fn print_pretty(infos: &[CertInfo], debug: &PrettyDebugInfo<'_>) {
+    // mTLS-required servers: print a high-visibility banner before anything
+    // else, then fall through to render the captured chain. The chain was
+    // received during the handshake (server's Certificate flight arrives
+    // before any CertificateRequest) so the user can inspect the server
+    // identity even though the handshake aborted.
+    if let Some(conn) = debug.conn
+        && conn.client_auth_required
+    {
+        println!();
+        println!(
+            "{} {}",
+            "[mTLS REQUIRED]".red().bold(),
+            "This server requires client certificate authentication.".bold()
+        );
+        println!(
+            "  Re-run with {} or {} to authenticate.",
+            "--client-cert <pem> --client-key <pem>".cyan(),
+            "--pkcs12 <p12> --cert-password ...".cyan()
+        );
+        println!("  The server's certificate chain is shown below for reference.");
+        println!();
+    }
+
     if let (Some(host), Some(conn)) = (debug.hostname, debug.conn)
         && let Some(leaf) = infos.first()
+        && !conn.client_auth_required
     {
         let matched = cert_matches_hostname(leaf, host);
         let status = if matched { "true".green() } else { "false".red() };
@@ -595,6 +620,92 @@ pub fn output_results(
         }
     }
     Ok(())
+}
+
+/// Render the result of a `dcert convert ...` operation in the requested
+/// output format.
+///
+/// `pretty` (the default for human use) prints a pre-flight table with role
+/// labels (`[ROOT]` / `[INTERMEDIATE]` / `[LEAF]`), warnings, and a final
+/// "wrote N file(s)" line. `json` and `yaml` emit the `ConvertResult` struct
+/// verbatim, preserving the machine-readable shape that scripts and the MCP
+/// layer rely on.
+pub fn render_convert_result(result: &ConvertResult, format: OutputFormat) -> Result<()> {
+    match format {
+        OutputFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(result)?);
+        }
+        OutputFormat::Yaml => {
+            println!("{}", serde_yaml_ng::to_string(result)?);
+        }
+        OutputFormat::Pretty => {
+            print_convert_result_pretty(result);
+        }
+    }
+    Ok(())
+}
+
+fn print_convert_result_pretty(result: &ConvertResult) {
+    println!(
+        "{} → {}",
+        result.input_format.bold(),
+        result.output_format.bold().green()
+    );
+
+    // Pre-flight table: cert roles. Only relevant for keystore/truststore
+    // operations; pfx-to-pem and pem-to-pfx leave `cert_roles` empty.
+    if !result.cert_roles.is_empty() {
+        println!();
+        println!("Certificates ({}):", result.cert_roles.len());
+        for s in &result.cert_roles {
+            let label = match s.role {
+                CertRole::RootCa => format!("[{}]", s.role.label()).green().bold(),
+                CertRole::IntermediateCa => format!("[{}]", s.role.label()).cyan().bold(),
+                CertRole::Leaf => format!("[{}]", s.role.label()).red().bold(),
+            };
+            let expiry = if s.expired {
+                format!("[EXPIRED on {}]", s.not_after).red().to_string()
+            } else {
+                format!("expires {}", s.not_after)
+            };
+            let fp_short = if s.fingerprint_sha256.len() >= 11 {
+                &s.fingerprint_sha256[..11]
+            } else {
+                &s.fingerprint_sha256
+            };
+            println!("  {:<14} {:<46} {:<22} fp:{}..", label, s.subject, expiry, fp_short);
+        }
+    }
+
+    if !result.warnings.is_empty() {
+        println!();
+        println!("{}", "Warnings:".yellow().bold());
+        for w in &result.warnings {
+            println!("  {} {}", "•".yellow(), w);
+        }
+    }
+
+    if let Some(ref subj) = result.cert_subject {
+        println!();
+        println!("Identity subject : {}", subj);
+    }
+    if let Some(ref kt) = result.key_type {
+        println!("Key type         : {}", kt);
+    }
+    if result.ca_certs_count > 0 {
+        println!("CA certs in chain: {}", result.ca_certs_count);
+    }
+
+    println!();
+    let plural = if result.output_files.len() == 1 {
+        "file"
+    } else {
+        "files"
+    };
+    println!("Wrote {} {}:", result.output_files.len(), plural);
+    for f in &result.output_files {
+        println!("  {} {}", "→".green(), f);
+    }
 }
 
 /// Print compliance report in pretty format.
