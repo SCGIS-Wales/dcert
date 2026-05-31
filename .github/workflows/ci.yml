@@ -482,11 +482,74 @@ jobs:
           name: dcert-aarch64-apple-darwin
           path: dist/dcert-aarch64-apple-darwin.tar.gz
 
+  build-windows:
+    name: Build Windows x86_64
+    runs-on: windows-latest
+    needs: [ test, auto-tag ]
+    if: always() && needs.test.result == 'success' && (needs.auto-tag.result == 'success' || needs.auto-tag.result == 'skipped')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set version from auto-tag
+        if: needs.auto-tag.outputs.version != ''
+        shell: pwsh
+        run: |
+          $v = "${{ needs.auto-tag.outputs.version }}"
+          (Get-Content Cargo.toml) -replace '^version = ".*"', "version = `"$v`"" | Set-Content Cargo.toml
+          Write-Host "Set Cargo.toml version to $v"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+
+      # Vendored OpenSSL (Windows-only, see Cargo.toml) builds from source and
+      # requires NASM and Perl. Strawberry Perl ships on the runner image.
+      - name: Install NASM
+        uses: ilammy/setup-nasm@v1
+
+      - name: Verify build prerequisites
+        shell: pwsh
+        run: |
+          where.exe nasm
+          where.exe perl
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-msvc-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: windows-msvc-cargo-
+
+      - name: Build (release)
+        run: cargo build --release --target x86_64-pc-windows-msvc
+
+      - name: Package artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $rel = "target/x86_64-pc-windows-msvc/release"
+          Compress-Archive -Path "$rel/dcert.exe","$rel/dcert-mcp.exe" `
+            -DestinationPath "dist/dcert-x86_64-pc-windows-msvc.zip" -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dcert-x86_64-pc-windows-msvc
+          path: dist/dcert-x86_64-pc-windows-msvc.zip
+
   # Build platform-specific Python wheels that bundle the Rust binaries
   build-platform-wheels:
     name: Build platform wheels
-    needs: [ auto-tag, build-linux, build-macos-intel, build-macos-arm, python-build ]
-    if: always() && needs.python-build.result == 'success' && needs.build-linux.result == 'success' && needs.build-macos-intel.result == 'success' && needs.build-macos-arm.result == 'success'
+    needs: [ auto-tag, build-linux, build-macos-intel, build-macos-arm, build-windows, python-build ]
+    if: always() && needs.python-build.result == 'success' && needs.build-linux.result == 'success' && needs.build-macos-intel.result == 'success' && needs.build-macos-arm.result == 'success' && needs.build-windows.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -530,7 +593,7 @@ jobs:
           }
           assets_dir = 'release-assets'
           for f in sorted(os.listdir(assets_dir)):
-              if f.startswith('dcert-') and f.endswith('.tar.gz'):
+              if f.startswith('dcert-') and (f.endswith('.tar.gz') or f.endswith('.zip')):
                   path = os.path.join(assets_dir, f)
                   sha = hashlib.sha256(open(path, 'rb').read()).hexdigest()
                   checksums['archives'][f] = sha
@@ -746,7 +809,7 @@ jobs:
   release:
     name: Create GitHub Release
     if: needs.auto-tag.outputs.created == 'true'
-    needs: [ auto-tag, test, security-audit, build-linux, build-macos-intel, build-macos-arm, create-homebrew-formula ]
+    needs: [ auto-tag, test, security-audit, build-linux, build-macos-intel, build-macos-arm, build-windows, create-homebrew-formula ]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -760,6 +823,12 @@ jobs:
         with:
           name: dcert-x86_64-unknown-linux-gnu
           path: ./artifacts/dcert-x86_64-unknown-linux-gnu
+
+      - name: Download Windows x86_64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dcert-x86_64-pc-windows-msvc
+          path: ./artifacts/dcert-x86_64-pc-windows-msvc
 
       - name: Download macOS Intel artifact
         uses: actions/download-artifact@v4
@@ -831,6 +900,22 @@ jobs:
           chmod +x dcert dcert-mcp && sudo mv dcert dcert-mcp /usr/local/bin/
           \`\`\`
 
+          ### Windows
+
+          Install with Chocolatey:
+
+          \`\`\`powershell
+          choco install dcert
+          \`\`\`
+
+          Or download the prebuilt binaries (x86_64):
+
+          \`\`\`powershell
+          # Extract dcert.exe and dcert-mcp.exe from the archive and add them to your PATH
+          curl -L -o dcert.zip https://github.com/${REPO}/releases/download/${TAG}/dcert-x86_64-pc-windows-msvc.zip
+          Expand-Archive dcert.zip -DestinationPath .
+          \`\`\`
+
           ### Docker
 
           \`\`\`bash
@@ -874,6 +959,60 @@ jobs:
               --latest \
               release-assets/*
           fi
+
+  create-chocolatey-package:
+    name: Create Chocolatey package
+    if: needs.auto-tag.outputs.created == 'true'
+    needs: [ auto-tag, build-windows, release ]
+    runs-on: windows-latest
+    env:
+      CHOCO_API_KEY: ${{ secrets.CHOCO_API_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dcert-x86_64-pc-windows-msvc
+          path: ./artifacts
+
+      - name: Template nuspec and install script
+        shell: pwsh
+        run: |
+          $version = "${{ needs.auto-tag.outputs.version }}"
+          $zip = "artifacts/dcert-x86_64-pc-windows-msvc.zip"
+          $sha = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          Write-Host "version=$version sha256=$sha"
+          $files = @(
+            "packaging/chocolatey/dcert.nuspec",
+            "packaging/chocolatey/tools/chocolateyInstall.ps1"
+          )
+          foreach ($f in $files) {
+            (Get-Content $f) -replace '__VERSION__', $version -replace '__SHA256__', $sha | Set-Content $f
+          }
+
+      - name: Choco pack
+        shell: pwsh
+        run: choco pack packaging/chocolatey/dcert.nuspec --outputdirectory dist-choco
+
+      - name: Upload nupkg artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dcert-chocolatey
+          path: dist-choco/*.nupkg
+
+      - name: Choco push (community feed)
+        if: env.CHOCO_API_KEY != ''
+        shell: pwsh
+        run: |
+          $nupkg = Get-ChildItem dist-choco/*.nupkg | Select-Object -First 1
+          choco push $nupkg.FullName --source https://push.chocolatey.org/ --api-key $env:CHOCO_API_KEY
+
+      - name: Note when push is skipped
+        if: env.CHOCO_API_KEY == ''
+        shell: pwsh
+        run: Write-Host "CHOCO_API_KEY secret not set — built .nupkg artifact only, skipping choco push."
 
   publish-pypi:
     name: Publish to PyPI
