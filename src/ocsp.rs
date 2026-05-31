@@ -137,7 +137,15 @@ pub fn check_ocsp_status(cert_der: &[u8], issuer_der: Option<&[u8]>, ocsp_url: &
             debug_log!(debug, "OCSP responder connected: {}:{}", host, port);
             s
         }
-        Err(e) => return format!("error: connect to OCSP responder failed: {}", e),
+        Err(e) => {
+            // The CA's OCSP endpoint (e.g. ocsp.digicert.com) is unreachable.
+            // This is frequently a firewall blocking outbound access to the CA
+            // rather than a problem with the certificate itself — say so clearly.
+            return format!(
+                "unknown (could not reach OCSP responder at {}:{} — CA endpoint unreachable, possibly firewall-blocked: {})",
+                host, port, e
+            );
+        }
     };
     if let Err(e) = tcp_stream.set_read_timeout(Some(Duration::from_secs(5))) {
         eprintln!("Warning: failed to set OCSP read timeout: {}", e);

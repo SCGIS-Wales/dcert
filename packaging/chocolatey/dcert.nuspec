@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>dcert</id>
+    <version>__VERSION__</version>
+    <title>dcert</title>
+    <authors>SCGIS-Wales</authors>
+    <owners>SCGIS-Wales</owners>
+    <projectUrl>https://github.com/SCGIS-Wales/dcert</projectUrl>
+    <packageSourceUrl>https://github.com/SCGIS-Wales/dcert/tree/main/packaging/chocolatey</packageSourceUrl>
+    <projectSourceUrl>https://github.com/SCGIS-Wales/dcert</projectSourceUrl>
+    <bugTrackerUrl>https://github.com/SCGIS-Wales/dcert/issues</bugTrackerUrl>
+    <docsUrl>https://github.com/SCGIS-Wales/dcert/blob/main/README.md</docsUrl>
+    <licenseUrl>https://github.com/SCGIS-Wales/dcert/blob/main/LICENSE</licenseUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <tags>tls certificate x509 ssl ocsp pkcs12 mcp cli mtls</tags>
+    <summary>TLS certificate analysis, format conversion, and key verification (CLI + MCP server).</summary>
+    <description>
+dcert decodes, validates, and converts TLS certificates and runs as an MCP
+(Model Context Protocol) server for AI assistants. It analyzes HTTPS/mTLS
+endpoints, exports PEM chains, checks expiry and OCSP revocation, and converts
+between PEM/DER/PKCS12 formats.
+
+This package installs `dcert.exe` (CLI) and `dcert-mcp.exe` (MCP server) and
+adds them to your PATH via Chocolatey shims.
+    </description>
+    <releaseNotes>https://github.com/SCGIS-Wales/dcert/releases/tag/v__VERSION__</releaseNotes>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>

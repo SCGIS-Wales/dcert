@@ -41,6 +41,27 @@ def _make_tar_archive(path: Path, binaries: dict[str, bytes] | None = None) -> P
     return path
 
 
+def _make_zip_archive(path: Path, binaries: dict[str, bytes] | None = None) -> Path:
+    """Create a fake Windows .zip archive containing .exe binaries."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if binaries is None:
+        binaries = {
+            "dcert.exe": b"MZ\x90\x00dcert",
+            "dcert-mcp.exe": b"MZ\x90\x00dcert-mcp",
+        }
+    with ZipFile(path, "w") as zf:
+        for name, data in binaries.items():
+            zf.writestr(name, data)
+    return path
+
+
+def _make_archive_for(path: Path) -> Path:
+    """Create a platform archive matching the filename's extension."""
+    if path.suffix == ".zip":
+        return _make_zip_archive(path)
+    return _make_tar_archive(path)
+
+
 def _make_universal_wheel(directory: Path) -> Path:
     """Create a minimal universal wheel for testing."""
     directory.mkdir(parents=True, exist_ok=True)
@@ -133,6 +154,25 @@ class TestExtractBinaries:
                 tar.addfile(info, io.BytesIO(data))
         binaries = _extract_binaries_from_archive(archive_path)
         assert set(binaries.keys()) == {"dcert", "dcert-mcp"}
+
+    def test_extract_windows_zip(self, tmp_path):
+        archive = _make_zip_archive(tmp_path / "dcert-x86_64-pc-windows-msvc.zip")
+        binaries = _extract_binaries_from_archive(archive)
+        assert set(binaries.keys()) == {"dcert.exe", "dcert-mcp.exe"}
+
+    def test_build_windows_wheel(self, tmp_path):
+        src = _make_universal_wheel(tmp_path / "src")
+        archive = _make_zip_archive(
+            tmp_path / "archives" / "dcert-x86_64-pc-windows-msvc.zip"
+        )
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        result = build_platform_wheel(src, archive, "win_amd64", output_dir)
+        assert "win_amd64" in result.name
+        with ZipFile(result, "r") as zf:
+            names = zf.namelist()
+            assert "dcert/bin/dcert.exe" in names
+            assert "dcert/bin/dcert-mcp.exe" in names
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +274,7 @@ class TestBuildAll:
         archives_dir.mkdir()
 
         for archive_name in PLATFORM_MAP:
-            _make_tar_archive(archives_dir / archive_name)
+            _make_archive_for(archives_dir / archive_name)
 
         output_dir = tmp_path / "out"
         output_dir.mkdir()
@@ -288,11 +328,13 @@ class TestPlatformMap:
         assert "dcert-x86_64-unknown-linux-gnu.tar.gz" in PLATFORM_MAP
         assert "dcert-x86_64-apple-darwin.tar.gz" in PLATFORM_MAP
         assert "dcert-aarch64-apple-darwin.tar.gz" in PLATFORM_MAP
+        assert PLATFORM_MAP["dcert-x86_64-pc-windows-msvc.zip"] == "win_amd64"
 
     def test_platform_count(self):
-        assert len(PLATFORM_MAP) == 3
+        assert len(PLATFORM_MAP) == 4
 
     def test_binary_names(self):
         assert "dcert" in BINARY_NAMES
         assert "dcert-mcp" in BINARY_NAMES
-        assert len(BINARY_NAMES) == 2
+        assert "dcert.exe" in BINARY_NAMES
+        assert "dcert-mcp.exe" in BINARY_NAMES

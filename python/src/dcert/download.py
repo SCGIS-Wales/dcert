@@ -26,6 +26,7 @@ import sysconfig
 import tarfile
 import tempfile
 import urllib.request
+import zipfile
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -42,7 +43,17 @@ PLATFORM_MAP: dict[tuple[str, str], str] = {
     ("darwin", "arm64"): "aarch64-apple-darwin",
     ("darwin", "x86_64"): "x86_64-apple-darwin",
     ("linux", "x86_64"): "x86_64-unknown-linux-gnu",
+    ("windows", "amd64"): "x86_64-pc-windows-msvc",
 }
+
+
+def _is_windows() -> bool:
+    return platform.system().lower() == "windows"
+
+
+def _bin_filename(stem: str) -> str:
+    """Return the on-disk binary filename for *stem* (adds .exe on Windows)."""
+    return f"{stem}.exe" if _is_windows() else stem
 
 
 def _load_checksums() -> dict:
@@ -80,7 +91,10 @@ def _get_archive_name() -> str | None:
     triple = _get_target_triple()
     if triple is None:
         return None
-    return f"dcert-{triple}.tar.gz"
+    # Windows binaries are shipped as .zip (PowerShell-friendly); other
+    # platforms use .tar.gz.
+    ext = "zip" if _is_windows() else "tar.gz"
+    return f"dcert-{triple}.{ext}"
 
 
 def _get_install_dir() -> Path:
@@ -119,40 +133,59 @@ def _verify_checksum(file_path: Path, expected_sha256: str) -> bool:
 
 
 def _extract_binaries(archive_path: Path, install_dir: Path) -> Path:
-    """Extract dcert and dcert-mcp binaries from a tar.gz archive.
+    """Extract dcert and dcert-mcp binaries from a downloaded archive.
+
+    Handles both .tar.gz (Linux/macOS) and .zip (Windows) archives. On
+    Windows the binaries are named ``dcert.exe`` / ``dcert-mcp.exe``.
 
     Args:
-        archive_path: Path to the downloaded .tar.gz file.
+        archive_path: Path to the downloaded .tar.gz or .zip file.
         install_dir: Directory to install binaries into.
 
     Returns:
         Path to the installed dcert-mcp binary.
 
     Raises:
-        RuntimeError: If dcert-mcp binary not found in archive.
+        RuntimeError: If the dcert-mcp binary is not found in the archive.
     """
+    is_win = _is_windows()
+    mcp_name = _bin_filename("dcert-mcp")
+    wanted = {_bin_filename("dcert"), mcp_name}
     found_mcp = False
-    with tarfile.open(archive_path, "r:gz") as tar:
-        for member in tar.getmembers():
-            name = Path(member.name).name
-            if name in ("dcert", "dcert-mcp"):
-                # Extract file contents manually to prevent path traversal
-                # attacks — tar.extract() trusts member.name which could
-                # contain "../" sequences even after stripping with Path.name.
-                file_obj = tar.extractfile(member)
-                if file_obj is None:
-                    continue
-                target = install_dir / name
-                with open(target, "wb") as out:
-                    shutil.copyfileobj(file_obj, out)
-                target.chmod(target.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-                if name == "dcert-mcp":
-                    found_mcp = True
+
+    def _emit(name: str, file_obj) -> None:
+        nonlocal found_mcp
+        # Write contents manually rather than using extract() to avoid path
+        # traversal — member names could contain "../" even after Path.name.
+        target = install_dir / name
+        with open(target, "wb") as out:
+            shutil.copyfileobj(file_obj, out)
+        if not is_win:
+            target.chmod(target.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        if name == mcp_name:
+            found_mcp = True
+
+    if archive_path.suffix == ".zip" or is_win:
+        with zipfile.ZipFile(archive_path) as zf:
+            for member in zf.infolist():
+                name = Path(member.filename).name
+                if name in wanted:
+                    with zf.open(member) as file_obj:
+                        _emit(name, file_obj)
+    else:
+        with tarfile.open(archive_path, "r:gz") as tar:
+            for member in tar.getmembers():
+                name = Path(member.name).name
+                if name in wanted:
+                    file_obj = tar.extractfile(member)
+                    if file_obj is None:
+                        continue
+                    _emit(name, file_obj)
 
     if not found_mcp:
         raise RuntimeError("dcert-mcp binary not found in archive")
 
-    return install_dir / "dcert-mcp"
+    return install_dir / mcp_name
 
 
 def ensure_binary(version: str) -> str | None:
@@ -176,7 +209,7 @@ def ensure_binary(version: str) -> str | None:
         urllib.error.URLError: If the download fails.
     """
     install_dir = _get_install_dir()
-    target = install_dir / "dcert-mcp"
+    target = install_dir / _bin_filename("dcert-mcp")
 
     # Already installed?
     if target.exists() and os.access(str(target), os.X_OK):

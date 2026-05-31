@@ -581,9 +581,21 @@ struct HttpTlsParams {
     /// Colon-separated IANA cipher names for TLS 1.3 (e.g. "TLS_AES_256_GCM_SHA384")
     #[serde(default)]
     cipher_suites: Option<String>,
-    /// Override SNI hostname for TLS handshake
+    /// Override the SNI (Server Name Indication) hostname sent in the TLS
+    /// handshake. Most callers do NOT need this. To connect to an IP while
+    /// validating a hostname, prefer `connect_to` (keep the hostname in
+    /// `target`); use `sni` only to send a SNI value that differs from the
+    /// validated hostname. Example: target='https://10.0.0.5', sni='api.example.com'.
     #[serde(default)]
     sni: Option<String>,
+    /// Connect to this explicit IP address instead of resolving the hostname in
+    /// `target` via DNS. The hostname is still used for SNI and certificate
+    /// validation. Use this to analyze a specific server/backend behind a load
+    /// balancer or DNS round-robin, or when the hostname does not resolve from
+    /// here. Like curl's --connect-to/--resolve. Example: target='https://api.example.com',
+    /// connect_to='10.0.0.5'.
+    #[serde(default)]
+    connect_to: Option<String>,
     /// Connection timeout in seconds (default: 10)
     #[serde(default)]
     timeout: Option<u64>,
@@ -626,6 +638,10 @@ impl HttpTlsParams {
         }
         if let Some(ref v) = self.sni {
             args.push("--sni".to_string());
+            args.push(v.clone());
+        }
+        if let Some(ref v) = self.connect_to {
+            args.push("--connect-to".to_string());
             args.push(v.clone());
         }
         if let Some(v) = self.timeout {
@@ -1479,7 +1495,7 @@ impl Default for DcertMcpServer {
 impl DcertMcpServer {
     /// Decode and analyze TLS certificates from an HTTPS endpoint or PEM file.
     #[tool(
-        description = "Decode and analyze TLS certificates from an HTTPS endpoint or PEM file. Returns certificate details including subject, issuer, SANs, validity dates, fingerprints, extensions, TLS connection information, and OSI-layer diagnostics. Supports mTLS with client certificates and custom CA bundles.",
+        description = "Decode and analyze TLS certificates from an HTTPS endpoint or PEM file. Returns certificate details including subject, issuer, SANs, validity dates, fingerprints, extensions, TLS connection information, and OSI-layer diagnostics. Supports mTLS with client certificates and custom CA bundles. To analyze a specific IP/backend while validating a hostname (e.g. behind a load balancer, or when DNS does not resolve), keep the hostname in `target` and set `connect_to` to the IP address.",
         annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true)
     )]
     pub async fn analyze_certificate(
@@ -1679,7 +1695,7 @@ impl DcertMcpServer {
 
     /// Get TLS connection details for an HTTPS endpoint.
     #[tool(
-        description = "Get TLS connection details for an HTTPS endpoint including protocol version, cipher suite, ALPN negotiation, DNS/TCP/TLS latency, verification status, full OSI-layer diagnostics, and (when applicable) a `client_auth_required` flag plus the captured server chain when the server demands mTLS. Supports mTLS and custom CA bundles.",
+        description = "Get TLS connection details for an HTTPS endpoint including protocol version, cipher suite, ALPN negotiation, DNS/TCP/TLS latency, verification status, full OSI-layer diagnostics, and (when applicable) a `client_auth_required` flag plus the captured server chain when the server demands mTLS. Supports mTLS and custom CA bundles. To probe a specific IP/backend while validating a hostname (e.g. behind a load balancer, or when DNS does not resolve), keep the hostname in `target` and set `connect_to` to the IP address.",
         annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = false)
     )]
     pub async fn tls_connection_info(

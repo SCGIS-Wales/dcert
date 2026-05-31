@@ -2,7 +2,7 @@ use anyhow::Result;
 use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
 use pem_rfc7468::LineEnding;
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -116,6 +116,33 @@ pub fn direct_tcp_connect(host: &str, port: u16, timeout: Duration) -> Result<(T
     Ok((stream, dns_ms, socket_addr))
 }
 
+/// Establish a direct TCP connection to an explicit IP address, bypassing DNS.
+///
+/// Used by `--connect-to` / the MCP `connect_to` parameter so a caller can
+/// reach a specific server (e.g. one backend behind a load balancer, or a host
+/// whose name doesn't resolve) while the hostname is still used for SNI and
+/// certificate validation. Mirrors curl's `--resolve` / `--connect-to`.
+pub fn connect_to_ip_addr(ip: &str, port: u16, timeout: Duration) -> Result<TcpStream> {
+    let addr: IpAddr = ip
+        .parse()
+        .map_err(|_| anyhow::anyhow!("--connect-to value '{}' is not a valid IP address", ip))?;
+    let socket_addr = SocketAddr::new(addr, port);
+    TcpStream::connect_timeout(&socket_addr, timeout).map_err(|e| match e.kind() {
+        std::io::ErrorKind::TimedOut => {
+            anyhow::anyhow!(
+                "TCP connection to {}:{} timed out after {}s",
+                ip,
+                port,
+                timeout.as_secs()
+            )
+        }
+        std::io::ErrorKind::ConnectionRefused => {
+            anyhow::anyhow!("TCP connection refused by {}:{} (port may not be open)", ip, port)
+        }
+        _ => anyhow::anyhow!("TCP connection to {}:{} failed: {}", ip, port, e),
+    })
+}
+
 /// Result of a TLS connection, containing the certificate chain and connection metadata.
 #[derive(Debug, serde::Serialize, Clone)]
 pub struct TlsConnectionInfo {
@@ -162,6 +189,74 @@ pub fn is_client_auth_required(err_msg: &str) -> bool {
         || msg.contains("tlsv1 alert handshake failure") && msg.contains("client_certificate")
 }
 
+/// Build a clear, actionable error message for a TLS handshake that failed
+/// during certificate verification.
+///
+/// The common-but-confusing case is when the server presents an incomplete
+/// chain (no intermediate) and the issuer's CA distribution endpoint (AIA /
+/// CA-certificate / OCSP / CRL URL — e.g. `cacerts.digicert.com`,
+/// `ocsp.digicert.com`) is blocked by a firewall. dcert (like OpenSSL) does
+/// not fetch missing intermediates over AIA, so the result is an
+/// `unable to get local issuer certificate` verify error. We detect that and
+/// say so explicitly rather than blaming the local CA store.
+///
+/// `verify_details` are the per-cert verify errors captured during the
+/// handshake (format: `depth N: <openssl error> (<subject>)`).
+fn handshake_verify_error(err_str: &str, verify_details: &[String], custom_ca: bool) -> anyhow::Error {
+    let lower = err_str.to_ascii_lowercase();
+    let details_blob = verify_details.join("; ").to_ascii_lowercase();
+
+    let missing_issuer =
+        lower.contains("unable to get local issuer") || details_blob.contains("unable to get local issuer");
+    let unknown_root = details_blob.contains("self signed certificate in certificate chain")
+        || details_blob.contains("self-signed certificate in certificate chain")
+        || lower.contains("self signed certificate in certificate chain");
+
+    // Pull the subject of the deepest cert whose issuer could not be found —
+    // that is the missing link in the chain.
+    let missing_subject = verify_details
+        .iter()
+        .rfind(|d| d.to_ascii_lowercase().contains("unable to get local issuer"))
+        .and_then(|d| d.split_once('(').map(|(_, s)| s.trim_end_matches(')').to_string()));
+
+    let detail_lines = if verify_details.is_empty() {
+        String::new()
+    } else {
+        format!("\n  Chain validation details: {}", verify_details.join("; "))
+    };
+
+    if missing_issuer && !unknown_root {
+        let who = missing_subject.map(|s| format!(" for '{}'", s)).unwrap_or_default();
+        anyhow::anyhow!(
+            "TLS chain incomplete: could not build a trusted path to a root CA. \
+             The server did not send the intermediate CA certificate{who}, and dcert does \
+             not fetch it from the issuer's AIA URL. This commonly happens when a firewall \
+             blocks the CA's certificate/AIA/OCSP endpoint (e.g. cacerts.digicert.com, \
+             ocsp.digicert.com). To resolve:\n  \
+             - Supply the missing intermediate(s) with --ca-cert <chain.pem>\n  \
+             - Or unblock outbound access to the CA's AIA/OCSP endpoints\n  \
+             - Or use --no-verify to skip certificate verification (diagnostic only)\
+             {detail_lines}\n  Underlying error: {err_str}"
+        )
+    } else if !custom_ca {
+        anyhow::anyhow!(
+            "TLS handshake failed: {err_str}\n\
+             Hint: OpenSSL could not find the CA certificates needed to verify this chain. Try one of:\n  \
+             - Set SSL_CERT_FILE to point to your CA bundle (e.g. /etc/ssl/certs/ca-certificates.crt)\n  \
+             - Set SSL_CERT_DIR to your certificates directory\n  \
+             - Supply the trust anchor with --ca-cert <ca.pem>\n  \
+             - Use --no-verify to skip certificate verification\
+             {detail_lines}"
+        )
+    } else {
+        anyhow::anyhow!(
+            "TLS handshake failed: {err_str}\n  \
+             The provided --ca-cert bundle did not verify the server chain. Ensure it \
+             contains the issuing intermediate(s) and root.{detail_lines}"
+        )
+    }
+}
+
 /// Encode a sequence of OpenSSL `X509` certificates as a single
 /// concatenated PEM string. Used both on the success path (after a full
 /// handshake) and on the mTLS-required failure path (chain captured during
@@ -194,6 +289,9 @@ pub struct TlsFetchOptions<'a> {
     pub timeout_secs: u64,
     pub read_timeout_secs: u64,
     pub sni_override: Option<&'a str>,
+    /// Connect to this explicit IP address instead of resolving the hostname.
+    /// The hostname is still used for SNI and certificate validation.
+    pub connect_to: Option<&'a str>,
     pub proxy_config: &'a ProxyConfig,
     pub min_tls: Option<TlsVersionArg>,
     pub max_tls: Option<TlsVersionArg>,
@@ -219,6 +317,7 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
         timeout_secs,
         read_timeout_secs,
         sni_override,
+        connect_to,
         proxy_config,
         min_tls,
         max_tls,
@@ -260,7 +359,14 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
     let connect_timeout = Duration::from_secs(timeout_secs);
     let l4_start = std::time::Instant::now();
 
-    let (stream, dns_latency) = if proxy_config.should_bypass(host) {
+    let (stream, dns_latency) = if let Some(ip) = connect_to {
+        // --connect-to: dial the explicit IP, bypassing DNS and any proxy. The
+        // hostname is still used for SNI and certificate validation below.
+        let s = connect_to_ip_addr(ip, port, connect_timeout)?;
+        dbg_section(debug, "Layer 3 (Network)");
+        debug_log!(debug, "connect-to override: {} -> {}:{} (DNS bypassed)", host, ip, port);
+        (s, 0)
+    } else if proxy_config.should_bypass(host) {
         let (s, dns, addr) = direct_tcp_connect(host, port, connect_timeout)?;
         dbg_section(debug, "Layer 3 (Network)");
         debug_log!(debug, "Resolved {} -> {} ({} ms)", host, addr.ip(), dns);
@@ -482,13 +588,8 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
             }
             return Err(
                 if err_str.contains("certificate verify failed") || err_str.contains("unable to get local issuer") {
-                    anyhow::anyhow!(
-                        "TLS handshake failed: {e}\n\
-                     Hint: OpenSSL could not find CA certificates. Try one of:\n  \
-                     - Set SSL_CERT_FILE to point to your CA bundle (e.g. /etc/ssl/certs/ca-certificates.crt)\n  \
-                     - Set SSL_CERT_DIR to your certificates directory\n  \
-                     - Use --no-verify to skip certificate verification"
-                    )
+                    let details = verify_errors.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                    handshake_verify_error(&err_str, &details, ca_cert_path.is_some())
                 } else {
                     anyhow::anyhow!("TLS handshake failed: {e}")
                 },
@@ -753,6 +854,8 @@ pub struct StarttlsFetchOptions<'a> {
     pub timeout_secs: u64,
     pub read_timeout_secs: u64,
     pub sni_override: Option<&'a str>,
+    /// Connect to this explicit IP address instead of resolving the hostname.
+    pub connect_to: Option<&'a str>,
     pub min_tls: Option<TlsVersionArg>,
     pub max_tls: Option<TlsVersionArg>,
     pub cipher_list: Option<&'a str>,
@@ -887,6 +990,7 @@ pub fn fetch_tls_chain_starttls(opts: &StarttlsFetchOptions<'_>) -> Result<TlsCo
         timeout_secs,
         read_timeout_secs,
         sni_override,
+        connect_to,
         min_tls,
         max_tls,
         cipher_list,
@@ -902,12 +1006,21 @@ pub fn fetch_tls_chain_starttls(opts: &StarttlsFetchOptions<'_>) -> Result<TlsCo
     // Layer 4: TCP connect
     let connect_timeout = Duration::from_secs(timeout_secs);
     let l4_start = std::time::Instant::now();
-    let (mut stream, dns_latency, addr) = direct_tcp_connect(host, port, connect_timeout)?;
-
-    if debug {
-        dbg_section(true, "Layer 3 (Network)");
-        debug_log!(true, "Resolved {} -> {} ({} ms)", host, addr.ip(), dns_latency);
-    }
+    let (mut stream, dns_latency) = if let Some(ip) = connect_to {
+        let s = connect_to_ip_addr(ip, port, connect_timeout)?;
+        if debug {
+            dbg_section(true, "Layer 3 (Network)");
+            debug_log!(true, "connect-to override: {} -> {}:{} (DNS bypassed)", host, ip, port);
+        }
+        (s, 0u128)
+    } else {
+        let (s, dns_latency, addr) = direct_tcp_connect(host, port, connect_timeout)?;
+        if debug {
+            dbg_section(true, "Layer 3 (Network)");
+            debug_log!(true, "Resolved {} -> {} ({} ms)", host, addr.ip(), dns_latency);
+        }
+        (s, dns_latency)
+    };
 
     stream
         .set_read_timeout(Some(Duration::from_secs(read_timeout_secs)))
@@ -997,10 +1110,8 @@ pub fn fetch_tls_chain_starttls(opts: &StarttlsFetchOptions<'_>) -> Result<TlsCo
     let ssl_stream = connector.connect(sni_host, stream).map_err(|e| {
         let err_str = e.to_string();
         if err_str.contains("certificate verify failed") || err_str.contains("unable to get local issuer") {
-            anyhow::anyhow!(
-                "TLS handshake failed: {e}\n\
-                 Hint: Use --no-verify to skip certificate verification"
-            )
+            let details = verify_errors.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            handshake_verify_error(&err_str, &details, ca_cert_path.is_some())
         } else {
             anyhow::anyhow!("TLS handshake failed: {e}")
         }
@@ -1097,7 +1208,39 @@ pub fn fetch_tls_chain_starttls(opts: &StarttlsFetchOptions<'_>) -> Result<TlsCo
 
 #[cfg(test)]
 mod tests {
-    use super::is_client_auth_required;
+    use super::{connect_to_ip_addr, handshake_verify_error, is_client_auth_required};
+    use std::time::Duration;
+
+    #[test]
+    fn connect_to_rejects_non_ip() {
+        let err = connect_to_ip_addr("api.example.com", 443, Duration::from_secs(1)).unwrap_err();
+        assert!(err.to_string().contains("not a valid IP address"), "got: {}", err);
+    }
+
+    #[test]
+    fn missing_intermediate_error_names_aia_block() {
+        let details =
+            vec!["depth 1: unable to get local issuer certificate (CN=DigiCert TLS RSA SHA256 2020 CA1)".to_string()];
+        let err = handshake_verify_error("certificate verify failed", &details, false);
+        let msg = err.to_string();
+        assert!(msg.contains("TLS chain incomplete"), "got: {}", msg);
+        assert!(msg.contains("AIA"), "should mention AIA: {}", msg);
+        assert!(
+            msg.contains("DigiCert TLS RSA SHA256 2020 CA1"),
+            "should name the missing intermediate: {}",
+            msg
+        );
+        assert!(msg.contains("--ca-cert"), "should suggest --ca-cert: {}", msg);
+    }
+
+    #[test]
+    fn unknown_root_falls_back_to_trust_store_hint() {
+        let details = vec!["depth 0: self signed certificate in certificate chain (CN=test)".to_string()];
+        let err = handshake_verify_error("certificate verify failed", &details, false);
+        let msg = err.to_string();
+        assert!(!msg.contains("TLS chain incomplete"), "got: {}", msg);
+        assert!(msg.contains("SSL_CERT_FILE"), "got: {}", msg);
+    }
 
     #[test]
     fn detects_tls13_certificate_required_alert() {

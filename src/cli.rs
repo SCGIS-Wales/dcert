@@ -342,6 +342,14 @@ pub struct CheckArgs {
     #[arg(long)]
     pub sni: Option<String>,
 
+    /// Connect to this IP address instead of resolving the hostname via DNS.
+    /// The hostname in the target is still used for SNI and certificate
+    /// validation. Use to reach a specific backend behind a load balancer, or
+    /// a host whose name does not resolve. Example:
+    /// `dcert https://api.example.com --connect-to 10.0.0.5`
+    #[arg(long, value_name = "IP")]
+    pub connect_to: Option<String>,
+
     /// Show SHA-256 fingerprint for each certificate
     #[arg(long)]
     pub fingerprint: bool,

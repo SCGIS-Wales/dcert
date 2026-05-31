@@ -493,6 +493,7 @@ pub fn verify_key_matches_cert(key_path: &str, target: &str, debug: bool) -> Res
             timeout_secs: 10,
             read_timeout_secs: 5,
             sni_override: None,
+            connect_to: None,
             proxy_config: &proxy_config,
             min_tls: None,
             max_tls: None,

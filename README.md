@@ -100,6 +100,18 @@ chmod +x dcert dcert-mcp
 sudo mv dcert dcert-mcp /usr/local/bin/
 ```
 
+### Windows
+
+Install with [Chocolatey](https://chocolatey.org/):
+
+```powershell
+choco install dcert
+```
+
+Or `pip install dcert` (the `win_amd64` wheel bundles `dcert.exe` and `dcert-mcp.exe`), or download the `dcert-x86_64-pc-windows-msvc.zip` archive from the [Releases](https://github.com/SCGIS-Wales/dcert/releases) page and add the extracted `.exe` files to your `PATH`.
+
+> Note: the Windows build links a vendored OpenSSL that has no system trust store. If certificate verification fails because no CA roots are found, set `SSL_CERT_FILE` to a CA bundle (e.g. one exported from your organization or a `cacert.pem`).
+
 ### Build from source
 
 ```bash
@@ -231,6 +243,12 @@ dcert --http-protocol http2 https://example.com
 # SNI override
 dcert https://10.0.0.1 --sni api.example.com
 
+# Connect to a specific IP while validating the hostname (like curl --connect-to).
+# Keep the hostname in the URL — it is used for SNI and certificate validation —
+# and dcert dials the given IP instead of resolving DNS. Useful for probing one
+# backend behind a load balancer, or a host that does not resolve from here.
+dcert https://api.example.com --connect-to 10.0.0.5
+
 # Skip TLS verification (self-signed certs)
 dcert https://localhost:8443 --no-verify
 ```
@@ -305,6 +323,8 @@ Options:
       --timeout <SECONDS>              Connection timeout (default: 10)
       --read-timeout <SECONDS>         Read timeout (default: 5)
       --sni <HOSTNAME>                 Override SNI hostname
+      --connect-to <IP>                Dial this IP instead of resolving DNS
+                                       (hostname still used for SNI/validation)
       --fingerprint                    Show SHA-256 fingerprints
       --extensions                     Show certificate extensions
       --expiry-warn <DAYS>             Warn if expiring within N days (exit code 1)
