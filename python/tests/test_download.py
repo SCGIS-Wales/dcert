@@ -120,12 +120,21 @@ def test_get_target_triple_unsupported():
 
 
 def test_get_target_triple_windows():
-    """Test target triple returns None for Windows."""
+    """Test target triple for Windows x86_64 (machine() reports AMD64)."""
     with (
         patch("dcert.download.platform.system", return_value="Windows"),
         patch("dcert.download.platform.machine", return_value="AMD64"),
     ):
-        assert _get_target_triple() is None
+        assert _get_target_triple() == "x86_64-pc-windows-msvc"
+
+
+def test_get_archive_name_windows():
+    """Windows ships a .zip archive rather than .tar.gz."""
+    with (
+        patch("dcert.download.platform.system", return_value="Windows"),
+        patch("dcert.download.platform.machine", return_value="AMD64"),
+    ):
+        assert _get_archive_name() == "dcert-x86_64-pc-windows-msvc.zip"
 
 
 # ---------------------------------------------------------------------------
