@@ -38,10 +38,11 @@ PLATFORM_MAP: dict[str, str] = {
     "dcert-x86_64-unknown-linux-gnu.tar.gz": "manylinux_2_35_x86_64",
     "dcert-x86_64-apple-darwin.tar.gz": "macosx_10_15_x86_64",
     "dcert-aarch64-apple-darwin.tar.gz": "macosx_11_0_arm64",
+    "dcert-x86_64-pc-windows-msvc.zip": "win_amd64",
 }
 
-# Binaries to extract from each archive
-BINARY_NAMES = ["dcert", "dcert-mcp"]
+# Binaries to extract from each archive (Windows uses .exe names)
+BINARY_NAMES = ["dcert", "dcert-mcp", "dcert.exe", "dcert-mcp.exe"]
 
 
 def _record_entry(filename: str, data: bytes) -> str:
@@ -61,19 +62,29 @@ def _parse_wheel_filename(wheel_path: Path) -> tuple[str, str]:
 
 
 def _extract_binaries_from_archive(archive_path: Path) -> dict[str, bytes]:
-    """Extract dcert and dcert-mcp binaries from a tar.gz archive.
+    """Extract dcert and dcert-mcp binaries from a tar.gz or .zip archive.
+
+    Windows binaries ship in a .zip with .exe names; other platforms use
+    tar.gz.
 
     Returns:
         Dict mapping binary name to its bytes content.
     """
     binaries: dict[str, bytes] = {}
-    with tarfile.open(archive_path, "r:gz") as tar:
-        for member in tar.getmembers():
-            name = Path(member.name).name
-            if name in BINARY_NAMES:
-                f = tar.extractfile(member)
-                if f is not None:
-                    binaries[name] = f.read()
+    if archive_path.suffix == ".zip":
+        with ZipFile(archive_path) as zf:
+            for member in zf.infolist():
+                name = Path(member.filename).name
+                if name in BINARY_NAMES:
+                    binaries[name] = zf.read(member)
+    else:
+        with tarfile.open(archive_path, "r:gz") as tar:
+            for member in tar.getmembers():
+                name = Path(member.name).name
+                if name in BINARY_NAMES:
+                    f = tar.extractfile(member)
+                    if f is not None:
+                        binaries[name] = f.read()
     return binaries
 
 
@@ -104,7 +115,7 @@ def build_platform_wheel(
 
     # Extract binaries from the archive
     binaries = _extract_binaries_from_archive(archive)
-    if "dcert-mcp" not in binaries:
+    if "dcert-mcp" not in binaries and "dcert-mcp.exe" not in binaries:
         raise RuntimeError(f"dcert-mcp binary not found in {archive.name}")
 
     records: list[str] = []

@@ -42,6 +42,11 @@ def _find_bundled_binary(name: str) -> str | None:
     """
     pkg_dir = Path(__file__).parent
     bundled = pkg_dir / "bin" / name
+    # On Windows the bundled binary carries a .exe suffix (dcert.exe).
+    if not bundled.is_file() and sys.platform == "win32" and not name.endswith(".exe"):
+        win_bundled = pkg_dir / "bin" / f"{name}.exe"
+        if win_bundled.is_file():
+            bundled = win_bundled
     if not bundled.is_file():
         return None
     # Ensure the binary is executable (pip may not preserve permissions
