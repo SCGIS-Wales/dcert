@@ -12,7 +12,7 @@
     <bugTrackerUrl>https://github.com/SCGIS-Wales/dcert/issues</bugTrackerUrl>
     <docsUrl>https://github.com/SCGIS-Wales/dcert/blob/main/README.md</docsUrl>
     <licenseUrl>https://github.com/SCGIS-Wales/dcert/blob/main/LICENSE</licenseUrl>
-    <iconUrl>https://cdn.jsdelivr.net/gh/SCGIS-Wales/dcert@v__VERSION__/assets/logo.svg</iconUrl>
+    <iconUrl>https://cdn.jsdelivr.net/gh/SCGIS-Wales/dcert@04b85035df56c18fda99d302ab9fb9bfda2e342d/assets/logo.svg</iconUrl>
     <copyright>2026 SCGIS-Wales</copyright>
     <requireLicenseAcceptance>false</requireLicenseAcceptance>
     <tags>tls certificate x509 ssl ocsp pkcs12 mcp cli mtls</tags>
