@@ -3,7 +3,7 @@
   <metadata>
     <id>dcert</id>
     <version>__VERSION__</version>
-    <title>dcert</title>
+    <title>dcert (TLS Certificate Toolkit &amp; MCP Server)</title>
     <authors>SCGIS-Wales</authors>
     <owners>SCGIS-Wales</owners>
     <projectUrl>https://github.com/SCGIS-Wales/dcert</projectUrl>
