@@ -960,13 +960,15 @@ jobs:
               release-assets/*
           fi
 
+  # Pack the Chocolatey package (unprivileged — no secret here). Always
+  # produces the .nupkg artifact, even if publishing is later skipped/fails.
   create-chocolatey-package:
     name: Create Chocolatey package
     if: needs.auto-tag.outputs.created == 'true'
     needs: [ auto-tag, build-windows, release ]
     runs-on: windows-latest
-    env:
-      CHOCO_API_KEY: ${{ secrets.CHOCO_API_KEY }}
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -982,6 +984,7 @@ jobs:
         run: |
           $version = "${{ needs.auto-tag.outputs.version }}"
           $zip = "artifacts/dcert-x86_64-pc-windows-msvc.zip"
+          if (-not (Test-Path $zip)) { throw "Windows artifact not found: $zip" }
           $sha = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
           Write-Host "version=$version sha256=$sha"
           $files = @(
@@ -992,9 +995,26 @@ jobs:
             (Get-Content $f) -replace '__VERSION__', $version -replace '__SHA256__', $sha | Set-Content $f
           }
 
+      - name: Verify placeholders were substituted
+        shell: pwsh
+        run: |
+          $bad = Select-String -Path "packaging/chocolatey/dcert.nuspec","packaging/chocolatey/tools/chocolateyInstall.ps1" -Pattern '__VERSION__|__SHA256__'
+          if ($bad) {
+            $bad | ForEach-Object { Write-Host $_.Line }
+            throw "Unsubstituted placeholders remain in the Chocolatey package — aborting."
+          }
+          Write-Host "All placeholders substituted."
+
       - name: Choco pack
         shell: pwsh
         run: choco pack packaging/chocolatey/dcert.nuspec --outputdirectory dist-choco
+
+      - name: Verify exactly one nupkg
+        shell: pwsh
+        run: |
+          $pkgs = @(Get-ChildItem dist-choco/*.nupkg)
+          if ($pkgs.Count -ne 1) { throw "Expected exactly one .nupkg, found $($pkgs.Count)." }
+          Write-Host "Packed: $($pkgs[0].Name)"
 
       - name: Upload nupkg artifact
         uses: actions/upload-artifact@v4
@@ -1002,17 +1022,72 @@ jobs:
           name: dcert-chocolatey
           path: dist-choco/*.nupkg
 
-      - name: Choco push (community feed)
+  # Publish to chocolatey.org. Isolated job that holds the secret and does
+  # nothing but push — idempotent (a version that already exists is treated as
+  # success) and retried on transient failures.
+  publish-chocolatey:
+    name: Publish to Chocolatey
+    if: needs.auto-tag.outputs.created == 'true'
+    needs: [ auto-tag, create-chocolatey-package ]
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    env:
+      CHOCO_API_KEY: ${{ secrets.CHOCO_API_KEY }}
+    steps:
+      - name: Download nupkg artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dcert-chocolatey
+          path: ./dist-choco
+
+      - name: Push to chocolatey.org (idempotent, with retry)
         if: env.CHOCO_API_KEY != ''
         shell: pwsh
         run: |
+          # Native command stderr must not throw under 'Stop'; rely on exit code.
+          $ErrorActionPreference = 'Continue'
           $nupkg = Get-ChildItem dist-choco/*.nupkg | Select-Object -First 1
-          choco push $nupkg.FullName --source https://push.chocolatey.org/ --api-key $env:CHOCO_API_KEY
+          if (-not $nupkg) { throw "No .nupkg found to publish." }
+          Write-Host "Publishing $($nupkg.Name) to chocolatey.org"
 
-      - name: Note when push is skipped
+          $maxAttempts = 3
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            Write-Host "Push attempt $attempt of $maxAttempts..."
+            # --api-key is passed inline (never echoed); GitHub masks the secret in logs.
+            $output = choco push $nupkg.FullName --source https://push.chocolatey.org/ --api-key $env:CHOCO_API_KEY --timeout 300 2>&1
+            $code = $LASTEXITCODE
+            $text = $output | Out-String
+            Write-Host $text
+
+            if ($code -eq 0) {
+              Write-Host "Push succeeded."
+              exit 0
+            }
+
+            # Idempotency: a version already on the feed is not a failure.
+            if ($text -match '(?i)already exists|version.*exists|409|conflict') {
+              Write-Host "Version already published on chocolatey.org — treating as success (idempotent)."
+              exit 0
+            }
+
+            # Auth/permission errors should fail fast rather than retry.
+            if ($text -match '(?i)403|forbidden|unauthorized|invalid api key') {
+              throw "Authorization error from chocolatey.org — failing fast (check/rotate CHOCO_API_KEY)."
+            }
+
+            if ($attempt -lt $maxAttempts) {
+              $delay = $attempt * 15
+              Write-Host "Transient failure (exit $code). Retrying in $delay s..."
+              Start-Sleep -Seconds $delay
+            }
+          }
+          throw "choco push failed after $maxAttempts attempts."
+
+      - name: Note when publish is skipped
         if: env.CHOCO_API_KEY == ''
         shell: pwsh
-        run: Write-Host "CHOCO_API_KEY secret not set — built .nupkg artifact only, skipping choco push."
+        run: Write-Host "CHOCO_API_KEY secret not set — skipping chocolatey.org publish (the .nupkg artifact is still available)."
 
   publish-pypi:
     name: Publish to PyPI
