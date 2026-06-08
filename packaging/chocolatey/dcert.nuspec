@@ -3,7 +3,7 @@
   <metadata>
     <id>dcert</id>
     <version>__VERSION__</version>
-    <title>dcert</title>
+    <title>dcert (TLS Certificate Toolkit &amp; MCP Server)</title>
     <authors>SCGIS-Wales</authors>
     <owners>SCGIS-Wales</owners>
     <projectUrl>https://github.com/SCGIS-Wales/dcert</projectUrl>
@@ -12,6 +12,8 @@
     <bugTrackerUrl>https://github.com/SCGIS-Wales/dcert/issues</bugTrackerUrl>
     <docsUrl>https://github.com/SCGIS-Wales/dcert/blob/main/README.md</docsUrl>
     <licenseUrl>https://github.com/SCGIS-Wales/dcert/blob/main/LICENSE</licenseUrl>
+    <iconUrl>https://cdn.jsdelivr.net/gh/SCGIS-Wales/dcert@04b85035df56c18fda99d302ab9fb9bfda2e342d/assets/logo.svg</iconUrl>
+    <copyright>2026 SCGIS-Wales</copyright>
     <requireLicenseAcceptance>false</requireLicenseAcceptance>
     <tags>tls certificate x509 ssl ocsp pkcs12 mcp cli mtls</tags>
     <summary>TLS certificate analysis, format conversion, and key verification (CLI + MCP server).</summary>
