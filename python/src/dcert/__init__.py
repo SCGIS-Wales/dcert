@@ -24,7 +24,7 @@ Usage with typed async wrappers:
         result = await dcert.analyze_certificate(target="example.com")
 """
 
-__version__ = "3.0.36"
+__version__ = "3.0.37"
 
 from dcert.client import create_client
 from dcert.resilience import (
