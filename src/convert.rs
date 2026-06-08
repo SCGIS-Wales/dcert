@@ -588,13 +588,27 @@ fn vec_to_stack(certs: Vec<X509>) -> Result<Stack<X509>> {
     Ok(stack)
 }
 
+/// Warn the user (to stderr) that a private-key file could not be locked down.
+/// Restricting permissions is best-effort — we never abort key generation over it —
+/// but the user must be told so they can fix the permissions themselves rather than
+/// unknowingly leaving a private key world-readable.
+#[cfg(any(unix, windows))]
+fn warn_unrestricted(path: &str, detail: &str) {
+    eprintln!(
+        "warning: could not restrict permissions on '{path}' ({detail}). \
+         This file may contain a private key — secure it manually."
+    );
+}
+
 /// Set file permissions to owner-only (0600) on Unix.
-/// This is a best-effort operation — failure is silently ignored since
-/// the file was already written and the caller can check permissions.
+/// Best-effort: on failure we warn rather than aborting, since the file is already
+/// written and the caller may still want the output.
 #[cfg(unix)]
 pub(crate) fn restrict_file_permissions(path: &str) {
     use std::os::unix::fs::PermissionsExt;
-    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+    if let Err(e) = fs::set_permissions(path, fs::Permissions::from_mode(0o600)) {
+        warn_unrestricted(path, &e.to_string());
+    }
 }
 
 /// On Windows, restrict file permissions using icacls.
@@ -604,14 +618,26 @@ pub(crate) fn restrict_file_permissions(path: &str) {
     use std::process::Command;
     let username = std::env::var("USERNAME").unwrap_or_default();
     if username.is_empty() {
+        warn_unrestricted(path, "USERNAME environment variable is not set");
+        return;
+    }
+    // Reject characters that are illegal in Windows account names and that would
+    // otherwise corrupt the icacls grant argument (`user:perm`) if interpolated.
+    if username.contains([':', '/', '\\', '"', '*', '?', '<', '>', '|']) || username.trim() != username {
+        warn_unrestricted(path, "USERNAME contains unexpected characters");
         return;
     }
     // Remove inherited permissions, then grant full control only to the current user.
     // icacls is available on all modern Windows versions (Vista+).
-    let _ = Command::new("icacls").args([path, "/inheritance:r"]).output();
-    let _ = Command::new("icacls")
-        .args([path, "/grant:r", &format!("{}:F", username)])
+    let stripped = Command::new("icacls").args([path, "/inheritance:r"]).output();
+    let granted = Command::new("icacls")
+        .args([path, "/grant:r", &format!("{username}:F")])
         .output();
+    let ok = matches!((&stripped, &granted),
+        (Ok(s), Ok(g)) if s.status.success() && g.status.success());
+    if !ok {
+        warn_unrestricted(path, "icacls did not complete successfully");
+    }
 }
 
 /// No-op on platforms that are neither Unix nor Windows.
@@ -639,6 +665,23 @@ mod tests {
     use openssl::x509::extension::{BasicConstraints, SubjectAlternativeName};
     use openssl::x509::{X509, X509NameBuilder};
     use tempfile::TempDir;
+
+    #[cfg(unix)]
+    #[test]
+    fn restrict_file_permissions_sets_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("key.pem");
+        fs::write(&path, b"-----BEGIN PRIVATE KEY-----\n").unwrap();
+        // Start permissive so we can prove the call actually tightens the mode.
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        restrict_file_permissions(path.to_str().unwrap());
+
+        let mode = fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "private key file should be owner-only");
+    }
 
     /// Generate a self-signed test certificate and private key.
     fn generate_test_key_and_cert() -> (PKey<openssl::pkey::Private>, X509) {
