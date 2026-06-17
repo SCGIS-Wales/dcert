@@ -330,11 +330,13 @@ pub struct CheckArgs {
     #[arg(long)]
     pub no_verify: bool,
 
-    /// Connection timeout in seconds
+    /// TCP connect timeout in seconds — how long to wait to *establish* the
+    /// connection. Does not bound the response wait (see --read-timeout).
     #[arg(long, default_value_t = 10)]
     pub timeout: u64,
 
-    /// Read timeout in seconds (time to wait for server response after connection)
+    /// Read timeout in seconds — how long to wait for the server's response
+    /// *after* the connection and TLS handshake succeed.
     #[arg(long, default_value_t = 5)]
     pub read_timeout: u64,
 
@@ -409,8 +411,12 @@ pub struct CheckArgs {
     pub ca_cert: Option<String>,
 
     // -- STARTTLS --
-    /// Perform STARTTLS negotiation before TLS handshake (for mail/FTP servers).
-    /// Target is treated as host[:port] instead of an HTTPS URL.
+    /// Perform STARTTLS negotiation before the TLS handshake (for mail/FTP
+    /// servers). The target is treated as host[:port], not an HTTPS URL.
+    ///
+    /// Cannot be combined with the HTTP request options (--method, --header,
+    /// --data, --data-file, --http-protocol): STARTTLS inspects the certificate
+    /// over a plain protocol upgrade and never sends an HTTP request.
     #[arg(long, value_enum, value_name = "PROTOCOL", conflicts_with_all = ["method", "header", "data", "data_file", "http_protocol"])]
     pub starttls: Option<StarttlsProtocol>,
 }
@@ -564,7 +570,7 @@ pub struct VerifyKeyArgs {
   dcert csr create --cn www.example.com --san DNS:*.example.com
   dcert csr create --cn app.local --key-algo ecdsa-p256
   dcert csr validate request.csr                 Validate against CA/B Forum standards
-  dcert csr validate request.csr --strict        Treat warnings as errors")]
+  dcert csr validate request.csr --warnings-as-errors   Treat warnings as errors")]
 pub struct CsrArgs {
     #[command(subcommand)]
     pub mode: CsrMode,
@@ -652,9 +658,10 @@ pub struct CsrValidateArgs {
     #[arg(short, long, value_enum, default_value_t = OutputFormat::Pretty)]
     pub format: OutputFormat,
 
-    /// Treat warnings as errors (exit code 1 if any warnings)
-    #[arg(long)]
-    pub strict: bool,
+    /// Treat warnings as errors (exit code 1 if any warnings are found).
+    /// `--strict` is a deprecated alias kept for backward compatibility.
+    #[arg(long, visible_alias = "strict")]
+    pub warnings_as_errors: bool,
 }
 
 // -- Vault subcommand --

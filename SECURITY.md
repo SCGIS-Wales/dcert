@@ -83,7 +83,11 @@ For simpler deployments, a static bearer token can be used:
 ### Network Security
 - JWKS and token endpoints use HTTPS
 - HTTP client timeouts prevent hanging connections
-- CORS is configured for cross-origin HTTP access
+- CORS denies cross-origin browser access by default; set `DCERT_MCP_ALLOWED_ORIGINS`
+  (comma-separated) to permit specific origins. A literal `*` allows any origin and
+  is never combined with credentials — avoid it for internet-facing deployments.
+- In-memory secret hygiene: Vault tokens, the issued private key, and auth secrets
+  (LDAP password, AppRole secret_id) are zeroized on drop via the `zeroize` crate.
 
 ## Environment Variables
 
@@ -100,3 +104,4 @@ For simpler deployments, a static bearer token can be used:
 | `DCERT_MCP_OBO_TOKEN_URL` | OBO token exchange endpoint |
 | `DCERT_MCP_OBO_CLIENT_ID` | OBO client application ID |
 | `DCERT_MCP_OBO_CLIENT_SECRET` | OBO client secret |
+| `DCERT_MCP_ALLOWED_ORIGINS` | Comma-separated CORS allowlist for HTTP mode (default: none; `*` = any origin) |

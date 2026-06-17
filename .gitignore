@@ -82,3 +82,5 @@ python/.venv/
 python/.pytest_cache/
 python/.ruff_cache/
 python/*.egg-info
+# Generated SBOM files
+*.cdx.json

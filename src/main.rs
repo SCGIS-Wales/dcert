@@ -821,7 +821,7 @@ fn run_csr_validate(args: cli::CsrValidateArgs) -> Result<i32> {
         return Ok(exit_code::ERROR);
     }
 
-    if args.strict && result.findings.iter().any(|f| f.severity == csr::Severity::Warning) {
+    if args.warnings_as_errors && result.findings.iter().any(|f| f.severity == csr::Severity::Warning) {
         eprintln!(
             "{} {}",
             "WARNING:".yellow().bold(),
@@ -913,8 +913,10 @@ fn run_vault_issue(client: &vault::VaultClient, args: cli::VaultIssueArgs) -> Re
         let temp_dir = tempfile::TempDir::new()?;
         let cert_path = temp_dir.path().join("cert.pem");
         let key_path = temp_dir.path().join("key.pem");
-        std::fs::write(&cert_path, &full_chain)?;
-        std::fs::write(&key_path, key_pem)?;
+        std::fs::write(&cert_path, &full_chain)
+            .with_context(|| format!("Failed to write temp certificate file: {}", cert_path.display()))?;
+        std::fs::write(&key_path, key_pem)
+            .with_context(|| format!("Failed to write temp key file: {}", key_path.display()))?;
         convert::pem_to_pfx(
             cert_path
                 .to_str()
@@ -1192,7 +1194,10 @@ fn main() {
             }
         }
 
-        Cli::command().print_help().unwrap();
+        if let Err(e) = Cli::command().print_help() {
+            eprintln!("{} failed to render help: {}", "Error:".red().bold(), e);
+            std::process::exit(exit_code::ERROR);
+        }
         println!();
         std::process::exit(0);
     }
