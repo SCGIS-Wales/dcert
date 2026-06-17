@@ -1,0 +1,50 @@
+# cargo-deny configuration — supply-chain policy for advisories, licenses,
+# sources, and dependency bans. Run locally with `cargo deny check`.
+
+[advisories]
+# Use the latest advisory DB; fail on any unignored vulnerability.
+yanked = "deny"
+ignore = [
+    # RUSTSEC-2023-0071: rsa crate — Marvin Attack timing sidechannel.
+    # Transitive dependency via jsonwebtoken 10 (rust_crypto feature). No fixed
+    # version is available upstream. We only use RSA for JWT signature
+    # *verification* (not encryption/decryption), so the PKCS#1 v1.5 decryption
+    # timing oracle does not apply to our usage.
+    "RUSTSEC-2023-0071",
+]
+
+[licenses]
+# Allow the permissive licenses our dependency tree uses. Anything outside this
+# set fails the check so a copyleft/unknown license can't slip in unnoticed.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+    "OpenSSL",
+]
+confidence-threshold = 0.8
+
+[[licenses.exceptions]]
+# `ring` ships a bespoke license file; allow it explicitly for that crate only.
+name = "ring"
+allow = ["OpenSSL", "ISC", "MIT"]
+
+[bans]
+# Warn on multiple versions of the same crate (dependency bloat / drift) but
+# don't hard-fail the build on it.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+# Only crates.io and the git sources we explicitly trust.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

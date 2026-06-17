@@ -645,13 +645,7 @@ pub(crate) fn restrict_file_permissions(path: &str) {
 pub(crate) fn restrict_file_permissions(_path: &str) {}
 
 fn key_type_name(pkey: &PKey<openssl::pkey::Private>) -> String {
-    if pkey.rsa().is_ok() {
-        format!("RSA ({} bits)", pkey.bits())
-    } else if pkey.ec_key().is_ok() {
-        format!("EC ({} bits)", pkey.bits())
-    } else {
-        format!("Unknown ({} bits)", pkey.bits())
-    }
+    format!("{} ({} bits)", crate::cert::pkey_algorithm(pkey), pkey.bits())
 }
 
 #[cfg(test)]

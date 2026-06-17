@@ -105,7 +105,7 @@ pub fn vault_authenticate(
 
             if !resp.status().is_success() {
                 let status = resp.status();
-                let body = resp.text().unwrap_or_default();
+                let body = truncate_upstream_error(&resp.text().unwrap_or_default());
                 return Err(anyhow::anyhow!("LDAP auth failed (HTTP {}): {}", status, body));
             }
 
@@ -131,7 +131,7 @@ pub fn vault_authenticate(
 
             if !resp.status().is_success() {
                 let status = resp.status();
-                let body = resp.text().unwrap_or_default();
+                let body = truncate_upstream_error(&resp.text().unwrap_or_default());
                 return Err(anyhow::anyhow!("AppRole auth failed (HTTP {}): {}", status, body));
             }
 
@@ -195,7 +195,9 @@ pub struct VaultClientConfig {
 pub struct VaultClient {
     client: reqwest::blocking::Client,
     base_url: String,
-    token: String,
+    /// Vault token. Wrapped in `Zeroizing` so the heap buffer is wiped when the
+    /// client drops — important for the long-running MCP server.
+    token: zeroize::Zeroizing<String>,
     debug: bool,
 }
 
@@ -303,7 +305,7 @@ impl VaultClient {
         Ok(Self {
             client,
             base_url: addr.trim_end_matches('/').to_string(),
-            token: token.to_string(),
+            token: zeroize::Zeroizing::new(token.to_string()),
             debug: config.debug,
         })
     }
@@ -318,7 +320,7 @@ impl VaultClient {
         let resp = self
             .client
             .get(&url)
-            .header("X-Vault-Token", &self.token)
+            .header("X-Vault-Token", self.token.as_str())
             .send()
             .map_err(|e| vault_connection_error(e, &self.base_url, self.debug))?;
 
@@ -335,7 +337,7 @@ impl VaultClient {
         let resp = self
             .client
             .post(&url)
-            .header("X-Vault-Token", &self.token)
+            .header("X-Vault-Token", self.token.as_str())
             .json(body)
             .send()
             .map_err(|e| vault_connection_error(e, &self.base_url, self.debug))?;
@@ -356,7 +358,7 @@ impl VaultClient {
                 reqwest::Method::from_bytes(b"LIST").unwrap_or(reqwest::Method::GET),
                 &url,
             )
-            .header("X-Vault-Token", &self.token)
+            .header("X-Vault-Token", self.token.as_str())
             .send()
             .map_err(|e| vault_connection_error(e, &self.base_url, self.debug))?;
 
@@ -374,7 +376,7 @@ impl VaultClient {
         let resp = self
             .client
             .put(&url)
-            .header("X-Vault-Token", &self.token)
+            .header("X-Vault-Token", self.token.as_str())
             .json(body)
             .send()
             .map_err(|e| vault_connection_error(e, &self.base_url, self.debug))?;
@@ -388,7 +390,7 @@ impl VaultClient {
         let resp = self
             .client
             .get(&url)
-            .header("X-Vault-Token", &self.token)
+            .header("X-Vault-Token", self.token.as_str())
             .send()
             .map_err(|e| vault_connection_error(e, &self.base_url, self.debug))?;
 
@@ -444,6 +446,22 @@ fn vault_connection_error(e: reqwest::Error, base_url: &str, debug: bool) -> any
     }
 }
 
+/// Cap untrusted upstream text before echoing it into an error message.
+///
+/// Vault/LDAP HTTP error bodies can be large and may include request context
+/// (e.g. submitted field values) we don't want dumped verbatim to the
+/// terminal or logs. Trim whitespace and truncate to a sane bound.
+fn truncate_upstream_error(s: &str) -> String {
+    const MAX_CHARS: usize = 512;
+    let trimmed = s.trim();
+    if trimmed.chars().count() > MAX_CHARS {
+        let head: String = trimmed.chars().take(MAX_CHARS).collect();
+        format!("{head}… (truncated)")
+    } else {
+        trimmed.to_string()
+    }
+}
+
 fn handle_vault_response(resp: reqwest::blocking::Response, hint: &PolicyHint) -> Result<serde_json::Value> {
     let status = resp.status();
 
@@ -466,9 +484,11 @@ fn handle_vault_response(resp: reqwest::blocking::Response, hint: &PolicyHint) -
         .unwrap_or_default();
 
     let errors_str = if vault_errors.is_empty() {
-        body_text.clone()
+        // No structured `errors` array: this is a raw, possibly large/sensitive
+        // upstream body — truncate rather than echoing it verbatim.
+        truncate_upstream_error(&body_text)
     } else {
-        vault_errors.join("; ")
+        truncate_upstream_error(&vault_errors.join("; "))
     };
 
     match status.as_u16() {
@@ -652,6 +672,17 @@ pub struct VaultPkiIssueData {
     pub ca_chain: Vec<String>,
     pub serial_number: Option<String>,
     pub expiration: Option<serde_json::Value>,
+}
+
+impl Drop for VaultPkiIssueData {
+    /// Wipe the issued private key from memory when this struct drops, so the
+    /// freshly minted key material doesn't linger on the heap after use.
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        if let Some(pk) = self.private_key.as_mut() {
+            pk.zeroize();
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1643,6 +1674,12 @@ pub fn interactive_sign(client: &VaultClient) -> Result<SignWizardResult> {
 mod tests {
     use super::*;
 
+    /// Serializes tests that mutate process-global environment variables.
+    /// Env access is process-wide and not thread-safe, so the `unsafe`
+    /// `set_var`/`remove_var` calls below must not run concurrently. Tests hold
+    /// this lock for their whole body to guarantee single-threaded env access.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     // -- Token Discovery (uses discover_vault_token_from to avoid env var races) --
 
     #[test]
@@ -1688,14 +1725,13 @@ mod tests {
 
     #[test]
     fn test_vault_addr_from_env() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let prev = std::env::var("VAULT_ADDR").ok();
-        // TODO: Audit that the environment access only happens in single-threaded code.
+        // Safe: ENV_LOCK guarantees no other test mutates the environment concurrently.
         unsafe { std::env::set_var("VAULT_ADDR", "https://vault.example.com:8200") };
         let result = vault_addr();
         match prev {
-            // TODO: Audit that the environment access only happens in single-threaded code.
             Some(v) => unsafe { std::env::set_var("VAULT_ADDR", v) },
-            // TODO: Audit that the environment access only happens in single-threaded code.
             None => unsafe { std::env::remove_var("VAULT_ADDR") },
         }
         assert!(result.is_ok());
@@ -1704,14 +1740,13 @@ mod tests {
 
     #[test]
     fn test_vault_addr_strips_trailing_slash() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let prev = std::env::var("VAULT_ADDR").ok();
-        // TODO: Audit that the environment access only happens in single-threaded code.
+        // Safe: ENV_LOCK guarantees no other test mutates the environment concurrently.
         unsafe { std::env::set_var("VAULT_ADDR", "https://vault.example.com:8200/") };
         let result = vault_addr();
         match prev {
-            // TODO: Audit that the environment access only happens in single-threaded code.
             Some(v) => unsafe { std::env::set_var("VAULT_ADDR", v) },
-            // TODO: Audit that the environment access only happens in single-threaded code.
             None => unsafe { std::env::remove_var("VAULT_ADDR") },
         }
         assert!(result.is_ok());
@@ -1720,12 +1755,12 @@ mod tests {
 
     #[test]
     fn test_vault_addr_missing_error() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let prev = std::env::var("VAULT_ADDR").ok();
-        // TODO: Audit that the environment access only happens in single-threaded code.
+        // Safe: ENV_LOCK guarantees no other test mutates the environment concurrently.
         unsafe { std::env::remove_var("VAULT_ADDR") };
         let result = vault_addr();
         if let Some(v) = prev {
-            // TODO: Audit that the environment access only happens in single-threaded code.
             unsafe { std::env::set_var("VAULT_ADDR", v) };
         }
         assert!(result.is_err());
@@ -1754,7 +1789,7 @@ mod tests {
 
         let data: VaultPkiIssueData = serde_json::from_value(json["data"].clone()).unwrap();
         assert!(data.certificate.contains("BEGIN CERTIFICATE"));
-        assert!(data.private_key.unwrap().contains("BEGIN RSA PRIVATE KEY"));
+        assert!(data.private_key.as_deref().unwrap().contains("BEGIN RSA PRIVATE KEY"));
         assert_eq!(data.ca_chain.len(), 2);
         assert_eq!(data.serial_number, Some("39:dd:2e:90:b7:23:1f:8d".to_string()));
     }

@@ -393,8 +393,8 @@ dcert csr validate my-cert.csr
 # JSON output (for CI/CD pipelines)
 dcert csr validate my-cert.csr --format json
 
-# Strict mode (warnings become errors)
-dcert csr validate my-cert.csr --strict
+# Treat warnings as errors (--strict is a deprecated alias)
+dcert csr validate my-cert.csr --warnings-as-errors
 ```
 
 #### Key Algorithm Options
@@ -445,7 +445,7 @@ Arguments:
   <CSR_FILE>              PEM-encoded CSR file to validate
 
 Options:
-      --strict             Treat warnings as errors
+      --warnings-as-errors  Treat warnings as errors (alias: --strict)
   -f, --format <FORMAT>   Output format [pretty, json, yaml] (default: pretty)
 ```
 
@@ -1079,6 +1079,7 @@ For downstream API calls that require user context, `dcert-mcp` supports the OBO
 | `DCERT_MCP_OBO_TOKEN_URL` | OBO token exchange endpoint |
 | `DCERT_MCP_OBO_CLIENT_ID` | OBO client application ID |
 | `DCERT_MCP_OBO_CLIENT_SECRET` | OBO client secret |
+| `DCERT_MCP_ALLOWED_ORIGINS` | Comma-separated CORS allowlist for HTTP mode. Unset = no cross-origin access (default); `*` allows any origin (not recommended) |
 
 See [SECURITY.md](SECURITY.md) for full security architecture documentation.
 
