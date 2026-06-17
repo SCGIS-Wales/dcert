@@ -457,6 +457,24 @@ pub struct KeyMatchResult {
 ///
 /// The `key_path` is a PEM file containing the private key.
 /// The `target` is either a PEM file or HTTPS URL. For HTTPS, we fetch the leaf cert.
+/// Report the public-key algorithm of an OpenSSL key by its key id.
+///
+/// Unlike probing `rsa()`/`ec_key()` and falling back to a bare `"Unknown"`,
+/// `id()` always reflects the real algorithm, so EdDSA/DSA keys are named
+/// instead of being silently bucketed as unknown.
+pub(crate) fn pkey_algorithm<T>(pkey: &openssl::pkey::PKey<T>) -> String {
+    use openssl::pkey::Id;
+    match pkey.id() {
+        Id::RSA => "RSA".to_string(),
+        Id::RSA_PSS => "RSA-PSS".to_string(),
+        Id::EC => "EC".to_string(),
+        Id::ED25519 => "Ed25519".to_string(),
+        Id::ED448 => "Ed448".to_string(),
+        Id::DSA => "DSA".to_string(),
+        other => format!("Unknown ({:?})", other),
+    }
+}
+
 pub fn verify_key_matches_cert(key_path: &str, target: &str, debug: bool) -> Result<KeyMatchResult> {
     use crate::debug::debug_log;
     use openssl::pkey::PKey;
@@ -468,13 +486,7 @@ pub fn verify_key_matches_cert(key_path: &str, target: &str, debug: bool) -> Res
     let private_key = PKey::private_key_from_pem(&key_data)
         .map_err(|e| anyhow::anyhow!("Failed to parse private key '{}': {}", key_path, e))?;
 
-    let key_type = if private_key.rsa().is_ok() {
-        "RSA".to_string()
-    } else if private_key.ec_key().is_ok() {
-        "EC".to_string()
-    } else {
-        "Unknown".to_string()
-    };
+    let key_type = pkey_algorithm(&private_key);
     let key_size_bits = private_key.bits();
     debug_log!(debug, "Key type: {} ({} bits)", key_type, key_size_bits);
 
@@ -531,13 +543,7 @@ pub fn verify_key_matches_cert(key_path: &str, target: &str, debug: bool) -> Res
         .public_key()
         .map_err(|e| anyhow::anyhow!("Failed to extract public key from certificate: {}", e))?;
 
-    let cert_key_alg = if cert_pubkey.rsa().is_ok() {
-        "RSA".to_string()
-    } else if cert_pubkey.ec_key().is_ok() {
-        "EC".to_string()
-    } else {
-        "Unknown".to_string()
-    };
+    let cert_key_alg = pkey_algorithm(&cert_pubkey);
     let cert_key_size = cert_pubkey.bits();
 
     // Compare public keys

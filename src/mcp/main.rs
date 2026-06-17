@@ -1027,6 +1027,23 @@ struct VaultParams {
     skip_verify: Option<bool>,
 }
 
+impl Drop for VaultParams {
+    /// Wipe Vault secrets received in tool arguments (token, LDAP password,
+    /// AppRole secret_id) from memory once the request is done.
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        if let Some(s) = self.vault_token.as_mut() {
+            s.zeroize();
+        }
+        if let Some(s) = self.ldap_password.as_mut() {
+            s.zeroize();
+        }
+        if let Some(s) = self.approle_secret_id.as_mut() {
+            s.zeroize();
+        }
+    }
+}
+
 impl VaultParams {
     fn validate(&self) -> Result<(), String> {
         let method = self.auth_method.as_deref().unwrap_or("token");
@@ -1083,6 +1100,20 @@ impl VaultParams {
     }
 }
 
+/// Cap untrusted upstream text before echoing it into an error message, so a
+/// large or sensitive Vault response body isn't returned verbatim to the MCP
+/// client or written to logs.
+fn truncate_upstream_error(s: &str) -> String {
+    const MAX_CHARS: usize = 512;
+    let trimmed = s.trim();
+    if trimmed.chars().count() > MAX_CHARS {
+        let head: String = trimmed.chars().take(MAX_CHARS).collect();
+        format!("{head}… (truncated)")
+    } else {
+        trimmed.to_string()
+    }
+}
+
 /// Authenticate with Vault using LDAP or AppRole and return a client token.
 /// The MCP server performs the auth handshake so the dcert subprocess only needs a token.
 async fn vault_authenticate(vault_params: &VaultParams) -> Result<String, String> {
@@ -1127,7 +1158,7 @@ async fn vault_authenticate(vault_params: &VaultParams) -> Result<String, String
 
             if !resp.status().is_success() {
                 let status = resp.status();
-                let body = resp.text().await.unwrap_or_default();
+                let body = truncate_upstream_error(&resp.text().await.unwrap_or_default());
                 return Err(format!("LDAP auth failed (HTTP {}): {}", status, body));
             }
 
@@ -1164,7 +1195,7 @@ async fn vault_authenticate(vault_params: &VaultParams) -> Result<String, String
 
             if !resp.status().is_success() {
                 let status = resp.status();
-                let body = resp.text().await.unwrap_or_default();
+                let body = truncate_upstream_error(&resp.text().await.unwrap_or_default());
                 return Err(format!("AppRole auth failed (HTTP {}): {}", status, body));
             }
 
@@ -1197,9 +1228,11 @@ async fn run_dcert_vault(
 
     // Resolve vault token: explicit param → LDAP/AppRole auth → inherited from env
     let method = vault_params.auth_method.as_deref().unwrap_or("token");
-    let resolved_token: Option<String> = match method {
-        "ldap" | "approle" => Some(vault_authenticate(vault_params).await?),
-        _ => vault_params.vault_token.clone(),
+    // Wrapped in `Zeroizing` so the token buffer is wiped once it has been
+    // handed to the subprocess environment below.
+    let resolved_token: Option<zeroize::Zeroizing<String>> = match method {
+        "ldap" | "approle" => Some(zeroize::Zeroizing::new(vault_authenticate(vault_params).await?)),
+        _ => vault_params.vault_token.clone().map(zeroize::Zeroizing::new),
     };
 
     // Build CLI args: "vault" <subcommand> [flags] --format json
@@ -1229,7 +1262,7 @@ async fn run_dcert_vault(
         cmd.env("VAULT_ADDR", addr);
     }
     if let Some(ref token) = resolved_token {
-        cmd.env("VAULT_TOKEN", token);
+        cmd.env("VAULT_TOKEN", token.as_str());
     }
 
     let mut child = cmd
@@ -2195,7 +2228,7 @@ impl DcertMcpServer {
             "json".to_string(),
         ];
         if params.strict {
-            args.push("--strict".to_string());
+            args.push("--warnings-as-errors".to_string());
         }
 
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
@@ -2770,13 +2803,89 @@ struct HttpAppState {
     mcp_server: DcertMcpServer,
 }
 
+/// Build the CORS layer for the HTTP MCP server.
+///
+/// Allowed origins are read from `DCERT_MCP_ALLOWED_ORIGINS` (comma-separated).
+/// When unset/empty, cross-origin browser requests are denied (no
+/// `Access-Control-Allow-Origin` header is emitted) — the server is meant to be
+/// reached same-origin or via a trusted reverse proxy. A literal `*` enables
+/// any-origin access (logged as a warning); we never pair it with credentials,
+/// and only `authorization`/`content-type` request headers are allowed.
+/// Parsed CORS origin policy derived from `DCERT_MCP_ALLOWED_ORIGINS`.
+#[derive(Debug, PartialEq, Eq)]
+enum CorsOriginPolicy {
+    /// No cross-origin access (env unset/empty).
+    None,
+    /// Any origin (env contained a literal `*`).
+    Any,
+    /// Explicit allowlist of origins.
+    List(Vec<String>),
+}
+
+/// Parse the `DCERT_MCP_ALLOWED_ORIGINS` value into a policy. Pure function so
+/// the precedence rules (empty → None, any `*` → Any, else trimmed list) are
+/// unit-testable without constructing an HTTP layer.
+fn parse_allowed_origins(raw: &str) -> CorsOriginPolicy {
+    let entries: Vec<String> = raw
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if entries.is_empty() {
+        CorsOriginPolicy::None
+    } else if entries.iter().any(|e| e == "*") {
+        CorsOriginPolicy::Any
+    } else {
+        CorsOriginPolicy::List(entries)
+    }
+}
+
+fn build_cors_layer() -> tower_http::cors::CorsLayer {
+    use axum::http::{HeaderName, HeaderValue, Method};
+    use tower_http::cors::{AllowOrigin, CorsLayer};
+
+    let layer = CorsLayer::new()
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_headers([
+            HeaderName::from_static("authorization"),
+            HeaderName::from_static("content-type"),
+        ]);
+
+    match parse_allowed_origins(&std::env::var("DCERT_MCP_ALLOWED_ORIGINS").unwrap_or_default()) {
+        CorsOriginPolicy::Any => {
+            tracing::warn!(
+                "CORS: DCERT_MCP_ALLOWED_ORIGINS=* — allowing ANY origin; do not expose this server publicly"
+            );
+            layer.allow_origin(AllowOrigin::any())
+        }
+        CorsOriginPolicy::None => {
+            tracing::info!("CORS: no cross-origin access (set DCERT_MCP_ALLOWED_ORIGINS to allow specific origins)");
+            layer.allow_origin(AllowOrigin::list(Vec::<HeaderValue>::new()))
+        }
+        CorsOriginPolicy::List(entries) => {
+            let origins: Vec<HeaderValue> = entries
+                .iter()
+                .filter_map(|o| match HeaderValue::from_str(o) {
+                    Ok(v) => Some(v),
+                    Err(_) => {
+                        tracing::warn!(origin = %o, "CORS: ignoring invalid origin in DCERT_MCP_ALLOWED_ORIGINS");
+                        None
+                    }
+                })
+                .collect();
+            tracing::info!(origins = ?entries, "CORS: cross-origin access restricted to allowlist");
+            layer.allow_origin(AllowOrigin::list(origins))
+        }
+    }
+}
+
 /// Run in HTTP mode with OIDC/OAuth2 authentication.
 async fn run_http_mode(config: McpConfig, addr: &str) -> Result<(), Box<dyn std::error::Error>> {
     use axum::routing::{get, post};
     use security::audit::AuditLogger;
     use security::middleware::{AuthState, auth_middleware};
     use security::session::{SessionCache, SessionConfig};
-    use tower_http::cors::CorsLayer;
 
     // Initialize structured logging for HTTP mode.
     tracing_subscriber::fmt()
@@ -2830,7 +2939,7 @@ async fn run_http_mode(config: McpConfig, addr: &str) -> Result<(), Box<dyn std:
     let app = axum::Router::new()
         .route("/health", get(health_handler))
         .route("/mcp", post(mcp_handler))
-        .layer(CorsLayer::permissive())
+        .layer(build_cors_layer())
         .layer(axum::middleware::from_fn_with_state(auth_state, auth_middleware))
         .with_state(app_state);
 
@@ -3060,8 +3169,55 @@ async fn dispatch_tool_call(config: &McpConfig, tool_name: &str, arguments: &ser
 }
 
 #[cfg(test)]
+// VaultParams implements Drop (to zeroize secrets), which forbids the
+// `..Default::default()` functional-update syntax; tests build via
+// `VaultParams::default()` then assign fields, so allow the related lint here.
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
+
+    // ---------------------------------------------------------------
+    // CORS origin policy parsing
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_parse_allowed_origins_empty_is_none() {
+        assert_eq!(parse_allowed_origins(""), CorsOriginPolicy::None);
+        assert_eq!(parse_allowed_origins("   "), CorsOriginPolicy::None);
+        assert_eq!(parse_allowed_origins(" , , "), CorsOriginPolicy::None);
+    }
+
+    #[test]
+    fn test_parse_allowed_origins_wildcard_is_any() {
+        assert_eq!(parse_allowed_origins("*"), CorsOriginPolicy::Any);
+        // A wildcard anywhere in the list wins.
+        assert_eq!(parse_allowed_origins("https://a.test, *"), CorsOriginPolicy::Any);
+    }
+
+    #[test]
+    fn test_parse_allowed_origins_list_is_trimmed() {
+        assert_eq!(
+            parse_allowed_origins("https://a.test, https://b.test ,,"),
+            CorsOriginPolicy::List(vec!["https://a.test".to_string(), "https://b.test".to_string()])
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Upstream error truncation
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_truncate_upstream_error_short_passthrough() {
+        assert_eq!(truncate_upstream_error("  permission denied  "), "permission denied");
+    }
+
+    #[test]
+    fn test_truncate_upstream_error_caps_long_body() {
+        let long = "x".repeat(1000);
+        let out = truncate_upstream_error(&long);
+        assert!(out.ends_with("… (truncated)"));
+        assert!(out.chars().count() < 1000);
+    }
 
     // ---------------------------------------------------------------
     // validate_target unit tests
@@ -3968,12 +4124,10 @@ mod tests {
 
     #[test]
     fn test_vault_params_ldap_missing_username() {
-        let params = VaultParams {
-            auth_method: Some("ldap".to_string()),
-            ldap_password: Some("pass".to_string()),
-            vault_addr: Some("https://vault.example.com:8200".to_string()),
-            ..Default::default()
-        };
+        let mut params = VaultParams::default();
+        params.auth_method = Some("ldap".to_string());
+        params.ldap_password = Some("pass".to_string());
+        params.vault_addr = Some("https://vault.example.com:8200".to_string());
         let err = params.validate().unwrap_err();
         assert!(
             err.contains("ldap_username"),
@@ -3984,12 +4138,10 @@ mod tests {
 
     #[test]
     fn test_vault_params_ldap_missing_password() {
-        let params = VaultParams {
-            auth_method: Some("ldap".to_string()),
-            ldap_username: Some("user".to_string()),
-            vault_addr: Some("https://vault.example.com:8200".to_string()),
-            ..Default::default()
-        };
+        let mut params = VaultParams::default();
+        params.auth_method = Some("ldap".to_string());
+        params.ldap_username = Some("user".to_string());
+        params.vault_addr = Some("https://vault.example.com:8200".to_string());
         let err = params.validate().unwrap_err();
         assert!(
             err.contains("ldap_password"),
@@ -4000,24 +4152,20 @@ mod tests {
 
     #[test]
     fn test_vault_params_ldap_valid() {
-        let params = VaultParams {
-            auth_method: Some("ldap".to_string()),
-            ldap_username: Some("user".to_string()),
-            ldap_password: Some("pass".to_string()),
-            vault_addr: Some("https://vault.example.com:8200".to_string()),
-            ..Default::default()
-        };
+        let mut params = VaultParams::default();
+        params.auth_method = Some("ldap".to_string());
+        params.ldap_username = Some("user".to_string());
+        params.ldap_password = Some("pass".to_string());
+        params.vault_addr = Some("https://vault.example.com:8200".to_string());
         assert!(params.validate().is_ok());
     }
 
     #[test]
     fn test_vault_params_approle_missing_role_id() {
-        let params = VaultParams {
-            auth_method: Some("approle".to_string()),
-            approle_secret_id: Some("secret".to_string()),
-            vault_addr: Some("https://vault.example.com:8200".to_string()),
-            ..Default::default()
-        };
+        let mut params = VaultParams::default();
+        params.auth_method = Some("approle".to_string());
+        params.approle_secret_id = Some("secret".to_string());
+        params.vault_addr = Some("https://vault.example.com:8200".to_string());
         let err = params.validate().unwrap_err();
         assert!(
             err.contains("approle_role_id"),
@@ -4028,12 +4176,10 @@ mod tests {
 
     #[test]
     fn test_vault_params_approle_missing_secret_id() {
-        let params = VaultParams {
-            auth_method: Some("approle".to_string()),
-            approle_role_id: Some("role-id".to_string()),
-            vault_addr: Some("https://vault.example.com:8200".to_string()),
-            ..Default::default()
-        };
+        let mut params = VaultParams::default();
+        params.auth_method = Some("approle".to_string());
+        params.approle_role_id = Some("role-id".to_string());
+        params.vault_addr = Some("https://vault.example.com:8200".to_string());
         let err = params.validate().unwrap_err();
         assert!(
             err.contains("approle_secret_id"),
@@ -4044,32 +4190,26 @@ mod tests {
 
     #[test]
     fn test_vault_params_approle_valid() {
-        let params = VaultParams {
-            auth_method: Some("approle".to_string()),
-            approle_role_id: Some("role-id".to_string()),
-            approle_secret_id: Some("secret-id".to_string()),
-            vault_addr: Some("https://vault.example.com:8200".to_string()),
-            ..Default::default()
-        };
+        let mut params = VaultParams::default();
+        params.auth_method = Some("approle".to_string());
+        params.approle_role_id = Some("role-id".to_string());
+        params.approle_secret_id = Some("secret-id".to_string());
+        params.vault_addr = Some("https://vault.example.com:8200".to_string());
         assert!(params.validate().is_ok());
     }
 
     #[test]
     fn test_vault_params_invalid_method() {
-        let params = VaultParams {
-            auth_method: Some("invalid".to_string()),
-            ..Default::default()
-        };
+        let mut params = VaultParams::default();
+        params.auth_method = Some("invalid".to_string());
         let err = params.validate().unwrap_err();
         assert!(err.contains("Invalid auth_method"), "Error: {}", err);
     }
 
     #[test]
     fn test_vault_params_resolve_addr() {
-        let params = VaultParams {
-            vault_addr: Some("https://vault.example.com:8200/".to_string()),
-            ..Default::default()
-        };
+        let mut params = VaultParams::default();
+        params.vault_addr = Some("https://vault.example.com:8200/".to_string());
         assert_eq!(
             params.resolve_addr(),
             Some("https://vault.example.com:8200".to_string())
@@ -4078,10 +4218,8 @@ mod tests {
 
     #[test]
     fn test_vault_params_resolve_addr_no_trailing_slash() {
-        let params = VaultParams {
-            vault_addr: Some("https://vault.example.com:8200".to_string()),
-            ..Default::default()
-        };
+        let mut params = VaultParams::default();
+        params.vault_addr = Some("https://vault.example.com:8200".to_string());
         assert_eq!(
             params.resolve_addr(),
             Some("https://vault.example.com:8200".to_string())

@@ -1111,7 +1111,14 @@ fn test_csr_validate_help() {
         .output()
         .expect("failed to run dcert");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("--strict"), "validate help should show --strict");
+    assert!(
+        stdout.contains("--warnings-as-errors"),
+        "validate help should show --warnings-as-errors"
+    );
+    assert!(
+        stdout.contains("--strict"),
+        "validate help should still show the deprecated --strict alias"
+    );
     assert!(stdout.contains("--format"), "validate help should show --format");
 }
 
