@@ -46,6 +46,12 @@ pub struct CertInfo {
     pub authority_info_access: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revocation_status: Option<String>,
+    /// Set when this certificate is itself present in the chain and is (or is
+    /// not) a recognized publicly trusted root CA. Usually `None` because the
+    /// root is not sent by the server; populated for full-chain PEM input or
+    /// servers that include the root. See chain-level `root_trust` for the verdict.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_public_root: Option<bool>,
 }
 
 #[derive(Debug, serde::Serialize, Clone)]
@@ -351,6 +357,7 @@ pub fn process_certificate(
         basic_constraints,
         authority_info_access,
         revocation_status: None,
+        is_public_root: None,
     }))
 }
 
@@ -657,6 +664,7 @@ pub mod tests {
             basic_constraints: None,
             authority_info_access: None,
             revocation_status: None,
+            is_public_root: None,
         }
     }
 

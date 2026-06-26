@@ -222,6 +222,74 @@ dcert certificate.pem --compliance
 dcert https://example.com --compliance --format json
 ```
 
+#### Root CA Trust Classification
+
+Every `check` reports whether the certificate chain anchors to a **publicly
+trusted** root CA, a **private PKI**, or is **self-signed** — answering "is this
+issued by a real public CA, or a private/self-signed one?" This runs by default.
+
+```bash
+# Classification appears in the "Root CA trust" block (pretty) and the
+# "root_trust" object (JSON/YAML)
+dcert https://www.google.com
+dcert https://example.com --format json   # see .root_trust
+
+# Skip it (byte-stable legacy output)
+dcert https://example.com --no-trust-check
+```
+
+The classification is one of:
+
+| Classification | Meaning |
+|----------------|---------|
+| `publicly_trusted` | Chain verifies up to a root in the embedded **Mozilla/CCADB** root set |
+| `private_pki` | Chain terminates in a private (non-public) root CA |
+| `self_signed` | A single self-signed certificate, not issued by any CA |
+| `incomplete` | Chain neither reaches a public root nor presents a self-signed root (an issuer is missing) — try `--resolve-issuers` |
+
+**How "publicly trusted" is defined.** The authoritative source is the
+Mozilla/CCADB root set, embedded at build time via the `webpki-root-certs`
+crate. CCADB is the shared database behind the Mozilla, Microsoft, Apple and
+Google root programs, so DigiCert, Amazon/AWS, Google Trust Services, Microsoft
+and Apple public TLS roots, GlobalSign, Sectigo, Let's Encrypt, etc. are all
+included. Classification is a **local cryptographic verification** — no network
+is used — so it stays fast across 50+ certificates with no per-host timeouts. A
+private root that merely shares a Distinguished Name with a public one cannot
+produce a false positive, because the signature must validate against an
+embedded public key. Certificate expiry is ignored for this verdict (dcert
+reports expiry separately).
+
+Each certificate that is itself a recognized public root carries an
+`is_public_root: true` attribute in JSON/YAML (usually absent, since servers
+don't send the root).
+
+**Optional network probe (`--resolve-issuers`).** For `incomplete` or
+`private_pki` results you can follow the certificate's AIA "CA Issuers" URLs to
+fetch missing issuer certificates — completing the chain (which can flip an
+`incomplete` result to `publicly_trusted`) and confirming whether a private CA
+backend is reachable (`private_backend_reachable`). It is **off by default**.
+
+```bash
+# Complete a chain whose server omitted the intermediate
+dcert https://example.com --resolve-issuers
+
+# Keep the timeout short when probing many private CAs
+dcert - --resolve-issuers --issuer-timeout 2 < hosts.txt
+```
+
+`--resolve-issuers` honours the standard forward-proxy environment variables
+(`http_proxy`/`https_proxy`/`no_proxy`, see [Proxy and Timeout
+Configuration](#proxy-and-timeout-configuration)) and uses the short
+`--issuer-timeout` (default 2s) so large batches fail fast. Unlike the OCSP
+path, it intentionally **does not block private/internal IPs** — private-PKI AIA
+endpoints legitimately live on internal hosts, which is exactly what this flag
+exists to reach. It is gated behind this explicit opt-in.
+
+**Refreshing the public root set.** `--refresh-public-roots` fetches the latest
+Mozilla/CCADB bundle from `https://curl.se/ca/cacert.pem` (over the proxy layer)
+and unions it into the embedded set for that run, so coverage can stay current
+between releases.
+
 #### TLS Options
 
 ```bash
@@ -332,6 +400,12 @@ Options:
       --watch <SECONDS>                Re-check at interval
       --compliance                      Run compliance checks (CA/B Forum, DigiCert, X9)
       --check-revocation               Check OCSP revocation status
+      --no-trust-check                 Skip root-CA trust classification (on by default)
+      --resolve-issuers                Follow AIA "CA Issuers" URLs over the network to
+                                       complete a chain / probe a private CA backend (off by default)
+      --issuer-timeout <SECONDS>       Short timeout for issuer/refresh fetches (default: 2)
+      --refresh-public-roots           Refresh the embedded Mozilla/CCADB root set from
+                                       https://curl.se/ca/cacert.pem for this run
       --debug                          Verbose OSI-layer diagnostics on stderr
       --client-cert <PATH>             Client certificate PEM for mTLS
       --client-key <PATH>              Client private key PEM for mTLS
