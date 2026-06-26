@@ -690,6 +690,27 @@ struct AnalyzeCertificateParams {
     /// Check OCSP revocation status (default: false)
     #[serde(default)]
     check_revocation: bool,
+    /// Skip the root-CA trust classification (publicly trusted vs private PKI
+    /// vs self-signed). Classification is on by default and runs fully offline;
+    /// set true to omit the `root_trust` object. (default: false)
+    #[serde(default)]
+    no_trust_check: bool,
+    /// For chains that do not anchor to a publicly trusted root, follow the
+    /// Authority Information Access "CA Issuers" URLs over the network to fetch
+    /// missing issuer certificates — completing the chain and probing whether a
+    /// private CA backend is reachable. Off by default. Honours forward-proxy
+    /// environment variables (http_proxy/https_proxy/no_proxy). (default: false)
+    #[serde(default)]
+    resolve_issuers: bool,
+    /// Short connect/read timeout in seconds for issuer (`resolve_issuers`) and
+    /// public-root refresh fetches. Kept low so batches fail fast. (default: 2)
+    #[serde(default)]
+    issuer_timeout: Option<u64>,
+    /// Refresh the embedded Mozilla/CCADB public root set from the upstream
+    /// bundle (https://curl.se/ca/cacert.pem) and union it in for this run.
+    /// Honours forward-proxy environment variables. (default: false)
+    #[serde(default)]
+    refresh_public_roots: bool,
     /// mTLS and CA configuration
     #[serde(flatten, default)]
     mtls: MtlsParams,
@@ -1528,7 +1549,7 @@ impl Default for DcertMcpServer {
 impl DcertMcpServer {
     /// Decode and analyze TLS certificates from an HTTPS endpoint or PEM file.
     #[tool(
-        description = "Decode and analyze TLS certificates from an HTTPS endpoint or PEM file. Returns certificate details including subject, issuer, SANs, validity dates, fingerprints, extensions, TLS connection information, and OSI-layer diagnostics. Supports mTLS with client certificates and custom CA bundles. To analyze a specific IP/backend while validating a hostname (e.g. behind a load balancer, or when DNS does not resolve), keep the hostname in `target` and set `connect_to` to the IP address.",
+        description = "Decode and analyze TLS certificates from an HTTPS endpoint or PEM file. Returns certificate details including subject, issuer, SANs, validity dates, fingerprints, extensions, TLS connection information, and OSI-layer diagnostics. Also classifies the chain's root CA (the `root_trust` object): whether it anchors to a publicly trusted CA (Mozilla/CCADB root program — DigiCert, Amazon, Google, Microsoft, Apple, Let's Encrypt, etc.), a private PKI, or is self-signed. This runs offline by default; set `resolve_issuers` to follow AIA 'CA Issuers' URLs over the network to complete an incomplete chain or probe a private CA backend. Supports mTLS with client certificates and custom CA bundles. To analyze a specific IP/backend while validating a hostname (e.g. behind a load balancer, or when DNS does not resolve), keep the hostname in `target` and set `connect_to` to the IP address.",
         annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true)
     )]
     pub async fn analyze_certificate(
@@ -1551,6 +1572,19 @@ impl DcertMcpServer {
         }
         if params.check_revocation {
             args.push("--check-revocation".to_string());
+        }
+        if params.no_trust_check {
+            args.push("--no-trust-check".to_string());
+        }
+        if params.resolve_issuers {
+            args.push("--resolve-issuers".to_string());
+        }
+        if let Some(t) = params.issuer_timeout {
+            args.push("--issuer-timeout".to_string());
+            args.push(t.to_string());
+        }
+        if params.refresh_public_roots {
+            args.push("--refresh-public-roots".to_string());
         }
         args.extend(params.mtls.to_args());
         args.extend(params.http_tls.to_args());
@@ -3566,6 +3600,13 @@ mod tests {
             text.contains("certificates"),
             "Response should contain JSON with certificates: {}",
             &text[..text.len().min(200)]
+        );
+        // Root-CA trust classification flows through the MCP path by default.
+        // valid.pem is a self-signed certificate.
+        assert!(
+            text.contains("root_trust") && text.contains("self_signed"),
+            "Response should classify the self-signed root: {}",
+            &text[..text.len().min(400)]
         );
 
         client.cancel().await.unwrap();

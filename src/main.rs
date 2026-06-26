@@ -8,6 +8,7 @@ mod ocsp;
 mod output;
 mod proxy;
 mod tls;
+mod trust;
 mod vault;
 
 use anyhow::{Context, Result};
@@ -121,6 +122,16 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
     // Cache proxy configuration from environment at startup
     let proxy_config = ProxyConfig::from_env();
 
+    // Build the public root set once per invocation (offline by default;
+    // optionally refreshed from the upstream Mozilla/CCADB bundle). Reused
+    // across every target so classifying 50+ certs stays fast.
+    let public_roots = trust::PublicRoots::load(
+        args.refresh_public_roots,
+        &proxy_config,
+        Duration::from_secs(args.issuer_timeout),
+        args.debug,
+    )?;
+
     // Resolve targets (support stdin via '-')
     let mut targets: Vec<String> = Vec::new();
     let mut stdin_pem: Option<String> = None;
@@ -213,7 +224,14 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
             );
 
             for target in &targets {
-                match process_target(target, &args, &proxy_config, body_data.as_deref(), stdin_pem.as_deref()) {
+                match process_target(
+                    target,
+                    &args,
+                    &proxy_config,
+                    &public_roots,
+                    body_data.as_deref(),
+                    stdin_pem.as_deref(),
+                ) {
                     Ok(result) => {
                         // Check for changes
                         let current_fps: Vec<Option<String>> =
@@ -250,7 +268,14 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
     let mut all_results: Vec<TargetResult> = Vec::new();
 
     for target in &targets {
-        match process_target(target, &args, &proxy_config, body_data.as_deref(), stdin_pem.as_deref()) {
+        match process_target(
+            target,
+            &args,
+            &proxy_config,
+            &public_roots,
+            body_data.as_deref(),
+            stdin_pem.as_deref(),
+        ) {
             Ok(result) => {
                 // Promote to CLIENT_CERT_ERROR when the server demanded an mTLS
                 // client cert we didn't supply. This is more specific than the
@@ -301,6 +326,7 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
                 certificates: result.infos.clone(),
                 connection: result.conn_info.clone(),
                 compliance: result.compliance_report.clone(),
+                root_trust: result.root_trust.clone(),
             };
             map.insert(result.target.clone(), serde_json::to_value(&output)?);
         }
@@ -312,6 +338,7 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
                 certificates: result.infos.clone(),
                 connection: result.conn_info.clone(),
                 compliance: result.compliance_report.clone(),
+                root_trust: result.root_trust.clone(),
             };
             map.insert(result.target.clone(), output);
         }

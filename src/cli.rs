@@ -410,6 +410,32 @@ pub struct CheckArgs {
     #[arg(long, value_name = "PATH")]
     pub ca_cert: Option<String>,
 
+    // -- Root CA trust classification --
+    /// Skip the root-CA trust classification (publicly trusted vs private PKI vs
+    /// self-signed). Classification is on by default and runs fully offline.
+    #[arg(long)]
+    pub no_trust_check: bool,
+
+    /// For chains that do not anchor to a publicly trusted root, follow the
+    /// Authority Information Access "CA Issuers" URLs to fetch missing issuer
+    /// certificates over the network, completing the chain and probing whether a
+    /// private CA backend is reachable. Off by default. Respects the standard
+    /// forward-proxy environment variables (http_proxy/https_proxy/no_proxy).
+    #[arg(long)]
+    pub resolve_issuers: bool,
+
+    /// Short connect/read timeout (seconds) for issuer (--resolve-issuers) and
+    /// public-root refresh fetches. Kept low so batches of many certificates
+    /// fail fast instead of stalling on per-host timeouts.
+    #[arg(long, value_name = "SECONDS", default_value_t = 2)]
+    pub issuer_timeout: u64,
+
+    /// Refresh the embedded Mozilla/CCADB public root set from the upstream
+    /// bundle (https://curl.se/ca/cacert.pem) and union it into the trust store
+    /// for this run. Respects forward-proxy environment variables.
+    #[arg(long)]
+    pub refresh_public_roots: bool,
+
     // -- STARTTLS --
     /// Perform STARTTLS negotiation before the TLS handshake (for mail/FTP
     /// servers). The target is treated as host[:port], not an HTTPS URL.

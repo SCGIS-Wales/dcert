@@ -18,6 +18,7 @@ use crate::proxy::ProxyConfig;
 use crate::tls::{
     StarttlsFetchOptions, TlsConnectionInfo, TlsFetchOptions, fetch_tls_chain_openssl, fetch_tls_chain_starttls,
 };
+use crate::trust::{PublicRoots, RootTrustClass, RootTrustInfo, TrustOpts, assess_root_trust};
 
 /// Debug/connection info for pretty output.
 pub struct PrettyDebugInfo<'a> {
@@ -207,6 +208,47 @@ HTTP status line (not the full response body)."
     }
 }
 
+/// Render the chain-level root-CA trust classification.
+pub fn print_root_trust_pretty(trust: &RootTrustInfo) {
+    let colored_label = match trust.classification {
+        RootTrustClass::PubliclyTrusted => "Publicly trusted CA".green().bold(),
+        RootTrustClass::PrivatePki => "Private PKI".yellow().bold(),
+        RootTrustClass::SelfSigned => "Self-signed".red().bold(),
+        RootTrustClass::Incomplete => "Incomplete chain".yellow().bold(),
+        RootTrustClass::Unknown => "Unknown".normal(),
+    };
+
+    println!("{}", "Root CA trust".bold());
+    println!("  Classification : {}", colored_label);
+    if let Some(ref subject) = trust.trust_anchor_subject {
+        let in_chain = if trust.anchor_present_in_chain {
+            " (present in chain)"
+        } else {
+            " (resolved from trust store)"
+        };
+        println!("  Trust anchor   : {}{}", subject, in_chain.dimmed());
+    }
+    if let Some(ref fp) = trust.trust_anchor_sha256 {
+        println!("  Anchor SHA-256 : {}", fp);
+    }
+    if trust.chain_completed_via_aia {
+        println!("  Chain completed via AIA: {}", "yes".cyan());
+    }
+    if let Some(reachable) = trust.private_backend_reachable {
+        let r = if reachable {
+            "reachable".green()
+        } else {
+            "unreachable".red()
+        };
+        println!("  Private CA backend: {}", r);
+    }
+    if let Some(ref detail) = trust.detail {
+        println!("  {}", detail.dimmed());
+    }
+    println!("  Public root source: {}", trust.source.dimmed());
+    println!();
+}
+
 pub fn cert_matches_hostname(cert: &CertInfo, host: &str) -> bool {
     let host = host.trim().to_lowercase();
 
@@ -257,6 +299,7 @@ pub struct TargetResult {
     pub infos: Vec<CertInfo>,
     pub pem_data: String,
     pub compliance_report: Option<ChainComplianceReport>,
+    pub root_trust: Option<RootTrustInfo>,
 }
 
 /// JSON/YAML wrapper that includes both certificates and connection metadata.
@@ -267,6 +310,8 @@ pub struct StructuredOutput {
     pub connection: Option<TlsConnectionInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compliance: Option<ChainComplianceReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub root_trust: Option<RootTrustInfo>,
 }
 
 /// Process a single target (PEM file, HTTPS URL, or stdin PEM data) and return results.
@@ -277,6 +322,7 @@ pub fn process_target(
     target: &str,
     args: &CheckArgs,
     proxy_config: &ProxyConfig,
+    public_roots: &PublicRoots,
     body: Option<&[u8]>,
     stdin_pem: Option<&str>,
 ) -> Result<TargetResult> {
@@ -399,6 +445,37 @@ pub fn process_target(
         }
     }
 
+    // Root-CA trust classification (publicly trusted vs private PKI vs
+    // self-signed). On by default; offline unless --resolve-issuers is set.
+    // Computed before any sort so per-cert flags map to the original chain
+    // order, and the chain DERs are in issuance order (leaf first).
+    let root_trust = if args.no_trust_check {
+        None
+    } else {
+        let chain_ders: Vec<Vec<u8>> = pem::parse_many(&pem_data)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|b| b.tag() == "CERTIFICATE")
+            .map(|b| b.contents().to_vec())
+            .collect();
+
+        // Per-cert: flag any presented cert that is itself a public root.
+        for (i, info) in infos.iter_mut().enumerate() {
+            if let Some(der) = chain_ders.get(i) {
+                if public_roots.is_public_root_der(der) {
+                    info.is_public_root = Some(true);
+                }
+            }
+        }
+
+        let trust_opts = TrustOpts {
+            resolve_issuers: args.resolve_issuers,
+            issuer_timeout: std::time::Duration::from_secs(args.issuer_timeout),
+            debug: args.debug,
+        };
+        Some(assess_root_trust(public_roots, &chain_ders, &trust_opts, proxy_config))
+    };
+
     // Sort certificates by expiry if requested
     if let Some(sort_order) = args.sort_expiry {
         sort_certs_by_expiry(&mut infos, sort_order);
@@ -417,6 +494,7 @@ pub fn process_target(
         infos,
         pem_data,
         compliance_report,
+        root_trust,
     })
 }
 
@@ -599,6 +677,11 @@ pub fn output_results(
             };
             print_pretty(&result.infos, &debug);
 
+            // Print the root-CA trust classification if available
+            if let Some(ref trust) = result.root_trust {
+                print_root_trust_pretty(trust);
+            }
+
             // Print compliance report if available
             if let Some(ref report) = result.compliance_report {
                 print_compliance_pretty(report);
@@ -609,6 +692,7 @@ pub fn output_results(
                 certificates: result.infos.clone(),
                 connection: result.conn_info.clone(),
                 compliance: result.compliance_report.clone(),
+                root_trust: result.root_trust.clone(),
             };
             println!("{}", serde_json::to_string_pretty(&output)?);
         }
@@ -617,6 +701,7 @@ pub fn output_results(
                 certificates: result.infos.clone(),
                 connection: result.conn_info.clone(),
                 compliance: result.compliance_report.clone(),
+                root_trust: result.root_trust.clone(),
             };
             println!("{}", serde_yaml_ng::to_string(&output)?);
         }
