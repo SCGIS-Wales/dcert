@@ -979,6 +979,110 @@ jobs:
               release-assets/*
           fi
 
+  # Integration test for the Chocolatey package. Packs the package against the
+  # latest published release, installs it, verifies dcert.exe / dcert-mcp.exe
+  # run from the generated PATH shims, then uninstalls and verifies cleanup.
+  # Runs on every push/PR (NOT gated on a new tag) so the install/uninstall
+  # scripts are exercised before they ship. The new version under development
+  # has no release yet, so this smoke-tests the scripts against the most recent
+  # real release — which is exactly what changes in a packaging PR.
+  test-chocolatey-package:
+    name: Test Chocolatey package (install/uninstall)
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve latest released version
+        id: ver
+        shell: pwsh
+        run: |
+          $tag = git tag --sort=-v:refname |
+            Where-Object { $_ -match '^v\d+\.\d+\.\d+$' } |
+            Select-Object -First 1
+          if (-not $tag) {
+            Write-Host "::notice::No release tag found — skipping Chocolatey install test."
+            "skip=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            exit 0
+          }
+          $version = $tag.TrimStart('v')
+          Write-Host "Latest released version: $version (tag $tag)"
+          "skip=false"       | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Download release zip and compute SHA256
+        if: steps.ver.outputs.skip == 'false'
+        id: sha
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = "${{ steps.ver.outputs.version }}"
+          $url = "https://github.com/SCGIS-Wales/dcert/releases/download/v$version/dcert-x86_64-pc-windows-msvc.zip"
+          $zip = "dcert-windows.zip"
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          Write-Host "sha256=$hash"
+          "sha=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      # Mirrors the templating in create-chocolatey-package: substitute the
+      # version + checksum placeholders into the checked-out package files.
+      - name: Template nuspec and install script
+        if: steps.ver.outputs.skip == 'false'
+        shell: pwsh
+        run: |
+          $version = "${{ steps.ver.outputs.version }}"
+          $sha = "${{ steps.sha.outputs.sha }}"
+          $files = @(
+            "packaging/chocolatey/dcert.nuspec",
+            "packaging/chocolatey/tools/chocolateyInstall.ps1"
+          )
+          foreach ($f in $files) {
+            (Get-Content $f) -replace '__VERSION__', $version -replace '__SHA256__', $sha | Set-Content $f
+          }
+
+      - name: Choco pack
+        if: steps.ver.outputs.skip == 'false'
+        shell: pwsh
+        run: choco pack packaging/chocolatey/dcert.nuspec --outputdirectory dist-choco
+
+      - name: Choco install from local source
+        if: steps.ver.outputs.skip == 'false'
+        shell: pwsh
+        run: choco install dcert --source "dist-choco" --yes --no-progress
+
+      - name: Verify installed binaries run
+        if: steps.ver.outputs.skip == 'false'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1"
+          refreshenv
+          foreach ($exe in @('dcert', 'dcert-mcp')) {
+            Write-Host "Checking $exe --version ..."
+            $out = & $exe --version 2>&1 | Out-String
+            Write-Host $out
+            if ($LASTEXITCODE -ne 0) { throw "$exe --version exited with code $LASTEXITCODE" }
+          }
+          Write-Host "Both binaries run from the Chocolatey shims."
+
+      - name: Choco uninstall and verify cleanup
+        if: steps.ver.outputs.skip == 'false'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          choco uninstall dcert --yes
+          if ($LASTEXITCODE -ne 0) { throw "choco uninstall exited with code $LASTEXITCODE" }
+          foreach ($exe in @('dcert.exe', 'dcert-mcp.exe')) {
+            $shim = Join-Path "$env:ChocolateyInstall\bin" $exe
+            if (Test-Path $shim) { throw "Shim still present after uninstall: $shim" }
+          }
+          Write-Host "Uninstall verified — shims removed."
+
   # Pack the Chocolatey package (unprivileged — no secret here). Always
   # produces the .nupkg artifact, even if publishing is later skipped/fails.
   create-chocolatey-package:
