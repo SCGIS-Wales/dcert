@@ -1244,7 +1244,43 @@ jobs:
       - name: List wheels to publish
         run: ls -la dist/
 
-      - name: Publish to PyPI
+      # PyPI publishing occasionally fails on transient upstream errors — most
+      # often a 5xx from the Sigstore Rekor transparency log while generating
+      # PEP 740 attestations (e.g. "Rekor returned an unknown error with HTTP
+      # 502"). Retry the publish with exponential backoff instead of failing the
+      # release. Every attempt uses the official trusted-publisher action (OIDC)
+      # with skip-existing, so files uploaded by an earlier partial attempt are
+      # skipped rather than causing a hard error on the next try.
+      - name: Publish to PyPI (attempt 1)
+        id: publish1
+        continue-on-error: true
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/
+          skip-existing: true
+
+      - name: Backoff before attempt 2
+        if: steps.publish1.outcome == 'failure'
+        run: echo "Attempt 1 failed (likely transient). Waiting 30s before retry..." && sleep 30
+
+      - name: Publish to PyPI (attempt 2)
+        id: publish2
+        if: steps.publish1.outcome == 'failure'
+        continue-on-error: true
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          skip-existing: true
+
+      - name: Backoff before attempt 3
+        if: steps.publish1.outcome == 'failure' && steps.publish2.outcome == 'failure'
+        run: echo "Attempt 2 failed (likely transient). Waiting 60s before final retry..." && sleep 60
+
+      # Final attempt: NOT continue-on-error, so a persistent failure here
+      # (i.e. a real problem rather than a transient blip) fails the job.
+      - name: Publish to PyPI (attempt 3, final)
+        if: steps.publish1.outcome == 'failure' && steps.publish2.outcome == 'failure'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          skip-existing: true
