@@ -2938,12 +2938,36 @@ async fn run_http_mode(config: McpConfig, addr: &str) -> Result<(), Box<dyn std:
     let static_token = std::env::var("DCERT_MCP_AUTH_TOKEN").ok().filter(|s| !s.is_empty());
 
     // Log auth status.
+    let auth_configured = oidc_validator.is_some() || static_token.is_some();
     if oidc_validator.is_some() {
         tracing::info!("authentication: OIDC/OAuth2 enabled");
     } else if static_token.is_some() {
         tracing::info!("authentication: static bearer token enabled");
     } else {
         tracing::warn!("authentication: DISABLED — no OIDC issuer or static token configured");
+    }
+
+    // Refuse to expose an unauthenticated endpoint on a non-loopback interface.
+    // Binding to a public/LAN address with no OIDC issuer or static token lets
+    // any host on the network drive the cert-tooling/subprocess-spawning API.
+    // The operator can opt in explicitly with DCERT_MCP_ALLOW_INSECURE=1.
+    if !auth_configured && !addr_is_loopback(addr) {
+        let allow_insecure = std::env::var("DCERT_MCP_ALLOW_INSECURE")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if !allow_insecure {
+            return Err(format!(
+                "refusing to start: HTTP mode has no authentication configured and would \
+                 bind to a non-loopback address ({addr}). Configure DCERT_MCP_OIDC_ISSUER or \
+                 DCERT_MCP_AUTH_TOKEN, bind to 127.0.0.1, or set DCERT_MCP_ALLOW_INSECURE=1 to \
+                 override."
+            )
+            .into());
+        }
+        tracing::warn!(
+            addr = addr,
+            "starting UNAUTHENTICATED HTTP server on a non-loopback address (DCERT_MCP_ALLOW_INSECURE=1)"
+        );
     }
 
     // Session cache.
@@ -2980,8 +3004,28 @@ async fn run_http_mode(config: McpConfig, addr: &str) -> Result<(), Box<dyn std:
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(addr = addr, "dcert-mcp HTTP server listening");
 
-    axum::serve(listener, app).await?;
+    // Wire ConnectInfo so the auth middleware can record the real client IP in
+    // audit logs (otherwise `remote_addr` is always "unknown").
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
     Ok(())
+}
+
+/// Return true when `addr` binds to a loopback interface (safe to run without
+/// authentication). Unparseable or non-loopback addresses are treated as
+/// non-loopback so the insecure-bind guard fails closed.
+fn addr_is_loopback(addr: &str) -> bool {
+    use std::net::ToSocketAddrs;
+    match addr.to_socket_addrs() {
+        Ok(iter) => {
+            let resolved: Vec<_> = iter.collect();
+            !resolved.is_empty() && resolved.iter().all(|sa| sa.ip().is_loopback())
+        }
+        Err(_) => false,
+    }
 }
 
 /// Build OIDC validator from environment variables (if configured).
@@ -3080,29 +3124,35 @@ async fn mcp_handler(
                 .unwrap_or(serde_json::Value::Object(Default::default()));
 
             // Run the dcert binary directly for tool calls.
-            let result = dispatch_tool_call(&state.mcp_server.config, &tool_name, &arguments).await;
+            let (result, is_error) = dispatch_tool_call(&state.mcp_server.config, &tool_name, &arguments).await;
 
             axum::response::Json(serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": id,
                 "result": {
                     "content": [{"type": "text", "text": result}],
-                    "isError": false
+                    "isError": is_error
                 }
             }))
         }
-        "initialize" => axum::response::Json(serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "result": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": { "tools": {} },
-                "serverInfo": {
-                    "name": "dcert-mcp",
-                    "version": dcert_mcp_version()
+        "initialize" => {
+            // Negotiate the protocol version instead of pinning the oldest
+            // revision: echo the client's requested version when we support it,
+            // otherwise advertise the latest version the rmcp SDK implements.
+            let requested = params.get("protocolVersion").and_then(|v| v.as_str());
+            axum::response::Json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "protocolVersion": negotiate_protocol_version(requested),
+                    "capabilities": { "tools": {} },
+                    "serverInfo": {
+                        "name": "dcert-mcp",
+                        "version": dcert_mcp_version()
+                    }
                 }
-            }
-        })),
+            }))
+        }
         _ => axum::response::Json(serde_json::json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -3114,10 +3164,37 @@ async fn mcp_handler(
     }
 }
 
+/// Negotiate the MCP protocol version for the HTTP transport.
+///
+/// Echoes the client's requested version when the rmcp SDK supports it,
+/// otherwise falls back to the latest version rmcp implements. This keeps the
+/// hand-rolled HTTP handler in lockstep with the stdio transport (which
+/// negotiates through rmcp directly) instead of pinning the oldest revision.
+fn negotiate_protocol_version(requested: Option<&str>) -> String {
+    use rmcp::model::ProtocolVersion;
+    match requested {
+        Some(v) if ProtocolVersion::KNOWN_VERSIONS.iter().any(|k| k.as_str() == v) => v.to_string(),
+        _ => ProtocolVersion::LATEST.as_str().to_string(),
+    }
+}
+
 /// Dispatch a tool call by running the dcert binary with appropriate arguments.
-async fn dispatch_tool_call(config: &McpConfig, tool_name: &str, arguments: &serde_json::Value) -> String {
+///
+/// Returns `(output, is_error)` so the HTTP transport can set the JSON-RPC
+/// `isError` flag correctly instead of always reporting success.
+async fn dispatch_tool_call(config: &McpConfig, tool_name: &str, arguments: &serde_json::Value) -> (String, bool) {
     // Map tool names to dcert CLI arguments.
     let mut args: Vec<String> = Vec::new();
+
+    // The HTTP dispatch path reaches the subprocess argv directly, so it must
+    // apply the same target hardening as the stdio `#[tool]` handlers: reject
+    // empty, flag-like (`-`-prefixed), and null-byte-bearing targets before
+    // they can be interpreted as CLI flags.
+    if let Some(target) = arguments.get("target").and_then(|v| v.as_str()) {
+        if let Err(e) = validate_target(target) {
+            return (format!("error: {e}"), true);
+        }
+    }
 
     match tool_name {
         "analyze_certificate" => {
@@ -3181,7 +3258,7 @@ async fn dispatch_tool_call(config: &McpConfig, tool_name: &str, arguments: &ser
             args.extend(["--format".to_string(), "json".to_string()]);
         }
         _ => {
-            return format!("unknown tool: {tool_name}");
+            return (format!("unknown tool: {tool_name}"), true);
         }
     }
 
@@ -3196,9 +3273,9 @@ async fn dispatch_tool_call(config: &McpConfig, tool_name: &str, arguments: &ser
             if code != 0 {
                 output.push_str(&format!("\n--- exit code: {code} ---"));
             }
-            output
+            (output, code != 0)
         }
-        Err(e) => format!("error: {e}"),
+        Err(e) => (format!("error: {e}"), true),
     }
 }
 
@@ -3219,6 +3296,63 @@ mod tests {
         assert_eq!(parse_allowed_origins(""), CorsOriginPolicy::None);
         assert_eq!(parse_allowed_origins("   "), CorsOriginPolicy::None);
         assert_eq!(parse_allowed_origins(" , , "), CorsOriginPolicy::None);
+    }
+
+    // ---------------------------------------------------------------
+    // MCP HTTP protocol version negotiation
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_negotiate_protocol_version_echoes_supported() {
+        assert_eq!(negotiate_protocol_version(Some("2025-06-18")), "2025-06-18");
+        assert_eq!(negotiate_protocol_version(Some("2024-11-05")), "2024-11-05");
+        assert_eq!(negotiate_protocol_version(Some("2025-11-25")), "2025-11-25");
+    }
+
+    #[test]
+    fn test_negotiate_protocol_version_falls_back_to_latest() {
+        // Unknown or absent requested version → advertise the latest we support.
+        assert_eq!(negotiate_protocol_version(None), "2025-11-25");
+        assert_eq!(negotiate_protocol_version(Some("1999-01-01")), "2025-11-25");
+        assert_eq!(negotiate_protocol_version(Some("")), "2025-11-25");
+    }
+
+    // ---------------------------------------------------------------
+    // Insecure-bind guard helper
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_addr_is_loopback() {
+        assert!(addr_is_loopback("127.0.0.1:3000"));
+        assert!(addr_is_loopback("[::1]:3000"));
+        assert!(!addr_is_loopback("0.0.0.0:3000"));
+        assert!(!addr_is_loopback("192.168.1.10:3000"));
+        // Unparseable → fail closed (treated as non-loopback).
+        assert!(!addr_is_loopback("not-an-addr"));
+    }
+
+    // ---------------------------------------------------------------
+    // HTTP dispatch input validation
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_dispatch_tool_call_rejects_flag_target() {
+        let config = test_config(PathBuf::from("/nonexistent/dcert"));
+        let args = serde_json::json!({"target": "--no-verify"});
+        let (out, is_error) = dispatch_tool_call(&config, "analyze_certificate", &args).await;
+        assert!(is_error, "flag-like target must be rejected");
+        assert!(
+            out.contains("must not start with '-'") || out.contains("error:"),
+            "got: {out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_tool_call_unknown_tool_is_error() {
+        let config = test_config(PathBuf::from("/nonexistent/dcert"));
+        let (out, is_error) = dispatch_tool_call(&config, "no_such_tool", &serde_json::json!({})).await;
+        assert!(is_error);
+        assert!(out.contains("unknown tool"));
     }
 
     #[test]
