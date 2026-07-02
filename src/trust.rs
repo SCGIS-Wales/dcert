@@ -47,6 +47,10 @@ const MAX_AIA_HOPS: usize = 4;
 /// certs are a few KB; this caps a misbehaving or hostile endpoint.
 const MAX_ISSUER_BYTES: usize = 256 * 1024;
 
+/// Cap on the CCADB root bundle download to bound memory if a hostile proxy
+/// streams an oversized body. The real bundle is ~250 KB; 8 MB is generous.
+const MAX_BUNDLE_BYTES: usize = 8 * 1024 * 1024;
+
 /// Upstream Mozilla/CCADB bundle used by `--refresh-public-roots`.
 const CCADB_BUNDLE_URL: &str = "https://curl.se/ca/cacert.pem";
 
@@ -476,6 +480,10 @@ fn refresh_public_roots(proxy: &ProxyConfig, timeout: Duration, debug: bool) -> 
         .map_err(|e| anyhow::anyhow!("{e}"))?
         .bytes()
         .map_err(|e| anyhow::anyhow!("read failed: {e}"))?;
+
+    if pem.len() > MAX_BUNDLE_BYTES {
+        anyhow::bail!("CCADB bundle too large ({} bytes)", pem.len());
+    }
 
     let certs = X509::stack_from_pem(&pem).map_err(|e| anyhow::anyhow!("failed to parse CCADB bundle: {e}"))?;
 

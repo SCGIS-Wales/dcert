@@ -6,7 +6,7 @@ If you discover a security vulnerability, please report it responsibly by openin
 
 ## Authentication Architecture
 
-dcert-mcp supports OIDC/OAuth2 authentication for HTTP transport mode, following [MCP Security Best Practices](https://modelcontextprotocol.io/specification/2024-11-05/security).
+dcert-mcp supports OIDC/OAuth2 authentication for HTTP transport mode, following [MCP Security Best Practices](https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices).
 
 ### Transport Modes
 
@@ -23,6 +23,10 @@ When running in HTTP mode, authentication is resolved in priority order:
 2. **Static bearer token** — if only `DCERT_MCP_AUTH_TOKEN` is set
 3. **No auth** — if neither is configured (not recommended for production)
 
+When no authentication is configured, `dcert-mcp` refuses to start on a non-loopback bind address (e.g. the default `0.0.0.0:3000`) so an unauthenticated, subprocess-spawning endpoint is never exposed to the network by accident. Bind to `127.0.0.1`, configure authentication, or set `DCERT_MCP_ALLOW_INSECURE=1` to override.
+
+The signature algorithm allow-list accepts only RSA (RS256/384/512) and ECDSA (ES256/384); `alg=none` and HMAC algorithms are rejected to prevent algorithm-confusion attacks.
+
 ### OIDC/OAuth2 Token Validation
 
 JWT tokens are validated against:
@@ -34,7 +38,7 @@ JWT tokens are validated against:
 - **Scopes** — optional scope enforcement via `DCERT_MCP_REQUIRED_SCOPES`
 - **Roles** — optional role enforcement via `DCERT_MCP_REQUIRED_ROLES`
 
-Supported algorithms: RS256, RS384, RS512.
+Supported algorithms: RS256, RS384, RS512, ES256, ES384.
 
 ### On-Behalf-Of (OBO) Token Exchange
 

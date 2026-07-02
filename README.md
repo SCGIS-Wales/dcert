@@ -319,6 +319,13 @@ dcert https://api.example.com --connect-to 10.0.0.5
 
 # Skip TLS verification (self-signed certs)
 dcert https://localhost:8443 --no-verify
+
+# Inspect the certificate of a STARTTLS service (SMTP/IMAP/POP3/FTP)
+dcert mail.example.com:587 --starttls smtp
+dcert imap.example.com:143 --starttls imap
+
+# Show the negotiated cipher suite in IANA or OpenSSL notation
+dcert https://example.com --ciphers iana
 ```
 
 #### mTLS (Mutual TLS)
@@ -387,6 +394,9 @@ Options:
       --max-tls <VERSION>              Maximum TLS version [1.2, 1.3]
       --cipher-list <STRING>           Allowed TLS 1.2 ciphers (OpenSSL format)
       --cipher-suites <SUITES>         Allowed TLS 1.3 cipher suites (colon-separated)
+      --ciphers <NOTATION>             Show the negotiated cipher suite in [iana, openssl] notation
+      --starttls <PROTOCOL>            Upgrade a plaintext connection before TLS
+                                       [smtp, imap, pop3, ftp]
       --no-verify                      Disable TLS verification (insecure)
       --timeout <SECONDS>              Connection timeout (default: 10)
       --read-timeout <SECONDS>         Read timeout (default: 5)
@@ -630,14 +640,30 @@ Set these environment variables before using vault commands:
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `VAULT_ADDR` | Yes | Vault server URL (e.g., `https://vault.example.com:8200`) |
-| `VAULT_TOKEN` | No* | Vault authentication token |
+| `VAULT_TOKEN` | No* | Vault authentication token (for `--auth-method token`) |
 | `VAULT_CACERT` | No | Custom CA certificate PEM file for Vault TLS |
 | `VAULT_CAPATH` | No | Directory of CA PEM files for Vault TLS |
 | `VAULT_SKIP_VERIFY` | No | Set to `1` to skip TLS verification (insecure) |
 | `SSL_CERT_FILE` | No | Fallback CA cert file (used if `VAULT_CACERT` is not set) |
 | `SSL_CERT_DIR` | No | Fallback CA cert directory (used if `VAULT_CAPATH` is not set) |
+| `DCERT_LDAP_USERNAME` / `DCERT_LDAP_PASSWORD` | No | Credentials for `--auth-method ldap` |
+| `DCERT_APPROLE_ROLE_ID` / `DCERT_APPROLE_SECRET_ID` | No | Credentials for `--auth-method approle` |
 
 \* Token is discovered in order: `VAULT_TOKEN` env var, then `~/.vault-token` file.
+
+#### Authentication Methods
+
+By default dcert authenticates with a Vault token. LDAP and AppRole logins are also supported via `--auth-method`:
+
+```bash
+# LDAP login (credentials via flags or DCERT_LDAP_USERNAME / DCERT_LDAP_PASSWORD)
+dcert vault --auth-method ldap --ldap-username alice issue --cn www.example.com --role my-role
+
+# AppRole login (credentials via flags or DCERT_APPROLE_ROLE_ID / DCERT_APPROLE_SECRET_ID)
+dcert vault --auth-method approle \
+  --approle-role-id "$ROLE_ID" --approle-secret-id "$SECRET_ID" \
+  issue --cn www.example.com --role my-role
+```
 
 **TLS configuration**: By default, dcert uses your system's native CA store. For corporate Vault servers using internal CAs, set `VAULT_CACERT` or `SSL_CERT_FILE` to point to your CA bundle. Use `--debug` to diagnose TLS issues:
 
@@ -804,9 +830,16 @@ Error: Permission denied by Vault.
 dcert vault [GLOBAL OPTIONS] <SUBCOMMAND> [OPTIONS]
 
 Global Vault Options:
-      --skip-verify           Skip TLS verification (insecure). Also: VAULT_SKIP_VERIFY=1
-      --vault-cacert <PATH>   Custom CA certificate PEM file. Also: VAULT_CACERT env var
-      --debug                 Show verbose TLS and API diagnostics
+      --skip-verify              Skip TLS verification (insecure). Also: VAULT_SKIP_VERIFY=1
+      --vault-cacert <PATH>      Custom CA certificate PEM file. Also: VAULT_CACERT env var
+      --auth-method <METHOD>     Vault auth method [token, ldap, approle] (default: token)
+      --ldap-username <USER>     LDAP username (env: DCERT_LDAP_USERNAME)
+      --ldap-password <PASS>     LDAP password (env: DCERT_LDAP_PASSWORD)
+      --ldap-mount <MOUNT>       LDAP auth mount (default: ldap)
+      --approle-role-id <ID>     AppRole role ID (env: DCERT_APPROLE_ROLE_ID)
+      --approle-secret-id <ID>   AppRole secret ID (env: DCERT_APPROLE_SECRET_ID)
+      --approle-mount <MOUNT>    AppRole auth mount (default: approle)
+      --debug                    Show verbose TLS and API diagnostics
 
 dcert vault issue [OPTIONS]
       --cn <NAME>           Common Name. Omit for interactive wizard.
@@ -831,6 +864,7 @@ dcert vault sign [OPTIONS]
       --mount <MOUNT>       PKI mount point (default: vault_intermediate)
       --output <NAME>       Output file base name
   -f, --format <FORMAT>     Output format [pretty, json, yaml]
+      --pfx-password <PW>   Output as PFX instead of PEM (env: DCERT_CERT_PASSWORD)
       --store-path <PATH>   Store certificate in Vault KV after signing
       --kv-version <1|2>    Vault KV version for --store-path (default: 1)
 
@@ -878,6 +912,8 @@ dcert vault renew [OPTIONS] <PATH>
 
 `dcert-mcp` is a Model Context Protocol server that exposes dcert's capabilities as tools for AI-powered IDEs. It supports two transport modes: **stdio** (default, for IDE integration) and **HTTP** (for remote deployment with optional OIDC/OAuth2 authentication).
 
+It implements the current MCP specification revision (**2025-11-25**) via the `rmcp` SDK. On the HTTP transport it negotiates the protocol version with the client: it echoes the client's requested version when supported and otherwise advertises the latest version it implements.
+
 ### Tools
 
 | Tool | Description |
@@ -892,10 +928,18 @@ dcert vault renew [OPTIONS] <PATH>
 | `validate_csr` | Validate a CSR for compliance with CA/B Forum Baseline Requirements, DigiCert, and X9 standards. Returns findings with severity levels. |
 | `validate_certificate` | Run compliance checks on a certificate (PEM file or HTTPS endpoint). Checks key size, signature algorithm, validity period, SANs, CT, EKU, and Basic Constraints against CA/B Forum standards. |
 | `verify_key_match` | Verify that a private key matches a certificate (PEM file or HTTPS endpoint). |
+| `verify_key_auto_discover` | Auto-discover and verify all matching cert/key pairs in a directory. |
 | `convert_pfx_to_pem` | Convert PKCS12/PFX to separate PEM files (cert, key, CA chain). |
 | `convert_pem_to_pfx` | Convert PEM certificate + key to PKCS12/PFX file. |
 | `create_keystore` | Create a PKCS12 keystore from PEM cert + key (Java-compatible). |
 | `create_truststore` | Create a PKCS12 truststore from CA certificate PEM files. |
+| `vault_issue` | Issue a TLS certificate from HashiCorp Vault PKI. |
+| `vault_sign` | Sign a CSR using Vault PKI. |
+| `vault_revoke` | Revoke a certificate in Vault PKI (by serial or PEM file). |
+| `vault_list` | List certificates issued by Vault PKI, optionally with details. |
+| `vault_store` | Store a certificate + key in Vault KV (v1 or v2). |
+| `vault_validate` | Read and validate a certificate + key from Vault KV. |
+| `vault_renew` | Renew a certificate stored in Vault KV. |
 
 ### Configuration
 
@@ -1120,9 +1164,11 @@ The HTTP server exposes:
 - `GET /health` — health check endpoint
 - `POST /mcp` — JSON-RPC endpoint for MCP tool calls
 
+> **Security:** the HTTP transport exposes cert tooling that spawns subprocesses. If no authentication is configured (neither `DCERT_MCP_OIDC_ISSUER` nor `DCERT_MCP_AUTH_TOKEN`), `dcert-mcp` **refuses to start when binding to a non-loopback address** (e.g. the default `0.0.0.0:3000`). Either configure authentication, bind to `127.0.0.1`, or set `DCERT_MCP_ALLOW_INSECURE=1` to explicitly opt in to an unauthenticated public bind (not recommended). Unauthenticated binds to loopback are always allowed.
+
 #### Authentication (OIDC/OAuth2)
 
-When running in HTTP mode, `dcert-mcp` supports OIDC/OAuth2 JWT authentication following [MCP Security Best Practices](https://modelcontextprotocol.io/specification/2024-11-05/security). Authentication is resolved in priority order:
+When running in HTTP mode, `dcert-mcp` supports OIDC/OAuth2 JWT authentication following [MCP Security Best Practices](https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices). Authentication is resolved in priority order:
 
 1. **OIDC/OAuth2** — if `DCERT_MCP_OIDC_ISSUER` is set (recommended for production)
 2. **Static bearer token** — if only `DCERT_MCP_AUTH_TOKEN` is set
@@ -1132,7 +1178,9 @@ OIDC tokens are validated against JWKS (JSON Web Key Sets) with automatic key ro
 
 #### On-Behalf-Of (OBO) Token Exchange
 
-For downstream API calls that require user context, `dcert-mcp` supports the OBO token exchange flow:
+> **Status:** the OBO token-exchange module is included in the codebase but is **not yet wired to environment configuration** — there is currently no env-var switch that enables it at runtime. It is documented here as the intended design for a future release.
+
+For downstream API calls that require user context, the OBO token exchange flow is designed so that:
 
 - User tokens are **never forwarded** to downstream APIs
 - OBO exchange acquires a new token scoped to the downstream resource
@@ -1150,10 +1198,10 @@ For downstream API calls that require user context, `dcert-mcp` supports the OBO
 | `DCERT_MCP_ALLOWED_CLIENTS` | Comma-separated allowed client app IDs |
 | `DCERT_MCP_SESSION_TTL` | Session cache inactivity TTL in seconds (default: 300) |
 | `DCERT_MCP_AUTH_TOKEN` | Static bearer token (lower priority than OIDC) |
-| `DCERT_MCP_OBO_TOKEN_URL` | OBO token exchange endpoint |
-| `DCERT_MCP_OBO_CLIENT_ID` | OBO client application ID |
-| `DCERT_MCP_OBO_CLIENT_SECRET` | OBO client secret |
 | `DCERT_MCP_ALLOWED_ORIGINS` | Comma-separated CORS allowlist for HTTP mode. Unset = no cross-origin access (default); `*` allows any origin (not recommended) |
+| `DCERT_MCP_ALLOW_INSECURE` | Set to `1` to allow starting HTTP mode unauthenticated on a non-loopback address (not recommended) |
+
+The server also reads a few non-auth environment variables: `DCERT_MCP_MODE` (`stdio`/`http`, alternative to `--mode`), `DCERT_MCP_ADDR` (bind address, alternative to `--addr`), and `DCERT_MCP_DEBUG` (pass `--debug` to the `dcert` subprocess).
 
 See [SECURITY.md](SECURITY.md) for full security architecture documentation.
 
@@ -1338,7 +1386,10 @@ server.run()  # stdio mode (default)
 # stdio mode (default, for MCP clients like Claude Code)
 dcert-python
 
-# HTTP mode
+# HTTP mode (binds 127.0.0.1 by default — the proxy has no auth of its own)
+dcert-python --transport http --port 8080
+
+# Expose on all interfaces only behind a trusted, authenticating gateway
 dcert-python --transport http --host 0.0.0.0 --port 8080
 
 # Pre-download binary
