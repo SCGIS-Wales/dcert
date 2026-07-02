@@ -78,16 +78,29 @@ def _find_binary(name: str) -> str:
     if found and not _is_python_script(found):
         return found
 
-    # 3. Auto-download from GitHub Releases (fallback for universal wheel)
+    # 3. Auto-download from GitHub Releases (fallback for universal wheel).
+    # ensure_binary downloads/verifies the archive and extracts BOTH binaries
+    # (dcert and dcert-mcp) into the install dir, returning the dcert-mcp path.
+    # Resolve the actually-requested binary from that dir instead of returning
+    # ensure_binary's dcert-mcp path unconditionally (which would exec the MCP
+    # server when the user asked for the dcert CLI).
     from dcert import __version__
-    from dcert.download import ensure_binary
+    from dcert.download import _bin_filename, _get_install_dir, ensure_binary
 
     try:
-        downloaded = ensure_binary(__version__)
-        if downloaded:
-            return downloaded
+        mcp_path = ensure_binary(__version__)
+    except RuntimeError as e:
+        # Checksum mismatch is a tamper indicator — surface it rather than
+        # masking it behind a generic "binary not found" message.
+        raise FileNotFoundError(f"{name} download failed integrity verification: {e}") from e
     except Exception:
-        pass
+        # Network/URL errors fall through to the install-hint message below.
+        mcp_path = None
+
+    if mcp_path:
+        candidate = _get_install_dir() / _bin_filename(name)
+        if candidate.exists() and os.access(str(candidate), os.X_OK):
+            return str(candidate)
 
     raise FileNotFoundError(
         f"{name} binary not found. Install dcert via:\n"
@@ -137,8 +150,11 @@ def main() -> None:
     )
     parser.add_argument(
         "--host",
-        default="0.0.0.0",
-        help="Host for HTTP/SSE mode (default: 0.0.0.0)",
+        default="127.0.0.1",
+        help=(
+            "Host for HTTP/SSE mode (default: 127.0.0.1). The proxy has no "
+            "authentication; bind to 0.0.0.0 only behind a trusted gateway."
+        ),
     )
     parser.add_argument(
         "--port",

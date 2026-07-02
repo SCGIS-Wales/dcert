@@ -69,17 +69,19 @@ pub async fn auth_middleware(
         // while avoiding storing the sensitive bearer token as a map key.
         let cache_key = token_cache_key(token);
         let mut claims: Option<TokenClaims> = None;
-        if let Some(ref cache) = state.session_cache {
-            claims = cache.get(&cache_key).await;
+        if let (Some(cache), Some(key)) = (state.session_cache.as_ref(), cache_key.as_ref()) {
+            claims = cache.get(key).await;
         }
 
         if claims.is_none() {
             // Validate the token.
             match validator.validate_token(token).await {
                 Ok(validated) => {
-                    // Cache the validated claims.
-                    if let Some(ref cache) = state.session_cache {
-                        cache.put(cache_key.clone(), validated.clone()).await;
+                    // Cache the validated claims (only when we have a real hash
+                    // key; a hashing failure skips caching rather than falling
+                    // back to a collision-prone key).
+                    if let (Some(cache), Some(key)) = (state.session_cache.as_ref(), cache_key.as_ref()) {
+                        cache.put(key.clone(), validated.clone()).await;
                     }
                     claims = Some(validated);
                 }
@@ -142,12 +144,15 @@ fn extract_bearer_token(auth_header: &str) -> &str {
 
 /// Derives a cache key from a bearer token by hashing it with SHA-256.
 /// This avoids storing the raw token in the cache while ensuring consistent keys.
-fn token_cache_key(token: &str) -> String {
+///
+/// Returns `None` if hashing fails so the caller skips the cache entirely. A
+/// length-based fallback would collide all tokens of equal length, which could
+/// let an unvalidated token receive claims cached for a validated one.
+fn token_cache_key(token: &str) -> Option<String> {
     use openssl::hash::{MessageDigest, hash};
-    match hash(MessageDigest::sha256(), token.as_bytes()) {
-        Ok(digest) => base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest),
-        Err(_) => token.len().to_string(), // fallback — effectively disables caching
-    }
+    hash(MessageDigest::sha256(), token.as_bytes())
+        .ok()
+        .map(|digest| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest))
 }
 
 /// Constant-time byte comparison to prevent timing attacks on token comparison.
