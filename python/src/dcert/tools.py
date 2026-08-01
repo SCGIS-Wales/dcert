@@ -102,6 +102,30 @@ def _validate_required(params: dict[str, Any], names: list[str], tool: str) -> N
             raise ValueError(f"{tool}() requires '{name}' parameter")
 
 
+def _add_connection_args(
+    args: dict[str, Any],
+    *,
+    connect_to: str | list[str] | None,
+    resolve: str | list[str] | None,
+    proxy: str | None,
+    noproxy: str | None,
+) -> None:
+    """Merge the shared connection-override arguments into a tool payload.
+
+    ``proxy`` and ``noproxy`` are checked against ``None`` rather than
+    truthiness because the empty string is meaningful for both: it forces a
+    direct connection and clears an inherited ``NO_PROXY`` respectively.
+    """
+    if connect_to is not None:
+        args["connect_to"] = connect_to
+    if resolve is not None:
+        args["resolve"] = resolve
+    if proxy is not None:
+        args["proxy"] = proxy
+    if noproxy is not None:
+        args["noproxy"] = noproxy
+
+
 # ---------------------------------------------------------------------------
 # Client
 # ---------------------------------------------------------------------------
@@ -314,6 +338,10 @@ class DcertClient:
         pkcs12: str | None = None,
         cert_password: str | None = None,
         ca_cert: str | None = None,
+        connect_to: str | list[str] | None = None,
+        resolve: str | list[str] | None = None,
+        proxy: str | None = None,
+        noproxy: str | None = None,
         timeout: float | None = None,
     ) -> Any:
         """Decode and analyze TLS certificates from an HTTPS endpoint or PEM file.
@@ -331,6 +359,19 @@ class DcertClient:
             pkcs12: PKCS12/PFX file for mTLS.
             cert_password: Password for PKCS12 file.
             ca_cert: Custom CA certificate bundle PEM file.
+            connect_to: Redirect the connection while still validating the
+                hostname in ``target``. A bare IP address, or curl's
+                "HOST1:PORT1:HOST2:PORT2" form to redirect to another hostname
+                or port. A single string or a list of them.
+            resolve: Pin "HOST:PORT:ADDRESS" to specific IP addresses instead
+                of using DNS, like curl's --resolve. Only IP addresses are
+                accepted; use ``connect_to`` for a hostname. A single string or
+                a list of them.
+            proxy: Forward proxy URL for this request, overriding
+                HTTPS_PROXY/HTTP_PROXY. Pass "" to force a direct connection.
+                ``connect_to``/``resolve`` always bypass the proxy.
+            noproxy: Comma-separated hosts that bypass the proxy, overriding
+                NO_PROXY. "*" bypasses it entirely.
             timeout: Timeout in seconds (overrides default).
         """
         args: dict[str, Any] = {"target": target}
@@ -351,6 +392,9 @@ class DcertClient:
             args["cert_password"] = cert_password
         if ca_cert is not None:
             args["ca_cert"] = ca_cert
+        _add_connection_args(
+            args, connect_to=connect_to, resolve=resolve, proxy=proxy, noproxy=noproxy
+        )
         return await self._call("analyze_certificate", args, timeout=timeout)
 
     async def check_expiry(
@@ -363,6 +407,10 @@ class DcertClient:
         pkcs12: str | None = None,
         cert_password: str | None = None,
         ca_cert: str | None = None,
+        connect_to: str | list[str] | None = None,
+        resolve: str | list[str] | None = None,
+        proxy: str | None = None,
+        noproxy: str | None = None,
         timeout: float | None = None,
     ) -> Any:
         """Check if TLS certificates expire within a specified number of days.
@@ -375,6 +423,19 @@ class DcertClient:
             pkcs12: PKCS12/PFX file for mTLS.
             cert_password: Password for PKCS12 file.
             ca_cert: Custom CA certificate bundle PEM file.
+            connect_to: Redirect the connection while still validating the
+                hostname in ``target``. A bare IP address, or curl's
+                "HOST1:PORT1:HOST2:PORT2" form to redirect to another hostname
+                or port. A single string or a list of them.
+            resolve: Pin "HOST:PORT:ADDRESS" to specific IP addresses instead
+                of using DNS, like curl's --resolve. Only IP addresses are
+                accepted; use ``connect_to`` for a hostname. A single string or
+                a list of them.
+            proxy: Forward proxy URL for this request, overriding
+                HTTPS_PROXY/HTTP_PROXY. Pass "" to force a direct connection.
+                ``connect_to``/``resolve`` always bypass the proxy.
+            noproxy: Comma-separated hosts that bypass the proxy, overriding
+                NO_PROXY. "*" bypasses it entirely.
             timeout: Timeout in seconds (overrides default).
         """
         args: dict[str, Any] = {"target": target}
@@ -391,6 +452,9 @@ class DcertClient:
             args["cert_password"] = cert_password
         if ca_cert is not None:
             args["ca_cert"] = ca_cert
+        _add_connection_args(
+            args, connect_to=connect_to, resolve=resolve, proxy=proxy, noproxy=noproxy
+        )
         return await self._call("check_expiry", args, timeout=timeout)
 
     async def check_revocation(
@@ -402,6 +466,10 @@ class DcertClient:
         pkcs12: str | None = None,
         cert_password: str | None = None,
         ca_cert: str | None = None,
+        connect_to: str | list[str] | None = None,
+        resolve: str | list[str] | None = None,
+        proxy: str | None = None,
+        noproxy: str | None = None,
         timeout: float | None = None,
     ) -> Any:
         """Check the OCSP revocation status of TLS certificates.
@@ -413,6 +481,19 @@ class DcertClient:
             pkcs12: PKCS12/PFX file for mTLS.
             cert_password: Password for PKCS12 file.
             ca_cert: Custom CA certificate bundle PEM file.
+            connect_to: Redirect the connection while still validating the
+                hostname in ``target``. A bare IP address, or curl's
+                "HOST1:PORT1:HOST2:PORT2" form to redirect to another hostname
+                or port. A single string or a list of them.
+            resolve: Pin "HOST:PORT:ADDRESS" to specific IP addresses instead
+                of using DNS, like curl's --resolve. Only IP addresses are
+                accepted; use ``connect_to`` for a hostname. A single string or
+                a list of them.
+            proxy: Forward proxy URL for this request, overriding
+                HTTPS_PROXY/HTTP_PROXY. Pass "" to force a direct connection.
+                ``connect_to``/``resolve`` always bypass the proxy.
+            noproxy: Comma-separated hosts that bypass the proxy, overriding
+                NO_PROXY. "*" bypasses it entirely.
             timeout: Timeout in seconds (overrides default).
         """
         args: dict[str, Any] = {"target": target}
@@ -427,6 +508,9 @@ class DcertClient:
             args["cert_password"] = cert_password
         if ca_cert is not None:
             args["ca_cert"] = ca_cert
+        _add_connection_args(
+            args, connect_to=connect_to, resolve=resolve, proxy=proxy, noproxy=noproxy
+        )
         return await self._call("check_revocation", args, timeout=timeout)
 
     async def compare_certificates(
@@ -458,6 +542,10 @@ class DcertClient:
         pkcs12: str | None = None,
         cert_password: str | None = None,
         ca_cert: str | None = None,
+        connect_to: str | list[str] | None = None,
+        resolve: str | list[str] | None = None,
+        proxy: str | None = None,
+        noproxy: str | None = None,
         timeout: float | None = None,
     ) -> Any:
         """Get TLS connection details for an HTTPS endpoint.
@@ -474,6 +562,19 @@ class DcertClient:
             pkcs12: PKCS12/PFX file for mTLS.
             cert_password: Password for PKCS12 file.
             ca_cert: Custom CA certificate bundle PEM file.
+            connect_to: Redirect the connection while still validating the
+                hostname in ``target``. A bare IP address, or curl's
+                "HOST1:PORT1:HOST2:PORT2" form to redirect to another hostname
+                or port. A single string or a list of them.
+            resolve: Pin "HOST:PORT:ADDRESS" to specific IP addresses instead
+                of using DNS, like curl's --resolve. Only IP addresses are
+                accepted; use ``connect_to`` for a hostname. A single string or
+                a list of them.
+            proxy: Forward proxy URL for this request, overriding
+                HTTPS_PROXY/HTTP_PROXY. Pass "" to force a direct connection.
+                ``connect_to``/``resolve`` always bypass the proxy.
+            noproxy: Comma-separated hosts that bypass the proxy, overriding
+                NO_PROXY. "*" bypasses it entirely.
             timeout: Timeout in seconds (overrides default).
         """
         args: dict[str, Any] = {"target": target}
@@ -492,6 +593,9 @@ class DcertClient:
             args["cert_password"] = cert_password
         if ca_cert is not None:
             args["ca_cert"] = ca_cert
+        _add_connection_args(
+            args, connect_to=connect_to, resolve=resolve, proxy=proxy, noproxy=noproxy
+        )
         return await self._call("tls_connection_info", args, timeout=timeout)
 
     async def export_pem(
@@ -505,6 +609,10 @@ class DcertClient:
         pkcs12: str | None = None,
         cert_password: str | None = None,
         ca_cert: str | None = None,
+        connect_to: str | list[str] | None = None,
+        resolve: str | list[str] | None = None,
+        proxy: str | None = None,
+        noproxy: str | None = None,
         timeout: float | None = None,
     ) -> Any:
         """Export the TLS certificate chain as PEM text.
@@ -518,6 +626,19 @@ class DcertClient:
             pkcs12: PKCS12/PFX file for mTLS.
             cert_password: Password for PKCS12 file.
             ca_cert: Custom CA certificate bundle PEM file.
+            connect_to: Redirect the connection while still validating the
+                hostname in ``target``. A bare IP address, or curl's
+                "HOST1:PORT1:HOST2:PORT2" form to redirect to another hostname
+                or port. A single string or a list of them.
+            resolve: Pin "HOST:PORT:ADDRESS" to specific IP addresses instead
+                of using DNS, like curl's --resolve. Only IP addresses are
+                accepted; use ``connect_to`` for a hostname. A single string or
+                a list of them.
+            proxy: Forward proxy URL for this request, overriding
+                HTTPS_PROXY/HTTP_PROXY. Pass "" to force a direct connection.
+                ``connect_to``/``resolve`` always bypass the proxy.
+            noproxy: Comma-separated hosts that bypass the proxy, overriding
+                NO_PROXY. "*" bypasses it entirely.
             timeout: Timeout in seconds (overrides default).
         """
         args: dict[str, Any] = {"target": target}
@@ -536,6 +657,9 @@ class DcertClient:
             args["cert_password"] = cert_password
         if ca_cert is not None:
             args["ca_cert"] = ca_cert
+        _add_connection_args(
+            args, connect_to=connect_to, resolve=resolve, proxy=proxy, noproxy=noproxy
+        )
         return await self._call("export_pem", args, timeout=timeout)
 
     async def verify_key_match(
