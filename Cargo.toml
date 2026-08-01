@@ -60,5 +60,9 @@ openssl = { version = "0.10", features = ["vendored"] }
 
 [dev-dependencies]
 wiremock = "0.6"
+# Lets the CLI integration tests stand up a real loopback TLS server, so the
+# --resolve / --connect-to overrides are exercised end to end rather than only
+# at the argument-parsing layer.
+openssl = "0.10"
 
 rustc_version_runtime = "0.3"

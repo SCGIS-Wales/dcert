@@ -11,6 +11,7 @@ use x509_parser::prelude::FromDer;
 use crate::cert::{CertInfo, CertProcessOpts, extract_ocsp_url, parse_cert_infos_from_pem};
 use crate::cli::{CheckArgs, CipherNotation, HttpProtocol, OutputFormat, SortOrder};
 use crate::compliance::{self, ChainComplianceReport, Severity};
+use crate::connect::ConnectOverrides;
 use crate::convert::{CertRole, ConvertResult};
 use crate::debug::debug_log;
 use crate::ocsp::check_ocsp_status;
@@ -73,6 +74,11 @@ pub fn print_pretty(infos: &[CertInfo], debug: &PrettyDebugInfo<'_>) {
             },
         };
         println!("  HTTP protocol: {}", proto_display);
+        if let Some(ref override_desc) = conn.connect_override {
+            println!("  Connection override: {}", override_desc.cyan());
+        } else if let Some(ref peer) = conn.peer_address {
+            println!("  Connected to: {}", peer);
+        }
         if conn.http_response_code > 0 {
             let code_color = match conn.http_response_code {
                 200..=299 => conn.http_response_code.to_string().green(),
@@ -322,6 +328,7 @@ pub fn process_target(
     target: &str,
     args: &CheckArgs,
     proxy_config: &ProxyConfig,
+    connect_overrides: &ConnectOverrides,
     public_roots: &PublicRoots,
     body: Option<&[u8]>,
     stdin_pem: Option<&str>,
@@ -370,7 +377,7 @@ pub fn process_target(
             timeout_secs: args.timeout,
             read_timeout_secs: args.read_timeout,
             sni_override: args.sni.as_deref(),
-            connect_to: args.connect_to.as_deref(),
+            connect_overrides,
             min_tls: args.min_tls,
             max_tls: args.max_tls,
             cipher_list: args.cipher_list.as_deref(),
@@ -399,7 +406,7 @@ pub fn process_target(
             timeout_secs: args.timeout,
             read_timeout_secs: args.read_timeout,
             sni_override: args.sni.as_deref(),
-            connect_to: args.connect_to.as_deref(),
+            connect_overrides,
             proxy_config,
             min_tls: args.min_tls,
             max_tls: args.max_tls,

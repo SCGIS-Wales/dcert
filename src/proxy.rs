@@ -33,6 +33,35 @@ impl ProxyConfig {
         }
     }
 
+    /// Build the effective configuration from the `--proxy` / `--noproxy` flags
+    /// layered over the environment.
+    ///
+    /// `--proxy` replaces both the HTTPS and HTTP proxy, as curl's `-x` does.
+    /// `--noproxy` replaces `NO_PROXY` outright, so `--noproxy ""` deliberately
+    /// clears an inherited bypass list and `--noproxy '*'` disables proxying.
+    pub fn resolve(proxy: Option<&str>, noproxy: Option<&str>) -> Result<Self> {
+        let mut config = Self::from_env();
+
+        if let Some(proxy) = proxy {
+            let proxy = proxy.trim();
+            if proxy.is_empty() {
+                // `--proxy ""` means "no proxy", matching curl.
+                config.https_proxy = None;
+                config.http_proxy = None;
+            } else {
+                validate_proxy_url(proxy)?;
+                config.https_proxy = Some(proxy.to_string());
+                config.http_proxy = Some(proxy.to_string());
+            }
+        }
+
+        if let Some(noproxy) = noproxy {
+            config.no_proxy = noproxy.trim().to_string();
+        }
+
+        Ok(config)
+    }
+
     pub fn get_proxy_url(&self, scheme: &str) -> Option<&str> {
         match scheme {
             "https" => self.https_proxy.as_deref(),
@@ -51,6 +80,10 @@ impl ProxyConfig {
             if pattern.is_empty() {
                 continue;
             }
+            // `*` bypasses the proxy for every host, as in curl's --noproxy.
+            if pattern == "*" {
+                return true;
+            }
             if pattern == host {
                 return true;
             }
@@ -66,6 +99,31 @@ impl ProxyConfig {
         }
         false
     }
+}
+
+/// Reject proxy URLs we cannot actually tunnel through, so the failure lands at
+/// argument-handling time rather than mid-connection.
+fn validate_proxy_url(proxy: &str) -> Result<()> {
+    let url = Url::parse(proxy).map_err(|e| {
+        anyhow::anyhow!(
+            "Invalid --proxy URL '{}': {} (expected e.g. http://proxy.corp:3128)",
+            proxy,
+            e
+        )
+    })?;
+    match url.scheme() {
+        "http" | "https" => {}
+        other => {
+            return Err(anyhow::anyhow!(
+                "Unsupported --proxy scheme '{}': dcert tunnels over HTTP CONNECT, so the proxy URL must be http:// or https://",
+                other
+            ));
+        }
+    }
+    if url.host_str().is_none_or(str::is_empty) {
+        return Err(anyhow::anyhow!("--proxy URL '{}' must include a host", proxy));
+    }
+    Ok(())
 }
 
 /// Connect through HTTP proxy using CONNECT method
@@ -227,6 +285,93 @@ mod tests {
             "127.0.0.1 should bypass for localhost"
         );
         assert!(localhost.should_bypass("::1"), "::1 should bypass for localhost");
+    }
+
+    #[test]
+    fn test_bypass_wildcard() {
+        let all = ProxyConfig {
+            https_proxy: Some("http://proxy:8080".to_string()),
+            http_proxy: None,
+            no_proxy: "*".to_string(),
+        };
+        assert!(all.should_bypass("example.com"), "'*' should bypass every host");
+        assert!(all.should_bypass("10.0.0.1"), "'*' should bypass IPs too");
+
+        let mixed = ProxyConfig {
+            https_proxy: None,
+            http_proxy: None,
+            no_proxy: "internal.corp,*".to_string(),
+        };
+        assert!(
+            mixed.should_bypass("anything.example.com"),
+            "'*' anywhere in the list wins"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // validate_proxy_url tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_validate_proxy_url() {
+        assert!(validate_proxy_url("http://proxy.corp:3128").is_ok());
+        assert!(validate_proxy_url("https://proxy.corp:3128").is_ok());
+        assert!(validate_proxy_url("http://user:pass@proxy.corp:3128").is_ok());
+
+        let err = validate_proxy_url("socks5://proxy.corp:1080").unwrap_err().to_string();
+        assert!(err.contains("Unsupported --proxy scheme"), "got: {err}");
+
+        let err = validate_proxy_url("not a url").unwrap_err().to_string();
+        assert!(err.contains("Invalid --proxy URL"), "got: {err}");
+
+        let err = validate_proxy_url("http://").unwrap_err().to_string();
+        assert!(
+            err.contains("Invalid --proxy URL") || err.contains("must include a host"),
+            "got: {err}"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // ProxyConfig::resolve tests
+    //
+    // These only exercise the flag paths, which are independent of the
+    // process environment; env precedence itself is covered by from_env.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_resolve_proxy_flag_sets_both_schemes() {
+        let config = ProxyConfig::resolve(Some("http://proxy.corp:3128"), None).unwrap();
+        assert_eq!(config.get_proxy_url("https"), Some("http://proxy.corp:3128"));
+        assert_eq!(config.get_proxy_url("http"), Some("http://proxy.corp:3128"));
+    }
+
+    #[test]
+    fn test_resolve_empty_proxy_flag_disables_proxying() {
+        let config = ProxyConfig::resolve(Some(""), None).unwrap();
+        assert_eq!(config.get_proxy_url("https"), None);
+        assert_eq!(config.get_proxy_url("http"), None);
+    }
+
+    #[test]
+    fn test_resolve_rejects_bad_proxy_url() {
+        assert!(ProxyConfig::resolve(Some("socks5://proxy:1080"), None).is_err());
+    }
+
+    #[test]
+    fn test_resolve_noproxy_flag_replaces_list() {
+        let config = ProxyConfig::resolve(Some("http://proxy.corp:3128"), Some("*")).unwrap();
+        assert!(
+            config.should_bypass("example.com"),
+            "--noproxy '*' should bypass everything"
+        );
+
+        let config = ProxyConfig::resolve(Some("http://proxy.corp:3128"), Some("internal.corp")).unwrap();
+        assert!(config.should_bypass("internal.corp"));
+        assert!(!config.should_bypass("example.com"));
+
+        // An explicit empty list clears any inherited NO_PROXY.
+        let config = ProxyConfig::resolve(Some("http://proxy.corp:3128"), Some("")).unwrap();
+        assert!(!config.should_bypass("example.com"));
     }
 
     // ---------------------------------------------------------------

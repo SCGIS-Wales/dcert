@@ -78,13 +78,17 @@ struct McpProxyInfo {
 impl McpProxyInfo {
     /// Read proxy environment variables using the same precedence as the main dcert binary.
     fn from_env() -> Self {
-        let https_proxy = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]
+        // DCERT_PROXY/DCERT_NOPROXY come first: they are what the per-tool
+        // `proxy`/`noproxy` parameters set on the subprocess, and dcert itself
+        // gives them precedence over the standard variables.
+        let https_proxy = ["DCERT_PROXY", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]
             .iter()
             .find_map(|var| std::env::var(var).ok().filter(|v| !v.is_empty()));
-        let http_proxy = ["HTTP_PROXY", "http_proxy"]
+        let http_proxy = ["DCERT_PROXY", "HTTP_PROXY", "http_proxy"]
             .iter()
             .find_map(|var| std::env::var(var).ok().filter(|v| !v.is_empty()));
-        let no_proxy = std::env::var("NO_PROXY")
+        let no_proxy = std::env::var("DCERT_NOPROXY")
+            .or_else(|_| std::env::var("NO_PROXY"))
             .or_else(|_| std::env::var("no_proxy"))
             .ok()
             .filter(|v| !v.is_empty());
@@ -568,6 +572,27 @@ impl MtlsParams {
     }
 }
 
+/// A parameter that accepts either one value or a list of them.
+///
+/// The repeatable connection-override flags are far more often used once than
+/// many times, so requiring an array for the common case would be needless
+/// ceremony for callers.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(untagged)]
+enum OneOrMany {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl OneOrMany {
+    fn values(&self) -> Vec<&str> {
+        match self {
+            OneOrMany::One(v) => vec![v.as_str()],
+            OneOrMany::Many(v) => v.iter().map(String::as_str).collect(),
+        }
+    }
+}
+
 /// Optional HTTP/TLS parameters shared across check-related MCP tools.
 /// These mirror the CLI flags that were previously only available on the command line.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
@@ -588,14 +613,38 @@ struct HttpTlsParams {
     /// validated hostname. Example: target='https://10.0.0.5', sni='api.example.com'.
     #[serde(default)]
     sni: Option<String>,
-    /// Connect to this explicit IP address instead of resolving the hostname in
-    /// `target` via DNS. The hostname is still used for SNI and certificate
-    /// validation. Use this to analyze a specific server/backend behind a load
-    /// balancer or DNS round-robin, or when the hostname does not resolve from
-    /// here. Like curl's --connect-to/--resolve. Example: target='https://api.example.com',
-    /// connect_to='10.0.0.5'.
+    /// Redirect the connection to another host or IP while `target`'s hostname
+    /// is still used for SNI, the Host header and certificate validation. Use
+    /// this to analyze a specific server/backend behind a load balancer or DNS
+    /// round-robin, or when the hostname does not resolve from here. Accepts a
+    /// bare IP address, or curl's "HOST1:PORT1:HOST2:PORT2" form (empty fields
+    /// mean any/unchanged) when the destination is a hostname or a different
+    /// port. A single string or a list of strings. Like curl's --connect-to.
+    /// Examples: target='https://api.example.com' with connect_to='10.0.0.5',
+    /// or connect_to='api.example.com:443:origin.internal:8443'.
     #[serde(default)]
-    connect_to: Option<String>,
+    connect_to: Option<OneOrMany>,
+    /// Pin "HOST:PORT" to specific IP addresses instead of using DNS, like
+    /// curl's --resolve. The hostname is still used for SNI, the Host header
+    /// and certificate validation. Format "HOST:PORT:ADDRESS", where HOST may
+    /// be "*" and ADDRESS may be several comma-separated IPs tried in order.
+    /// Only IP addresses are accepted here — use `connect_to` for a hostname.
+    /// A single string or a list of strings.
+    /// Example: 'api.example.com:443:10.0.0.5'.
+    #[serde(default)]
+    resolve: Option<OneOrMany>,
+    /// Forward proxy URL for this request, overriding the HTTPS_PROXY/HTTP_PROXY
+    /// environment variables the server inherited. Must be http:// or https://;
+    /// credentials may be embedded (http://user:pass@proxy.corp:3128). Pass an
+    /// empty string to force a direct connection. Note that `connect_to` and
+    /// `resolve` always bypass the proxy.
+    #[serde(default)]
+    proxy: Option<String>,
+    /// Comma-separated hosts that must bypass the proxy, overriding NO_PROXY.
+    /// "*" bypasses the proxy entirely; an empty string clears an inherited
+    /// NO_PROXY. Like curl's --noproxy.
+    #[serde(default)]
+    noproxy: Option<String>,
     /// Connection timeout in seconds (default: 10)
     #[serde(default)]
     timeout: Option<u64>,
@@ -640,9 +689,13 @@ impl HttpTlsParams {
             args.push("--sni".to_string());
             args.push(v.clone());
         }
-        if let Some(ref v) = self.connect_to {
+        for spec in self.connect_to.iter().flat_map(OneOrMany::values) {
             args.push("--connect-to".to_string());
-            args.push(v.clone());
+            args.push(spec.to_string());
+        }
+        for spec in self.resolve.iter().flat_map(OneOrMany::values) {
+            args.push("--resolve".to_string());
+            args.push(spec.to_string());
         }
         if let Some(v) = self.timeout {
             args.push("--timeout".to_string());
@@ -673,6 +726,52 @@ impl HttpTlsParams {
             args.push(v.clone());
         }
         args
+    }
+
+    /// Proxy settings travel as environment variables rather than argv: a proxy
+    /// URL may carry credentials, and argv is world-readable via `ps`. This is
+    /// the same treatment `MtlsParams` gives `DCERT_CERT_PASSWORD`.
+    fn env_vars(&self) -> Vec<(&str, &str)> {
+        let mut vars = Vec::new();
+        if let Some(ref p) = self.proxy {
+            vars.push(("DCERT_PROXY", p.as_str()));
+        }
+        if let Some(ref n) = self.noproxy {
+            vars.push(("DCERT_NOPROXY", n.as_str()));
+        }
+        vars
+    }
+
+    /// Reject values that could smuggle extra flags into the dcert subprocess.
+    fn validate(&self) -> Result<(), String> {
+        for (label, spec) in self
+            .connect_to
+            .iter()
+            .flat_map(OneOrMany::values)
+            .map(|s| ("connect_to", s))
+            .chain(self.resolve.iter().flat_map(OneOrMany::values).map(|s| ("resolve", s)))
+        {
+            if spec.trim().is_empty() {
+                return Err(format!("{label} entries must not be empty"));
+            }
+            if spec.starts_with('-') {
+                return Err(format!("{label} value '{spec}' must not start with '-'"));
+            }
+            if spec.contains('\0') {
+                return Err(format!("{label} value must not contain null bytes"));
+            }
+        }
+        if let Some(ref proxy) = self.proxy
+            && (proxy.starts_with('-') || proxy.contains('\0'))
+        {
+            return Err("proxy must not start with '-' or contain null bytes".to_string());
+        }
+        if let Some(ref noproxy) = self.noproxy
+            && (noproxy.starts_with('-') || noproxy.contains('\0'))
+        {
+            return Err("noproxy must not start with '-' or contain null bytes".to_string());
+        }
+        Ok(())
     }
 }
 
@@ -1549,7 +1648,7 @@ impl Default for DcertMcpServer {
 impl DcertMcpServer {
     /// Decode and analyze TLS certificates from an HTTPS endpoint or PEM file.
     #[tool(
-        description = "Decode and analyze TLS certificates from an HTTPS endpoint or PEM file. Returns certificate details including subject, issuer, SANs, validity dates, fingerprints, extensions, TLS connection information, and OSI-layer diagnostics. Also classifies the chain's root CA (the `root_trust` object): whether it anchors to a publicly trusted CA (Mozilla/CCADB root program — DigiCert, Amazon, Google, Microsoft, Apple, Let's Encrypt, etc.), a private PKI, or is self-signed. This runs offline by default; set `resolve_issuers` to follow AIA 'CA Issuers' URLs over the network to complete an incomplete chain or probe a private CA backend. Supports mTLS with client certificates and custom CA bundles. To analyze a specific IP/backend while validating a hostname (e.g. behind a load balancer, or when DNS does not resolve), keep the hostname in `target` and set `connect_to` to the IP address.",
+        description = "Decode and analyze TLS certificates from an HTTPS endpoint or PEM file. Returns certificate details including subject, issuer, SANs, validity dates, fingerprints, extensions, TLS connection information, and OSI-layer diagnostics. Also classifies the chain's root CA (the `root_trust` object): whether it anchors to a publicly trusted CA (Mozilla/CCADB root program — DigiCert, Amazon, Google, Microsoft, Apple, Let's Encrypt, etc.), a private PKI, or is self-signed. This runs offline by default; set `resolve_issuers` to follow AIA 'CA Issuers' URLs over the network to complete an incomplete chain or probe a private CA backend. Supports mTLS with client certificates and custom CA bundles. To analyze a specific IP/backend while validating a hostname (e.g. behind a load balancer, or when DNS does not resolve), keep the hostname in `target` and use `connect_to` (an IP, or 'HOST1:PORT1:HOST2:PORT2' to redirect to another hostname/port) or `resolve` ('HOST:PORT:IP'). Set `proxy`/`noproxy` to override the forward proxy for this request.",
         annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true)
     )]
     pub async fn analyze_certificate(
@@ -1586,10 +1685,13 @@ impl DcertMcpServer {
         if params.refresh_public_roots {
             args.push("--refresh-public-roots".to_string());
         }
+        if let Err(e) = params.http_tls.validate() {
+            return ok_error(e);
+        }
         args.extend(params.mtls.to_args());
         args.extend(params.http_tls.to_args());
-        let mtls_env = params.mtls.env_vars();
-        let env_refs = mtls_env.to_vec();
+        let mut env_refs = params.mtls.env_vars();
+        env_refs.extend(params.http_tls.env_vars());
 
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
         match run_dcert_with_env(&args_refs, &self.config, Some(&env_refs)).await {
@@ -1636,10 +1738,13 @@ impl DcertMcpServer {
             "--expiry-warn".to_string(),
             days_str,
         ];
+        if let Err(e) = params.http_tls.validate() {
+            return ok_error(e);
+        }
         args.extend(params.mtls.to_args());
         args.extend(params.http_tls.to_args());
-        let mtls_env = params.mtls.env_vars();
-        let env_refs = mtls_env.to_vec();
+        let mut env_refs = params.mtls.env_vars();
+        env_refs.extend(params.http_tls.env_vars());
 
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
         match run_dcert_with_env(&args_refs, &self.config, Some(&env_refs)).await {
@@ -1685,10 +1790,13 @@ impl DcertMcpServer {
             "--check-revocation".to_string(),
             "--extensions".to_string(),
         ];
+        if let Err(e) = params.http_tls.validate() {
+            return ok_error(e);
+        }
         args.extend(params.mtls.to_args());
         args.extend(params.http_tls.to_args());
-        let mtls_env = params.mtls.env_vars();
-        let env_refs = mtls_env.to_vec();
+        let mut env_refs = params.mtls.env_vars();
+        env_refs.extend(params.http_tls.env_vars());
 
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
         match run_dcert_with_env(&args_refs, &self.config, Some(&env_refs)).await {
@@ -1762,7 +1870,7 @@ impl DcertMcpServer {
 
     /// Get TLS connection details for an HTTPS endpoint.
     #[tool(
-        description = "Get TLS connection details for an HTTPS endpoint including protocol version, cipher suite, ALPN negotiation, DNS/TCP/TLS latency, verification status, full OSI-layer diagnostics, and (when applicable) a `client_auth_required` flag plus the captured server chain when the server demands mTLS. Supports mTLS and custom CA bundles. To probe a specific IP/backend while validating a hostname (e.g. behind a load balancer, or when DNS does not resolve), keep the hostname in `target` and set `connect_to` to the IP address.",
+        description = "Get TLS connection details for an HTTPS endpoint including protocol version, cipher suite, ALPN negotiation, DNS/TCP/TLS latency, verification status, full OSI-layer diagnostics, and (when applicable) a `client_auth_required` flag plus the captured server chain when the server demands mTLS. Supports mTLS and custom CA bundles. To probe a specific IP/backend while validating a hostname (e.g. behind a load balancer, or when DNS does not resolve), keep the hostname in `target` and use `connect_to` (an IP, or 'HOST1:PORT1:HOST2:PORT2' to redirect to another hostname/port) or `resolve` ('HOST:PORT:IP'). Set `proxy`/`noproxy` to override the forward proxy for this request.",
         annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = false)
     )]
     pub async fn tls_connection_info(
@@ -1805,10 +1913,13 @@ impl DcertMcpServer {
         {
             return ok_error("min_tls (1.3) must not be greater than max_tls (1.2)".to_string());
         }
+        if let Err(e) = params.http_tls.validate() {
+            return ok_error(e);
+        }
         args.extend(params.mtls.to_args());
         args.extend(params.http_tls.to_args());
-        let mtls_env = params.mtls.env_vars();
-        let env_refs = mtls_env.to_vec();
+        let mut env_refs = params.mtls.env_vars();
+        env_refs.extend(params.http_tls.env_vars());
 
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
         match run_dcert_with_env(&args_refs, &self.config, Some(&env_refs)).await {
@@ -1856,10 +1967,13 @@ impl DcertMcpServer {
         if params.exclude_expired {
             args.push("--exclude-expired".to_string());
         }
+        if let Err(e) = params.http_tls.validate() {
+            return ok_error(e);
+        }
         args.extend(params.mtls.to_args());
         args.extend(params.http_tls.to_args());
-        let mtls_env = params.mtls.env_vars();
-        let env_refs = mtls_env.to_vec();
+        let mut env_refs = params.mtls.env_vars();
+        env_refs.extend(params.http_tls.env_vars());
 
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
         match run_dcert_with_env(&args_refs, &self.config, Some(&env_refs)).await {
@@ -3521,6 +3635,146 @@ mod tests {
         assert!(args.contains(&"--client-cert".to_string()));
         assert!(args.contains(&"--client-key".to_string()));
         assert!(args.contains(&"--ca-cert".to_string()));
+    }
+
+    // ---------------------------------------------------------------
+    // HttpTlsParams connection-override unit tests
+    // ---------------------------------------------------------------
+
+    /// Index of the value that follows `flag` in an argv vector.
+    fn value_after(args: &[String], flag: &str) -> Vec<String> {
+        args.iter()
+            .zip(args.iter().skip(1))
+            .filter(|(f, _)| f.as_str() == flag)
+            .map(|(_, v)| v.clone())
+            .collect()
+    }
+
+    #[test]
+    fn test_http_tls_params_connect_to_accepts_single_string() {
+        let params = HttpTlsParams {
+            connect_to: Some(OneOrMany::One("10.0.0.5".to_string())),
+            ..Default::default()
+        };
+        assert_eq!(value_after(&params.to_args(), "--connect-to"), vec!["10.0.0.5"]);
+    }
+
+    #[test]
+    fn test_http_tls_params_connect_to_accepts_list() {
+        let params = HttpTlsParams {
+            connect_to: Some(OneOrMany::Many(vec![
+                "api.example.com:443:origin.internal:8443".to_string(),
+                "10.0.0.5".to_string(),
+            ])),
+            ..Default::default()
+        };
+        assert_eq!(
+            value_after(&params.to_args(), "--connect-to"),
+            vec!["api.example.com:443:origin.internal:8443", "10.0.0.5"]
+        );
+    }
+
+    #[test]
+    fn test_http_tls_params_resolve_to_args() {
+        let params = HttpTlsParams {
+            resolve: Some(OneOrMany::Many(vec![
+                "api.example.com:443:10.0.0.5".to_string(),
+                "*:8443:10.0.0.6".to_string(),
+            ])),
+            ..Default::default()
+        };
+        assert_eq!(
+            value_after(&params.to_args(), "--resolve"),
+            vec!["api.example.com:443:10.0.0.5", "*:8443:10.0.0.6"]
+        );
+    }
+
+    #[test]
+    fn test_http_tls_params_deserializes_string_or_list() {
+        let one: HttpTlsParams = serde_json::from_value(serde_json::json!({"connect_to": "10.0.0.5"})).unwrap();
+        assert_eq!(value_after(&one.to_args(), "--connect-to"), vec!["10.0.0.5"]);
+
+        let many: HttpTlsParams =
+            serde_json::from_value(serde_json::json!({"resolve": ["a.example.com:443:10.0.0.5"]})).unwrap();
+        assert_eq!(
+            value_after(&many.to_args(), "--resolve"),
+            vec!["a.example.com:443:10.0.0.5"]
+        );
+    }
+
+    #[test]
+    fn test_http_tls_params_proxy_goes_via_env_not_argv() {
+        let params = HttpTlsParams {
+            proxy: Some("http://user:pass@proxy.corp:3128".to_string()),
+            noproxy: Some("*".to_string()),
+            ..Default::default()
+        };
+        let args = params.to_args();
+        assert!(
+            !args.iter().any(|a| a.contains("proxy.corp")),
+            "proxy credentials must not reach argv: {args:?}"
+        );
+        assert_eq!(
+            params.env_vars(),
+            vec![
+                ("DCERT_PROXY", "http://user:pass@proxy.corp:3128"),
+                ("DCERT_NOPROXY", "*"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_http_tls_params_validate_accepts_normal_values() {
+        let params = HttpTlsParams {
+            connect_to: Some(OneOrMany::One("10.0.0.5".to_string())),
+            resolve: Some(OneOrMany::One("api.example.com:443:10.0.0.5".to_string())),
+            proxy: Some("http://proxy.corp:3128".to_string()),
+            noproxy: Some("internal.corp,*".to_string()),
+            ..Default::default()
+        };
+        assert!(params.validate().is_ok());
+    }
+
+    #[test]
+    fn test_http_tls_params_validate_rejects_flag_injection() {
+        let params = HttpTlsParams {
+            connect_to: Some(OneOrMany::One("--no-verify".to_string())),
+            ..Default::default()
+        };
+        assert!(params.validate().unwrap_err().contains("must not start with '-'"));
+
+        let params = HttpTlsParams {
+            resolve: Some(OneOrMany::One("--export-pem".to_string())),
+            ..Default::default()
+        };
+        assert!(params.validate().unwrap_err().contains("must not start with '-'"));
+
+        let params = HttpTlsParams {
+            proxy: Some("--ca-cert".to_string()),
+            ..Default::default()
+        };
+        assert!(params.validate().is_err());
+
+        let params = HttpTlsParams {
+            noproxy: Some("--debug".to_string()),
+            ..Default::default()
+        };
+        assert!(params.validate().is_err());
+    }
+
+    #[test]
+    fn test_http_tls_params_validate_rejects_null_bytes_and_empty() {
+        let params = HttpTlsParams {
+            resolve: Some(OneOrMany::One("a.example.com:443:10.0.0.5\0".to_string())),
+            ..Default::default()
+        };
+        assert!(params.validate().unwrap_err().contains("null bytes"));
+
+        let params = HttpTlsParams {
+            connect_to: Some(OneOrMany::One("  ".to_string())),
+            ..Default::default()
+        };
+        assert!(params.validate().unwrap_err().contains("must not be empty"));
     }
 
     // ---------------------------------------------------------------

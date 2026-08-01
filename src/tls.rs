@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::cli::{HttpProtocol, StarttlsProtocol, TlsVersionArg};
+use crate::connect::{ConnectOverrides, ResolvedOverride};
 use crate::debug::{dbg_section, debug_log, sanitize_header_value, sanitize_url};
 use crate::proxy::{ProxyConfig, connect_through_proxy};
 
@@ -116,31 +117,41 @@ pub fn direct_tcp_connect(host: &str, port: u16, timeout: Duration) -> Result<(T
     Ok((stream, dns_ms, socket_addr))
 }
 
-/// Establish a direct TCP connection to an explicit IP address, bypassing DNS.
+/// Dial the target of a `--resolve` / `--connect-to` override.
 ///
-/// Used by `--connect-to` / the MCP `connect_to` parameter so a caller can
-/// reach a specific server (e.g. one backend behind a load balancer, or a host
-/// whose name doesn't resolve) while the hostname is still used for SNI and
-/// certificate validation. Mirrors curl's `--resolve` / `--connect-to`.
-pub fn connect_to_ip_addr(ip: &str, port: u16, timeout: Duration) -> Result<TcpStream> {
-    let addr: IpAddr = ip
-        .parse()
-        .map_err(|_| anyhow::anyhow!("--connect-to value '{}' is not a valid IP address", ip))?;
-    let socket_addr = SocketAddr::new(addr, port);
-    TcpStream::connect_timeout(&socket_addr, timeout).map_err(|e| match e.kind() {
-        std::io::ErrorKind::TimedOut => {
-            anyhow::anyhow!(
-                "TCP connection to {}:{} timed out after {}s",
-                ip,
-                port,
-                timeout.as_secs()
-            )
+/// Candidates are tried in order — `--resolve` may list several addresses for
+/// one host — and each may be an IP literal (dialled directly) or a hostname
+/// (resolved via DNS first). Returns the stream, the address actually reached,
+/// and the DNS time spent, which is zero for IP literals.
+///
+/// Overrides deliberately bypass any forward proxy: the point of the flag is to
+/// reach one specific endpoint, and routing that through a proxy would hand
+/// destination selection back to the proxy.
+pub fn connect_via_override(ov: &ResolvedOverride<'_>, timeout: Duration) -> Result<(TcpStream, SocketAddr, u128)> {
+    let mut errors = Vec::new();
+
+    for target in ov.targets {
+        let attempt = match target.parse::<IpAddr>() {
+            Ok(ip) => {
+                let addr = SocketAddr::new(ip, ov.port);
+                TcpStream::connect_timeout(&addr, timeout)
+                    .map(|s| (s, addr, 0))
+                    .map_err(|e| anyhow::anyhow!("{}", e))
+            }
+            Err(_) => direct_tcp_connect(target, ov.port, timeout).map(|(s, dns, addr)| (s, addr, dns)),
+        };
+
+        match attempt {
+            Ok(result) => return Ok(result),
+            Err(e) => errors.push(format!("{}:{}: {}", target, ov.port, e)),
         }
-        std::io::ErrorKind::ConnectionRefused => {
-            anyhow::anyhow!("TCP connection refused by {}:{} (port may not be open)", ip, port)
-        }
-        _ => anyhow::anyhow!("TCP connection to {}:{} failed: {}", ip, port, e),
-    })
+    }
+
+    Err(anyhow::anyhow!(
+        "{} could not reach any target ({})",
+        ov.source,
+        errors.join("; ")
+    ))
 }
 
 /// Result of a TLS connection, containing the certificate chain and connection metadata.
@@ -168,6 +179,14 @@ pub struct TlsConnectionInfo {
     /// handshake aborted, so the user can still inspect the server identity.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub client_auth_required: bool,
+    /// Address actually dialled, e.g. "10.0.0.5:443". `None` when a forward
+    /// proxy performed the connection on our behalf.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_address: Option<String>,
+    /// Set when `--resolve` or `--connect-to` redirected the connection, e.g.
+    /// "--resolve api.example.com:443 -> 10.0.0.5:443".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connect_override: Option<String>,
 }
 
 /// Detect whether an OpenSSL handshake failure is caused by the server
@@ -224,6 +243,22 @@ fn handshake_verify_error(err_str: &str, verify_details: &[String], custom_ca: b
     } else {
         format!("\n  Chain validation details: {}", verify_details.join("; "))
     };
+
+    // A hostname mismatch is its own failure and has nothing to do with CA
+    // trust, so say so rather than sending the user off to check SSL_CERT_FILE.
+    // It is the expected outcome when --resolve/--connect-to point at a server
+    // that does not serve a certificate for the target name.
+    if lower.contains("hostname mismatch") {
+        return anyhow::anyhow!(
+            "TLS certificate does not match the hostname being validated. The server \
+             presented a certificate whose SANs/CN do not cover the host in the target URL.\n  \
+             - With --resolve/--connect-to, the target hostname is still what gets validated; \
+             check that the address you redirected to serves a certificate for that name\n  \
+             - Use --sni <name> to send a different SNI value\n  \
+             - Or use --no-verify to inspect the certificate anyway (diagnostic only)\
+             {detail_lines}\n  Underlying error: {err_str}"
+        );
+    }
 
     if missing_issuer && !unknown_root {
         let who = missing_subject.map(|s| format!(" for '{}'", s)).unwrap_or_default();
@@ -289,9 +324,9 @@ pub struct TlsFetchOptions<'a> {
     pub timeout_secs: u64,
     pub read_timeout_secs: u64,
     pub sni_override: Option<&'a str>,
-    /// Connect to this explicit IP address instead of resolving the hostname.
-    /// The hostname is still used for SNI and certificate validation.
-    pub connect_to: Option<&'a str>,
+    /// `--resolve` / `--connect-to` table. A match redirects where we dial; the
+    /// hostname is still used for SNI, the `Host:` header and validation.
+    pub connect_overrides: &'a ConnectOverrides,
     pub proxy_config: &'a ProxyConfig,
     pub min_tls: Option<TlsVersionArg>,
     pub max_tls: Option<TlsVersionArg>,
@@ -317,7 +352,7 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
         timeout_secs,
         read_timeout_secs,
         sni_override,
-        connect_to,
+        connect_overrides,
         proxy_config,
         min_tls,
         max_tls,
@@ -359,30 +394,38 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
     let connect_timeout = Duration::from_secs(timeout_secs);
     let l4_start = std::time::Instant::now();
 
-    let (stream, dns_latency) = if let Some(ip) = connect_to {
-        // --connect-to: dial the explicit IP, bypassing DNS and any proxy. The
-        // hostname is still used for SNI and certificate validation below.
-        let s = connect_to_ip_addr(ip, port, connect_timeout)?;
+    let mut connect_override = None;
+    let (stream, dns_latency, peer_address) = if let Some(ov) = connect_overrides.lookup(host, port) {
+        // --resolve / --connect-to: dial the override target, bypassing any
+        // proxy. The hostname is still used for SNI and validation below.
+        let (s, addr, dns) = connect_via_override(&ov, connect_timeout)?;
         dbg_section(debug, "Layer 3 (Network)");
-        debug_log!(debug, "connect-to override: {} -> {}:{} (DNS bypassed)", host, ip, port);
-        (s, 0)
+        let description = ov.describe(host, port);
+        debug_log!(
+            debug,
+            "Connection override: {} (dialled {}, proxy bypassed)",
+            description,
+            addr
+        );
+        connect_override = Some(description);
+        (s, dns, Some(addr))
     } else if proxy_config.should_bypass(host) {
         let (s, dns, addr) = direct_tcp_connect(host, port, connect_timeout)?;
         dbg_section(debug, "Layer 3 (Network)");
         debug_log!(debug, "Resolved {} -> {} ({} ms)", host, addr.ip(), dns);
-        (s, dns)
+        (s, dns, Some(addr))
     } else if let Some(proxy_url) = proxy_config.get_proxy_url("https") {
         debug_log!(debug, "Using proxy: {}", sanitize_url(proxy_url));
         // Proxy connections resolve the proxy host, not the target
         let stream = connect_through_proxy(proxy_url, host, port, debug)?;
         dbg_section(debug, "Layer 3 (Network)");
         debug_log!(debug, "DNS resolution handled by proxy");
-        (stream, 0)
+        (stream, 0, None)
     } else {
         let (s, dns, addr) = direct_tcp_connect(host, port, connect_timeout)?;
         dbg_section(debug, "Layer 3 (Network)");
         debug_log!(debug, "Resolved {} -> {} ({} ms)", host, addr.ip(), dns);
-        (s, dns)
+        (s, dns, Some(addr))
     };
 
     // Set read timeout
@@ -582,6 +625,8 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
                         verify_result: Some("client certificate required (mTLS)".to_string()),
                         chain_validation_errors: verify_errors.lock().unwrap_or_else(|e| e.into_inner()).clone(),
                         client_auth_required: true,
+                        peer_address: peer_address.map(|a| a.to_string()),
+                        connect_override,
                     });
                 }
                 // Fall through to the regular error path if no chain was captured.
@@ -842,6 +887,8 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
         verify_result,
         chain_validation_errors,
         client_auth_required: false,
+        peer_address: peer_address.map(|a| a.to_string()),
+        connect_override,
     })
 }
 
@@ -854,8 +901,9 @@ pub struct StarttlsFetchOptions<'a> {
     pub timeout_secs: u64,
     pub read_timeout_secs: u64,
     pub sni_override: Option<&'a str>,
-    /// Connect to this explicit IP address instead of resolving the hostname.
-    pub connect_to: Option<&'a str>,
+    /// `--resolve` / `--connect-to` table. A match redirects where we dial; the
+    /// hostname is still used for SNI and certificate validation.
+    pub connect_overrides: &'a ConnectOverrides,
     pub min_tls: Option<TlsVersionArg>,
     pub max_tls: Option<TlsVersionArg>,
     pub cipher_list: Option<&'a str>,
@@ -990,7 +1038,7 @@ pub fn fetch_tls_chain_starttls(opts: &StarttlsFetchOptions<'_>) -> Result<TlsCo
         timeout_secs,
         read_timeout_secs,
         sni_override,
-        connect_to,
+        connect_overrides,
         min_tls,
         max_tls,
         cipher_list,
@@ -1006,20 +1054,23 @@ pub fn fetch_tls_chain_starttls(opts: &StarttlsFetchOptions<'_>) -> Result<TlsCo
     // Layer 4: TCP connect
     let connect_timeout = Duration::from_secs(timeout_secs);
     let l4_start = std::time::Instant::now();
-    let (mut stream, dns_latency) = if let Some(ip) = connect_to {
-        let s = connect_to_ip_addr(ip, port, connect_timeout)?;
+    let mut connect_override = None;
+    let (mut stream, dns_latency, peer_address) = if let Some(ov) = connect_overrides.lookup(host, port) {
+        let (s, addr, dns) = connect_via_override(&ov, connect_timeout)?;
+        let description = ov.describe(host, port);
         if debug {
             dbg_section(true, "Layer 3 (Network)");
-            debug_log!(true, "connect-to override: {} -> {}:{} (DNS bypassed)", host, ip, port);
+            debug_log!(true, "Connection override: {} (dialled {})", description, addr);
         }
-        (s, 0u128)
+        connect_override = Some(description);
+        (s, dns, Some(addr))
     } else {
         let (s, dns_latency, addr) = direct_tcp_connect(host, port, connect_timeout)?;
         if debug {
             dbg_section(true, "Layer 3 (Network)");
             debug_log!(true, "Resolved {} -> {} ({} ms)", host, addr.ip(), dns_latency);
         }
-        (s, dns_latency)
+        (s, dns_latency, Some(addr))
     };
 
     stream
@@ -1203,18 +1254,41 @@ pub fn fetch_tls_chain_starttls(opts: &StarttlsFetchOptions<'_>) -> Result<TlsCo
         verify_result,
         chain_validation_errors,
         client_auth_required: false,
+        peer_address: peer_address.map(|a| a.to_string()),
+        connect_override,
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{connect_to_ip_addr, handshake_verify_error, is_client_auth_required};
+    use super::{connect_via_override, handshake_verify_error, is_client_auth_required};
+    use crate::connect::{OverrideSource, ResolvedOverride};
     use std::time::Duration;
 
+    /// Bind and immediately drop a loopback listener to obtain a port nothing is
+    /// listening on, so connect attempts fail fast instead of timing out.
+    fn closed_loopback_port() -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        listener.local_addr().expect("local addr").port()
+    }
+
     #[test]
-    fn connect_to_rejects_non_ip() {
-        let err = connect_to_ip_addr("api.example.com", 443, Duration::from_secs(1)).unwrap_err();
-        assert!(err.to_string().contains("not a valid IP address"), "got: {}", err);
+    fn connect_via_override_reports_every_failed_candidate() {
+        let port = closed_loopback_port();
+        let targets = vec!["127.0.0.1".to_string(), "127.0.0.2".to_string()];
+        let ov = ResolvedOverride {
+            targets: &targets,
+            port,
+            source: OverrideSource::Resolve,
+        };
+
+        let err = connect_via_override(&ov, Duration::from_secs(1))
+            .expect_err("nothing is listening on the chosen port")
+            .to_string();
+
+        assert!(err.contains("--resolve"), "should name the flag: {err}");
+        assert!(err.contains("127.0.0.1"), "should list the first candidate: {err}");
+        assert!(err.contains("127.0.0.2"), "should list the second candidate: {err}");
     }
 
     #[test]
