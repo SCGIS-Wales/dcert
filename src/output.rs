@@ -468,10 +468,10 @@ pub fn process_target(
 
         // Per-cert: flag any presented cert that is itself a public root.
         for (i, info) in infos.iter_mut().enumerate() {
-            if let Some(der) = chain_ders.get(i) {
-                if public_roots.is_public_root_der(der) {
-                    info.is_public_root = Some(true);
-                }
+            if let Some(der) = chain_ders.get(i)
+                && public_roots.is_public_root_der(der)
+            {
+                info.is_public_root = Some(true);
             }
         }
 

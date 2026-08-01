@@ -585,8 +585,8 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
                         if !acc.is_empty() {
                             acc.push_str(", ");
                         }
-                        if let Ok(data) = e.data().as_utf8() {
-                            acc.push_str(data.as_ref());
+                        if let Ok(data) = e.data().to_string() {
+                            acc.push_str(&data);
                         }
                         acc
                     })
@@ -1143,8 +1143,8 @@ pub fn fetch_tls_chain_starttls(opts: &StarttlsFetchOptions<'_>) -> Result<TlsCo
                         if !acc.is_empty() {
                             acc.push_str(", ");
                         }
-                        if let Ok(data) = e.data().as_utf8() {
-                            acc.push_str(data.as_ref());
+                        if let Ok(data) = e.data().to_string() {
+                            acc.push_str(&data);
                         }
                         acc
                     })

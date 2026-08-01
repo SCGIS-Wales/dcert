@@ -540,8 +540,8 @@ pub fn verify_key_matches_cert(key_path: &str, target: &str, debug: bool) -> Res
         if !acc.is_empty() {
             acc.push_str(", ");
         }
-        if let Ok(data) = e.data().as_utf8() {
-            acc.push_str(data.as_ref());
+        if let Ok(data) = e.data().to_string() {
+            acc.push_str(&data);
         }
         acc
     });

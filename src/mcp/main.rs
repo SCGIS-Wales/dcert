@@ -1,7 +1,7 @@
 use clap::Parser;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo};
+use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo};
 use rmcp::{ServerHandler, ServiceExt, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -1606,11 +1606,11 @@ fn validate_tls_version(version: &str) -> Result<(), String> {
 }
 
 fn ok_text(text: String) -> Result<CallToolResult, rmcp::ErrorData> {
-    Ok(CallToolResult::success(vec![Content::text(text)]))
+    Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
 }
 
 fn ok_error(msg: String) -> Result<CallToolResult, rmcp::ErrorData> {
-    Ok(CallToolResult::error(vec![Content::text(msg)]))
+    Ok(CallToolResult::error(vec![ContentBlock::text(msg)]))
 }
 
 // -- MCP Server Handler --
@@ -3299,15 +3299,17 @@ fn negotiate_protocol_version(requested: Option<&str>) -> String {
 async fn dispatch_tool_call(config: &McpConfig, tool_name: &str, arguments: &serde_json::Value) -> (String, bool) {
     // Map tool names to dcert CLI arguments.
     let mut args: Vec<String> = Vec::new();
+    // Kept alive past the match so `env_vars()` can borrow from it below.
+    let mut http_tls = HttpTlsParams::default();
 
     // The HTTP dispatch path reaches the subprocess argv directly, so it must
     // apply the same target hardening as the stdio `#[tool]` handlers: reject
     // empty, flag-like (`-`-prefixed), and null-byte-bearing targets before
     // they can be interpreted as CLI flags.
-    if let Some(target) = arguments.get("target").and_then(|v| v.as_str()) {
-        if let Err(e) = validate_target(target) {
-            return (format!("error: {e}"), true);
-        }
+    if let Some(target) = arguments.get("target").and_then(|v| v.as_str())
+        && let Err(e) = validate_target(target)
+    {
+        return (format!("error: {e}"), true);
     }
 
     match tool_name {
@@ -3325,44 +3327,15 @@ async fn dispatch_tool_call(config: &McpConfig, tool_name: &str, arguments: &ser
             if arguments.get("check_revocation").and_then(|v| v.as_bool()) == Some(true) {
                 args.push("--check-revocation".to_string());
             }
-            // HTTP/TLS params
-            if let Some(headers) = arguments.get("headers").and_then(|v| v.as_array()) {
-                for h in headers {
-                    if let Some(s) = h.as_str() {
-                        args.extend(["--header".to_string(), s.to_string()]);
-                    }
-                }
+            // HTTP/TLS params, including the connection and proxy overrides.
+            // Deserializing the shared struct rather than re-reading each key by
+            // hand keeps this path from drifting away from the stdio handlers —
+            // `tools/list` advertises one schema for both transports.
+            http_tls = serde_json::from_value(arguments.clone()).unwrap_or_default();
+            if let Err(e) = http_tls.validate() {
+                return (format!("error: {e}"), true);
             }
-            if let Some(v) = arguments.get("cipher_list").and_then(|v| v.as_str()) {
-                args.extend(["--cipher-list".to_string(), v.to_string()]);
-            }
-            if let Some(v) = arguments.get("cipher_suites").and_then(|v| v.as_str()) {
-                args.extend(["--cipher-suites".to_string(), v.to_string()]);
-            }
-            if let Some(v) = arguments.get("sni").and_then(|v| v.as_str()) {
-                args.extend(["--sni".to_string(), v.to_string()]);
-            }
-            if let Some(v) = arguments.get("timeout").and_then(|v| v.as_u64()) {
-                args.extend(["--timeout".to_string(), v.to_string()]);
-            }
-            if let Some(v) = arguments.get("read_timeout").and_then(|v| v.as_u64()) {
-                args.extend(["--read-timeout".to_string(), v.to_string()]);
-            }
-            if let Some(v) = arguments.get("method").and_then(|v| v.as_str()) {
-                args.extend(["--method".to_string(), v.to_string()]);
-            }
-            if let Some(v) = arguments.get("data").and_then(|v| v.as_str()) {
-                args.extend(["--data".to_string(), v.to_string()]);
-            }
-            if let Some(v) = arguments.get("http_protocol").and_then(|v| v.as_str()) {
-                args.extend(["--http-protocol".to_string(), v.to_string()]);
-            }
-            if let Some(v) = arguments.get("ciphers_notation").and_then(|v| v.as_str()) {
-                args.extend(["--ciphers".to_string(), v.to_string()]);
-            }
-            if let Some(v) = arguments.get("starttls").and_then(|v| v.as_str()) {
-                args.extend(["--starttls".to_string(), v.to_string()]);
-            }
+            args.extend(http_tls.to_args());
         }
         "validate_certificate" => {
             if let Some(target) = arguments.get("target").and_then(|v| v.as_str()) {
@@ -3377,7 +3350,8 @@ async fn dispatch_tool_call(config: &McpConfig, tool_name: &str, arguments: &ser
     }
 
     let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    match run_dcert(&args_refs, config).await {
+    let env_refs = http_tls.env_vars();
+    match run_dcert_with_env(&args_refs, config, Some(&env_refs)).await {
         Ok((stdout, stderr, code)) => {
             let mut output = stdout;
             if !stderr.is_empty() {
@@ -3723,6 +3697,38 @@ mod tests {
         );
     }
 
+    /// The HTTP transport builds subprocess argv from the raw JSON arguments
+    /// rather than from a typed `Parameters<T>`, so it can silently drop
+    /// parameters that `tools/list` advertises. Deserializing the shared struct
+    /// is what keeps the two transports honest — this pins that behaviour.
+    #[test]
+    fn test_http_transport_deserializes_the_same_params_as_stdio() {
+        let arguments = serde_json::json!({
+            "target": "https://api.example.com",
+            "fingerprint": true,
+            "connect_to": "api.example.com:443:origin.internal:8443",
+            "resolve": ["api.example.com:443:10.0.0.5"],
+            "sni": "api.example.com",
+            "proxy": "http://proxy.corp:3128",
+            "noproxy": "*",
+        });
+
+        let http_tls: HttpTlsParams = serde_json::from_value(arguments).expect("unknown keys are ignored");
+        assert!(http_tls.validate().is_ok());
+
+        let args = http_tls.to_args();
+        assert_eq!(
+            value_after(&args, "--connect-to"),
+            vec!["api.example.com:443:origin.internal:8443"]
+        );
+        assert_eq!(value_after(&args, "--resolve"), vec!["api.example.com:443:10.0.0.5"]);
+        assert_eq!(value_after(&args, "--sni"), vec!["api.example.com"]);
+        assert_eq!(
+            http_tls.env_vars(),
+            vec![("DCERT_PROXY", "http://proxy.corp:3128"), ("DCERT_NOPROXY", "*")]
+        );
+    }
+
     #[test]
     fn test_http_tls_params_validate_accepts_normal_values() {
         let params = HttpTlsParams {
@@ -3981,7 +3987,7 @@ mod tests {
         let text = response
             .content
             .first()
-            .and_then(|c| c.raw.as_text())
+            .and_then(|c| c.as_text())
             .map(|t| t.text.as_str())
             .unwrap_or("");
         assert!(
@@ -4043,7 +4049,7 @@ mod tests {
         let text = response
             .content
             .first()
-            .and_then(|c| c.raw.as_text())
+            .and_then(|c| c.as_text())
             .map(|t| t.text.as_str())
             .unwrap_or("");
         assert!(
@@ -4095,7 +4101,7 @@ mod tests {
         let text = response
             .content
             .first()
-            .and_then(|c| c.raw.as_text())
+            .and_then(|c| c.as_text())
             .map(|t| t.text.as_str())
             .unwrap_or("");
         assert!(
@@ -4158,7 +4164,7 @@ mod tests {
         let text = response
             .content
             .first()
-            .and_then(|c| c.raw.as_text())
+            .and_then(|c| c.as_text())
             .map(|t| t.text.as_str())
             .unwrap_or("");
         assert!(
@@ -4210,7 +4216,7 @@ mod tests {
         let text = response
             .content
             .first()
-            .and_then(|c| c.raw.as_text())
+            .and_then(|c| c.as_text())
             .map(|t| t.text.as_str())
             .unwrap_or("");
         assert!(
@@ -4349,7 +4355,7 @@ mod tests {
         let text = response
             .content
             .first()
-            .and_then(|c| c.raw.as_text())
+            .and_then(|c| c.as_text())
             .map(|t| t.text.as_str())
             .unwrap_or("");
         assert!(
@@ -4405,7 +4411,7 @@ mod tests {
         let text = response
             .content
             .first()
-            .and_then(|c| c.raw.as_text())
+            .and_then(|c| c.as_text())
             .map(|t| t.text.as_str())
             .unwrap_or("");
         assert!(
