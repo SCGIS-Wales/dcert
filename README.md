@@ -311,11 +311,35 @@ dcert --http-protocol http2 https://example.com
 # SNI override
 dcert https://10.0.0.1 --sni api.example.com
 
-# Connect to a specific IP while validating the hostname (like curl --connect-to).
-# Keep the hostname in the URL — it is used for SNI and certificate validation —
-# and dcert dials the given IP instead of resolving DNS. Useful for probing one
-# backend behind a load balancer, or a host that does not resolve from here.
+# Connection overrides — change where dcert dials without changing what it
+# validates. Keep the hostname in the URL: it is still used for SNI, the Host
+# header and certificate validation. Useful for probing one backend behind a
+# load balancer, or a host that does not resolve from here.
+
+# Pin a host/port to an IP address, like curl --resolve.
+dcert https://api.example.com --resolve api.example.com:443:10.0.0.5
+
+# Several addresses, tried in order; '*' matches any host on that port.
+dcert https://api.example.com --resolve 'api.example.com:443:10.0.0.5,10.0.0.6'
+dcert https://api.example.com --resolve '*:443:10.0.0.5'
+
+# Redirect to a different hostname and/or port, like curl --connect-to.
+dcert https://api.example.com --connect-to api.example.com:443:origin.internal:8443
+
+# The short form dials one IP for every target.
 dcert https://api.example.com --connect-to 10.0.0.5
+
+# Both flags are repeatable and the first matching entry wins.
+
+# Forward proxy for this run only, overriding HTTPS_PROXY/HTTP_PROXY.
+dcert https://api.example.com --proxy http://proxy.corp:3128
+
+# Bypass the proxy for specific hosts, or entirely.
+dcert https://api.example.com --proxy http://proxy.corp:3128 --noproxy internal.corp
+dcert https://api.example.com --noproxy '*'
+
+# Note: --resolve/--connect-to always bypass the proxy — they exist to reach one
+# specific endpoint, and going via a proxy would hand that choice back to it.
 
 # Skip TLS verification (self-signed certs)
 dcert https://localhost:8443 --no-verify
@@ -401,8 +425,14 @@ Options:
       --timeout <SECONDS>              Connection timeout (default: 10)
       --read-timeout <SECONDS>         Read timeout (default: 5)
       --sni <HOSTNAME>                 Override SNI hostname
-      --connect-to <IP>                Dial this IP instead of resolving DNS
-                                       (hostname still used for SNI/validation)
+      --resolve <HOST:PORT:ADDRESS>    Pin HOST:PORT to an IP instead of using DNS
+                                       (like curl --resolve; repeatable)
+      --connect-to <IP|H1:P1:H2:P2>    Redirect the connection to another host/IP
+                                       (like curl --connect-to; repeatable)
+      --proxy <URL>                    Forward proxy, overrides HTTPS_PROXY/HTTP_PROXY
+                                       [env: DCERT_PROXY]
+      --noproxy <LIST>                 Hosts bypassing the proxy, overrides NO_PROXY;
+                                       '*' bypasses all [env: DCERT_NOPROXY]
       --fingerprint                    Show SHA-256 fingerprints
       --extensions                     Show certificate extensions
       --expiry-warn <DAYS>             Warn if expiring within N days (exit code 1)
@@ -1044,11 +1074,41 @@ In corporate environments behind forward proxies, `dcert-mcp` inherits proxy set
 
 | Variable | Description |
 |----------|-------------|
+| `DCERT_PROXY` | Forward proxy URL; takes precedence over the variables below (equivalent to `--proxy`) |
+| `DCERT_NOPROXY` | Proxy bypass list; takes precedence over `NO_PROXY` (equivalent to `--noproxy`) |
 | `HTTPS_PROXY` / `https_proxy` | Forward proxy URL for HTTPS connections |
 | `HTTP_PROXY` / `http_proxy` | Forward proxy URL for HTTP connections (fallback for HTTPS) |
 | `NO_PROXY` / `no_proxy` | Comma-separated list of hosts to bypass the proxy |
 | `SSL_CERT_FILE` | Custom CA certificate file for proxy TLS interception |
 | `SSL_CERT_DIR` | Custom CA certificate directory |
+
+#### Per-request proxy and connection overrides
+
+The environment settles proxying for the whole server process. To override it for
+a single tool call, the certificate-analysis tools (`analyze_certificate`,
+`check_expiry`, `check_revocation`, `tls_connection_info`, `export_pem`) accept:
+
+| Parameter | Description |
+|-----------|-------------|
+| `proxy` | Forward proxy URL for this request, overriding the inherited environment. `""` forces a direct connection. |
+| `noproxy` | Comma-separated bypass list, overriding `NO_PROXY`. `"*"` bypasses the proxy entirely. |
+| `connect_to` | Redirect the connection: a bare IP, or `"HOST1:PORT1:HOST2:PORT2"` to redirect to another hostname/port. A single string or a list. |
+| `resolve` | Pin `"HOST:PORT:ADDRESS"` to specific IP addresses instead of using DNS. IPs only — use `connect_to` for a hostname. A single string or a list. |
+
+The hostname in `target` still drives SNI, the `Host` header and certificate
+validation, so `connect_to`/`resolve` probe a specific backend without weakening
+what gets verified. Both always bypass the proxy. `proxy` and `noproxy` reach the
+`dcert` subprocess as `DCERT_PROXY`/`DCERT_NOPROXY` environment variables rather
+than command-line arguments, so a proxy URL carrying credentials does not appear
+in the process list.
+
+```json
+{
+  "target": "https://api.example.com",
+  "connect_to": "api.example.com:443:origin.internal:8443",
+  "noproxy": "*"
+}
+```
 
 Example configuration with a corporate proxy:
 

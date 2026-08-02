@@ -502,6 +502,7 @@ pub fn verify_key_matches_cert(key_path: &str, target: &str, debug: bool) -> Res
         debug_log!(debug, "Fetching certificate from: {}", target);
         // Fetch TLS chain from the target
         let proxy_config = crate::proxy::ProxyConfig::from_env();
+        let connect_overrides = crate::connect::ConnectOverrides::default();
         let conn = crate::tls::fetch_tls_chain_openssl(&crate::tls::TlsFetchOptions {
             endpoint: target,
             method: "GET",
@@ -512,7 +513,7 @@ pub fn verify_key_matches_cert(key_path: &str, target: &str, debug: bool) -> Res
             timeout_secs: 10,
             read_timeout_secs: 5,
             sni_override: None,
-            connect_to: None,
+            connect_overrides: &connect_overrides,
             proxy_config: &proxy_config,
             min_tls: None,
             max_tls: None,
@@ -539,8 +540,8 @@ pub fn verify_key_matches_cert(key_path: &str, target: &str, debug: bool) -> Res
         if !acc.is_empty() {
             acc.push_str(", ");
         }
-        if let Ok(data) = e.data().as_utf8() {
-            acc.push_str(data.as_ref());
+        if let Ok(data) = e.data().to_string() {
+            acc.push_str(&data);
         }
         acc
     });

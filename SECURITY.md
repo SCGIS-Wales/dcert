@@ -92,6 +92,13 @@ For simpler deployments, a static bearer token can be used:
   is never combined with credentials — avoid it for internet-facing deployments.
 - In-memory secret hygiene: Vault tokens, the issued private key, and auth secrets
   (LDAP password, AppRole secret_id) are zeroized on drop via the `zeroize` crate.
+- Proxy credentials stay off the command line: the MCP `proxy`/`noproxy` tool
+  parameters are passed to the `dcert` subprocess as `DCERT_PROXY`/`DCERT_NOPROXY`
+  environment variables, so a proxy URL containing a password is not visible in
+  the process list. Proxy URLs are masked in all diagnostic output.
+- The connection-override parameters (`connect_to`, `resolve`) change only which
+  address is dialled. The hostname in `target` still drives SNI and certificate
+  validation, so redirecting a connection cannot silently weaken verification.
 
 ## Environment Variables
 
@@ -109,3 +116,5 @@ For simpler deployments, a static bearer token can be used:
 | `DCERT_MCP_OBO_CLIENT_ID` | OBO client application ID |
 | `DCERT_MCP_OBO_CLIENT_SECRET` | OBO client secret |
 | `DCERT_MCP_ALLOWED_ORIGINS` | Comma-separated CORS allowlist for HTTP mode (default: none; `*` = any origin) |
+| `DCERT_PROXY` | Forward proxy URL for the `dcert` binary; overrides `HTTPS_PROXY`/`HTTP_PROXY` |
+| `DCERT_NOPROXY` | Proxy bypass list for the `dcert` binary; overrides `NO_PROXY` |

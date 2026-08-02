@@ -1464,3 +1464,253 @@ fn test_csr_help_listed_in_top_level() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("csr"), "top-level help should list csr subcommand");
 }
+
+// ---------------------------------------------------------------
+// Connection overrides (--resolve / --connect-to) and proxy flags
+// ---------------------------------------------------------------
+
+/// A hostname that must never resolve, so any successful connection to it can
+/// only be the result of a connection override.
+const UNRESOLVABLE_HOST: &str = "dcert-connection-override.invalid";
+
+/// Start a throwaway TLS server on 127.0.0.1 using the test fixture identity.
+///
+/// Returns the bound port. The listener serves exactly one connection and the
+/// thread then exits, which is all a single dcert invocation needs.
+fn spawn_loopback_tls_server() -> u16 {
+    use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
+    use std::net::TcpListener;
+
+    let mut builder = SslAcceptor::mozilla_intermediate(SslMethod::tls()).expect("acceptor builder");
+    builder
+        .set_private_key_file(test_data("verify-key-discovery/server.key"), SslFiletype::PEM)
+        .expect("load test key");
+    builder
+        .set_certificate_file(test_data("verify-key-discovery/server.crt"), SslFiletype::PEM)
+        .expect("load test cert");
+    let acceptor = builder.build();
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let port = listener.local_addr().expect("local addr").port();
+
+    std::thread::spawn(move || {
+        if let Ok((stream, _)) = listener.accept()
+            && let Ok(mut tls) = acceptor.accept(stream)
+        {
+            // dcert only reads the status line, so a minimal response is enough
+            // to complete the exchange it expects.
+            let _ = tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        }
+    });
+
+    port
+}
+
+#[test]
+fn test_resolve_reaches_server_dns_cannot_find() {
+    let port = spawn_loopback_tls_server();
+    let target = format!("https://{UNRESOLVABLE_HOST}:{port}");
+
+    let output = dcert_bin()
+        .args([
+            &target,
+            "--resolve",
+            &format!("{UNRESOLVABLE_HOST}:{port}:127.0.0.1"),
+            "--no-verify",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("failed to run dcert");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("expected JSON, got {stdout} ({e})"));
+
+    assert_eq!(
+        parsed["certificates"][0]["common_name"], "test-server",
+        "should have fetched the loopback server's certificate: {stdout}"
+    );
+    assert_eq!(
+        parsed["connection"]["connect_override"],
+        format!("--resolve {UNRESOLVABLE_HOST}:{port} -> 127.0.0.1:{port}"),
+        "the override should be reported back: {stdout}"
+    );
+    assert_eq!(
+        parsed["connection"]["peer_address"],
+        format!("127.0.0.1:{port}"),
+        "should record the address actually dialled: {stdout}"
+    );
+}
+
+#[test]
+fn test_connect_to_four_field_form_redirects_port() {
+    let port = spawn_loopback_tls_server();
+    // Ask for port 443 but redirect to the loopback listener, proving both the
+    // host and the port fields are honoured.
+    let target = format!("https://{UNRESOLVABLE_HOST}");
+
+    let output = dcert_bin()
+        .args([
+            &target,
+            "--connect-to",
+            &format!("{UNRESOLVABLE_HOST}:443:127.0.0.1:{port}"),
+            "--no-verify",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("failed to run dcert");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("expected JSON, got {stdout} ({e})"));
+
+    assert_eq!(parsed["certificates"][0]["common_name"], "test-server", "got: {stdout}");
+    assert_eq!(parsed["connection"]["peer_address"], format!("127.0.0.1:{port}"));
+}
+
+#[test]
+fn test_connect_to_bare_ip_still_supported() {
+    let port = spawn_loopback_tls_server();
+    let target = format!("https://{UNRESOLVABLE_HOST}:{port}");
+
+    let output = dcert_bin()
+        .args([&target, "--connect-to", "127.0.0.1", "--no-verify", "--format", "json"])
+        .output()
+        .expect("failed to run dcert");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("expected JSON, got {stdout} ({e})"));
+
+    assert_eq!(
+        parsed["certificates"][0]["common_name"], "test-server",
+        "the original bare-IP spelling must keep working: {stdout}"
+    );
+}
+
+#[test]
+fn test_target_without_override_does_not_resolve() {
+    // Guards the tests above: without an override the same target must fail, so
+    // a passing override test really is the override doing the work.
+    let output = dcert_bin()
+        .args([&format!("https://{UNRESOLVABLE_HOST}"), "--no-verify"])
+        .output()
+        .expect("failed to run dcert");
+
+    assert!(!output.status.success(), "an unresolvable host must not succeed");
+}
+
+#[test]
+fn test_resolve_does_not_match_a_different_port() {
+    let port = spawn_loopback_tls_server();
+    // The override names port 443, but the target asks for `port`, so it must
+    // not apply and the unresolvable hostname must fail.
+    let output = dcert_bin()
+        .args([
+            &format!("https://{UNRESOLVABLE_HOST}:{port}"),
+            "--resolve",
+            &format!("{UNRESOLVABLE_HOST}:443:127.0.0.1"),
+            "--no-verify",
+        ])
+        .output()
+        .expect("failed to run dcert");
+
+    assert!(
+        !output.status.success(),
+        "an override for a different port must not be applied"
+    );
+}
+
+#[test]
+fn test_resolve_rejects_hostname_target() {
+    let output = dcert_bin()
+        .args(["https://example.com", "--resolve", "example.com:443:origin.internal"])
+        .output()
+        .expect("failed to run dcert");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(
+        stderr.contains("not a valid IP address") && stderr.contains("--connect-to"),
+        "should point the user at --connect-to: {stderr}"
+    );
+}
+
+#[test]
+fn test_connect_to_rejects_malformed_spec() {
+    let output = dcert_bin()
+        .args(["https://example.com", "--connect-to", "example.com:443:origin"])
+        .output()
+        .expect("failed to run dcert");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(
+        stderr.contains("HOST1:PORT1:HOST2:PORT2"),
+        "should describe the expected form: {stderr}"
+    );
+}
+
+#[test]
+fn test_proxy_rejects_unsupported_scheme() {
+    let output = dcert_bin()
+        .args(["https://example.com", "--proxy", "socks5://proxy.corp:1080"])
+        .output()
+        .expect("failed to run dcert");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(
+        stderr.contains("Unsupported --proxy scheme"),
+        "should reject non-HTTP proxies: {stderr}"
+    );
+}
+
+#[test]
+fn test_noproxy_wildcard_bypasses_a_dead_proxy() {
+    // With a proxy pointing at a closed port the request can only succeed if
+    // --noproxy '*' caused it to be bypassed entirely.
+    let port = spawn_loopback_tls_server();
+    let dead_proxy = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        l.local_addr().expect("addr").port()
+    };
+
+    let output = dcert_bin()
+        .args([
+            &format!("https://{UNRESOLVABLE_HOST}:{port}"),
+            "--connect-to",
+            "127.0.0.1",
+            "--proxy",
+            &format!("http://127.0.0.1:{dead_proxy}"),
+            "--noproxy",
+            "*",
+            "--no-verify",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("failed to run dcert");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("test-server"),
+        "--noproxy '*' should have bypassed the dead proxy: {stdout} {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn test_help_documents_connection_overrides() {
+    let output = dcert_bin()
+        .args(["check", "--help"])
+        .output()
+        .expect("failed to run dcert");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    for flag in ["--resolve", "--connect-to", "--proxy", "--noproxy"] {
+        assert!(stdout.contains(flag), "check --help should document {flag}");
+    }
+}
