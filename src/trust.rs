@@ -270,14 +270,15 @@ fn classify(roots: &PublicRoots, certs: &[X509], info: &mut RootTrustInfo) {
         ctx.init(&roots.store, leaf, &stack, |c| {
             let ok = c.verify_cert()?;
             let mut anchor = None;
-            if ok && let Some(chain) = c.chain() {
-                if let Some(root) = chain.iter().last() {
-                    anchor = Some(AnchorInfo {
-                        subject: format_name(root.subject_name()),
-                        sha256: fingerprint_hex(root),
-                        present_in_chain: cert_in_chain(root, certs),
-                    });
-                }
+            if ok
+                && let Some(chain) = c.chain()
+                && let Some(root) = chain.iter().last()
+            {
+                anchor = Some(AnchorInfo {
+                    subject: format_name(root.subject_name()),
+                    sha256: fingerprint_hex(root),
+                    present_in_chain: cert_in_chain(root, certs),
+                });
             }
             Ok((ok, anchor))
         })
@@ -534,7 +535,7 @@ fn format_name(name: &X509NameRef) -> String {
     let mut parts = Vec::new();
     for entry in name.entries() {
         let key = entry.object().nid().short_name().unwrap_or("?");
-        if let Ok(value) = entry.data().as_utf8() {
+        if let Ok(value) = entry.data().to_string() {
             parts.push(format!("{}={}", key, value));
         }
     }

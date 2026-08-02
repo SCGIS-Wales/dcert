@@ -592,16 +592,12 @@ fn format_subject_name(subject: &CsrSubject) -> String {
 // -- Validation helpers --
 
 fn extract_subject_info(name: &X509NameRef) -> CsrSubjectInfo {
-    let get_field = |nid: Nid| -> Option<String> {
-        name.entries_by_nid(nid)
-            .next()
-            .and_then(|e| e.data().as_utf8().ok())
-            .map(|s| s.to_string())
-    };
+    let get_field =
+        |nid: Nid| -> Option<String> { name.entries_by_nid(nid).next().and_then(|e| e.data().to_string().ok()) };
 
     let ous: Vec<String> = name
         .entries_by_nid(Nid::ORGANIZATIONALUNITNAME)
-        .filter_map(|e| e.data().as_utf8().ok().map(|s| s.to_string()))
+        .filter_map(|e| e.data().to_string().ok())
         .collect();
 
     CsrSubjectInfo {

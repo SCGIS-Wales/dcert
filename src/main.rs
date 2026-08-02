@@ -1,6 +1,7 @@
 mod cert;
 mod cli;
 mod compliance;
+mod connect;
 mod convert;
 mod csr;
 mod debug;
@@ -22,6 +23,7 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 use cli::{CheckArgs, Cli, Command, HttpMethod, KNOWN_SUBCOMMANDS, OutputFormat, exit_code};
+use connect::ConnectOverrides;
 use output::{
     StructuredOutput, TargetResult, check_expiry_warnings, export_pem_chain, output_results, print_diff, process_target,
 };
@@ -119,8 +121,12 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
         args.method = HttpMethod::Post;
     }
 
-    // Cache proxy configuration from environment at startup
-    let proxy_config = ProxyConfig::from_env();
+    // Cache proxy configuration at startup: --proxy/--noproxy layered over the
+    // standard environment variables.
+    let proxy_config = ProxyConfig::resolve(args.proxy.as_deref(), args.noproxy.as_deref())?;
+
+    // --resolve and --connect-to share one lookup table, built once per run.
+    let connect_overrides = ConnectOverrides::new(&args.resolve, &args.connect_to);
 
     // Build the public root set once per invocation (offline by default;
     // optionally refreshed from the upstream Mozilla/CCADB bundle). Reused
@@ -228,6 +234,7 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
                     target,
                     &args,
                     &proxy_config,
+                    &connect_overrides,
                     &public_roots,
                     body_data.as_deref(),
                     stdin_pem.as_deref(),
@@ -272,6 +279,7 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
             target,
             &args,
             &proxy_config,
+            &connect_overrides,
             &public_roots,
             body_data.as_deref(),
             stdin_pem.as_deref(),

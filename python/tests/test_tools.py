@@ -216,6 +216,58 @@ class TestToolCallHappyPath:
         )
 
     @pytest.mark.asyncio
+    async def test_connection_overrides_are_forwarded(self, mock_client):
+        await mock_client.analyze_certificate(
+            target="https://api.example.com",
+            connect_to="10.0.0.5",
+            resolve="api.example.com:443:10.0.0.6",
+            proxy="http://proxy.corp:3128",
+            noproxy="internal.corp",
+        )
+        mock_client._client.call_tool.assert_awaited_once_with(
+            "analyze_certificate",
+            {
+                "target": "https://api.example.com",
+                "connect_to": "10.0.0.5",
+                "resolve": "api.example.com:443:10.0.0.6",
+                "proxy": "http://proxy.corp:3128",
+                "noproxy": "internal.corp",
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_connection_overrides_accept_lists(self, mock_client):
+        await mock_client.tls_connection_info(
+            target="https://api.example.com",
+            connect_to=["api.example.com:443:origin.internal:8443"],
+            resolve=["api.example.com:443:10.0.0.5", "*:8443:10.0.0.6"],
+        )
+        mock_client._client.call_tool.assert_awaited_once_with(
+            "tls_connection_info",
+            {
+                "target": "https://api.example.com",
+                "connect_to": ["api.example.com:443:origin.internal:8443"],
+                "resolve": ["api.example.com:443:10.0.0.5", "*:8443:10.0.0.6"],
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_empty_proxy_and_noproxy_are_forwarded(self, mock_client):
+        # "" is meaningful for both — it forces a direct connection and clears
+        # an inherited NO_PROXY — so it must not be dropped as falsy.
+        await mock_client.check_expiry(target="example.com", proxy="", noproxy="")
+        mock_client._client.call_tool.assert_awaited_once_with(
+            "check_expiry", {"target": "example.com", "proxy": "", "noproxy": ""}
+        )
+
+    @pytest.mark.asyncio
+    async def test_connection_overrides_omitted_when_unset(self, mock_client):
+        await mock_client.export_pem(target="example.com")
+        mock_client._client.call_tool.assert_awaited_once_with(
+            "export_pem", {"target": "example.com"}
+        )
+
+    @pytest.mark.asyncio
     async def test_verify_key_match(self, mock_client):
         result = await mock_client.verify_key_match(target="cert.pem", key_path="key.pem")
         assert result == '{"status": "ok"}'

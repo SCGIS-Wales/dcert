@@ -1,6 +1,8 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use openssl::ssl::SslVersion;
 
+use crate::connect::{ConnectOverride, parse_connect_to, parse_resolve};
+
 /// Return the version string for `--version` output.
 ///
 /// Uses CARGO_PKG_VERSION from Cargo.toml, which is set to the correct
@@ -344,13 +346,35 @@ pub struct CheckArgs {
     #[arg(long)]
     pub sni: Option<String>,
 
-    /// Connect to this IP address instead of resolving the hostname via DNS.
-    /// The hostname in the target is still used for SNI and certificate
-    /// validation. Use to reach a specific backend behind a load balancer, or
-    /// a host whose name does not resolve. Example:
-    /// `dcert https://api.example.com --connect-to 10.0.0.5`
-    #[arg(long, value_name = "IP")]
-    pub connect_to: Option<String>,
+    /// Pin HOST:PORT to a specific IP address instead of using DNS, like curl's
+    /// --resolve. The hostname is still used for SNI, the Host header and
+    /// certificate validation. Repeatable; the host may be `*` and several
+    /// comma-separated addresses may be given (tried in order). Use
+    /// --connect-to to redirect to a hostname rather than an IP. Example:
+    /// `dcert https://api.example.com --resolve api.example.com:443:10.0.0.5`
+    #[arg(long, value_name = "HOST:PORT:ADDRESS", value_parser = parse_resolve)]
+    pub resolve: Vec<ConnectOverride>,
+
+    /// Redirect the connection to another host or IP while keeping the target
+    /// hostname for SNI, the Host header and certificate validation. Accepts a
+    /// bare IP address, or curl's HOST1:PORT1:HOST2:PORT2 form where empty
+    /// fields mean "any"/"unchanged". Repeatable. Example:
+    /// `dcert https://api.example.com --connect-to api.example.com:443:origin.internal:8443`
+    #[arg(long, value_name = "IP|HOST1:PORT1:HOST2:PORT2", value_parser = parse_connect_to)]
+    pub connect_to: Vec<ConnectOverride>,
+
+    /// Forward proxy URL for HTTPS/HTTP requests, like curl's -x. Overrides the
+    /// HTTPS_PROXY/HTTP_PROXY environment variables. Credentials may be embedded
+    /// (http://user:pass@proxy:3128). Pass an empty value to force a direct
+    /// connection. Note that --resolve/--connect-to always bypass the proxy.
+    #[arg(long, value_name = "URL", env = "DCERT_PROXY")]
+    pub proxy: Option<String>,
+
+    /// Comma-separated list of hosts that must bypass the proxy, like curl's
+    /// --noproxy. Overrides NO_PROXY; `*` bypasses the proxy entirely and an
+    /// empty value clears an inherited NO_PROXY.
+    #[arg(long = "noproxy", value_name = "LIST", env = "DCERT_NOPROXY")]
+    pub noproxy: Option<String>,
 
     /// Show SHA-256 fingerprint for each certificate
     #[arg(long)]

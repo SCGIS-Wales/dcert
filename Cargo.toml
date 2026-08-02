@@ -2,7 +2,8 @@
 name = "dcert"
 version = "3.0.43"
 edition = "2024"
-rust-version = "1.85"
+# Raised from 1.85 by jsonwebtoken 11, which declares rust-version = "1.88.0".
+rust-version = "1.88"
 license = "MIT"
 repository = "https://github.com/SCGIS-Wales/dcert"
 description = "TLS certificate analysis, format conversion, and key verification — CLI and MCP server"
@@ -21,7 +22,7 @@ path = "src/mcp/main.rs"
 
 pem-rfc7468 = { version = "1.0", features = ["alloc"] }
 url = "2.5"
-base64 = "0.22"
+base64 = "0.23"
 anyhow = "1.0"
 clap = { version = "4.6", features = ["derive", "env"] }
 colored = "3.1"
@@ -30,25 +31,34 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 x509-parser = "0.18"
 openssl = "0.10"
-pem = "3.0"
+pem = "4.0"
 serde_yaml_ng = "0.10"
 ctrlc = "3.5"
 openssl-probe = "0.2"
-rmcp = { version = "1.6", features = ["server", "transport-io", "client"] }
+rmcp = { version = "3.1", features = ["server", "transport-io", "client"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-std", "sync", "time"] }
 schemars = "1.2"
-jsonwebtoken = { version = "10", features = ["rust_crypto"] }
-reqwest = { version = "0.12", features = ["json", "rustls-tls-native-roots", "blocking"], default-features = false }
+jsonwebtoken = { version = "11", features = ["rust_crypto"] }
+# reqwest 0.13 replaced 0.12's `rustls-tls-native-roots`: `rustls` now pulls in
+# rustls-platform-verifier, so the platform trust store is used by default and
+# the separate native-roots feature no longer exists. `form` also became its own
+# feature; the OBO token exchange posts a urlencoded form body.
+reqwest = { version = "0.13", features = [
+    "json",
+    "form",
+    "rustls",
+    "blocking",
+], default-features = false }
 axum = "0.8"
 tower = "0.5"
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.7", features = ["cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 regex-lite = "0.1"
 subtle = "2.6"
 tempfile = "3.27"
 percent-encoding = "2.3"
-rust_xlsxwriter = "0.94"
+rust_xlsxwriter = "0.97"
 zeroize = { version = "1.8", features = ["derive"] }
 webpki-root-certs = "1"
 
@@ -60,5 +70,9 @@ openssl = { version = "0.10", features = ["vendored"] }
 
 [dev-dependencies]
 wiremock = "0.6"
+# Lets the CLI integration tests stand up a real loopback TLS server, so the
+# --resolve / --connect-to overrides are exercised end to end rather than only
+# at the argument-parsing layer.
+openssl = "0.10"
 
 rustc_version_runtime = "0.3"
