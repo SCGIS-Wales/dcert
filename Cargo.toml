@@ -1,6 +1,6 @@
 [package]
 name = "dcert"
-version = "3.0.43"
+version = "3.0.44"
 edition = "2024"
 # Raised from 1.85 by jsonwebtoken 11, which declares rust-version = "1.88.0".
 rust-version = "1.88"
