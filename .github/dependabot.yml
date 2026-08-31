@@ -57,6 +57,28 @@ updates:
       - "github-actions"
       - "dependencies"
 
+  # Python wrapper package under python/, which ships to PyPI alongside the
+  # crate and had no update schedule of its own.
+  - package-ecosystem: "pip"
+    directory: "/python"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:30"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    reviewers:
+      - "api-py"
+    assignees:
+      - "api-py"
+    commit-message:
+      prefix: "deps"
+      prefix-development: "deps-dev"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "python"
+
   # Docker base image
   - package-ecosystem: "docker"
     directory: "/"

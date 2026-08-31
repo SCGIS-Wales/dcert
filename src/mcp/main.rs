@@ -329,7 +329,7 @@ fn validate_alias(alias: &str) -> Result<(), String> {
 /// Truncate subprocess output if it exceeds the maximum allowed size.
 /// Walks back to a UTF-8 char boundary so the truncated output never splits a
 /// multi-byte character. Equivalent to `str::floor_char_boundary` but works on
-/// our MSRV (1.85; `floor_char_boundary` is stable from 1.91).
+/// our MSRV (1.88; `floor_char_boundary` is stable from 1.91).
 fn truncate_output(output: String) -> String {
     if output.len() > MAX_OUTPUT_SIZE {
         let mut boundary = MAX_OUTPUT_SIZE.min(output.len());
