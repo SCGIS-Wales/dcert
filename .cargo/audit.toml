@@ -4,9 +4,10 @@
 [advisories]
 ignore = [
     # RUSTSEC-2023-0071: rsa crate — Marvin Attack timing sidechannel.
-    # Transitive dependency via jsonwebtoken 10 (rust_crypto feature).
-    # No fixed version available upstream. We only use RSA for JWT signature
-    # *verification* (not encryption/decryption), so the PKCS#1 v1.5
-    # decryption timing oracle does not apply to our usage.
+    # Reaches us as rsa 0.9.x, pulled in by jsonwebtoken 11 (rust_crypto
+    # feature). Upstream has published no fixed 0.9 release. We use RSA only
+    # to *verify* JWT signatures, never to encrypt or decrypt, so the PKCS#1
+    # v1.5 decryption timing oracle is not reachable from our code paths.
+    # Re-check when jsonwebtoken moves off the rsa 0.9 line.
     "RUSTSEC-2023-0071",
 ]
