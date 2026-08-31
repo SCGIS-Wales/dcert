@@ -1,6 +1,10 @@
 name: CodeQL
 
 on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
   schedule:
     # Weekly scan on Monday at 08:00 UTC
     - cron: '0 8 * * 1'
@@ -9,19 +13,40 @@ on:
 permissions:
   security-events: write
   contents: read
+  actions: read
+
+# A newer push to the same branch supersedes an in-flight scan.
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   analyze:
-    name: Analyze
+    name: Analyze (${{ matrix.language }})
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: actions
+            build-mode: none
+          # The Rust crate is the bulk of the code and the part that parses
+          # untrusted certificate and token input, so it is the half that most
+          # needs scanning.
+          - language: rust
+            build-mode: none
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
         with:
-          languages: actions
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:${{ matrix.language }}

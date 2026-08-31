@@ -1,9 +1,10 @@
 name: CI/CD Pipeline
 
+# Least privilege by default. Only the jobs that publish escalate, and they do
+# so in their own `permissions:` block, so a pull request build never holds a
+# token that can push a package or mint an OIDC identity.
 permissions:
   contents: read
-  packages: write
-  id-token: write
 
 on:
   push:
@@ -24,18 +25,18 @@ jobs:
         rust: [ stable ]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: ${{ matrix.rust }}
           components: rustfmt, clippy
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -58,15 +59,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: stable
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -94,7 +95,7 @@ jobs:
         run: cargo cyclonedx --format json --all
 
       - name: Upload SBOM artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sbom
           path: '**/*.cdx.json'
@@ -108,10 +109,10 @@ jobs:
         working-directory: python
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -135,10 +136,10 @@ jobs:
         working-directory: python
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           allow-prereleases: true
@@ -154,10 +155,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -175,10 +176,10 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -196,10 +197,10 @@ jobs:
         working-directory: python
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -222,15 +223,15 @@ jobs:
         working-directory: python
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: stable
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -249,7 +250,7 @@ jobs:
         working-directory: .
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -278,7 +279,7 @@ jobs:
       created: ${{ steps.create_tag.outputs.created }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           token: ${{ secrets.TAP_GITHUB_TOKEN }}
@@ -322,6 +323,26 @@ jobs:
           # Update Cargo.toml
           sed -i "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
 
+          # Keep Cargo.lock in step with the manifest. Without this the lock
+          # file keeps the previous version, so a fresh checkout of main goes
+          # dirty as soon as any cargo command runs. Rewritten in place rather
+          # than through cargo, because this job installs no Rust toolchain.
+          python3 - "$VERSION" <<'PYEOF'
+          import re, sys
+
+          version = sys.argv[1]
+          text = open("Cargo.lock").read()
+          text, count = re.subn(
+              r'(\[\[package\]\]\nname = "dcert"\nversion = ")[^"]*(")',
+              lambda m: m.group(1) + version + m.group(2),
+              text,
+              count=1,
+          )
+          if count != 1:
+              sys.exit("Cargo.lock: could not find the dcert package entry")
+          open("Cargo.lock", "w").write(text)
+          PYEOF
+
           # Update Python package version
           sed -i "s/^version = \".*\"/version = \"$VERSION\"/" python/pyproject.toml
           sed -i "s/^__version__ = \".*\"/__version__ = \"$VERSION\"/" python/src/dcert/__init__.py
@@ -329,7 +350,7 @@ jobs:
           # Commit the version bump
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Cargo.toml python/pyproject.toml python/src/dcert/__init__.py
+          git add Cargo.toml Cargo.lock python/pyproject.toml python/src/dcert/__init__.py
           git commit -m "chore: bump version to ${VERSION} [skip ci]"
           git push origin main
 
@@ -353,7 +374,7 @@ jobs:
           - x86_64-unknown-linux-gnu
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -365,7 +386,7 @@ jobs:
           echo "Set Cargo.toml version to $VERSION"
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
@@ -376,7 +397,7 @@ jobs:
           sudo apt-get install -y pkg-config libssl-dev
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -394,7 +415,7 @@ jobs:
           tar czf dist/dcert-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release dcert dcert-mcp
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dcert-${{ matrix.target }}
           path: dist/dcert-${{ matrix.target }}.tar.gz
@@ -406,7 +427,7 @@ jobs:
     if: always() && needs.test.result == 'success' && (needs.auto-tag.result == 'success' || needs.auto-tag.result == 'skipped')
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -418,12 +439,12 @@ jobs:
           echo "Set Cargo.toml version to $VERSION"
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: stable
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -445,7 +466,7 @@ jobs:
           tar czf dist/dcert-x86_64-apple-darwin.tar.gz -C target/release dcert dcert-mcp
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dcert-x86_64-apple-darwin
           path: dist/dcert-x86_64-apple-darwin.tar.gz
@@ -457,7 +478,7 @@ jobs:
     if: always() && needs.test.result == 'success' && (needs.auto-tag.result == 'success' || needs.auto-tag.result == 'skipped')
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -469,12 +490,12 @@ jobs:
           echo "Set Cargo.toml version to $VERSION"
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: stable
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -496,7 +517,7 @@ jobs:
           tar czf dist/dcert-aarch64-apple-darwin.tar.gz -C target/release dcert dcert-mcp
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dcert-aarch64-apple-darwin
           path: dist/dcert-aarch64-apple-darwin.tar.gz
@@ -508,7 +529,7 @@ jobs:
     if: always() && needs.test.result == 'success' && (needs.auto-tag.result == 'success' || needs.auto-tag.result == 'skipped')
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -521,7 +542,7 @@ jobs:
           Write-Host "Set Cargo.toml version to $v"
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: stable
           targets: x86_64-pc-windows-msvc
@@ -529,7 +550,7 @@ jobs:
       # Vendored OpenSSL (Windows-only, see Cargo.toml) builds from source and
       # requires NASM and Perl. Strawberry Perl ships on the runner image.
       - name: Install NASM
-        uses: ilammy/setup-nasm@v1
+        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
 
       - name: Verify build prerequisites
         shell: pwsh
@@ -538,7 +559,7 @@ jobs:
           where.exe perl
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -559,7 +580,7 @@ jobs:
             -DestinationPath "dist/dcert-x86_64-pc-windows-msvc.zip" -Force
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dcert-x86_64-pc-windows-msvc
           path: dist/dcert-x86_64-pc-windows-msvc.zip
@@ -572,10 +593,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -593,7 +614,7 @@ jobs:
         run: python -m build --wheel python/
 
       - name: Download all release artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: dcert-*
           merge-multiple: true
@@ -633,13 +654,13 @@ jobs:
         run: ls -la python/platform-dist/
 
       - name: Upload universal wheel
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: python-wheel-universal
           path: python/dist/*.whl
 
       - name: Upload platform wheels
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: python-wheels-platform
           path: python/platform-dist/*.whl
@@ -651,12 +672,15 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     needs: [ auto-tag, build-linux ]
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Download Linux x86_64 artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dcert-x86_64-unknown-linux-gnu
           path: ./docker-bin
@@ -670,7 +694,7 @@ jobs:
 
       - name: Docker meta
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
@@ -679,17 +703,17 @@ jobs:
             type=ref,event=branch
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true
@@ -703,22 +727,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Download Linux x86_64 artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dcert-x86_64-unknown-linux-gnu
           path: ./artifacts
 
       - name: Download macOS x86_64 artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dcert-x86_64-apple-darwin
           path: ./artifacts
 
       - name: Download macOS ARM64 artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dcert-aarch64-apple-darwin
           path: ./artifacts
@@ -792,7 +816,7 @@ jobs:
           cat dcert.rb
 
       - name: Checkout homebrew-tap
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: SCGIS-Wales/homebrew-tap
           token: ${{ secrets.TAP_GITHUB_TOKEN }}
@@ -820,7 +844,7 @@ jobs:
           fi
 
       - name: Upload Homebrew Formula
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: homebrew-formula
           path: dcert.rb
@@ -835,34 +859,34 @@ jobs:
       packages: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Download Linux x86_64 artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dcert-x86_64-unknown-linux-gnu
           path: ./artifacts/dcert-x86_64-unknown-linux-gnu
 
       - name: Download Windows x86_64 artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dcert-x86_64-pc-windows-msvc
           path: ./artifacts/dcert-x86_64-pc-windows-msvc
 
       - name: Download macOS Intel artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dcert-x86_64-apple-darwin
           path: ./artifacts/dcert-x86_64-apple-darwin
 
       - name: Download macOS ARM64 artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dcert-aarch64-apple-darwin
           path: ./artifacts/dcert-aarch64-apple-darwin
 
       - name: Download Homebrew formula
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: homebrew-formula
           path: ./artifacts/homebrew-formula
@@ -993,7 +1017,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -1094,10 +1118,10 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Download Windows artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dcert-x86_64-pc-windows-msvc
           path: ./artifacts
@@ -1140,7 +1164,7 @@ jobs:
           Write-Host "Packed: $($pkgs[0].Name)"
 
       - name: Upload nupkg artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dcert-chocolatey
           path: dist-choco/*.nupkg
@@ -1159,7 +1183,7 @@ jobs:
       CHOCO_API_KEY: ${{ secrets.CHOCO_API_KEY }}
     steps:
       - name: Download nupkg artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dcert-chocolatey
           path: ./dist-choco
@@ -1224,19 +1248,19 @@ jobs:
       url: https://pypi.org/project/dcert/
     steps:
       - name: Download universal wheel
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: python-wheel-universal
           path: dist/
 
       - name: Download platform wheels
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: python-wheels-platform
           path: dist/
 
       - name: Download source distribution
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: python-wheel-universal
           path: sdist-tmp/
