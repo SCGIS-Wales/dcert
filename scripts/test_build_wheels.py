@@ -1,39 +1,37 @@
-"""Tests for the platform-specific wheel builder."""
+"""Tests for scripts/build_wheels.py."""
+
+from __future__ import annotations
 
 import io
 import tarfile
-import textwrap
 from pathlib import Path
 from zipfile import ZipFile
 
 import pytest
-
 from build_wheels import (
     BINARY_NAMES,
     PLATFORM_MAP,
-    _extract_binaries_from_archive,
-    _parse_wheel_filename,
-    _record_entry,
+    archive_name_for_host,
     build_all,
     build_platform_wheel,
+    extract_binaries_from_archive,
+    load_platform_rows,
+    main,
+    parse_wheel_filename,
+    platform_map,
+    record_entry,
+    resolve_wheel,
 )
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+TAR_BINARIES = {"dcert": b"#!/bin/sh\necho dcert", "dcert-mcp": b"#!/bin/sh\necho dcert-mcp"}
+ZIP_BINARIES = {"dcert.exe": b"MZ\x90\x00dcert", "dcert-mcp.exe": b"MZ\x90\x00dcert-mcp"}
 
 
-def _make_tar_archive(path: Path, binaries: dict[str, bytes] | None = None) -> Path:
-    """Create a fake tar.gz archive containing specified binaries."""
+def make_tar_archive(path: Path, binaries: dict[str, bytes] | None = None) -> Path:
+    """Write a tar.gz containing *binaries* (fake ones by default)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    if binaries is None:
-        binaries = {
-            "dcert": b"#!/bin/sh\necho dcert",
-            "dcert-mcp": b"#!/bin/sh\necho dcert-mcp",
-        }
     with tarfile.open(path, "w:gz") as tar:
-        for name, data in binaries.items():
+        for name, data in (binaries or TAR_BINARIES).items():
             info = tarfile.TarInfo(name=name)
             info.size = len(data)
             info.mode = 0o755
@@ -41,31 +39,25 @@ def _make_tar_archive(path: Path, binaries: dict[str, bytes] | None = None) -> P
     return path
 
 
-def _make_zip_archive(path: Path, binaries: dict[str, bytes] | None = None) -> Path:
-    """Create a fake Windows .zip archive containing .exe binaries."""
+def make_zip_archive(path: Path, binaries: dict[str, bytes] | None = None) -> Path:
+    """Write a Windows style zip containing *binaries*."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    if binaries is None:
-        binaries = {
-            "dcert.exe": b"MZ\x90\x00dcert",
-            "dcert-mcp.exe": b"MZ\x90\x00dcert-mcp",
-        }
     with ZipFile(path, "w") as zf:
-        for name, data in binaries.items():
+        for name, data in (binaries or ZIP_BINARIES).items():
             zf.writestr(name, data)
     return path
 
 
-def _make_archive_for(path: Path) -> Path:
-    """Create a platform archive matching the filename's extension."""
-    if path.suffix == ".zip":
-        return _make_zip_archive(path)
-    return _make_tar_archive(path)
+def make_archive_for(path: Path) -> Path:
+    """Write a fake archive whose format matches the file extension."""
+    return make_zip_archive(path) if path.suffix == ".zip" else make_tar_archive(path)
 
 
-def _make_universal_wheel(directory: Path) -> Path:
-    """Create a minimal universal wheel for testing."""
-    directory.mkdir(parents=True, exist_ok=True)
-    whl_path = directory / "dcert-1.0.0-py3-none-any.whl"
+@pytest.fixture
+def universal_wheel(tmp_path: Path) -> Path:
+    """A minimal universal wheel."""
+    whl_path = tmp_path / "src" / "dcert-1.0.0-py3-none-any.whl"
+    whl_path.parent.mkdir()
     with ZipFile(whl_path, "w") as zf:
         zf.writestr("dcert/__init__.py", "__version__ = '1.0.0'\n")
         zf.writestr(
@@ -80,261 +72,216 @@ def _make_universal_wheel(directory: Path) -> Path:
     return whl_path
 
 
-# ---------------------------------------------------------------------------
-# Tests: record entry
-# ---------------------------------------------------------------------------
+@pytest.fixture
+def tar_archive(tmp_path: Path) -> Path:
+    return make_tar_archive(tmp_path / "archives" / "test.tar.gz")
 
 
-class TestRecordEntry:
-    def test_format(self):
-        data = b"hello world"
-        entry = _record_entry("some/file.py", data)
-        assert entry.startswith("some/file.py,sha256=")
-        assert entry.endswith(f",{len(data)}")
-
-    def test_different_data_different_hash(self):
-        e1 = _record_entry("f.py", b"aaa")
-        e2 = _record_entry("f.py", b"bbb")
-        assert e1 != e2
+@pytest.fixture
+def output_dir(tmp_path: Path) -> Path:
+    out = tmp_path / "out"
+    out.mkdir()
+    return out
 
 
-# ---------------------------------------------------------------------------
-# Tests: parse wheel filename
-# ---------------------------------------------------------------------------
+@pytest.fixture
+def built_wheel(universal_wheel: Path, tar_archive: Path, output_dir: Path) -> Path:
+    return build_platform_wheel(universal_wheel, tar_archive, "macosx_11_0_arm64", output_dir)
 
 
-class TestParseWheelFilename:
-    def test_valid_name(self):
-        p = Path("dcert-1.0.0-py3-none-any.whl")
-        name, version = _parse_wheel_filename(p)
-        assert name == "dcert"
-        assert version == "1.0.0"
-
-    def test_invalid_name(self):
-        with pytest.raises(ValueError, match="Invalid wheel filename"):
-            _parse_wheel_filename(Path("bad.whl"))
+# -- record entry / wheel filename ---------------------------------------------
 
 
-# ---------------------------------------------------------------------------
-# Tests: extract binaries from archive
-# ---------------------------------------------------------------------------
+def test_record_entry_format():
+    data = b"hello world"
+    entry = record_entry("some/file.py", data)
+    assert entry.startswith("some/file.py,sha256=")
+    assert entry.endswith(f",{len(data)}")
+    assert record_entry("f.py", b"aaa") != record_entry("f.py", b"bbb")
 
 
-class TestExtractBinaries:
-    def test_extract_both_binaries(self, tmp_path):
-        archive = _make_tar_archive(tmp_path / "dcert-test.tar.gz")
-        binaries = _extract_binaries_from_archive(archive)
-        assert "dcert" in binaries
-        assert "dcert-mcp" in binaries
-        assert b"dcert" in binaries["dcert"]
-        assert b"dcert-mcp" in binaries["dcert-mcp"]
-
-    def test_extract_with_directory_prefix(self, tmp_path):
-        """Test extraction strips directory prefixes."""
-        archive_path = tmp_path / "dcert-test.tar.gz"
-        archive_path.parent.mkdir(parents=True, exist_ok=True)
-        with tarfile.open(archive_path, "w:gz") as tar:
-            for name in ["release/dcert", "release/dcert-mcp"]:
-                data = f"#!/bin/sh\necho {Path(name).name}".encode()
-                info = tarfile.TarInfo(name=name)
-                info.size = len(data)
-                tar.addfile(info, io.BytesIO(data))
-        binaries = _extract_binaries_from_archive(archive_path)
-        assert "dcert" in binaries
-        assert "dcert-mcp" in binaries
-
-    def test_ignores_other_files(self, tmp_path):
-        archive_path = tmp_path / "dcert-test.tar.gz"
-        archive_path.parent.mkdir(parents=True, exist_ok=True)
-        with tarfile.open(archive_path, "w:gz") as tar:
-            for name in ["dcert", "dcert-mcp", "README.md"]:
-                data = name.encode()
-                info = tarfile.TarInfo(name=name)
-                info.size = len(data)
-                tar.addfile(info, io.BytesIO(data))
-        binaries = _extract_binaries_from_archive(archive_path)
-        assert set(binaries.keys()) == {"dcert", "dcert-mcp"}
-
-    def test_extract_windows_zip(self, tmp_path):
-        archive = _make_zip_archive(tmp_path / "dcert-x86_64-pc-windows-msvc.zip")
-        binaries = _extract_binaries_from_archive(archive)
-        assert set(binaries.keys()) == {"dcert.exe", "dcert-mcp.exe"}
-
-    def test_build_windows_wheel(self, tmp_path):
-        src = _make_universal_wheel(tmp_path / "src")
-        archive = _make_zip_archive(
-            tmp_path / "archives" / "dcert-x86_64-pc-windows-msvc.zip"
-        )
-        output_dir = tmp_path / "out"
-        output_dir.mkdir()
-        result = build_platform_wheel(src, archive, "win_amd64", output_dir)
-        assert "win_amd64" in result.name
-        with ZipFile(result, "r") as zf:
-            names = zf.namelist()
-            assert "dcert/bin/dcert.exe" in names
-            assert "dcert/bin/dcert-mcp.exe" in names
+def test_parse_wheel_filename():
+    assert parse_wheel_filename(Path("dcert-1.0.0-py3-none-any.whl")) == ("dcert", "1.0.0")
+    with pytest.raises(ValueError, match="Invalid wheel filename"):
+        parse_wheel_filename(Path("bad.whl"))
 
 
-# ---------------------------------------------------------------------------
-# Tests: build_platform_wheel
-# ---------------------------------------------------------------------------
+# -- platform table from config.yaml -----------------------------------------
 
 
-class TestBuildPlatformWheel:
-    def test_creates_wheel(self, tmp_path):
-        src = _make_universal_wheel(tmp_path / "src")
-        archive = _make_tar_archive(tmp_path / "archives" / "test.tar.gz")
-        output_dir = tmp_path / "out"
-        output_dir.mkdir()
-
-        result = build_platform_wheel(src, archive, "macosx_11_0_arm64", output_dir)
-        assert result.exists()
-        assert "macosx_11_0_arm64" in result.name
-
-    def test_wheel_contains_both_binaries(self, tmp_path):
-        src = _make_universal_wheel(tmp_path / "src")
-        archive = _make_tar_archive(tmp_path / "archives" / "test.tar.gz")
-        output_dir = tmp_path / "out"
-        output_dir.mkdir()
-
-        result = build_platform_wheel(src, archive, "macosx_11_0_arm64", output_dir)
-        with ZipFile(result, "r") as zf:
-            names = zf.namelist()
-            assert "dcert/bin/dcert-mcp" in names
-            assert "dcert/bin/dcert" in names
-
-    def test_wheel_has_executable_permissions(self, tmp_path):
-        src = _make_universal_wheel(tmp_path / "src")
-        archive = _make_tar_archive(tmp_path / "archives" / "test.tar.gz")
-        output_dir = tmp_path / "out"
-        output_dir.mkdir()
-
-        result = build_platform_wheel(src, archive, "macosx_11_0_arm64", output_dir)
-        with ZipFile(result, "r") as zf:
-            for info in zf.infolist():
-                if info.filename.startswith("dcert/bin/") and info.filename.endswith(
-                    ("dcert", "dcert-mcp")
-                ):
-                    # Verify Unix create_system
-                    assert info.create_system == 3, "create_system must be Unix (3)"
-                    # Verify file type is regular file (0o100000) + rwxr-xr-x (0o755)
-                    mode = (info.external_attr >> 16) & 0o777
-                    assert mode == 0o755, f"expected 0o755, got {oct(mode)}"
-
-    def test_wheel_has_correct_platform_tag(self, tmp_path):
-        src = _make_universal_wheel(tmp_path / "src")
-        archive = _make_tar_archive(tmp_path / "archives" / "test.tar.gz")
-        output_dir = tmp_path / "out"
-        output_dir.mkdir()
-
-        tag = "manylinux_2_35_x86_64"
-        result = build_platform_wheel(src, archive, tag, output_dir)
-        with ZipFile(result, "r") as zf:
-            wheel_content = zf.read("dcert-1.0.0.dist-info/WHEEL").decode()
-            assert f"Tag: py3-none-{tag}" in wheel_content
-
-    def test_wheel_has_valid_record(self, tmp_path):
-        src = _make_universal_wheel(tmp_path / "src")
-        archive = _make_tar_archive(tmp_path / "archives" / "test.tar.gz")
-        output_dir = tmp_path / "out"
-        output_dir.mkdir()
-
-        result = build_platform_wheel(src, archive, "macosx_11_0_arm64", output_dir)
-        with ZipFile(result, "r") as zf:
-            record = zf.read("dcert-1.0.0.dist-info/RECORD").decode()
-            # Every file except RECORD itself should have a hash
-            for info in zf.infolist():
-                if info.filename == "dcert-1.0.0.dist-info/RECORD":
-                    assert "dcert-1.0.0.dist-info/RECORD,," in record
-                else:
-                    assert info.filename in record
-
-    def test_missing_dcert_mcp_raises(self, tmp_path):
-        src = _make_universal_wheel(tmp_path / "src")
-        archive = _make_tar_archive(
-            tmp_path / "archives" / "test.tar.gz",
-            binaries={"dcert": b"#!/bin/sh\necho dcert"},
-        )
-        output_dir = tmp_path / "out"
-        output_dir.mkdir()
-
-        with pytest.raises(RuntimeError, match="dcert-mcp binary not found"):
-            build_platform_wheel(src, archive, "macosx_11_0_arm64", output_dir)
+def test_platform_map_from_config():
+    assert PLATFORM_MAP == {
+        "dcert-x86_64-unknown-linux-gnu.tar.gz": "manylinux_2_35_x86_64",
+        "dcert-x86_64-apple-darwin.tar.gz": "macosx_10_15_x86_64",
+        "dcert-aarch64-apple-darwin.tar.gz": "macosx_11_0_arm64",
+        "dcert-x86_64-pc-windows-msvc.zip": "win_amd64",
+    }
+    assert platform_map(load_platform_rows()) == PLATFORM_MAP
 
 
-# ---------------------------------------------------------------------------
-# Tests: build_all (batch mode)
-# ---------------------------------------------------------------------------
+def test_archive_name_for_host():
+    rows = load_platform_rows()
+    assert archive_name_for_host("Linux", "x86_64", rows) == "dcert-x86_64-unknown-linux-gnu.tar.gz"
+    assert archive_name_for_host("Windows", "AMD64", rows) == "dcert-x86_64-pc-windows-msvc.zip"
+    assert archive_name_for_host("Linux", "aarch64", rows) is None
 
 
-class TestBuildAll:
-    def test_batch_builds_all_platforms(self, tmp_path):
-        src = _make_universal_wheel(tmp_path / "src")
-        archives_dir = tmp_path / "archives"
-        archives_dir.mkdir()
-
-        for archive_name in PLATFORM_MAP:
-            _make_archive_for(archives_dir / archive_name)
-
-        output_dir = tmp_path / "out"
-        output_dir.mkdir()
-
-        wheels = build_all(src, archives_dir, output_dir)
-        assert len(wheels) == len(PLATFORM_MAP)
-
-        # Verify each platform tag
-        for wheel in wheels:
-            found = False
-            for tag in PLATFORM_MAP.values():
-                if tag in wheel.name:
-                    found = True
-                    break
-            assert found, f"Wheel {wheel.name} doesn't match any platform tag"
-
-    def test_batch_skips_unknown_archives(self, tmp_path):
-        src = _make_universal_wheel(tmp_path / "src")
-        archives_dir = tmp_path / "archives"
-        archives_dir.mkdir()
-
-        # Create one valid archive and one unknown
-        first_archive = list(PLATFORM_MAP.keys())[0]
-        _make_tar_archive(archives_dir / first_archive)
-        _make_tar_archive(archives_dir / "dcert-unknown-platform.tar.gz")
-
-        output_dir = tmp_path / "out"
-        output_dir.mkdir()
-
-        wheels = build_all(src, archives_dir, output_dir)
-        assert len(wheels) == 1
-
-    def test_batch_empty_dir(self, tmp_path):
-        src = _make_universal_wheel(tmp_path / "src")
-        archives_dir = tmp_path / "archives"
-        archives_dir.mkdir()
-        output_dir = tmp_path / "out"
-        output_dir.mkdir()
-
-        wheels = build_all(src, archives_dir, output_dir)
-        assert len(wheels) == 0
+def test_load_platform_rows_rejects_bad_file(tmp_path: Path):
+    bad = tmp_path / "config.yaml"
+    bad.write_text("platforms: {}\n")
+    with pytest.raises(ValueError, match="platforms"):
+        load_platform_rows(bad)
 
 
-# ---------------------------------------------------------------------------
-# Tests: platform map completeness
-# ---------------------------------------------------------------------------
+def test_binary_names():
+    assert set(BINARY_NAMES) == {"dcert", "dcert-mcp", "dcert.exe", "dcert-mcp.exe"}
 
 
-class TestPlatformMap:
-    def test_all_platforms_present(self):
-        assert "dcert-x86_64-unknown-linux-gnu.tar.gz" in PLATFORM_MAP
-        assert "dcert-x86_64-apple-darwin.tar.gz" in PLATFORM_MAP
-        assert "dcert-aarch64-apple-darwin.tar.gz" in PLATFORM_MAP
-        assert PLATFORM_MAP["dcert-x86_64-pc-windows-msvc.zip"] == "win_amd64"
+# -- extraction --------------------------------------------------------------
 
-    def test_platform_count(self):
-        assert len(PLATFORM_MAP) == 4
 
-    def test_binary_names(self):
-        assert "dcert" in BINARY_NAMES
-        assert "dcert-mcp" in BINARY_NAMES
-        assert "dcert.exe" in BINARY_NAMES
-        assert "dcert-mcp.exe" in BINARY_NAMES
+def test_extract_both_binaries(tar_archive: Path):
+    assert extract_binaries_from_archive(tar_archive) == TAR_BINARIES
+
+
+def test_extract_with_directory_prefix(tmp_path: Path):
+    archive = make_tar_archive(
+        tmp_path / "prefixed.tar.gz",
+        {"release/dcert": b"a", "release/dcert-mcp": b"b", "release/README.md": b"c"},
+    )
+    assert extract_binaries_from_archive(archive) == {"dcert": b"a", "dcert-mcp": b"b"}
+
+
+def test_extract_windows_zip(tmp_path: Path):
+    archive = make_zip_archive(tmp_path / "dcert-x86_64-pc-windows-msvc.zip")
+    assert extract_binaries_from_archive(archive) == ZIP_BINARIES
+
+
+# -- build_platform_wheel ----------------------------------------------------
+
+
+def test_creates_wheel_with_tag_and_binaries(built_wheel: Path):
+    assert built_wheel.exists()
+    assert "macosx_11_0_arm64" in built_wheel.name
+    with ZipFile(built_wheel, "r") as zf:
+        names = zf.namelist()
+        assert "dcert/bin/dcert-mcp" in names
+        assert "dcert/bin/dcert" in names
+        assert "Tag: py3-none-macosx_11_0_arm64" in zf.read("dcert-1.0.0.dist-info/WHEEL").decode()
+
+
+def test_wheel_has_executable_permissions(built_wheel: Path):
+    with ZipFile(built_wheel, "r") as zf:
+        for info in zf.infolist():
+            if info.filename.startswith("dcert/bin/"):
+                assert info.create_system == 3
+                assert (info.external_attr >> 16) & 0o777 == 0o755
+
+
+def test_wheel_has_valid_record(built_wheel: Path):
+    with ZipFile(built_wheel, "r") as zf:
+        record = zf.read("dcert-1.0.0.dist-info/RECORD").decode()
+        for info in zf.infolist():
+            assert info.filename in record
+        assert "dcert-1.0.0.dist-info/RECORD,," in record
+
+
+def test_build_windows_wheel(universal_wheel: Path, output_dir: Path, tmp_path: Path):
+    archive = make_zip_archive(tmp_path / "archives" / "dcert-x86_64-pc-windows-msvc.zip")
+    result = build_platform_wheel(universal_wheel, archive, "win_amd64", output_dir)
+    assert "win_amd64" in result.name
+    with ZipFile(result, "r") as zf:
+        assert {"dcert/bin/dcert.exe", "dcert/bin/dcert-mcp.exe"} <= set(zf.namelist())
+
+
+def test_missing_dcert_mcp_raises(universal_wheel: Path, output_dir: Path, tmp_path: Path):
+    archive = make_tar_archive(tmp_path / "archives" / "test.tar.gz", {"dcert": b"only"})
+    with pytest.raises(RuntimeError, match="dcert-mcp binary not found"):
+        build_platform_wheel(universal_wheel, archive, "macosx_11_0_arm64", output_dir)
+
+
+# -- build_all ---------------------------------------------------------------
+
+
+def test_batch_builds_all_platforms(universal_wheel: Path, output_dir: Path, tmp_path: Path):
+    archives_dir = tmp_path / "archives"
+    archives_dir.mkdir()
+    for name in PLATFORM_MAP:
+        make_archive_for(archives_dir / name)
+    wheels = build_all(universal_wheel, archives_dir, output_dir)
+    assert len(wheels) == len(PLATFORM_MAP)
+    assert all(any(tag in wheel.name for tag in PLATFORM_MAP.values()) for wheel in wheels)
+
+
+def test_batch_skips_unknown_archives(universal_wheel: Path, output_dir: Path, tmp_path: Path):
+    archives_dir = tmp_path / "archives"
+    archives_dir.mkdir()
+    make_tar_archive(archives_dir / next(iter(PLATFORM_MAP)))
+    make_tar_archive(archives_dir / "dcert-unknown-platform.tar.gz")
+    assert len(build_all(universal_wheel, archives_dir, output_dir)) == 1
+
+
+def test_batch_empty_dir(universal_wheel: Path, output_dir: Path, tmp_path: Path):
+    archives_dir = tmp_path / "archives"
+    archives_dir.mkdir()
+    assert build_all(universal_wheel, archives_dir, output_dir) == []
+
+
+# -- command line ------------------------------------------------------------
+
+
+def test_resolve_wheel(universal_wheel: Path, tmp_path: Path):
+    assert resolve_wheel(str(universal_wheel)) == universal_wheel
+    assert resolve_wheel(str(tmp_path / "src" / "dcert-*.whl")) == universal_wheel
+    with pytest.raises(FileNotFoundError, match="wheel not found"):
+        resolve_wheel(str(tmp_path / "missing-*.whl"))
+    (tmp_path / "src" / "dcert-2.0.0-py3-none-any.whl").write_bytes(b"")
+    with pytest.raises(ValueError, match="multiple wheels match"):
+        resolve_wheel(str(tmp_path / "src" / "dcert-*.whl"))
+
+
+def test_main_batch_mode(universal_wheel: Path, output_dir: Path, tmp_path: Path):
+    archives_dir = tmp_path / "archives"
+    archives_dir.mkdir()
+    make_tar_archive(archives_dir / "dcert-x86_64-unknown-linux-gnu.tar.gz")
+    argv = [
+        "--wheel",
+        str(universal_wheel),
+        "--archives-dir",
+        str(archives_dir),
+        "--output",
+        str(output_dir),
+    ]
+    assert main(argv) == 0
+    assert list(output_dir.glob("*manylinux_2_35_x86_64.whl"))
+
+
+def test_main_single_mode(universal_wheel: Path, tar_archive: Path, output_dir: Path):
+    argv = [
+        "--wheel",
+        str(universal_wheel),
+        "--archive",
+        str(tar_archive),
+        "--platform",
+        "macosx_11_0_arm64",
+        "--output",
+        str(output_dir),
+    ]
+    assert main(argv) == 0
+    assert list(output_dir.glob("*macosx_11_0_arm64.whl"))
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        [],
+        ["--archives-dir", "/nonexistent"],
+        ["--archive", "/nonexistent.tar.gz", "--platform", "x"],
+    ],
+)
+def test_main_errors(universal_wheel: Path, output_dir: Path, extra: list[str]):
+    assert main(["--wheel", str(universal_wheel), "--output", str(output_dir), *extra]) == 1
+
+
+def test_main_missing_wheel(output_dir: Path):
+    assert main(["--wheel", "/nonexistent.whl", "--output", str(output_dir)]) == 1

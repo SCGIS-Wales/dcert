@@ -1,0 +1,109 @@
+# Packaged configuration for the dcert Python wrapper.
+#
+# Every value here is a default. Runtime settings under "resilience" and
+# "otel" can be overridden with the DCERT_MCP_* environment variables listed
+# in dcert/resilience.py, and the CLI flags of dcert-python override those.
+
+release:
+  # GitHub release asset URL; {version} and {archive_name} are substituted.
+  url_template: "https://github.com/SCGIS-Wales/dcert/releases/download/v{version}/{archive_name}"
+  # Hosts a download (or any redirect it follows) may point at. A host matches
+  # when it equals an entry or is a subdomain of it. GitHub serves release
+  # assets from github.com and redirects to *.githubusercontent.com.
+  allowed_hosts:
+    - github.com
+    - githubusercontent.com
+
+download:
+  timeout_seconds: 60
+  # Hard cap on the archive size, checked against Content-Length and while
+  # streaming (100 MiB).
+  max_bytes: 104857600
+  chunk_size: 65536
+  lock_file_name: ".dcert-install.lock"
+
+# Rust binaries shipped in each release and the environment variable that
+# points at an explicit path for each of them.
+binaries:
+  dcert: DCERT_PATH
+  dcert-mcp: DCERT_MCP_BINARY
+
+# One row per supported platform. "system" and "machine" are the lower-cased
+# values of platform.system() and platform.machine(); "wheel_tag" is used by
+# scripts/build_wheels.py to tag the platform wheel built from the archive.
+platforms:
+  - system: linux
+    machine: x86_64
+    triple: x86_64-unknown-linux-gnu
+    archive_extension: tar.gz
+    wheel_tag: manylinux_2_35_x86_64
+  - system: darwin
+    machine: x86_64
+    triple: x86_64-apple-darwin
+    archive_extension: tar.gz
+    wheel_tag: macosx_10_15_x86_64
+  - system: darwin
+    machine: arm64
+    triple: aarch64-apple-darwin
+    archive_extension: tar.gz
+    wheel_tag: macosx_11_0_arm64
+  - system: windows
+    machine: amd64
+    triple: x86_64-pc-windows-msvc
+    archive_extension: zip
+    wheel_tag: win_amd64
+
+subprocess:
+  # Environment variables forwarded from the proxy to the Rust subprocess.
+  passthrough_env:
+    - HOME
+    - USER
+    - PATH
+    - LD_LIBRARY_PATH
+    - DYLD_LIBRARY_PATH
+    - DYLD_FALLBACK_LIBRARY_PATH
+    - HTTP_PROXY
+    - HTTPS_PROXY
+    - NO_PROXY
+    - http_proxy
+    - https_proxy
+    - no_proxy
+    - SSL_CERT_FILE
+    - SSL_CERT_DIR
+    - REQUESTS_CA_BUNDLE
+    - DCERT_PATH
+    - DCERT_MCP_TIMEOUT
+    - DCERT_MCP_CONNECTION_TIMEOUT
+    - DCERT_MCP_READ_TIMEOUT
+
+server:
+  name: dcert-mcp
+  host: 127.0.0.1
+  port: 8080
+
+resilience:
+  tool_timeout: 300.0
+  reconnect_max: 3
+  retry_max_attempts: 3
+  retry_base_delay: 0.5
+  retry_max_delay: 10.0
+  retry_multiplier: 1.5
+  circuit_breaker_threshold: 5
+  circuit_breaker_reset_timeout: 30.0
+  rate_limit_rps: 10.0
+  rate_limit_burst: 20
+  bulkhead_max: 10
+  cache_tool_ttl: 300
+  cache_list_ttl: 60
+  # 256 KiB; 0 disables truncation.
+  max_response_bytes: 262144
+
+otel:
+  service_name: dcert-mcp
+  exporter: console
+
+tools:
+  # Default password applied by the Rust server to new truststores.
+  truststore_password: changeit
+  keystore_alias: server
+  expiry_days: 30

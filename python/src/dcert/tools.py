@@ -1,44 +1,53 @@
-"""Resilient async tool wrappers for all dcert MCP tools.
+"""Resilient async wrappers for every ``dcert-mcp`` tool.
 
-Provides typed Python functions for every dcert-mcp tool with production-grade
-resilience: automatic reconnection, configurable timeouts, structured error
-handling, circuit breaker, bulkhead, and graceful shutdown.
+A session is an async context manager yielding an immutable
+:class:`Session` record whose ``call`` closure adds a per call timeout,
+reconnection with exponential backoff, a bulkhead, an optional rate limiter
+and a circuit breaker on top of the FastMCP client::
 
-Usage::
+    from dcert.tools import analyze_certificate, create_session
 
-    from dcert.tools import DcertClient
+    async with create_session(timeout=60.0) as session:
+        result = await analyze_certificate(target="example.com", session=session)
 
-    async with DcertClient() as dcert:
-        result = await dcert.analyze_certificate(target="example.com")
-        expiry = await dcert.check_expiry(target="example.com", days=30)
-
-Module-level convenience functions are also available::
-
-    from dcert.tools import analyze_certificate, check_expiry
-
-    result = await analyze_certificate(target="example.com")
+Every tool function also works without a session, in which case a shared
+default session is created on first use and reused afterwards.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from contextlib import AsyncExitStack, asynccontextmanager
+from dataclasses import dataclass
+from typing import Any, Protocol, TypedDict, Unpack
 
 from fastmcp import Client
+from fastmcp.client.client import CallToolResult
 from fastmcp.client.transports import StdioTransport
 
+from dcert.config import load_config
 from dcert.resilience import (
-    CircuitBreaker,
-    CircuitBreakerOpen,
-    RateLimiter,
     ResilienceConfig,
-    _wait_for_compat,
+    backoff_delays,
+    create_circuit_breaker,
+    create_rate_limiter,
+    is_connection_error,
+    resilience_config_from_env,
+    run_with_retry,
     truncate_response,
 )
-from dcert.server import _build_subprocess_env, _find_binary
+from dcert.server import create_transport
 
 logger = logging.getLogger(__name__)
+
+#: What a tool call resolves to: the joined text blocks, or the raw result
+#: when the tool returned no text.
+ToolResponse = str | CallToolResult
+
+#: Anything that carries MCP content blocks.
+ToolContent = CallToolResult | Sequence[object]
 
 
 # ---------------------------------------------------------------------------
@@ -55,834 +64,612 @@ class DcertTimeoutError(DcertError):
 
 
 class DcertConnectionError(DcertError):
-    """The subprocess died or failed to connect."""
+    """The subprocess died, refused to start, or the circuit breaker is open."""
 
 
 class DcertToolError(DcertError):
     """The MCP tool returned an error result."""
 
-    def __init__(self, message: str, tool: str, error_content: Any = None) -> None:
+    def __init__(self, message: str, tool: str, error_content: ToolContent | None = None) -> None:
         super().__init__(message)
         self.tool = tool
         self.error_content = error_content
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Result helpers
 # ---------------------------------------------------------------------------
 
 
-def _extract_text(result: Any) -> Any:
-    """Extract meaningful content from an MCP tool result.
+def content_blocks(result: ToolContent) -> list[object]:
+    """Return the content blocks of *result* (a result object or a bare list)."""
+    content = result if isinstance(result, Sequence) else getattr(result, "content", None)
+    return list(content) if isinstance(content, Sequence) else []
 
-    FastMCP ``call_tool()`` returns a ``CallToolResult`` object with a
-    ``.content`` list, or sometimes a raw list.  This helper unwraps the
-    content into a plain string when possible.
+
+def extract_text(result: ToolContent) -> str | None:
+    """Return the text blocks of *result* joined with newlines, or ``None``."""
+    texts = [str(block.text) for block in content_blocks(result) if hasattr(block, "text")]
+    return "\n".join(texts) if texts else None
+
+
+def error_message(result: ToolContent) -> str | None:
+    """Return the error text of *result* when it represents a tool error."""
+    blocks = content_blocks(result)
+    if getattr(result, "is_error", False):
+        texts = [getattr(block, "text", str(block)) for block in blocks]
+        return "\n".join(texts) if texts else str(result)
+    for block in blocks:
+        if getattr(block, "type", None) == "error":
+            return str(getattr(block, "text", block))
+    return None
+
+
+def build_arguments(
+    tool: str,
+    required: Mapping[str, Any],
+    optional: Mapping[str, Any] | None = None,
+    defaulted: Mapping[str, tuple[Any, Any]] | None = None,
+) -> dict[str, Any]:
+    """Assemble a tool payload.
+
+    *required* values must not be ``None``; *optional* values are included
+    when not ``None``; *defaulted* maps a name to ``(value, default)`` and
+    includes the value only when it differs from the default.
+
+    Raises:
+        ValueError: If a required value is ``None``.
     """
-    # Handle CallToolResult objects (FastMCP 3.x)
-    content = getattr(result, "content", None)
-    if content is None:
-        content = result if isinstance(result, list) else None
-
-    if content is not None and isinstance(content, list):
-        if len(content) == 1 and hasattr(content[0], "text"):
-            return content[0].text
-        # Multiple text blocks — join them
-        texts = [item.text for item in content if hasattr(item, "text")]
-        if texts:
-            return "\n".join(texts)
-
-    return result
-
-
-def _validate_required(params: dict[str, Any], names: list[str], tool: str) -> None:
-    """Raise ``ValueError`` if any required parameter is missing."""
-    for name in names:
-        if params.get(name) is None:
+    for name, value in required.items():
+        if value is None:
             raise ValueError(f"{tool}() requires '{name}' parameter")
-
-
-def _add_connection_args(
-    args: dict[str, Any],
-    *,
-    connect_to: str | list[str] | None,
-    resolve: str | list[str] | None,
-    proxy: str | None,
-    noproxy: str | None,
-) -> None:
-    """Merge the shared connection-override arguments into a tool payload.
-
-    ``proxy`` and ``noproxy`` are checked against ``None`` rather than
-    truthiness because the empty string is meaningful for both: it forces a
-    direct connection and clears an inherited ``NO_PROXY`` respectively.
-    """
-    if connect_to is not None:
-        args["connect_to"] = connect_to
-    if resolve is not None:
-        args["resolve"] = resolve
-    if proxy is not None:
-        args["proxy"] = proxy
-    if noproxy is not None:
-        args["noproxy"] = noproxy
+    arguments = dict(required)
+    arguments.update({k: v for k, v in (optional or {}).items() if v is not None})
+    arguments.update(
+        {k: v for k, (v, default) in (defaulted or {}).items() if v is not None and v != default}
+    )
+    return arguments
 
 
 # ---------------------------------------------------------------------------
-# Client
+# Session
 # ---------------------------------------------------------------------------
 
 
-class DcertClient:
-    """Async context manager wrapping the dcert-mcp subprocess.
+class ToolCall(Protocol):
+    """Signature of :attr:`Session.call`."""
 
-    Applies five resilience layers (outermost to innermost):
+    def __call__(
+        self, tool: str, params: Mapping[str, Any], *, timeout: float | None = None
+    ) -> Awaitable[ToolResponse]: ...
 
-    1. **Bulkhead** -- ``asyncio.Semaphore`` limiting concurrent calls.
-    2. **Reconnection loop** -- auto-reconnects on subprocess crash.
-    3. **Circuit breaker** -- trips after repeated connection failures.
-    4. **Retry with backoff** -- retries transient connection errors.
-    5. **Timeout** -- per-call deadline with Python 3.10 compat shim.
+
+@dataclass(frozen=True)
+class Session:
+    """Immutable handle on a connected ``dcert-mcp`` subprocess."""
+
+    binary: str
+    call: ToolCall
+    connected: Callable[[], bool]
+
+
+ClientFactory = Callable[[], Client[StdioTransport]]
+
+
+@asynccontextmanager
+async def create_session(
+    binary_path: str | None = None,
+    env: Mapping[str, str] | None = None,
+    timeout: float | None = None,
+    max_reconnects: int | None = None,
+    resilience: ResilienceConfig | None = None,
+    client_factory: ClientFactory | None = None,
+) -> AsyncIterator[Session]:
+    """Connect to ``dcert-mcp`` and yield a :class:`Session`.
 
     Args:
-        binary_path: Explicit path to the dcert-mcp binary.
-        env: Additional environment variables for the subprocess.
-        timeout: Default timeout (seconds) for tool calls.
-        max_reconnects: Maximum automatic reconnection attempts.
-        resilience: Resilience configuration (defaults from env vars).
+        binary_path: Explicit path to ``dcert-mcp``; auto detected when ``None``.
+        env: Extra environment variables for the subprocess.
+        timeout: Default per call timeout in seconds (configured default when ``None``).
+        max_reconnects: Reconnection attempts per call (configured default when ``None``).
+        resilience: Resilience settings; read from the environment when ``None``.
+        client_factory: Builds the FastMCP client; mainly for tests.
+    """
+    config = resilience or resilience_config_from_env()
+    default_timeout = config.tool_timeout if timeout is None else timeout
+    reconnects = config.reconnect_max if max_reconnects is None else max_reconnects
+    transport = create_transport(binary_path, env)
+    make_client: ClientFactory = client_factory or (lambda: Client(transport))
+
+    client: Client[StdioTransport] | None = None
+    client_stack = AsyncExitStack()
+    semaphore = asyncio.Semaphore(config.bulkhead_max)
+    breaker = (
+        create_circuit_breaker(
+            config.circuit_breaker_threshold, config.circuit_breaker_reset_timeout
+        )
+        if config.circuit_breaker_enabled
+        else None
+    )
+    limiter = (
+        create_rate_limiter(config.rate_limit_rps, config.rate_limit_burst)
+        if config.rate_limit_enabled
+        else None
+    )
+    delays = list(
+        backoff_delays(
+            reconnects, config.retry_base_delay, config.retry_max_delay, config.retry_multiplier
+        )
+    )
+
+    async def connect() -> Client[StdioTransport]:
+        nonlocal client
+        candidate = make_client()
+        await client_stack.enter_async_context(candidate)
+        client = candidate
+        logger.debug("Connected to dcert-mcp subprocess: %s", transport.command)
+        return candidate
+
+    async def disconnect() -> None:
+        nonlocal client
+        if client is None:
+            return
+        client = None
+        try:
+            await client_stack.aclose()
+        except Exception:
+            logger.debug("Error while disconnecting", exc_info=True)
+
+    async def on_failure(exc: BaseException, attempt: int) -> None:
+        logger.warning("Tool call failed on attempt %d: %s", attempt + 1, exc)
+        await disconnect()
+        if breaker is not None:
+            await breaker.record_failure()
+
+    async def call(
+        tool: str, params: Mapping[str, Any], *, timeout: float | None = None
+    ) -> ToolResponse:
+        deadline = default_timeout if timeout is None else timeout
+
+        async def attempt(_attempt: int) -> CallToolResult:
+            active = client if client is not None else await connect()
+            async with asyncio.timeout(deadline):
+                return await active.call_tool(tool, dict(params), raise_on_error=False)
+
+        async with semaphore:
+            if limiter is not None:
+                await limiter.acquire()
+            if breaker is not None and not await breaker.allow():
+                raise DcertConnectionError(
+                    f"Circuit breaker is open; {tool} call rejected. "
+                    "The subprocess has failed repeatedly and will be probed again shortly."
+                )
+            try:
+                result = await run_with_retry(
+                    attempt,
+                    delays=delays,
+                    is_retryable=is_connection_error,
+                    on_failure=on_failure,
+                )
+            except TimeoutError:
+                raise DcertTimeoutError(f"{tool} timed out after {deadline}s") from None
+            except Exception as exc:
+                if is_connection_error(exc):
+                    raise DcertConnectionError(str(exc)) from exc
+                raise
+            if breaker is not None:
+                await breaker.record_success()
+        message = error_message(result)
+        if message is not None:
+            raise DcertToolError(message, tool=tool, error_content=result)
+        text = extract_text(result)
+        if text is None:
+            return result
+        return truncate_response(text, config.max_response_bytes)
+
+    await connect()
+    try:
+        yield Session(binary=transport.command, call=call, connected=lambda: client is not None)
+    finally:
+        await disconnect()
+
+
+# ---------------------------------------------------------------------------
+# Shared default session
+# ---------------------------------------------------------------------------
+
+_default_stack: AsyncExitStack | None = None
+_default_session: Session | None = None
+_default_loop: asyncio.AbstractEventLoop | None = None
+_default_lock: asyncio.Lock | None = None
+
+
+def _lock_for_current_loop() -> asyncio.Lock:
+    """Return the guard for the default session, fresh for each event loop."""
+    global _default_lock, _default_loop
+    loop = asyncio.get_running_loop()
+    if _default_lock is None or _default_loop is not loop:
+        _default_lock = asyncio.Lock()
+        _default_loop = loop
+    return _default_lock
+
+
+async def _close_default_unlocked() -> None:
+    global _default_stack, _default_session
+    stack, _default_stack, _default_session = _default_stack, None, None
+    if stack is not None:
+        await stack.aclose()
+
+
+async def default_session() -> Session:
+    """Return the shared session, connecting (or reconnecting) when needed."""
+    global _default_stack, _default_session
+    async with _lock_for_current_loop():
+        if _default_session is None or not _default_session.connected():
+            await _close_default_unlocked()
+            stack = AsyncExitStack()
+            _default_session = await stack.enter_async_context(create_session())
+            _default_stack = stack
+        return _default_session
+
+
+async def close_default_session() -> None:
+    """Disconnect the shared session, if any."""
+    async with _lock_for_current_loop():
+        await _close_default_unlocked()
+
+
+async def call_tool(
+    tool: str,
+    arguments: Mapping[str, Any],
+    *,
+    session: Session | None = None,
+    timeout: float | None = None,
+) -> ToolResponse:
+    """Invoke *tool* on *session* (or the shared default session)."""
+    active = session if session is not None else await default_session()
+    return await active.call(tool, arguments, timeout=timeout)
+
+
+# ---------------------------------------------------------------------------
+# Typed tool wrappers
+# ---------------------------------------------------------------------------
+
+
+class ConnectionOptions(TypedDict, total=False):
+    """mTLS and connection overrides shared by the network facing tools.
+
+    Keys:
+        client_cert: Client certificate PEM file for mTLS.
+        client_key: Client private key PEM file for mTLS.
+        pkcs12: PKCS12/PFX file for mTLS.
+        cert_password: Password for the PKCS12 file.
+        ca_cert: Custom CA bundle PEM file.
+        connect_to: Redirect the connection while validating the hostname in
+            ``target``: a bare IP address or curl's ``HOST1:PORT1:HOST2:PORT2``.
+        resolve: Pin ``HOST:PORT:ADDRESS`` to an IP address like curl's ``--resolve``.
+        proxy: Forward proxy URL; ``""`` forces a direct connection.
+        noproxy: Comma separated hosts bypassing the proxy; ``"*"`` bypasses it entirely.
     """
 
-    def __init__(
-        self,
-        binary_path: str | None = None,
-        env: dict[str, str] | None = None,
-        timeout: float = 300.0,
-        max_reconnects: int = 3,
-        resilience: ResilienceConfig | None = None,
-    ) -> None:
-        self._binary_path = binary_path
-        self._env = env
-        self._resilience = resilience or ResilienceConfig()
-        self._timeout = timeout
-        self._max_reconnects = max_reconnects
-        self._client: Client | None = None
-        self._connected = False
+    client_cert: str
+    client_key: str
+    pkcs12: str
+    cert_password: str
+    ca_cert: str
+    connect_to: str | list[str]
+    resolve: str | list[str]
+    proxy: str
+    noproxy: str
 
-        # Resilience primitives
-        self._semaphore = asyncio.Semaphore(self._resilience.bulkhead_max)
-        self._circuit_breaker: CircuitBreaker | None = (
-            CircuitBreaker(
-                threshold=self._resilience.circuit_breaker_threshold,
-                reset_timeout=self._resilience.circuit_breaker_reset_timeout,
-            )
-            if self._resilience.circuit_breaker_enabled
-            else None
-        )
-        self._rate_limiter: RateLimiter | None = (
-            RateLimiter(
-                rps=self._resilience.rate_limit_rps,
-                burst=self._resilience.rate_limit_burst,
-            )
-            if self._resilience.rate_limit_enabled
-            else None
-        )
 
-    # -- lifecycle ----------------------------------------------------------
+async def analyze_certificate(
+    *,
+    target: str,
+    fingerprint: bool = True,
+    extensions: bool = True,
+    check_revocation: bool = False,
+    session: Session | None = None,
+    timeout: float | None = None,
+    **options: Unpack[ConnectionOptions],
+) -> ToolResponse:
+    """Decode and analyse the TLS certificates of an endpoint or PEM file.
 
-    async def __aenter__(self) -> DcertClient:
-        await self._connect()
-        return self
+    Args:
+        target: HTTPS URL, hostname, or path to a PEM file.
+        fingerprint: Include SHA-256 fingerprints.
+        extensions: Include certificate extensions.
+        check_revocation: Check OCSP revocation status.
+        session: Session to use; the shared default when ``None``.
+        timeout: Per call timeout in seconds.
+        **options: See :class:`ConnectionOptions`.
+    """
+    arguments = build_arguments(
+        "analyze_certificate",
+        {"target": target},
+        options,
+        {
+            "fingerprint": (fingerprint, True),
+            "extensions": (extensions, True),
+            "check_revocation": (check_revocation, False),
+        },
+    )
+    return await call_tool("analyze_certificate", arguments, session=session, timeout=timeout)
 
-    async def __aexit__(self, *exc: object) -> None:
-        await self._disconnect()
 
-    async def _connect(self) -> None:
-        binary = self._binary_path or _find_binary()
-        subprocess_env = _build_subprocess_env(extra_env=self._env)
-        transport = StdioTransport(
-            command=binary,
-            args=[],
-            env=subprocess_env or None,
-        )
-        self._client = Client(transport)
-        await self._client.__aenter__()
-        self._connected = True
-        logger.debug("Connected to dcert-mcp subprocess: %s", binary)
+async def check_expiry(
+    *,
+    target: str,
+    days: int | None = None,
+    session: Session | None = None,
+    timeout: float | None = None,
+    **options: Unpack[ConnectionOptions],
+) -> ToolResponse:
+    """Check whether the certificates of *target* expire within *days*.
 
-    async def _disconnect(self) -> None:
-        if self._client is not None:
-            try:
-                await self._client.__aexit__(None, None, None)
-            except Exception:
-                logger.debug("Error during disconnect", exc_info=True)
-            finally:
-                self._client = None
-                self._connected = False
+    Args:
+        target: HTTPS URL, hostname, or path to a PEM file.
+        days: Warning threshold in days (configured default when ``None``).
+        session: Session to use; the shared default when ``None``.
+        timeout: Per call timeout in seconds.
+        **options: See :class:`ConnectionOptions`.
+    """
+    arguments = build_arguments(
+        "check_expiry",
+        {"target": target},
+        options,
+        {"days": (days, load_config().tools.expiry_days)},
+    )
+    return await call_tool("check_expiry", arguments, session=session, timeout=timeout)
 
-    async def _reconnect(self) -> None:
-        logger.warning("Reconnecting to dcert-mcp subprocess...")
-        await self._disconnect()
-        await self._connect()
 
-    # -- tool dispatch ------------------------------------------------------
+async def check_revocation(
+    *,
+    target: str,
+    session: Session | None = None,
+    timeout: float | None = None,
+    **options: Unpack[ConnectionOptions],
+) -> ToolResponse:
+    """Check the OCSP revocation status of the certificates of *target*.
 
-    async def _call(
-        self,
-        tool_name: str,
-        arguments: dict[str, Any],
-        timeout: float | None = None,
-    ) -> Any:
-        """Call an MCP tool with full resilience stack."""
-        effective_timeout = timeout if timeout is not None else self._timeout
+    Args:
+        target: HTTPS URL, hostname, or path to a PEM file.
+        session: Session to use; the shared default when ``None``.
+        timeout: Per call timeout in seconds.
+        **options: See :class:`ConnectionOptions`.
+    """
+    arguments = build_arguments("check_revocation", {"target": target}, options)
+    return await call_tool("check_revocation", arguments, session=session, timeout=timeout)
 
-        # Layer 1: Bulkhead (concurrency limiter)
-        async with self._semaphore:
-            # Layer 2: Rate limiting
-            if self._rate_limiter is not None:
-                await self._rate_limiter.acquire()
 
-            # Layer 3: Circuit breaker
-            if self._circuit_breaker is not None and not await self._circuit_breaker.allow():
-                raise DcertConnectionError(
-                    f"Circuit breaker is open — {tool_name} call rejected. "
-                    "The subprocess has failed repeatedly. "
-                    "It will recover automatically after the reset timeout."
-                )
+async def compare_certificates(
+    *,
+    target_a: str,
+    target_b: str,
+    session: Session | None = None,
+    timeout: float | None = None,
+) -> ToolResponse:
+    """Compare the certificates of two targets and report the differences.
 
-            return await self._call_with_retry(tool_name, arguments, effective_timeout)
+    Args:
+        target_a: First HTTPS URL, hostname, or PEM file path.
+        target_b: Second HTTPS URL, hostname, or PEM file path.
+        session: Session to use; the shared default when ``None``.
+        timeout: Per call timeout in seconds.
+    """
+    arguments = build_arguments(
+        "compare_certificates", {"target_a": target_a, "target_b": target_b}
+    )
+    return await call_tool("compare_certificates", arguments, session=session, timeout=timeout)
 
-    async def _call_with_retry(
-        self,
-        tool_name: str,
-        arguments: dict[str, Any],
-        timeout: float,
-    ) -> Any:
-        """Inner call loop with reconnection and retry."""
-        last_error: Exception | None = None
 
-        for attempt in range(1 + self._max_reconnects):
-            if not self._connected or self._client is None:
-                if attempt == 0:
-                    raise DcertConnectionError("Client is not connected")
-                try:
-                    await self._reconnect()
-                except Exception as exc:
-                    last_error = DcertConnectionError(str(exc))
-                    if self._circuit_breaker is not None:
-                        await self._circuit_breaker.record_failure()
-                    continue
+async def tls_connection_info(
+    *,
+    target: str,
+    min_tls: str | None = None,
+    max_tls: str | None = None,
+    session: Session | None = None,
+    timeout: float | None = None,
+    **options: Unpack[ConnectionOptions],
+) -> ToolResponse:
+    """Return TLS connection details (protocol, cipher, ALPN, latency) for *target*.
 
-            try:
-                logger.debug("Calling tool %s (attempt %d)", tool_name, attempt + 1)
-                result = await _wait_for_compat(
-                    self._client.call_tool(tool_name, arguments),
-                    timeout=timeout,
-                )
+    Args:
+        target: HTTPS URL or hostname.
+        min_tls: Minimum TLS version, ``"1.2"`` or ``"1.3"``.
+        max_tls: Maximum TLS version, ``"1.2"`` or ``"1.3"``.
+        session: Session to use; the shared default when ``None``.
+        timeout: Per call timeout in seconds.
+        **options: See :class:`ConnectionOptions`.
+    """
+    arguments = build_arguments(
+        "tls_connection_info",
+        {"target": target},
+        {"min_tls": min_tls, "max_tls": max_tls, **options},
+    )
+    return await call_tool("tls_connection_info", arguments, session=session, timeout=timeout)
 
-                # Check for error content in the result
-                is_error = getattr(result, "is_error", False)
-                if is_error:
-                    content = getattr(result, "content", [])
-                    texts = [
-                        getattr(item, "text", str(item))
-                        for item in (content if isinstance(content, list) else [])
-                    ]
-                    msg = "\n".join(texts) if texts else str(result)
-                    raise DcertToolError(msg, tool=tool_name, error_content=result)
-                # Also check list-of-content for error types
-                content = getattr(result, "content", result)
-                if isinstance(content, list):
-                    for item in content:
-                        if hasattr(item, "type") and item.type == "error":
-                            text = getattr(item, "text", str(item))
-                            raise DcertToolError(text, tool=tool_name, error_content=result)
 
-                # Record success for circuit breaker
-                if self._circuit_breaker is not None:
-                    await self._circuit_breaker.record_success()
+async def export_pem(
+    *,
+    target: str,
+    output_path: str | None = None,
+    exclude_expired: bool = False,
+    session: Session | None = None,
+    timeout: float | None = None,
+    **options: Unpack[ConnectionOptions],
+) -> ToolResponse:
+    """Export the certificate chain of *target* as PEM text.
 
-                # Apply response payload management (truncation)
-                text = _extract_text(result)
-                if isinstance(text, str) and self._resilience.max_response_bytes > 0:
-                    text = truncate_response(text, self._resilience.max_response_bytes)
-                return text
+    Args:
+        target: HTTPS URL or hostname.
+        output_path: File to write the PEM chain to.
+        exclude_expired: Leave expired certificates out of the chain.
+        session: Session to use; the shared default when ``None``.
+        timeout: Per call timeout in seconds.
+        **options: See :class:`ConnectionOptions`.
+    """
+    arguments = build_arguments(
+        "export_pem",
+        {"target": target},
+        {"output_path": output_path, **options},
+        {"exclude_expired": (exclude_expired, False)},
+    )
+    return await call_tool("export_pem", arguments, session=session, timeout=timeout)
 
-            except (TimeoutError, asyncio.TimeoutError):
-                raise DcertTimeoutError(f"{tool_name} timed out after {timeout}s") from None
-            except asyncio.CancelledError:
-                raise DcertTimeoutError(f"{tool_name} timed out after {timeout}s") from None
-            except DcertToolError:
-                raise
-            except DcertTimeoutError:
-                raise
-            except CircuitBreakerOpen:
-                raise DcertConnectionError(f"Circuit breaker open — {tool_name} rejected") from None
-            except Exception as exc:
-                last_error = DcertConnectionError(str(exc))
-                self._connected = False
-                if self._circuit_breaker is not None:
-                    await self._circuit_breaker.record_failure()
-                logger.warning("Tool call %s failed (attempt %d): %s", tool_name, attempt + 1, exc)
 
-        raise last_error or DcertConnectionError("All reconnection attempts exhausted")
+async def verify_key_match(
+    *,
+    target: str,
+    key_path: str,
+    session: Session | None = None,
+    timeout: float | None = None,
+) -> ToolResponse:
+    """Verify that a private key matches a certificate.
 
-    # -- tool wrappers (11 tools) ------------------------------------------
+    Args:
+        target: PEM certificate file or HTTPS URL.
+        key_path: Private key PEM file path.
+        session: Session to use; the shared default when ``None``.
+        timeout: Per call timeout in seconds.
+    """
+    arguments = build_arguments("verify_key_match", {"target": target, "key_path": key_path})
+    return await call_tool("verify_key_match", arguments, session=session, timeout=timeout)
 
-    async def analyze_certificate(
-        self,
-        *,
-        target: str,
-        fingerprint: bool = True,
-        extensions: bool = True,
-        check_revocation: bool = False,
-        client_cert: str | None = None,
-        client_key: str | None = None,
-        pkcs12: str | None = None,
-        cert_password: str | None = None,
-        ca_cert: str | None = None,
-        connect_to: str | list[str] | None = None,
-        resolve: str | list[str] | None = None,
-        proxy: str | None = None,
-        noproxy: str | None = None,
-        timeout: float | None = None,
-    ) -> Any:
-        """Decode and analyze TLS certificates from an HTTPS endpoint or PEM file.
 
-        Returns certificate details including subject, issuer, SANs, validity
-        dates, fingerprints, extensions, and TLS connection information.
+async def convert_pfx_to_pem(
+    *,
+    pkcs12_path: str,
+    password: str,
+    output_dir: str = ".",
+    session: Session | None = None,
+    timeout: float | None = None,
+) -> ToolResponse:
+    """Convert a PKCS12/PFX file to separate PEM files.
 
-        Args:
-            target: HTTPS URL, hostname, or local path to a PEM file.
-            fingerprint: Include SHA-256 fingerprints.
-            extensions: Include certificate extensions.
-            check_revocation: Check OCSP revocation status.
-            client_cert: Client certificate PEM file path for mTLS.
-            client_key: Client private key PEM file path for mTLS.
-            pkcs12: PKCS12/PFX file for mTLS.
-            cert_password: Password for PKCS12 file.
-            ca_cert: Custom CA certificate bundle PEM file.
-            connect_to: Redirect the connection while still validating the
-                hostname in ``target``. A bare IP address, or curl's
-                "HOST1:PORT1:HOST2:PORT2" form to redirect to another hostname
-                or port. A single string or a list of them.
-            resolve: Pin "HOST:PORT:ADDRESS" to specific IP addresses instead
-                of using DNS, like curl's --resolve. Only IP addresses are
-                accepted; use ``connect_to`` for a hostname. A single string or
-                a list of them.
-            proxy: Forward proxy URL for this request, overriding
-                HTTPS_PROXY/HTTP_PROXY. Pass "" to force a direct connection.
-                ``connect_to``/``resolve`` always bypass the proxy.
-            noproxy: Comma-separated hosts that bypass the proxy, overriding
-                NO_PROXY. "*" bypasses it entirely.
-            timeout: Timeout in seconds (overrides default).
-        """
-        args: dict[str, Any] = {"target": target}
-        _validate_required(args, ["target"], "analyze_certificate")
-        if fingerprint is not True:
-            args["fingerprint"] = fingerprint
-        if extensions is not True:
-            args["extensions"] = extensions
-        if check_revocation:
-            args["check_revocation"] = check_revocation
-        if client_cert is not None:
-            args["client_cert"] = client_cert
-        if client_key is not None:
-            args["client_key"] = client_key
-        if pkcs12 is not None:
-            args["pkcs12"] = pkcs12
-        if cert_password is not None:
-            args["cert_password"] = cert_password
-        if ca_cert is not None:
-            args["ca_cert"] = ca_cert
-        _add_connection_args(
-            args, connect_to=connect_to, resolve=resolve, proxy=proxy, noproxy=noproxy
-        )
-        return await self._call("analyze_certificate", args, timeout=timeout)
+    Args:
+        pkcs12_path: Input PKCS12/PFX file path.
+        password: Password for the PKCS12 file.
+        output_dir: Output directory for the PEM files.
+        session: Session to use; the shared default when ``None``.
+        timeout: Per call timeout in seconds.
+    """
+    arguments = build_arguments(
+        "convert_pfx_to_pem",
+        {"pkcs12_path": pkcs12_path, "password": password},
+        defaulted={"output_dir": (output_dir, ".")},
+    )
+    return await call_tool("convert_pfx_to_pem", arguments, session=session, timeout=timeout)
 
-    async def check_expiry(
-        self,
-        *,
-        target: str,
-        days: int = 30,
-        client_cert: str | None = None,
-        client_key: str | None = None,
-        pkcs12: str | None = None,
-        cert_password: str | None = None,
-        ca_cert: str | None = None,
-        connect_to: str | list[str] | None = None,
-        resolve: str | list[str] | None = None,
-        proxy: str | None = None,
-        noproxy: str | None = None,
-        timeout: float | None = None,
-    ) -> Any:
-        """Check if TLS certificates expire within a specified number of days.
 
-        Args:
-            target: HTTPS URL, hostname, or local path to a PEM file.
-            days: Warning threshold in days (max 3650).
-            client_cert: Client certificate PEM file path for mTLS.
-            client_key: Client private key PEM file path for mTLS.
-            pkcs12: PKCS12/PFX file for mTLS.
-            cert_password: Password for PKCS12 file.
-            ca_cert: Custom CA certificate bundle PEM file.
-            connect_to: Redirect the connection while still validating the
-                hostname in ``target``. A bare IP address, or curl's
-                "HOST1:PORT1:HOST2:PORT2" form to redirect to another hostname
-                or port. A single string or a list of them.
-            resolve: Pin "HOST:PORT:ADDRESS" to specific IP addresses instead
-                of using DNS, like curl's --resolve. Only IP addresses are
-                accepted; use ``connect_to`` for a hostname. A single string or
-                a list of them.
-            proxy: Forward proxy URL for this request, overriding
-                HTTPS_PROXY/HTTP_PROXY. Pass "" to force a direct connection.
-                ``connect_to``/``resolve`` always bypass the proxy.
-            noproxy: Comma-separated hosts that bypass the proxy, overriding
-                NO_PROXY. "*" bypasses it entirely.
-            timeout: Timeout in seconds (overrides default).
-        """
-        args: dict[str, Any] = {"target": target}
-        _validate_required(args, ["target"], "check_expiry")
-        if days != 30:
-            args["days"] = days
-        if client_cert is not None:
-            args["client_cert"] = client_cert
-        if client_key is not None:
-            args["client_key"] = client_key
-        if pkcs12 is not None:
-            args["pkcs12"] = pkcs12
-        if cert_password is not None:
-            args["cert_password"] = cert_password
-        if ca_cert is not None:
-            args["ca_cert"] = ca_cert
-        _add_connection_args(
-            args, connect_to=connect_to, resolve=resolve, proxy=proxy, noproxy=noproxy
-        )
-        return await self._call("check_expiry", args, timeout=timeout)
+async def convert_pem_to_pfx(
+    *,
+    cert_path: str,
+    key_path: str,
+    password: str,
+    output_path: str,
+    ca_path: str | None = None,
+    session: Session | None = None,
+    timeout: float | None = None,
+) -> ToolResponse:
+    """Convert a PEM certificate and key to a PKCS12/PFX file.
 
-    async def check_revocation(
-        self,
-        *,
-        target: str,
-        client_cert: str | None = None,
-        client_key: str | None = None,
-        pkcs12: str | None = None,
-        cert_password: str | None = None,
-        ca_cert: str | None = None,
-        connect_to: str | list[str] | None = None,
-        resolve: str | list[str] | None = None,
-        proxy: str | None = None,
-        noproxy: str | None = None,
-        timeout: float | None = None,
-    ) -> Any:
-        """Check the OCSP revocation status of TLS certificates.
-
-        Args:
-            target: HTTPS URL, hostname, or local path to a PEM file.
-            client_cert: Client certificate PEM file path for mTLS.
-            client_key: Client private key PEM file path for mTLS.
-            pkcs12: PKCS12/PFX file for mTLS.
-            cert_password: Password for PKCS12 file.
-            ca_cert: Custom CA certificate bundle PEM file.
-            connect_to: Redirect the connection while still validating the
-                hostname in ``target``. A bare IP address, or curl's
-                "HOST1:PORT1:HOST2:PORT2" form to redirect to another hostname
-                or port. A single string or a list of them.
-            resolve: Pin "HOST:PORT:ADDRESS" to specific IP addresses instead
-                of using DNS, like curl's --resolve. Only IP addresses are
-                accepted; use ``connect_to`` for a hostname. A single string or
-                a list of them.
-            proxy: Forward proxy URL for this request, overriding
-                HTTPS_PROXY/HTTP_PROXY. Pass "" to force a direct connection.
-                ``connect_to``/``resolve`` always bypass the proxy.
-            noproxy: Comma-separated hosts that bypass the proxy, overriding
-                NO_PROXY. "*" bypasses it entirely.
-            timeout: Timeout in seconds (overrides default).
-        """
-        args: dict[str, Any] = {"target": target}
-        _validate_required(args, ["target"], "check_revocation")
-        if client_cert is not None:
-            args["client_cert"] = client_cert
-        if client_key is not None:
-            args["client_key"] = client_key
-        if pkcs12 is not None:
-            args["pkcs12"] = pkcs12
-        if cert_password is not None:
-            args["cert_password"] = cert_password
-        if ca_cert is not None:
-            args["ca_cert"] = ca_cert
-        _add_connection_args(
-            args, connect_to=connect_to, resolve=resolve, proxy=proxy, noproxy=noproxy
-        )
-        return await self._call("check_revocation", args, timeout=timeout)
-
-    async def compare_certificates(
-        self,
-        *,
-        target_a: str,
-        target_b: str,
-        timeout: float | None = None,
-    ) -> Any:
-        """Compare TLS certificates between two targets and show differences.
-
-        Args:
-            target_a: First HTTPS URL, hostname, or PEM file path.
-            target_b: Second HTTPS URL, hostname, or PEM file path.
-            timeout: Timeout in seconds (overrides default).
-        """
-        args: dict[str, Any] = {"target_a": target_a, "target_b": target_b}
-        _validate_required(args, ["target_a", "target_b"], "compare_certificates")
-        return await self._call("compare_certificates", args, timeout=timeout)
-
-    async def tls_connection_info(
-        self,
-        *,
-        target: str,
-        min_tls: str | None = None,
-        max_tls: str | None = None,
-        client_cert: str | None = None,
-        client_key: str | None = None,
-        pkcs12: str | None = None,
-        cert_password: str | None = None,
-        ca_cert: str | None = None,
-        connect_to: str | list[str] | None = None,
-        resolve: str | list[str] | None = None,
-        proxy: str | None = None,
-        noproxy: str | None = None,
-        timeout: float | None = None,
-    ) -> Any:
-        """Get TLS connection details for an HTTPS endpoint.
-
-        Returns protocol version, cipher suite, ALPN negotiation,
-        DNS/TCP/TLS latency, and OSI-layer diagnostics.
-
-        Args:
-            target: HTTPS URL or hostname to inspect.
-            min_tls: Minimum TLS version: ``"1.2"`` or ``"1.3"``.
-            max_tls: Maximum TLS version: ``"1.2"`` or ``"1.3"``.
-            client_cert: Client certificate PEM file path for mTLS.
-            client_key: Client private key PEM file path for mTLS.
-            pkcs12: PKCS12/PFX file for mTLS.
-            cert_password: Password for PKCS12 file.
-            ca_cert: Custom CA certificate bundle PEM file.
-            connect_to: Redirect the connection while still validating the
-                hostname in ``target``. A bare IP address, or curl's
-                "HOST1:PORT1:HOST2:PORT2" form to redirect to another hostname
-                or port. A single string or a list of them.
-            resolve: Pin "HOST:PORT:ADDRESS" to specific IP addresses instead
-                of using DNS, like curl's --resolve. Only IP addresses are
-                accepted; use ``connect_to`` for a hostname. A single string or
-                a list of them.
-            proxy: Forward proxy URL for this request, overriding
-                HTTPS_PROXY/HTTP_PROXY. Pass "" to force a direct connection.
-                ``connect_to``/``resolve`` always bypass the proxy.
-            noproxy: Comma-separated hosts that bypass the proxy, overriding
-                NO_PROXY. "*" bypasses it entirely.
-            timeout: Timeout in seconds (overrides default).
-        """
-        args: dict[str, Any] = {"target": target}
-        _validate_required(args, ["target"], "tls_connection_info")
-        if min_tls is not None:
-            args["min_tls"] = min_tls
-        if max_tls is not None:
-            args["max_tls"] = max_tls
-        if client_cert is not None:
-            args["client_cert"] = client_cert
-        if client_key is not None:
-            args["client_key"] = client_key
-        if pkcs12 is not None:
-            args["pkcs12"] = pkcs12
-        if cert_password is not None:
-            args["cert_password"] = cert_password
-        if ca_cert is not None:
-            args["ca_cert"] = ca_cert
-        _add_connection_args(
-            args, connect_to=connect_to, resolve=resolve, proxy=proxy, noproxy=noproxy
-        )
-        return await self._call("tls_connection_info", args, timeout=timeout)
-
-    async def export_pem(
-        self,
-        *,
-        target: str,
-        output_path: str | None = None,
-        exclude_expired: bool = False,
-        client_cert: str | None = None,
-        client_key: str | None = None,
-        pkcs12: str | None = None,
-        cert_password: str | None = None,
-        ca_cert: str | None = None,
-        connect_to: str | list[str] | None = None,
-        resolve: str | list[str] | None = None,
-        proxy: str | None = None,
-        noproxy: str | None = None,
-        timeout: float | None = None,
-    ) -> Any:
-        """Export the TLS certificate chain as PEM text.
-
-        Args:
-            target: HTTPS URL or hostname.
-            output_path: Output file path to write the PEM chain.
-            exclude_expired: Exclude expired certificates from the chain.
-            client_cert: Client certificate PEM file path for mTLS.
-            client_key: Client private key PEM file path for mTLS.
-            pkcs12: PKCS12/PFX file for mTLS.
-            cert_password: Password for PKCS12 file.
-            ca_cert: Custom CA certificate bundle PEM file.
-            connect_to: Redirect the connection while still validating the
-                hostname in ``target``. A bare IP address, or curl's
-                "HOST1:PORT1:HOST2:PORT2" form to redirect to another hostname
-                or port. A single string or a list of them.
-            resolve: Pin "HOST:PORT:ADDRESS" to specific IP addresses instead
-                of using DNS, like curl's --resolve. Only IP addresses are
-                accepted; use ``connect_to`` for a hostname. A single string or
-                a list of them.
-            proxy: Forward proxy URL for this request, overriding
-                HTTPS_PROXY/HTTP_PROXY. Pass "" to force a direct connection.
-                ``connect_to``/``resolve`` always bypass the proxy.
-            noproxy: Comma-separated hosts that bypass the proxy, overriding
-                NO_PROXY. "*" bypasses it entirely.
-            timeout: Timeout in seconds (overrides default).
-        """
-        args: dict[str, Any] = {"target": target}
-        _validate_required(args, ["target"], "export_pem")
-        if output_path is not None:
-            args["output_path"] = output_path
-        if exclude_expired:
-            args["exclude_expired"] = exclude_expired
-        if client_cert is not None:
-            args["client_cert"] = client_cert
-        if client_key is not None:
-            args["client_key"] = client_key
-        if pkcs12 is not None:
-            args["pkcs12"] = pkcs12
-        if cert_password is not None:
-            args["cert_password"] = cert_password
-        if ca_cert is not None:
-            args["ca_cert"] = ca_cert
-        _add_connection_args(
-            args, connect_to=connect_to, resolve=resolve, proxy=proxy, noproxy=noproxy
-        )
-        return await self._call("export_pem", args, timeout=timeout)
-
-    async def verify_key_match(
-        self,
-        *,
-        target: str,
-        key_path: str,
-        timeout: float | None = None,
-    ) -> Any:
-        """Verify that a private key matches a certificate.
-
-        Args:
-            target: PEM certificate file or HTTPS URL.
-            key_path: Private key PEM file path.
-            timeout: Timeout in seconds (overrides default).
-        """
-        args: dict[str, Any] = {"target": target, "key_path": key_path}
-        _validate_required(args, ["target", "key_path"], "verify_key_match")
-        return await self._call("verify_key_match", args, timeout=timeout)
-
-    async def convert_pfx_to_pem(
-        self,
-        *,
-        pkcs12_path: str,
-        password: str,
-        output_dir: str = ".",
-        timeout: float | None = None,
-    ) -> Any:
-        """Convert a PKCS12/PFX file to separate PEM files.
-
-        Args:
-            pkcs12_path: Input PKCS12/PFX file path.
-            password: Password for the PKCS12 file.
-            output_dir: Output directory for PEM files.
-            timeout: Timeout in seconds (overrides default).
-        """
-        args: dict[str, Any] = {
-            "pkcs12_path": pkcs12_path,
-            "password": password,
-        }
-        _validate_required(args, ["pkcs12_path", "password"], "convert_pfx_to_pem")
-        if output_dir != ".":
-            args["output_dir"] = output_dir
-        return await self._call("convert_pfx_to_pem", args, timeout=timeout)
-
-    async def convert_pem_to_pfx(
-        self,
-        *,
-        cert_path: str,
-        key_path: str,
-        password: str,
-        output_path: str,
-        ca_path: str | None = None,
-        timeout: float | None = None,
-    ) -> Any:
-        """Convert PEM certificate and key to a PKCS12/PFX file.
-
-        Args:
-            cert_path: PEM certificate file path.
-            key_path: PEM private key file path.
-            password: Password for the output PKCS12 file.
-            output_path: Output PFX file path.
-            ca_path: Optional CA certificate PEM file to include.
-            timeout: Timeout in seconds (overrides default).
-        """
-        args: dict[str, Any] = {
+    Args:
+        cert_path: PEM certificate file path.
+        key_path: PEM private key file path.
+        password: Password for the output PKCS12 file.
+        output_path: Output PFX file path.
+        ca_path: Optional CA certificate PEM file to include.
+        session: Session to use; the shared default when ``None``.
+        timeout: Per call timeout in seconds.
+    """
+    arguments = build_arguments(
+        "convert_pem_to_pfx",
+        {
             "cert_path": cert_path,
             "key_path": key_path,
             "password": password,
             "output_path": output_path,
-        }
-        _validate_required(
-            args, ["cert_path", "key_path", "password", "output_path"], "convert_pem_to_pfx"
-        )
-        if ca_path is not None:
-            args["ca_path"] = ca_path
-        return await self._call("convert_pem_to_pfx", args, timeout=timeout)
+        },
+        {"ca_path": ca_path},
+    )
+    return await call_tool("convert_pem_to_pfx", arguments, session=session, timeout=timeout)
 
-    async def create_keystore(
-        self,
-        *,
-        cert_path: str,
-        key_path: str,
-        password: str,
-        output_path: str,
-        alias: str = "server",
-        timeout: float | None = None,
-    ) -> Any:
-        """Create a PKCS12 keystore from PEM certificate and key files.
 
-        Java-compatible since JDK 9 (PKCS12 is the default keystore type).
+async def create_keystore(
+    *,
+    cert_path: str,
+    key_path: str,
+    password: str,
+    output_path: str,
+    alias: str | None = None,
+    session: Session | None = None,
+    timeout: float | None = None,
+) -> ToolResponse:
+    """Create a PKCS12 keystore (Java compatible since JDK 9) from PEM files.
 
-        Args:
-            cert_path: PEM certificate file path.
-            key_path: PEM private key file path.
-            password: Password for the keystore.
-            output_path: Output PKCS12 keystore file path.
-            alias: Alias for the key entry.
-            timeout: Timeout in seconds (overrides default).
-        """
-        args: dict[str, Any] = {
+    Args:
+        cert_path: PEM certificate file path.
+        key_path: PEM private key file path.
+        password: Password for the keystore.
+        output_path: Output PKCS12 keystore file path.
+        alias: Alias for the key entry (configured default when ``None``).
+        session: Session to use; the shared default when ``None``.
+        timeout: Per call timeout in seconds.
+    """
+    arguments = build_arguments(
+        "create_keystore",
+        {
             "cert_path": cert_path,
             "key_path": key_path,
             "password": password,
             "output_path": output_path,
-        }
-        _validate_required(
-            args, ["cert_path", "key_path", "password", "output_path"], "create_keystore"
-        )
-        if alias != "server":
-            args["alias"] = alias
-        return await self._call("create_keystore", args, timeout=timeout)
-
-    async def create_truststore(
-        self,
-        *,
-        cert_paths: list[str],
-        output_path: str,
-        password: str = "changeit",
-        timeout: float | None = None,
-    ) -> Any:
-        """Create a PKCS12 truststore from CA certificate PEM files.
-
-        Java-compatible since JDK 9. Bundles multiple CA certificates
-        into a single truststore file.
-
-        Args:
-            cert_paths: PEM file paths containing CA certificates to trust.
-            output_path: Output PKCS12 truststore file path.
-            password: Password for the truststore.
-            timeout: Timeout in seconds (overrides default).
-        """
-        args: dict[str, Any] = {
-            "cert_paths": cert_paths,
-            "output_path": output_path,
-        }
-        _validate_required(args, ["cert_paths", "output_path"], "create_truststore")
-        if not cert_paths:
-            raise ValueError("create_truststore() requires at least one cert_path")
-        if password != "changeit":
-            args["password"] = password
-        return await self._call("create_truststore", args, timeout=timeout)
+        },
+        defaulted={"alias": (alias, load_config().tools.keystore_alias)},
+    )
+    return await call_tool("create_keystore", arguments, session=session, timeout=timeout)
 
 
-# ---------------------------------------------------------------------------
-# Module-level convenience functions
-# ---------------------------------------------------------------------------
+async def create_truststore(
+    *,
+    cert_paths: list[str],
+    output_path: str,
+    password: str | None = None,
+    session: Session | None = None,
+    timeout: float | None = None,
+) -> ToolResponse:
+    """Create a PKCS12 truststore (Java compatible since JDK 9) from CA PEM files.
 
-_default_client: DcertClient | None = None
+    Args:
+        cert_paths: PEM files containing the CA certificates to trust.
+        output_path: Output PKCS12 truststore file path.
+        password: Truststore password (configured default when ``None``).
+        session: Session to use; the shared default when ``None``.
+        timeout: Per call timeout in seconds.
 
-
-async def _get_client() -> DcertClient:
-    """Get or create the module-level singleton client."""
-    global _default_client
-    if _default_client is None or not _default_client._connected:
-        if _default_client is not None:
-            await _default_client._disconnect()
-        _default_client = DcertClient()
-        await _default_client._connect()
-    return _default_client
-
-
-async def analyze_certificate(**kwargs: Any) -> Any:
-    """Module-level convenience wrapper. See :meth:`DcertClient.analyze_certificate`."""
-    client = await _get_client()
-    return await client.analyze_certificate(**kwargs)
-
-
-async def check_expiry(**kwargs: Any) -> Any:
-    """Module-level convenience wrapper. See :meth:`DcertClient.check_expiry`."""
-    client = await _get_client()
-    return await client.check_expiry(**kwargs)
-
-
-async def check_revocation(**kwargs: Any) -> Any:
-    """Module-level convenience wrapper. See :meth:`DcertClient.check_revocation`."""
-    client = await _get_client()
-    return await client.check_revocation(**kwargs)
+    Raises:
+        ValueError: If *cert_paths* is empty.
+    """
+    if not cert_paths:
+        raise ValueError("create_truststore() requires at least one cert_path")
+    arguments = build_arguments(
+        "create_truststore",
+        {"cert_paths": cert_paths, "output_path": output_path},
+        defaulted={"password": (password, load_config().tools.truststore_password)},
+    )
+    return await call_tool("create_truststore", arguments, session=session, timeout=timeout)
 
 
-async def compare_certificates(**kwargs: Any) -> Any:
-    """Module-level convenience wrapper. See :meth:`DcertClient.compare_certificates`."""
-    client = await _get_client()
-    return await client.compare_certificates(**kwargs)
-
-
-async def tls_connection_info(**kwargs: Any) -> Any:
-    """Module-level convenience wrapper. See :meth:`DcertClient.tls_connection_info`."""
-    client = await _get_client()
-    return await client.tls_connection_info(**kwargs)
-
-
-async def export_pem(**kwargs: Any) -> Any:
-    """Module-level convenience wrapper. See :meth:`DcertClient.export_pem`."""
-    client = await _get_client()
-    return await client.export_pem(**kwargs)
-
-
-async def verify_key_match(**kwargs: Any) -> Any:
-    """Module-level convenience wrapper. See :meth:`DcertClient.verify_key_match`."""
-    client = await _get_client()
-    return await client.verify_key_match(**kwargs)
-
-
-async def convert_pfx_to_pem(**kwargs: Any) -> Any:
-    """Module-level convenience wrapper. See :meth:`DcertClient.convert_pfx_to_pem`."""
-    client = await _get_client()
-    return await client.convert_pfx_to_pem(**kwargs)
-
-
-async def convert_pem_to_pfx(**kwargs: Any) -> Any:
-    """Module-level convenience wrapper. See :meth:`DcertClient.convert_pem_to_pfx`."""
-    client = await _get_client()
-    return await client.convert_pem_to_pfx(**kwargs)
-
-
-async def create_keystore(**kwargs: Any) -> Any:
-    """Module-level convenience wrapper. See :meth:`DcertClient.create_keystore`."""
-    client = await _get_client()
-    return await client.create_keystore(**kwargs)
-
-
-async def create_truststore(**kwargs: Any) -> Any:
-    """Module-level convenience wrapper. See :meth:`DcertClient.create_truststore`."""
-    client = await _get_client()
-    return await client.create_truststore(**kwargs)
+TOOL_FUNCTIONS: tuple[Callable[..., Awaitable[ToolResponse]], ...] = (
+    analyze_certificate,
+    check_expiry,
+    check_revocation,
+    compare_certificates,
+    tls_connection_info,
+    export_pem,
+    verify_key_match,
+    convert_pfx_to_pem,
+    convert_pem_to_pfx,
+    create_keystore,
+    create_truststore,
+)
