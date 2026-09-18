@@ -60,6 +60,7 @@ pub struct BasicConstraintsInfo {
 }
 
 /// Options controlling what extra information to extract from certificates.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct CertProcessOpts {
     pub expired_only: bool,
     pub fingerprint: bool,
@@ -166,9 +167,7 @@ pub fn process_certificate(
 
     // SHA-256 fingerprint
     let sha256_fingerprint = if opts.fingerprint {
-        let digest = openssl::hash::hash(MessageDigest::sha256(), der_bytes)
-            .map_err(|e| anyhow::anyhow!("SHA-256 hash failed: {e}"))?;
-        Some(digest.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(":"))
+        Some(fingerprint_sha256_hex(der_bytes)?)
     } else {
         None
     };
@@ -296,24 +295,8 @@ pub fn process_certificate(
                         path_len_constraint: constraints.path_len_constraint,
                     });
                 }
-                ParsedExtension::AuthorityInfoAccess(access) => {
-                    let mut urls = Vec::new();
-                    for desc in access.iter() {
-                        let method_oid = desc.access_method.to_id_string();
-                        let method = match method_oid.as_str() {
-                            "1.3.6.1.5.5.7.48.1" => "OCSP",
-                            "1.3.6.1.5.5.7.48.2" => "CA Issuers",
-                            _ => &method_oid,
-                        };
-                        match &desc.access_location {
-                            GeneralName::URI(uri) => {
-                                urls.push(format!("{method}: {uri}"));
-                            }
-                            _ => {
-                                urls.push(format!("{method}: (non-URI)"));
-                            }
-                        }
-                    }
+                ParsedExtension::AuthorityInfoAccess(_) => {
+                    let urls = aia_entries(&cert);
                     if !urls.is_empty() {
                         aia = Some(urls);
                     }
@@ -460,7 +443,7 @@ pub struct KeyMatchResult {
 /// Unlike probing `rsa()`/`ec_key()` and falling back to a bare `"Unknown"`,
 /// `id()` always reflects the real algorithm, so EdDSA/DSA keys are named
 /// instead of being silently bucketed as unknown.
-pub(crate) fn pkey_algorithm<T>(pkey: &openssl::pkey::PKey<T>) -> String {
+pub fn pkey_algorithm<T>(pkey: &openssl::pkey::PKey<T>) -> String {
     use openssl::pkey::Id;
     match pkey.id() {
         Id::RSA => "RSA".to_string(),
@@ -526,15 +509,7 @@ pub fn verify_key_matches_cert(key_path: &str, target: &str, debug: bool) -> Res
     let cert = openssl::x509::X509::from_pem(cert_pem.as_bytes())
         .map_err(|e| anyhow::anyhow!("Failed to parse PEM certificate: {e}"))?;
 
-    let cert_subject = cert.subject_name().entries().fold(String::new(), |mut acc, e| {
-        if !acc.is_empty() {
-            acc.push_str(", ");
-        }
-        if let Ok(data) = e.data().to_string() {
-            acc.push_str(&data);
-        }
-        acc
-    });
+    let cert_subject = format_x509_name(cert.subject_name());
     debug_log!(debug, "Certificate subject: {}", cert_subject);
 
     let cert_pubkey = cert
@@ -570,19 +545,121 @@ pub fn verify_key_matches_cert(key_path: &str, target: &str, debug: bool) -> Res
 
 /// Extract OCSP responder URL from a certificate's Authority Information Access extension.
 pub fn extract_ocsp_url(cert: &X509Certificate<'_>) -> Option<String> {
+    aia_uris(cert, AiaMethod::Ocsp).into_iter().next()
+}
+
+/// Access methods carried in the Authority Information Access extension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiaMethod {
+    /// `id-ad-ocsp` (1.3.6.1.5.5.7.48.1)
+    Ocsp,
+    /// `id-ad-caIssuers` (1.3.6.1.5.5.7.48.2)
+    CaIssuers,
+}
+
+impl AiaMethod {
+    fn oid(self) -> &'static str {
+        match self {
+            AiaMethod::Ocsp => "1.3.6.1.5.5.7.48.1",
+            AiaMethod::CaIssuers => "1.3.6.1.5.5.7.48.2",
+        }
+    }
+
+    /// Human readable label used in extension listings.
+    pub fn label(self) -> &'static str {
+        match self {
+            AiaMethod::Ocsp => "OCSP",
+            AiaMethod::CaIssuers => "CA Issuers",
+        }
+    }
+
+    fn from_oid(oid: &str) -> Option<Self> {
+        match oid {
+            "1.3.6.1.5.5.7.48.1" => Some(AiaMethod::Ocsp),
+            "1.3.6.1.5.5.7.48.2" => Some(AiaMethod::CaIssuers),
+            _ => None,
+        }
+    }
+}
+
+/// Every URI in the AIA extension for the given access method, in
+/// certificate order. Non-URI access locations are skipped.
+pub fn aia_uris(cert: &X509Certificate<'_>, method: AiaMethod) -> Vec<String> {
+    let mut urls = Vec::new();
     for ext in cert.extensions() {
         if let ParsedExtension::AuthorityInfoAccess(aia) = ext.parsed_extension() {
             for desc in aia.iter() {
-                // OID 1.3.6.1.5.5.7.48.1 = id-ad-ocsp
-                if desc.access_method.to_id_string() == "1.3.6.1.5.5.7.48.1"
+                if desc.access_method.to_id_string() == method.oid()
                     && let GeneralName::URI(uri) = &desc.access_location
                 {
-                    return Some(uri.to_string());
+                    urls.push(uri.to_string());
                 }
             }
         }
     }
-    None
+    urls
+}
+
+/// Render every AIA entry as `"<method>: <location>"`, the shape shown in
+/// the `--extensions` listing.
+pub fn aia_entries(cert: &X509Certificate<'_>) -> Vec<String> {
+    let mut entries = Vec::new();
+    for ext in cert.extensions() {
+        if let ParsedExtension::AuthorityInfoAccess(aia) = ext.parsed_extension() {
+            for desc in aia.iter() {
+                let method_oid = desc.access_method.to_id_string();
+                let method =
+                    AiaMethod::from_oid(&method_oid).map_or_else(|| method_oid.clone(), |m| m.label().to_string());
+                match &desc.access_location {
+                    GeneralName::URI(uri) => entries.push(format!("{method}: {uri}")),
+                    _ => entries.push(format!("{method}: (non-URI)")),
+                }
+            }
+        }
+    }
+    entries
+}
+
+/// Collect the entries of an OpenSSL `X509Name` into a comma separated list of
+/// values (`Example Ltd, GB, api.example.com`). Used wherever a compact
+/// subject or issuer string is shown.
+pub fn format_x509_name(name: &openssl::x509::X509NameRef) -> String {
+    name.entries().fold(String::new(), |mut acc, e| {
+        if !acc.is_empty() {
+            acc.push_str(", ");
+        }
+        if let Ok(data) = e.data().to_string() {
+            acc.push_str(&data);
+        }
+        acc
+    })
+}
+
+/// Render an OpenSSL `X509Name` as `CN=..., O=..., C=...`.
+pub fn format_x509_name_with_keys(name: &openssl::x509::X509NameRef) -> String {
+    let mut parts = Vec::new();
+    for entry in name.entries() {
+        let key = entry.object().nid().short_name().unwrap_or("?");
+        if let Ok(value) = entry.data().to_string() {
+            parts.push(format!("{key}={value}"));
+        }
+    }
+    parts.join(", ")
+}
+
+/// Colon separated uppercase SHA-256 fingerprint of a DER encoded certificate.
+pub fn fingerprint_sha256_hex(der: &[u8]) -> Result<String> {
+    let digest =
+        openssl::hash::hash(MessageDigest::sha256(), der).map_err(|e| anyhow::anyhow!("SHA-256 hash failed: {e}"))?;
+    Ok(digest.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(":"))
+}
+
+/// Colon separated uppercase SHA-256 fingerprint of an OpenSSL certificate.
+/// Returns an empty string if the digest cannot be computed.
+pub fn fingerprint_hex(cert: &openssl::x509::X509Ref) -> String {
+    cert.digest(MessageDigest::sha256())
+        .map(|d| d.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(":"))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

@@ -1,21 +1,8 @@
-mod cert;
-mod cli;
-mod compliance;
-mod connect;
-mod convert;
-mod csr;
-mod debug;
-mod ocsp;
-mod output;
-mod proxy;
-mod tls;
-mod trust;
-mod vault;
-
 use anyhow::{Context, Result};
 use clap::CommandFactory;
 use clap::Parser;
 use colored::*;
+use dcert::{cert, cli, connect, convert, csr, output, proxy, trust, vault};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -25,7 +12,8 @@ use time::format_description::well_known::Rfc3339;
 use cli::{CheckArgs, Cli, Command, HttpMethod, KNOWN_SUBCOMMANDS, OutputFormat, exit_code};
 use connect::ConnectOverrides;
 use output::{
-    StructuredOutput, TargetResult, check_expiry_warnings, export_pem_chain, output_results, print_diff, process_target,
+    StructuredOutput, TargetResult, check_expiry_warnings, export_pem_chain, output_results, print_diff,
+    print_structured, process_target,
 };
 use proxy::ProxyConfig;
 
@@ -572,17 +560,7 @@ fn run_verify_key(args: cli::VerifyKeyArgs) -> Result<i32> {
     if let (Some(target), Some(key)) = (&args.target, &args.key) {
         let result = cert::verify_key_matches_cert(key, target, args.debug)?;
 
-        match args.format {
-            OutputFormat::Json => {
-                println!("{}", serde_json::to_string_pretty(&result)?);
-            }
-            OutputFormat::Yaml => {
-                println!("{}", serde_yaml_ng::to_string(&result)?);
-            }
-            OutputFormat::Pretty => {
-                print_single_result(&result, None, None);
-            }
-        }
+        print_structured(args.format, &result, || print_single_result(&result, None, None))?;
 
         return if result.matches {
             Ok(exit_code::SUCCESS)
@@ -646,15 +624,8 @@ fn run_verify_key(args: cli::VerifyKeyArgs) -> Result<i32> {
     }
 
     // Output collected JSON/YAML results
-    match args.format {
-        OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&all_results)?);
-        }
-        OutputFormat::Yaml => {
-            println!("{}", serde_yaml_ng::to_string(&all_results)?);
-        }
-        OutputFormat::Pretty => {} // already printed
-    }
+    // Pretty output was printed per pair above.
+    print_structured(args.format, &all_results, || {})?;
 
     Ok(exit_code)
 }
@@ -691,7 +662,7 @@ fn run_csr_create(args: cli::CsrCreateArgs) -> Result<i32> {
         }
 
         // Determine output paths
-        let base = cn.replace('*', "wildcard").replace('.', "-");
+        let base = csr::sanitise_cn(&cn);
         let csr_path = args.csr_out.unwrap_or_else(|| format!("{base}.csr"));
         let key_path = args.key_out.unwrap_or_else(|| format!("{base}.key"));
 
@@ -741,30 +712,22 @@ fn run_csr_create(args: cli::CsrCreateArgs) -> Result<i32> {
 
     let result = csr::create_csr(&opts, &csr_path, &key_path)?;
 
-    match args.format {
-        OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&result)?);
+    print_structured(args.format, &result, || {
+        println!("{}", "CSR created successfully".green().bold());
+        println!("  CSR file          : {}", result.csr_file);
+        println!("  Key file          : {}", result.key_file);
+        println!("  Key algorithm     : {}", result.key_algorithm);
+        println!("  Key size          : {} bits", result.key_size_bits);
+        println!("  Signature algo    : {}", result.signature_algorithm);
+        println!("  Subject           : {}", result.subject);
+        if !result.sans.is_empty() {
+            println!("  SANs              : {}", result.sans.join(", "));
         }
-        OutputFormat::Yaml => {
-            println!("{}", serde_yaml_ng::to_string(&result)?);
-        }
-        OutputFormat::Pretty => {
-            println!("{}", "CSR created successfully".green().bold());
-            println!("  CSR file          : {}", result.csr_file);
-            println!("  Key file          : {}", result.key_file);
-            println!("  Key algorithm     : {}", result.key_algorithm);
-            println!("  Key size          : {} bits", result.key_size_bits);
-            println!("  Signature algo    : {}", result.signature_algorithm);
-            println!("  Subject           : {}", result.subject);
-            if !result.sans.is_empty() {
-                println!("  SANs              : {}", result.sans.join(", "));
-            }
-            println!(
-                "  Key encrypted     : {}",
-                if result.key_encrypted { "yes" } else { "no" }
-            );
-        }
-    }
+        println!(
+            "  Key encrypted     : {}",
+            if result.key_encrypted { "yes" } else { "no" }
+        );
+    })?;
 
     Ok(exit_code::SUCCESS)
 }
@@ -775,78 +738,7 @@ fn run_csr_validate(args: cli::CsrValidateArgs) -> Result<i32> {
 
     let result = csr::validate_csr(&pem_data)?;
 
-    match args.format {
-        OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&result)?);
-        }
-        OutputFormat::Yaml => {
-            println!("{}", serde_yaml_ng::to_string(&result)?);
-        }
-        OutputFormat::Pretty => {
-            println!("{}", "=== CSR Validation Report ===".bold());
-            println!();
-
-            // Subject
-            println!("{}", "Subject:".bold());
-            if let Some(ref cn) = result.subject.common_name {
-                println!("  Common Name    : {cn}");
-            }
-            if let Some(ref org) = result.subject.organization {
-                println!("  Organization   : {org}");
-            }
-            for ou in &result.subject.organizational_units {
-                println!("  Org Unit       : {ou}");
-            }
-            if let Some(ref c) = result.subject.country {
-                println!("  Country        : {c}");
-            }
-            if let Some(ref st) = result.subject.state {
-                println!("  State          : {st}");
-            }
-            if let Some(ref l) = result.subject.locality {
-                println!("  Locality       : {l}");
-            }
-            if let Some(ref email) = result.subject.email {
-                println!("  Email          : {email}");
-            }
-            println!();
-
-            // Key info
-            println!("{}", "Public Key:".bold());
-            println!("  Algorithm      : {}", result.public_key_algorithm);
-            println!("  Size           : {} bits", result.public_key_size_bits);
-            println!("  Signature algo : {}", result.signature_algorithm);
-            println!();
-
-            // SANs
-            if !result.subject_alternative_names.is_empty() {
-                println!("{}", "Subject Alternative Names:".bold());
-                for san in &result.subject_alternative_names {
-                    println!("  {san}");
-                }
-                println!();
-            }
-
-            // Findings
-            println!("{}", "Compliance Findings:".bold());
-            for finding in &result.findings {
-                let (icon, color_fn): (&str, fn(&str) -> ColoredString) = match finding.severity {
-                    csr::Severity::Error => ("ERROR", |s: &str| s.red().bold()),
-                    csr::Severity::Warning => ("WARN ", |s: &str| s.yellow()),
-                    csr::Severity::Info => ("INFO ", |s: &str| s.cyan()),
-                };
-                println!("  {} [{}] {}", color_fn(icon), finding.category, finding.message);
-            }
-            println!();
-
-            // Overall result
-            if result.compliant {
-                println!("{}", "Result: COMPLIANT".green().bold());
-            } else {
-                println!("{}", "Result: NON-COMPLIANT".red().bold());
-            }
-        }
-    }
+    print_structured(args.format, &result, || print_csr_validation_pretty(&result))?;
 
     if !result.compliant {
         return Ok(exit_code::ERROR);
@@ -864,23 +756,75 @@ fn run_csr_validate(args: cli::CsrValidateArgs) -> Result<i32> {
     Ok(exit_code::SUCCESS)
 }
 
+fn print_csr_validation_pretty(result: &csr::CsrValidationResult) {
+    println!("{}", "=== CSR Validation Report ===".bold());
+    println!();
+
+    println!("{}", "Subject:".bold());
+    let subject = &result.subject;
+    let rows: [(&str, Option<&str>); 6] = [
+        ("Common Name   ", subject.common_name.as_deref()),
+        ("Organization  ", subject.organization.as_deref()),
+        ("Country       ", subject.country.as_deref()),
+        ("State         ", subject.state.as_deref()),
+        ("Locality      ", subject.locality.as_deref()),
+        ("Email         ", subject.email.as_deref()),
+    ];
+    for (label, value) in rows {
+        if let Some(v) = value {
+            println!("  {label} : {v}");
+        }
+    }
+    for ou in &subject.organizational_units {
+        println!("  Org Unit       : {ou}");
+    }
+    println!();
+
+    println!("{}", "Public Key:".bold());
+    println!("  Algorithm      : {}", result.public_key_algorithm);
+    println!("  Size           : {} bits", result.public_key_size_bits);
+    println!("  Signature algo : {}", result.signature_algorithm);
+    println!();
+
+    if !result.subject_alternative_names.is_empty() {
+        println!("{}", "Subject Alternative Names:".bold());
+        for san in &result.subject_alternative_names {
+            println!("  {san}");
+        }
+        println!();
+    }
+
+    println!("{}", "Compliance Findings:".bold());
+    output::print_findings(&result.findings, "  ");
+    println!();
+
+    if result.compliant {
+        println!("{}", "Result: COMPLIANT".green().bold());
+    } else {
+        println!("{}", "Result: NON-COMPLIANT".red().bold());
+    }
+}
+
 fn run_vault(args: cli::VaultArgs) -> Result<i32> {
     // Discover Vault token and address
     let addr = vault::vault_addr()?;
-    let token = match args.auth_method.as_str() {
-        "ldap" | "approle" => vault::vault_authenticate(
+    let auth_method: vault::VaultAuthMethod = args.auth_method.parse()?;
+    let tls = vault::VaultTlsSettings::resolve(args.vault_cacert.as_deref(), args.skip_verify);
+    let token = match auth_method {
+        vault::VaultAuthMethod::Ldap | vault::VaultAuthMethod::AppRole => vault::vault_authenticate(
             &addr,
-            &args.auth_method,
-            args.ldap_username.as_deref(),
-            args.ldap_password.as_deref(),
-            &args.ldap_mount,
-            args.approle_role_id.as_deref(),
-            args.approle_secret_id.as_deref(),
-            &args.approle_mount,
-            args.skip_verify,
-            args.vault_cacert.as_deref(),
+            auth_method,
+            &vault::VaultLogin {
+                ldap_username: args.ldap_username.as_deref(),
+                ldap_password: args.ldap_password.as_deref(),
+                ldap_mount: &args.ldap_mount,
+                approle_role_id: args.approle_role_id.as_deref(),
+                approle_secret_id: args.approle_secret_id.as_deref(),
+                approle_mount: &args.approle_mount,
+            },
+            &tls,
         )?,
-        _ => vault::discover_vault_token()?,
+        vault::VaultAuthMethod::Token => zeroize::Zeroizing::new(vault::discover_vault_token()?),
     };
 
     let config = vault::VaultClientConfig {
@@ -906,24 +850,34 @@ fn run_vault(args: cli::VaultArgs) -> Result<i32> {
 
 fn run_vault_issue(client: &vault::VaultClient, args: cli::VaultIssueArgs) -> Result<i32> {
     let kv_version = args.kv_version;
-    let (mount, role, cn, sans, ip_sans, ttl, pfx_password, output_base, store_path) = if let Some(cn) = args.cn {
+    let wizard = if let Some(cn) = args.cn {
         let role = vault::resolve_role(client, args.role)?;
-        let output_base = args.output.unwrap_or_else(|| vault::sanitise_cn(&cn));
-        (
-            args.mount,
+        let output = args.output.unwrap_or_else(|| vault::sanitise_cn(&cn));
+        vault::IssueWizardResult {
+            mount: args.mount,
             role,
             cn,
-            args.san,
-            args.ip_san,
-            args.ttl,
-            args.pfx_password,
-            output_base,
-            args.store_path,
-        )
+            sans: args.san,
+            ip_sans: args.ip_san,
+            ttl: args.ttl,
+            pfx_password: args.pfx_password,
+            output,
+            store_path: args.store_path,
+        }
     } else {
-        // Interactive wizard
         vault::interactive_issue(client)?
     };
+    let vault::IssueWizardResult {
+        mount,
+        role,
+        cn,
+        sans,
+        ip_sans,
+        ttl,
+        pfx_password,
+        output: output_base,
+        store_path,
+    } = wizard;
 
     let data = vault::issue_certificate(client, &mount, &role, &cn, &sans, &ip_sans, &ttl)?;
 
@@ -976,51 +930,51 @@ fn run_vault_issue(client: &vault::VaultClient, args: cli::VaultIssueArgs) -> Re
 
 fn run_vault_sign(client: &vault::VaultClient, args: cli::VaultSignArgs) -> Result<i32> {
     let kv_version = args.kv_version;
-    let (mount, role, csr_file, cn_override, sans, ip_sans, ttl, pfx_password, output_base, store_path) =
-        if let Some(csr_file) = args.csr_file {
-            let role = vault::resolve_role(client, args.role)?;
-            let output_base = args.output.unwrap_or_else(|| "signed-cert".to_string());
-            (
-                args.mount,
+    let (wizard, ip_sans) = if let Some(csr_file) = args.csr_file {
+        let role = vault::resolve_role(client, args.role)?;
+        let output = args.output.unwrap_or_else(|| "signed-cert".to_string());
+        (
+            vault::SignWizardResult {
+                mount: args.mount,
                 role,
                 csr_file,
-                args.cn,
-                args.san,
-                args.ip_san,
-                args.ttl,
-                args.pfx_password,
-                output_base,
-                args.store_path,
-            )
-        } else {
-            // Interactive wizard
-            let (mount, role, csr_file, cn_override, sans, ttl, pfx_password, output_base, store_path) =
-                vault::interactive_sign(client)?;
-            (
-                mount,
-                role,
-                csr_file,
-                cn_override,
-                sans,
-                vec![],
-                ttl,
-                pfx_password,
-                output_base,
-                store_path,
-            )
-        };
+                cn_override: args.cn,
+                sans: args.san,
+                ttl: args.ttl,
+                pfx_password: args.pfx_password,
+                output,
+                store_path: args.store_path,
+            },
+            args.ip_san,
+        )
+    } else {
+        (vault::interactive_sign(client)?, Vec::new())
+    };
+    let vault::SignWizardResult {
+        mount,
+        role,
+        csr_file,
+        cn_override,
+        sans,
+        ttl,
+        pfx_password,
+        output: output_base,
+        store_path,
+    } = wizard;
 
     let csr_pem = std::fs::read_to_string(&csr_file).with_context(|| format!("Failed to read CSR file: {csr_file}"))?;
 
     let data = vault::sign_csr(
         client,
-        &mount,
-        &role,
-        &csr_pem,
-        cn_override.as_deref(),
-        &sans,
-        &ip_sans,
-        &ttl,
+        &vault::SignRequest {
+            mount: &mount,
+            role: &role,
+            csr_pem: &csr_pem,
+            common_name: cn_override.as_deref(),
+            alt_names: &sans,
+            ip_sans: &ip_sans,
+            ttl: &ttl,
+        },
     )?;
 
     // Build full chain
@@ -1075,29 +1029,21 @@ fn run_vault_list(client: &vault::VaultClient, args: cli::VaultListArgs) -> Resu
         return Ok(exit_code::SUCCESS);
     }
 
-    match args.format {
-        OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&entries)?);
-        }
-        OutputFormat::Yaml => {
-            println!("{}", serde_yaml_ng::to_string(&entries)?);
-        }
-        OutputFormat::Pretty => {
-            println!("{} {} certificates", "Vault PKI:".bold(), entries.len());
-            for entry in &entries {
-                let status = if entry.status == "expired" {
-                    "EXPIRED".red().to_string()
-                } else {
-                    entry.status.green().to_string()
-                };
-                let cn = entry.common_name.as_deref().unwrap_or("(unknown)");
-                println!("  {} [{}] {}", entry.serial_number, status, cn);
-                if !entry.not_after.is_empty() {
-                    println!("    Not After: {}", entry.not_after);
-                }
+    print_structured(args.format, &entries, || {
+        println!("{} {} certificates", "Vault PKI:".bold(), entries.len());
+        for entry in &entries {
+            let status = if entry.status == "expired" {
+                "EXPIRED".red().to_string()
+            } else {
+                entry.status.green().to_string()
+            };
+            let cn = entry.common_name.as_deref().unwrap_or("(unknown)");
+            println!("  {} [{}] {}", entry.serial_number, status, cn);
+            if !entry.not_after.is_empty() {
+                println!("    Not After: {}", entry.not_after);
             }
         }
-    }
+    })?;
 
     Ok(exit_code::SUCCESS)
 }
@@ -1131,15 +1077,17 @@ fn run_vault_renew(client: &vault::VaultClient, args: cli::VaultRenewArgs) -> Re
 
     vault::renew_certificate(
         client,
-        &args.path,
-        &args.mount,
-        &role,
-        &args.ttl,
-        &args.cert_key,
-        &args.key_key,
-        args.kv_version,
-        &args.san,
-        &args.ip_san,
+        &vault::RenewRequest {
+            kv_path: &args.path,
+            mount: &args.mount,
+            role: &role,
+            ttl: &args.ttl,
+            cert_key_name: &args.cert_key,
+            key_key_name: &args.key_key,
+            kv_version: args.kv_version,
+            san_overrides: &args.san,
+            ip_san_overrides: &args.ip_san,
+        },
     )?;
 
     Ok(exit_code::SUCCESS)

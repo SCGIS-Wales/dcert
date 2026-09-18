@@ -22,6 +22,7 @@ use crate::tls::{
 use crate::trust::{PublicRoots, RootTrustClass, RootTrustInfo, TrustOpts, assess_root_trust};
 
 /// Debug/connection info for pretty output.
+#[derive(Debug)]
 pub struct PrettyDebugInfo<'a> {
     pub hostname: Option<&'a str>,
     pub conn: Option<&'a TlsConnectionInfo>,
@@ -299,6 +300,7 @@ pub fn cert_matches_hostname(cert: &CertInfo, host: &str) -> bool {
 }
 
 /// Result of processing a single target.
+#[derive(Debug)]
 pub struct TargetResult {
     pub target: String,
     pub conn_info: Option<TlsConnectionInfo>,
@@ -309,7 +311,7 @@ pub struct TargetResult {
 }
 
 /// JSON/YAML wrapper that includes both certificates and connection metadata.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Debug)]
 pub struct StructuredOutput {
     pub certificates: Vec<CertInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -653,6 +655,30 @@ pub fn export_pem_chain(pem_data: &str, export_path: &str, exclude_expired: bool
     Ok(())
 }
 
+/// Print `value` as JSON or YAML, or run `pretty` for the human readable
+/// format. Every subcommand routes its final output through here so the
+/// three formats cannot drift apart.
+pub fn print_structured<T: serde::Serialize>(format: OutputFormat, value: &T, pretty: impl FnOnce()) -> Result<()> {
+    match format {
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(value)?),
+        OutputFormat::Yaml => println!("{}", serde_yaml_ng::to_string(value)?),
+        OutputFormat::Pretty => pretty(),
+    }
+    Ok(())
+}
+
+/// Print compliance findings with a severity badge, one per line.
+pub fn print_findings(findings: &[compliance::Finding], indent: &str) {
+    for finding in findings {
+        let badge = match finding.severity {
+            Severity::Error => "ERROR".red().bold(),
+            Severity::Warning => "WARN ".yellow(),
+            Severity::Info => "INFO ".cyan(),
+        };
+        println!("{indent}{badge} [{}] {}", finding.category, finding.message);
+    }
+}
+
 /// Output results for a target in the requested format.
 pub fn output_results(
     result: &TargetResult,
@@ -673,46 +699,31 @@ pub fn output_results(
         None
     };
 
-    match format {
-        OutputFormat::Pretty => {
-            let debug = PrettyDebugInfo {
-                hostname: hostname.as_deref(),
-                conn: result.conn_info.as_ref(),
-                http_protocol,
-                cipher_notation: args.ciphers,
-            };
-            print_pretty(&result.infos, &debug);
+    let output = StructuredOutput {
+        certificates: result.infos.clone(),
+        connection: result.conn_info.clone(),
+        compliance: result.compliance_report.clone(),
+        root_trust: result.root_trust.clone(),
+    };
+    print_structured(format, &output, || {
+        let debug = PrettyDebugInfo {
+            hostname: hostname.as_deref(),
+            conn: result.conn_info.as_ref(),
+            http_protocol,
+            cipher_notation: args.ciphers,
+        };
+        print_pretty(&result.infos, &debug);
 
-            // Print the root-CA trust classification if available
-            if let Some(ref trust) = result.root_trust {
-                print_root_trust_pretty(trust);
-            }
+        // Print the root-CA trust classification if available
+        if let Some(ref trust) = result.root_trust {
+            print_root_trust_pretty(trust);
+        }
 
-            // Print compliance report if available
-            if let Some(ref report) = result.compliance_report {
-                print_compliance_pretty(report);
-            }
+        // Print compliance report if available
+        if let Some(ref report) = result.compliance_report {
+            print_compliance_pretty(report);
         }
-        OutputFormat::Json => {
-            let output = StructuredOutput {
-                certificates: result.infos.clone(),
-                connection: result.conn_info.clone(),
-                compliance: result.compliance_report.clone(),
-                root_trust: result.root_trust.clone(),
-            };
-            println!("{}", serde_json::to_string_pretty(&output)?);
-        }
-        OutputFormat::Yaml => {
-            let output = StructuredOutput {
-                certificates: result.infos.clone(),
-                connection: result.conn_info.clone(),
-                compliance: result.compliance_report.clone(),
-                root_trust: result.root_trust.clone(),
-            };
-            println!("{}", serde_yaml_ng::to_string(&output)?);
-        }
-    }
-    Ok(())
+    })
 }
 
 /// Render the result of a `dcert convert ...` operation in the requested
@@ -724,18 +735,7 @@ pub fn output_results(
 /// verbatim, preserving the machine-readable shape that scripts and the MCP
 /// layer rely on.
 pub fn render_convert_result(result: &ConvertResult, format: OutputFormat) -> Result<()> {
-    match format {
-        OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(result)?);
-        }
-        OutputFormat::Yaml => {
-            println!("{}", serde_yaml_ng::to_string(result)?);
-        }
-        OutputFormat::Pretty => {
-            print_convert_result_pretty(result);
-        }
-    }
-    Ok(())
+    print_structured(format, result, || print_convert_result_pretty(result))
 }
 
 fn print_convert_result_pretty(result: &ConvertResult) {
@@ -811,14 +811,7 @@ pub fn print_compliance_pretty(report: &ChainComplianceReport) {
         println!("{} [{}] {}", "Certificate".bold(), cert_report.index, cn_display);
 
         println!("{}", "  Compliance Findings:".bold());
-        for finding in &cert_report.findings {
-            let (icon, color_fn): (&str, fn(&str) -> ColoredString) = match finding.severity {
-                Severity::Error => ("ERROR", |s: &str| s.red().bold()),
-                Severity::Warning => ("WARN ", |s: &str| s.yellow()),
-                Severity::Info => ("INFO ", |s: &str| s.cyan()),
-            };
-            println!("    {} [{}] {}", color_fn(icon), finding.category, finding.message);
-        }
+        print_findings(&cert_report.findings, "    ");
 
         if cert_report.compliant {
             println!("  {}", "Status: COMPLIANT".green().bold());

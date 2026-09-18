@@ -52,6 +52,7 @@ pub fn dbg_section(enabled: bool, section: &str) {
 }
 
 /// Short-circuit macro that avoids format! allocation when debug is off.
+#[macro_export]
 macro_rules! debug_log {
     ($enabled:expr_2021, $($arg:tt)*) => {
         if $enabled {
@@ -60,7 +61,7 @@ macro_rules! debug_log {
         }
     };
 }
-pub(crate) use debug_log;
+pub use crate::debug_log;
 
 #[cfg(test)]
 mod tests {

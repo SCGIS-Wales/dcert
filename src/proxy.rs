@@ -9,6 +9,7 @@ use crate::debug::debug_log;
 use crate::tls::{CONNECTION_TIMEOUT_SECS, READ_TIMEOUT_SECS};
 
 /// Cached proxy configuration, read once at startup.
+#[derive(Debug, Clone, Default)]
 pub struct ProxyConfig {
     pub https_proxy: Option<String>,
     pub http_proxy: Option<String>,

@@ -29,13 +29,13 @@ use openssl::hash::MessageDigest;
 use openssl::stack::Stack;
 use openssl::x509::store::{X509Store, X509StoreBuilder};
 use openssl::x509::verify::X509VerifyFlags;
-use openssl::x509::{X509, X509NameRef, X509Ref, X509StoreContext};
+use openssl::x509::{X509, X509Ref, X509StoreContext};
 use std::collections::HashSet;
 use std::time::Duration;
 use x509_parser::certificate::X509Certificate;
-use x509_parser::extensions::{GeneralName, ParsedExtension};
 use x509_parser::prelude::FromDer;
 
+use crate::cert::{fingerprint_hex, format_x509_name_with_keys as format_name};
 use crate::debug::debug_log;
 use crate::proxy::ProxyConfig;
 
@@ -102,6 +102,7 @@ pub struct RootTrustInfo {
 }
 
 /// Options controlling the (opt-in) network behaviour of trust assessment.
+#[derive(Debug, Clone, Copy)]
 pub struct TrustOpts {
     pub resolve_issuers: bool,
     pub issuer_timeout: Duration,
@@ -114,6 +115,15 @@ pub struct PublicRoots {
     store: X509Store,
     fingerprints: HashSet<Vec<u8>>,
     source: &'static str,
+}
+
+impl std::fmt::Debug for PublicRoots {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PublicRoots")
+            .field("roots", &self.fingerprints.len())
+            .field("source", &self.source)
+            .finish_non_exhaustive()
+    }
 }
 
 impl PublicRoots {
@@ -391,21 +401,8 @@ fn resolve_issuers(certs: &mut Vec<X509>, opts: &TrustOpts, proxy: &ProxyConfig)
 }
 
 /// Extract AIA "CA Issuers" URLs (OID 1.3.6.1.5.5.7.48.2) from a certificate.
-/// Sibling of [`crate::cert::extract_ocsp_url`].
 pub fn extract_ca_issuer_urls(cert: &X509Certificate<'_>) -> Vec<String> {
-    let mut urls = Vec::new();
-    for ext in cert.extensions() {
-        if let ParsedExtension::AuthorityInfoAccess(aia) = ext.parsed_extension() {
-            for desc in aia.iter() {
-                if desc.access_method.to_id_string() == "1.3.6.1.5.5.7.48.2"
-                    && let GeneralName::URI(uri) = &desc.access_location
-                {
-                    urls.push(uri.to_string());
-                }
-            }
-        }
-    }
-    urls
+    crate::cert::aia_uris(cert, crate::cert::AiaMethod::CaIssuers)
 }
 
 /// Parse a fetched AIA payload into a certificate. Handles DER and PEM
@@ -421,32 +418,14 @@ fn parse_issuer_cert(bytes: &[u8]) -> Option<X509> {
 }
 
 /// Build a blocking HTTP client whose proxy behaviour mirrors dcert's
-/// [`ProxyConfig`] (the same `http_proxy`/`https_proxy`/`no_proxy` env vars the
-/// TLS path uses) and whose connect/read timeout is the short issuer timeout.
+/// [`ProxyConfig`] and whose connect and read timeout is the short issuer
+/// timeout.
 fn http_client(proxy: &ProxyConfig, timeout: Duration) -> Result<reqwest::blocking::Client> {
-    let mut builder = reqwest::blocking::Client::builder()
-        .timeout(timeout)
-        .connect_timeout(timeout)
-        .user_agent(concat!("dcert/", env!("CARGO_PKG_VERSION")));
-
-    let no_proxy = reqwest::NoProxy::from_string(&proxy.no_proxy);
-    if let Some(p) = &proxy.https_proxy {
-        builder = builder.proxy(
-            reqwest::Proxy::https(p)
-                .map_err(|e| anyhow::anyhow!("invalid https proxy '{p}': {e}"))?
-                .no_proxy(no_proxy.clone()),
-        );
-    }
-    if let Some(p) = &proxy.http_proxy {
-        builder = builder.proxy(
-            reqwest::Proxy::http(p)
-                .map_err(|e| anyhow::anyhow!("invalid http proxy '{p}': {e}"))?
-                .no_proxy(no_proxy),
-        );
-    }
-    builder
-        .build()
-        .map_err(|e| anyhow::anyhow!("failed to build HTTP client: {e}"))
+    crate::http::blocking_client(&crate::http::HttpClientOptions {
+        timeout: Some(timeout),
+        proxy: Some(proxy),
+        ..Default::default()
+    })
 }
 
 /// Fetch an issuer certificate from an AIA "CA Issuers" URL.
@@ -529,25 +508,6 @@ fn cert_in_chain(cert: &X509Ref, chain: &[X509]) -> bool {
         .iter()
         .filter_map(|c| c.digest(MessageDigest::sha256()).ok())
         .any(|fp| fp.as_ref() == target.as_ref())
-}
-
-/// Render an X.509 name as `CN=..., O=..., C=...`.
-fn format_name(name: &X509NameRef) -> String {
-    let mut parts = Vec::new();
-    for entry in name.entries() {
-        let key = entry.object().nid().short_name().unwrap_or("?");
-        if let Ok(value) = entry.data().to_string() {
-            parts.push(format!("{key}={value}"));
-        }
-    }
-    parts.join(", ")
-}
-
-/// Colon-separated uppercase SHA-256 fingerprint (matches dcert's cert output).
-fn fingerprint_hex(cert: &X509Ref) -> String {
-    cert.digest(MessageDigest::sha256())
-        .map(|d| d.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(":"))
-        .unwrap_or_default()
 }
 
 #[cfg(test)]

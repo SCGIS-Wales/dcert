@@ -3,7 +3,7 @@ use openssl::hash::MessageDigest;
 use openssl::pkcs12::Pkcs12;
 use openssl::pkey::PKey;
 use openssl::stack::Stack;
-use openssl::x509::{X509, X509NameRef};
+use openssl::x509::X509;
 use std::fs;
 use x509_parser::prelude::FromDer;
 
@@ -64,20 +64,7 @@ pub fn classify_cert(cert: &X509) -> CertRole {
     }
 }
 
-/// Collect the entries of an `X509Name` into a comma-separated `KEY=value` string
-/// (Subject CN, O, OU, …). Folds the four duplicate copies that previously
-/// lived inline in convert.rs and tls.rs into a single helper.
-pub fn format_x509_name(name: &X509NameRef) -> String {
-    name.entries().fold(String::new(), |mut acc, e| {
-        if !acc.is_empty() {
-            acc.push_str(", ");
-        }
-        if let Ok(data) = e.data().to_string() {
-            acc.push_str(&data);
-        }
-        acc
-    })
-}
+pub use crate::cert::format_x509_name;
 
 /// Lightweight summary of a single certificate, used in pre-flight tables and
 /// JSON `cert_roles` arrays.
@@ -99,9 +86,7 @@ fn cert_summary(cert: &X509) -> Result<CertSummary> {
     let der = cert
         .to_der()
         .map_err(|e| anyhow::anyhow!("DER conversion failed: {e}"))?;
-    let digest =
-        openssl::hash::hash(MessageDigest::sha256(), &der).map_err(|e| anyhow::anyhow!("SHA-256 hash failed: {e}"))?;
-    let fingerprint_sha256 = digest.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(":");
+    let fingerprint_sha256 = crate::cert::fingerprint_sha256_hex(&der)?;
 
     let (not_after, expired) = match x509_parser::certificate::X509Certificate::from_der(&der) {
         Ok((_, parsed)) => {
@@ -598,7 +583,7 @@ fn warn_unrestricted(path: &str, detail: &str) {
 /// Best-effort: on failure we warn rather than aborting, since the file is already
 /// written and the caller may still want the output.
 #[cfg(unix)]
-pub(crate) fn restrict_file_permissions(path: &str) {
+pub fn restrict_file_permissions(path: &str) {
     use std::os::unix::fs::PermissionsExt;
     if let Err(e) = fs::set_permissions(path, fs::Permissions::from_mode(0o600)) {
         warn_unrestricted(path, &e.to_string());
@@ -608,7 +593,7 @@ pub(crate) fn restrict_file_permissions(path: &str) {
 /// On Windows, restrict file permissions using icacls.
 /// Removes inherited ACLs and grants access only to the current user.
 #[cfg(windows)]
-pub(crate) fn restrict_file_permissions(path: &str) {
+pub fn restrict_file_permissions(path: &str) {
     use std::process::Command;
     let username = std::env::var("USERNAME").unwrap_or_default();
     if username.is_empty() {
@@ -636,7 +621,7 @@ pub(crate) fn restrict_file_permissions(path: &str) {
 
 /// No-op on platforms that are neither Unix nor Windows.
 #[cfg(not(any(unix, windows)))]
-pub(crate) fn restrict_file_permissions(_path: &str) {}
+pub fn restrict_file_permissions(_path: &str) {}
 
 fn key_type_name(pkey: &PKey<openssl::pkey::Private>) -> String {
     format!("{} ({} bits)", crate::cert::pkey_algorithm(pkey), pkey.bits())

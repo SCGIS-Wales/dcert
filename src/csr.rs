@@ -92,20 +92,13 @@ pub struct CsrCreateResult {
 // CSR Validation types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Severity {
-    Error,
-    Warning,
-    Info,
+/// Sanitise a CN into a safe base filename (`*.example.com` becomes
+/// `wildcard-example-com`).
+pub fn sanitise_cn(cn: &str) -> String {
+    cn.replace('*', "wildcard").replace(['.', '/', ':'], "-")
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct CsrFinding {
-    pub severity: Severity,
-    pub category: String,
-    pub message: String,
-}
+pub use crate::compliance::{Finding as CsrFinding, Severity};
 
 #[derive(Debug, serde::Serialize)]
 pub struct CsrSubjectInfo {
@@ -291,12 +284,12 @@ pub fn validate_csr(pem_data: &str) -> Result<CsrValidationResult> {
     check_subject_compliance(&subject, &mut findings);
 
     // SAN checks
-    check_san_compliance(&sans, &subject.common_name, &mut findings);
+    check_san_compliance(&sans, subject.common_name.as_deref(), &mut findings);
 
     // Signature algorithm checks
     check_signature_algorithm_compliance(&sig_algo, &mut findings);
 
-    let compliant = !findings.iter().any(|f| f.severity == Severity::Error);
+    let compliant = crate::compliance::is_compliant(&findings);
 
     Ok(CsrValidationResult {
         subject,
@@ -405,7 +398,7 @@ pub fn interactive_create() -> Result<(CsrCreateOptions, String, String)> {
 
     // Output paths
     eprintln!("\n--- Output Files ---");
-    let default_base = cn.replace('*', "wildcard").replace('.', "-");
+    let default_base = sanitise_cn(&cn);
     let default_csr = format!("{default_base}.csr");
     let default_key = format!("{default_base}.key");
     let csr_path = prompt_with_default("CSR output file", &default_csr)?;
@@ -439,7 +432,7 @@ pub fn interactive_create() -> Result<(CsrCreateOptions, String, String)> {
     Ok((opts, csr_path, key_path))
 }
 
-pub(crate) fn prompt_required(label: &str) -> Result<String> {
+pub fn prompt_required(label: &str) -> Result<String> {
     use std::io::{self, Write};
     loop {
         eprint!("{label}: ");
@@ -456,7 +449,7 @@ pub(crate) fn prompt_required(label: &str) -> Result<String> {
     }
 }
 
-pub(crate) fn prompt_optional(label: &str) -> Result<Option<String>> {
+pub fn prompt_optional(label: &str) -> Result<Option<String>> {
     use std::io::{self, Write};
     eprint!("{label}: ");
     io::stderr().flush().ok();
@@ -468,7 +461,7 @@ pub(crate) fn prompt_optional(label: &str) -> Result<Option<String>> {
     if input.is_empty() { Ok(None) } else { Ok(Some(input)) }
 }
 
-pub(crate) fn prompt_with_default(label: &str, default: &str) -> Result<String> {
+pub fn prompt_with_default(label: &str, default: &str) -> Result<String> {
     use std::io::{self, Write};
     eprint!("{label} [{default}]: ");
     io::stderr().flush().ok();
@@ -700,55 +693,7 @@ fn extract_csr_sans(req: &X509Req) -> Vec<String> {
 }
 
 fn check_key_compliance(algo: &str, bits: u32, findings: &mut Vec<CsrFinding>) {
-    if algo.contains("RSA") {
-        if bits < 2048 {
-            findings.push(CsrFinding {
-                severity: Severity::Error,
-                category: "Key Size".to_string(),
-                message: format!(
-                    "RSA key size {bits} bits is below the minimum 2048 bits required by CA/Browser Forum Baseline Requirements"
-                ),
-            });
-        } else if bits == 2048 {
-            findings.push(CsrFinding {
-                severity: Severity::Warning,
-                category: "Key Size".to_string(),
-                message: "RSA 2048 meets minimum requirements but RSA 4096 or ECDSA P-256 is recommended for stronger security".to_string(),
-            });
-        } else if bits >= 4096 {
-            findings.push(CsrFinding {
-                severity: Severity::Info,
-                category: "Key Size".to_string(),
-                message: format!("RSA {bits} bits — strong key size"),
-            });
-        }
-        // Suggest ECDSA as modern alternative
-        findings.push(CsrFinding {
-            severity: Severity::Info,
-            category: "Key Algorithm".to_string(),
-            message: "Consider ECDSA P-256 for better performance with equivalent security to RSA 3072".to_string(),
-        });
-    } else if algo.contains("EC") || algo.contains("ECDSA") {
-        if bits < 256 {
-            findings.push(CsrFinding {
-                severity: Severity::Error,
-                category: "Key Size".to_string(),
-                message: format!("EC key size {bits} bits is below the minimum 256 bits"),
-            });
-        } else {
-            findings.push(CsrFinding {
-                severity: Severity::Info,
-                category: "Key Size".to_string(),
-                message: format!("{algo} {bits} bits — excellent choice for modern deployments"),
-            });
-        }
-    } else {
-        findings.push(CsrFinding {
-            severity: Severity::Warning,
-            category: "Key Algorithm".to_string(),
-            message: format!("Unknown key algorithm: {algo}. Verify CA support."),
-        });
-    }
+    findings.extend(crate::compliance::key_size_findings(algo, bits));
 }
 
 fn check_subject_compliance(subject: &CsrSubjectInfo, findings: &mut Vec<CsrFinding>) {
@@ -788,59 +733,25 @@ fn check_subject_compliance(subject: &CsrSubjectInfo, findings: &mut Vec<CsrFind
     }
 }
 
-fn check_san_compliance(sans: &[String], cn: &Option<String>, findings: &mut Vec<CsrFinding>) {
+fn check_san_compliance(sans: &[String], cn: Option<&str>, findings: &mut Vec<CsrFinding>) {
     if sans.is_empty() {
-        findings.push(CsrFinding {
-            severity: Severity::Error,
-            category: "SAN".to_string(),
-            message: "No Subject Alternative Names (SANs) found. SANs are required by CA/Browser Forum Baseline Requirements since 2018. Browsers will reject certificates without SANs.".to_string(),
-        });
-    } else {
-        // Check if CN is included in SANs
-        if let Some(cn_val) = cn {
-            let cn_in_sans = sans
-                .iter()
-                .any(|s| s.strip_prefix("DNS:").map(|dns| dns == cn_val).unwrap_or(false));
-            if !cn_in_sans {
-                findings.push(CsrFinding {
-                    severity: Severity::Warning,
-                    category: "SAN".to_string(),
-                    message: format!(
-                        "CN '{cn_val}' is not included in SANs. Best practice is to include the CN as a SAN entry."
-                    ),
-                });
-            }
-        }
-
-        findings.push(CsrFinding {
-            severity: Severity::Info,
-            category: "SAN".to_string(),
-            message: format!("{} SAN entries found", sans.len()),
-        });
+        findings.push(CsrFinding::new(
+            Severity::Error,
+            "SAN",
+            "No Subject Alternative Names (SANs) found. SANs are required by CA/Browser Forum Baseline Requirements since 2018. Browsers will reject certificates without SANs.",
+        ));
+        return;
     }
+    findings.extend(crate::compliance::cn_in_sans_finding(cn, sans));
+    findings.push(CsrFinding::new(
+        Severity::Info,
+        "SAN",
+        format!("{} SAN entries found", sans.len()),
+    ));
 }
 
 fn check_signature_algorithm_compliance(sig_algo: &str, findings: &mut Vec<CsrFinding>) {
-    let sig_lower = sig_algo.to_lowercase();
-    if sig_lower.contains("sha1") || sig_lower.contains("sha-1") || sig_lower.contains("sha1withrsa") {
-        findings.push(CsrFinding {
-            severity: Severity::Error,
-            category: "Signature Algorithm".to_string(),
-            message: "SHA-1 signatures are insecure and rejected by all major CAs and browsers since 2017".to_string(),
-        });
-    } else if sig_lower.contains("md5") {
-        findings.push(CsrFinding {
-            severity: Severity::Error,
-            category: "Signature Algorithm".to_string(),
-            message: "MD5 signatures are cryptographically broken and must not be used".to_string(),
-        });
-    } else if sig_lower.contains("sha256") || sig_lower.contains("sha384") || sig_lower.contains("sha512") {
-        findings.push(CsrFinding {
-            severity: Severity::Info,
-            category: "Signature Algorithm".to_string(),
-            message: format!("Signature algorithm '{sig_algo}' is compliant"),
-        });
-    }
+    findings.extend(crate::compliance::signature_name_finding(sig_algo));
 }
 
 // ---------------------------------------------------------------------------

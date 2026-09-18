@@ -22,7 +22,7 @@ use crate::tls::direct_tcp_connect;
 /// without a full resolver dance); the destination IP appears in the debug
 /// output of `direct_tcp_connect` and an external SSRF allow-list at the
 /// network layer remains the strongest defence.
-pub(crate) fn is_safe_ocsp_host(host: &str) -> bool {
+pub fn is_safe_ocsp_host(host: &str) -> bool {
     // Strip optional surrounding `[` `]` for IPv6 literals.
     let trimmed = host.trim_start_matches('[').trim_end_matches(']');
     match trimmed.parse::<IpAddr>() {
