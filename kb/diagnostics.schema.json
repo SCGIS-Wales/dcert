@@ -1,0 +1,483 @@
+{
+  "$defs": {
+    "Category": {
+      "description": "Broad grouping used for filtering and display.",
+      "enum": [
+        "cloudfront",
+        "proxy",
+        "tls",
+        "mtls",
+        "interception"
+      ],
+      "type": "string"
+    },
+    "Entry": {
+      "additionalProperties": false,
+      "description": "One failure signature with its explanation.",
+      "properties": {
+        "category": {
+          "$ref": "#/$defs/Category"
+        },
+        "fallback": {
+          "default": false,
+          "description": "A catch all for its layer: reported only when no other entry in the\nsame layer matched.",
+          "type": "boolean"
+        },
+        "id": {
+          "description": "Stable identifier, e.g. `cloudfront.edge.waf-blocked`.",
+          "type": "string"
+        },
+        "layer": {
+          "$ref": "#/$defs/Layer"
+        },
+        "references": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "remediation": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "root_cause": {
+          "type": "string"
+        },
+        "signals": {
+          "items": {
+            "$ref": "#/$defs/Signal"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": "string"
+        },
+        "weight": {
+          "default": 1.0,
+          "description": "Maximum confidence when every signal matches (0 to 1).",
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "layer",
+        "category",
+        "signals",
+        "root_cause"
+      ],
+      "type": "object"
+    },
+    "Layer": {
+      "description": "Where in the request path a failure is attributed. The order is the order\nin which a probe traverses the path, and the order diagnoses are reported.",
+      "enum": [
+        "local_proxy_env",
+        "proxy_connect",
+        "tls_handshake",
+        "viewer_mtls",
+        "interception",
+        "edge_http",
+        "origin_http"
+      ],
+      "type": "string"
+    },
+    "RootClass": {
+      "description": "Root trust classes a signal can test for; mirrors [`RootTrustClass`].",
+      "enum": [
+        "publicly_trusted",
+        "private_pki",
+        "self_signed",
+        "incomplete",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "Signal": {
+      "description": "A weighted, optionally required, optionally negated signal.",
+      "oneOf": [
+        {
+          "description": "HTTP status code of the final response is one of `codes`.",
+          "properties": {
+            "codes": {
+              "items": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "codes"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A response header named `name` matches `pattern`.",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "pattern": {
+              "type": "string"
+            },
+            "type": {
+              "const": "header",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name",
+            "pattern"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "No response header named `name` is present.",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "type": {
+              "const": "header_absent",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The captured body excerpt matches `pattern`.",
+          "properties": {
+            "pattern": {
+              "type": "string"
+            },
+            "type": {
+              "const": "body",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pattern"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The connection error text matches `pattern` (TLS alerts, socket errors).",
+          "properties": {
+            "pattern": {
+              "type": "string"
+            },
+            "type": {
+              "const": "error",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pattern"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The proxy answered `CONNECT` with one of `codes`.",
+          "properties": {
+            "codes": {
+              "items": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "proxy_status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "codes"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A header in the proxy's `CONNECT` reply matches `pattern`.",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "pattern": {
+              "type": "string"
+            },
+            "type": {
+              "const": "proxy_header",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name",
+            "pattern"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Whether a forward proxy applies to this target.",
+          "properties": {
+            "type": {
+              "const": "proxy_configured",
+              "type": "string"
+            },
+            "value": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "`HTTP_PROXY` is set while neither `HTTPS_PROXY` nor `ALL_PROXY` is.",
+          "properties": {
+            "type": {
+              "const": "https_proxy_missing_http_set",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Any subject, issuer or trust anchor name in the chain matches `pattern`.",
+          "properties": {
+            "pattern": {
+              "type": "string"
+            },
+            "type": {
+              "const": "chain_name",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pattern"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The chain's root trust classification.",
+          "properties": {
+            "is": {
+              "$ref": "#/$defs/RootClass"
+            },
+            "type": {
+              "const": "root_class",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "is"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The target host is a public internet name (not an IP, not internal).",
+          "properties": {
+            "type": {
+              "const": "public_hostname",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The target host matches `pattern`.",
+          "properties": {
+            "pattern": {
+              "type": "string"
+            },
+            "type": {
+              "const": "target_host",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pattern"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Negotiated TLS version matches `pattern`.",
+          "properties": {
+            "pattern": {
+              "type": "string"
+            },
+            "type": {
+              "const": "tls_version",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pattern"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Negotiated ALPN protocol matches `pattern`.",
+          "properties": {
+            "pattern": {
+              "type": "string"
+            },
+            "type": {
+              "const": "alpn",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pattern"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The server asked for a client certificate and the handshake aborted.",
+          "properties": {
+            "type": {
+              "const": "client_auth_required",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A client certificate was supplied on the command line.",
+          "properties": {
+            "type": {
+              "const": "client_cert_supplied",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "`--sni` overrode the server name.",
+          "properties": {
+            "type": {
+              "const": "sni_overridden",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "`--no-verify` was set.",
+          "properties": {
+            "type": {
+              "const": "verification_disabled",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The OpenSSL verify result text matches `pattern`.",
+          "properties": {
+            "pattern": {
+              "type": "string"
+            },
+            "type": {
+              "const": "verify_result",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pattern"
+          ],
+          "type": "object"
+        }
+      ],
+      "properties": {
+        "negate": {
+          "default": false,
+          "description": "Invert the signal: it matches when the condition does not hold.",
+          "type": "boolean"
+        },
+        "required": {
+          "default": false,
+          "description": "The entry cannot match unless this signal matches.",
+          "type": "boolean"
+        },
+        "weight": {
+          "default": 1.0,
+          "description": "Contribution to the confidence score (default 1).",
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The whole knowledge base file.",
+  "properties": {
+    "entries": {
+      "items": {
+        "$ref": "#/$defs/Entry"
+      },
+      "type": "array"
+    },
+    "version": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "version",
+    "entries"
+  ],
+  "title": "KnowledgeBase",
+  "type": "object"
+}

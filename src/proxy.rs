@@ -8,6 +8,39 @@ use url::Url;
 use crate::debug::debug_log;
 use crate::tls::{CONNECTION_TIMEOUT_SECS, READ_TIMEOUT_SECS};
 
+/// The forward proxy refused the `CONNECT` tunnel. Carries the proxy's
+/// response head so diagnostics can name the reason (authentication,
+/// policy, upstream failure) instead of just "failed".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProxyConnectFailed {
+    pub status: u16,
+    pub status_line: String,
+    pub headers: Vec<crate::tls::HttpHeader>,
+}
+
+impl ProxyConnectFailed {
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|h| h.name.eq_ignore_ascii_case(name))
+            .map(|h| h.value.as_str())
+    }
+}
+
+impl std::fmt::Display for ProxyConnectFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Proxy CONNECT failed: {}", self.status_line)?;
+        for name in ["proxy-authenticate", "via", "server", "x-squid-error", "proxy-agent"] {
+            if let Some(v) = self.header(name) {
+                write!(f, "; {name}: {v}")?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for ProxyConnectFailed {}
+
 /// Cached proxy configuration, read once at startup.
 #[derive(Debug, Clone, Default)]
 pub struct ProxyConfig {
@@ -204,20 +237,25 @@ pub fn connect_through_proxy(proxy_url: &str, target_host: &str, target_port: u1
         }
     }
 
-    let response_str = String::from_utf8_lossy(&response);
-    let status_line = response_str
-        .lines()
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("Empty proxy response"))?;
+    let capture = crate::tls::HttpResponseCapture::parse(&response, 0);
+    if response.is_empty() {
+        return Err(anyhow::anyhow!("Empty proxy response"));
+    }
 
-    // Check if the CONNECT was successful (HTTP/x.x 200 ...)
-    let status_ok = status_line
-        .split_whitespace()
-        .nth(1)
-        .map(|code| code == "200")
-        .unwrap_or(false);
-    if !status_ok {
-        return Err(anyhow::anyhow!("Proxy CONNECT failed: {status_line}"));
+    // Anything but 2xx means the tunnel was refused; keep the whole head so
+    // the diagnostics layer can attribute it (407, 403, Via, X-Squid-Error).
+    if !(200..300).contains(&capture.status) {
+        let status_line = String::from_utf8_lossy(&response)
+            .lines()
+            .next()
+            .unwrap_or("")
+            .to_string();
+        return Err(ProxyConnectFailed {
+            status: capture.status,
+            status_line,
+            headers: capture.headers,
+        }
+        .into());
     }
 
     debug_log!(debug, "Proxy CONNECT tunnel established");

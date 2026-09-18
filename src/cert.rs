@@ -499,6 +499,7 @@ pub fn verify_key_matches_cert(key_path: &str, target: &str, debug: bool) -> Res
             pkcs12_path: None,
             cert_password: None,
             ca_cert_path: None,
+            body_limit: 0,
         })?;
         conn.pem_data
     } else {

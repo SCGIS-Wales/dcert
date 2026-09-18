@@ -233,6 +233,52 @@ pub enum Command {
     /// HashiCorp Vault PKI operations (issue, sign, revoke, list, store, validate, renew)
     #[command(name = "vault")]
     Vault(Box<VaultArgs>),
+
+    /// Diagnose CloudFront, mTLS and forward proxy failures for a target (same flags as check)
+    #[command(name = "diagnose", alias = "dx")]
+    Diagnose(Box<CheckArgs>),
+
+    /// Inspect or validate the diagnostics knowledge base
+    #[command(name = "kb")]
+    Kb(KbArgs),
+}
+
+/// `dcert kb` arguments.
+#[derive(Args, Debug)]
+pub struct KbArgs {
+    #[command(subcommand)]
+    pub mode: KbMode,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum KbMode {
+    /// List every entry (id, layer, category, title)
+    List {
+        /// Output format
+        #[arg(short, long, value_enum, default_value_t = OutputFormat::Pretty)]
+        format: OutputFormat,
+        /// Extra knowledge base file merged over the built in one
+        #[arg(long, value_name = "PATH", env = "DCERT_KB_FILE")]
+        kb_file: Option<String>,
+    },
+    /// Show one entry in full
+    Show {
+        /// Entry id, e.g. cloudfront.edge.waf-blocked
+        id: String,
+        /// Output format
+        #[arg(short, long, value_enum, default_value_t = OutputFormat::Pretty)]
+        format: OutputFormat,
+        /// Extra knowledge base file merged over the built in one
+        #[arg(long, value_name = "PATH", env = "DCERT_KB_FILE")]
+        kb_file: Option<String>,
+    },
+    /// Validate a knowledge base file (schema, unique ids, regexes)
+    Validate {
+        /// YAML file to validate
+        file: String,
+    },
+    /// Print the JSON schema for knowledge base files
+    Schema,
 }
 
 /// Known subcommand names for backward-compatible default routing.
@@ -249,6 +295,9 @@ pub const KNOWN_SUBCOMMANDS: &[&str] = &[
     "-h",
     "--version",
     "-V",
+    "diagnose",
+    "dx",
+    "kb",
 ];
 
 // -- Check subcommand (default) --
@@ -276,6 +325,26 @@ pub struct CheckArgs {
     /// Show only expired certificates
     #[arg(long)]
     pub expired_only: bool,
+
+    /// Maximum response body bytes captured for diagnostics (0 disables body capture)
+    #[arg(long, value_name = "BYTES", default_value_t = crate::tls::DEFAULT_BODY_LIMIT, value_parser = parse_body_limit)]
+    pub body_limit: usize,
+
+    /// Include the captured response body excerpt in the output
+    #[arg(long)]
+    pub show_body: bool,
+
+    /// Skip the CloudFront and proxy diagnostics pass
+    #[arg(long)]
+    pub no_diagnose: bool,
+
+    /// Set by `dcert diagnose`: print only the diagnosis.
+    #[arg(skip)]
+    pub diagnose_only: bool,
+
+    /// Extra diagnostics knowledge base file (YAML) merged over the built in one
+    #[arg(long, value_name = "PATH", env = "DCERT_KB_FILE")]
+    pub kb_file: Option<String>,
 
     /// Export the fetched PEM chain to a file (only for HTTPS targets)
     #[arg(long)]
@@ -1039,6 +1108,18 @@ pub struct VaultRenewArgs {
 }
 
 // -- Helper functions --
+
+/// Parse `--body-limit`, bounded so a typo cannot ask for gigabytes.
+fn parse_body_limit(s: &str) -> Result<usize, String> {
+    let n: usize = s.parse().map_err(|_| format!("'{s}' is not a number"))?;
+    if n > crate::tls::MAX_BODY_LIMIT {
+        return Err(format!(
+            "--body-limit must be at most {} bytes",
+            crate::tls::MAX_BODY_LIMIT
+        ));
+    }
+    Ok(n)
+}
 
 pub fn validate_target(s: &str) -> Result<String, String> {
     if s == "-" || s.starts_with("https://") || std::path::Path::new(s).exists() {

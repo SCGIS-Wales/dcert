@@ -137,6 +137,90 @@ pub fn connect_via_override(ov: &ResolvedOverride<'_>, timeout: Duration) -> Res
     ))
 }
 
+/// One response header as sent by the server.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HttpHeader {
+    pub name: String,
+    pub value: String,
+}
+
+/// Default number of body bytes captured for diagnostics.
+pub const DEFAULT_BODY_LIMIT: usize = 16 * 1024;
+/// Upper bound accepted for `--body-limit`.
+pub const MAX_BODY_LIMIT: usize = 1024 * 1024;
+
+/// Parsed HTTP/1.x response head plus a bounded body excerpt.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HttpResponseCapture {
+    pub status: u16,
+    pub reason: Option<String>,
+    pub headers: Vec<HttpHeader>,
+    pub body: Vec<u8>,
+    pub body_truncated: bool,
+}
+
+impl HttpResponseCapture {
+    /// First value of a header, case insensitive.
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|h| h.name.eq_ignore_ascii_case(name))
+            .map(|h| h.value.as_str())
+    }
+
+    /// Parse raw response bytes. Tolerates a missing header terminator (the
+    /// status line alone is enough to report a code) and never panics on
+    /// malformed input.
+    pub fn parse(raw: &[u8], body_limit: usize) -> Self {
+        let head_end = raw.windows(4).position(|w| w == b"\r\n\r\n");
+        let (head, body) = match head_end {
+            Some(i) => (&raw[..i], &raw[i + 4..]),
+            None => (raw, &raw[raw.len()..]),
+        };
+        let head = String::from_utf8_lossy(head);
+        let mut lines = head.split("\r\n");
+        let status_line = lines.next().unwrap_or("");
+        let mut parts = status_line.splitn(3, ' ');
+        let _version = parts.next();
+        let status = parts.next().and_then(|c| c.parse::<u16>().ok()).unwrap_or(0);
+        let reason = parts
+            .next()
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+            .map(ToString::to_string);
+        let headers = lines
+            .filter_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                let name = name.trim();
+                if name.is_empty() {
+                    return None;
+                }
+                Some(HttpHeader {
+                    name: name.to_ascii_lowercase(),
+                    value: value.trim().to_string(),
+                })
+            })
+            .collect();
+        let body_truncated = body.len() > body_limit;
+        Self {
+            status,
+            reason,
+            headers,
+            body: body[..body.len().min(body_limit)].to_vec(),
+            body_truncated,
+        }
+    }
+
+    /// Body as text, lossily decoded.
+    pub fn body_text(&self) -> Option<String> {
+        if self.body.is_empty() {
+            None
+        } else {
+            Some(String::from_utf8_lossy(&self.body).into_owned())
+        }
+    }
+}
+
 /// Result of a TLS connection, containing the certificate chain and connection metadata.
 #[derive(Debug, serde::Serialize, Clone)]
 pub struct TlsConnectionInfo {
@@ -153,6 +237,21 @@ pub struct TlsConnectionInfo {
     /// ALPN negotiated protocol (e.g. "h2", "http/1.1")
     pub negotiated_protocol: Option<String>,
     pub http_response_code: u16,
+    /// Reason phrase from the status line, e.g. `Forbidden`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_reason: Option<String>,
+    /// Response headers in wire order. Names are lower cased; values are
+    /// trimmed. Empty when no response was read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub http_headers: Vec<HttpHeader>,
+    /// Leading bytes of the response body (bounded by `--body-limit`),
+    /// decoded lossily as UTF-8. Cleared before output unless `--show-body`
+    /// is set or a diagnosis matched on it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_body_excerpt: Option<String>,
+    /// `true` when the body was cut at the limit.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub http_body_truncated: bool,
     pub verify_result: Option<String>,
     /// Per-certificate chain validation errors (depth, error, subject).
     pub chain_validation_errors: Vec<String>,
@@ -569,6 +668,58 @@ fn peer_chain_pem(ssl: &openssl::ssl::SslRef) -> Result<String> {
     chain_to_pem(&owned)
 }
 
+/// Read an HTTP/1.x response head and a bounded body prefix from `stream`.
+///
+/// Stops at EOF, at the read deadline, when `Content-Length` bytes of body
+/// have arrived, or when `body_limit + 1` body bytes are buffered. The
+/// result is raw bytes for [`HttpResponseCapture::parse`].
+fn read_http_response<R: Read>(stream: &mut R, read_timeout_secs: u64, body_limit: usize) -> Vec<u8> {
+    const MAX_HEAD_SIZE: usize = 64 * 1024;
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 4096];
+    let deadline = std::time::Instant::now() + Duration::from_secs(read_timeout_secs.max(1));
+    let mut head_len: Option<usize> = None;
+    let mut content_length: Option<usize> = None;
+
+    while std::time::Instant::now() < deadline {
+        if let Some(hl) = head_len {
+            let body_have = buf.len().saturating_sub(hl);
+            if body_have > body_limit || content_length.is_some_and(|cl| body_have >= cl) {
+                break;
+            }
+        } else if buf.len() > MAX_HEAD_SIZE {
+            break;
+        }
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                buf.extend_from_slice(&chunk[..n]);
+                if head_len.is_none()
+                    && let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n")
+                {
+                    head_len = Some(i + 4);
+                    let head = String::from_utf8_lossy(&buf[..i]);
+                    content_length = head
+                        .split("\r\n")
+                        .filter_map(|l| l.split_once(':'))
+                        .find(|(k, _)| k.trim().eq_ignore_ascii_case("content-length"))
+                        .and_then(|(_, v)| v.trim().parse::<usize>().ok());
+                }
+            }
+            Err(ref e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
+                break;
+            }
+            Err(e) => {
+                if buf.is_empty() {
+                    eprintln!("Warning: Error reading HTTP response: {e}");
+                }
+                break;
+            }
+        }
+    }
+    buf
+}
+
 /// Options for `fetch_tls_chain_openssl`, grouped to avoid an unwieldy
 /// 20-parameter function signature.
 #[derive(Debug)]
@@ -596,6 +747,8 @@ pub struct TlsFetchOptions<'a> {
     pub pkcs12_path: Option<&'a str>,
     pub cert_password: Option<&'a str>,
     pub ca_cert_path: Option<&'a str>,
+    /// Maximum number of response body bytes to keep for diagnostics.
+    pub body_limit: usize,
 }
 
 /// Fetch TLS certificate chain using OpenSSL, with proxy support, custom CA certificates, and mTLS.
@@ -622,6 +775,7 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
         pkcs12_path,
         cert_password,
         ca_cert_path,
+        body_limit,
     } = *opts;
     // Acquire a connection permit (released automatically when _permit is dropped)
     // Validate URL more thoroughly
@@ -696,7 +850,7 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
 
     // Layer 7: TLS handshake + HTTP request
     let l7_start = std::time::Instant::now();
-    let (connector, capture) = build_connector(&ConnectorOptions {
+    let (connector, verify) = build_connector(&ConnectorOptions {
         no_verify,
         min_tls,
         max_tls,
@@ -720,7 +874,7 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
             // captured during verification, so the user gets the server
             // identity even though the handshake aborted.
             if is_client_auth_required(&err_str) {
-                let chain = capture.chain();
+                let chain = verify.chain();
                 if !chain.is_empty() {
                     let pem = chain_to_pem(&chain)?;
                     let l7_latency = l7_start.elapsed().as_millis();
@@ -734,8 +888,12 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
                         tls_cipher_iana: None,
                         negotiated_protocol: None,
                         http_response_code: 0,
+                        http_reason: None,
+                        http_headers: Vec::new(),
+                        http_body_excerpt: None,
+                        http_body_truncated: false,
                         verify_result: Some("client certificate required (mTLS)".to_string()),
-                        chain_validation_errors: capture.errors(),
+                        chain_validation_errors: verify.errors(),
                         client_auth_required: true,
                         verification_disabled: no_verify,
                         peer_address: peer_address.map(|a| a.to_string()),
@@ -744,7 +902,7 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
                 }
                 // Fall through to the regular error path if no chain was captured.
             }
-            return Err(capture.handshake_error(&e, ca_cert_path.is_some()));
+            return Err(verify.handshake_error(&e, ca_cert_path.is_some()));
         }
     };
 
@@ -823,72 +981,21 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
         .flush()
         .map_err(|e| anyhow::anyhow!("Failed to flush stream: {e}"))?;
 
-    // Read the HTTP response. Partial reads are accumulated until the status
-    // line is complete, the buffer cap is hit, or the read deadline passes.
-    // The deadline is the documented `--read-timeout`: each socket read is
-    // bounded by it, and the loop as a whole never exceeds it either.
-    const MAX_RESPONSE_SIZE: usize = 64 * 1024; // 64 KB — we only need the status line
-    let mut response_buffer = Vec::new();
-    let mut temp_buffer = [0u8; 1024];
-    let deadline = std::time::Instant::now() + Duration::from_secs(read_timeout_secs);
-
-    while response_buffer.len() < MAX_RESPONSE_SIZE && std::time::Instant::now() < deadline {
-        match ssl_stream.read(&mut temp_buffer) {
-            Ok(0) => break, // EOF
-            Ok(n) => {
-                response_buffer.extend_from_slice(&temp_buffer[..n]);
-                // Stop once the status line (`HTTP/1.1 200 OK\r\n`) is complete.
-                if let Some(end_pos) = response_buffer.windows(2).position(|w| w == b"\r\n")
-                    && end_pos >= 12
-                {
-                    break;
-                }
-            }
-            Err(ref e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
-                // Read timeout: report whatever arrived rather than waiting again.
-                break;
-            }
-            Err(e) => {
-                eprintln!("Warning: Error reading HTTP response: {e}");
-                break;
-            }
-        }
-    }
-
-    // Parse HTTP status code
-    let http_response_code = if !response_buffer.is_empty() {
-        // Find the first line ending
-        let line_end = response_buffer
-            .windows(2)
-            .position(|w| w == b"\r\n")
-            .unwrap_or(response_buffer.len().min(100));
-
-        let status_line = &response_buffer[..line_end];
-
-        if let Ok(status_str) = std::str::from_utf8(status_line) {
-            // Parse "HTTP/1.1 200 OK" format
-            // Split by spaces and get the second element (status code)
-            let parts: Vec<&str> = status_str.split_whitespace().collect();
-            if parts.len() >= 2 {
-                // The second part should be the status code
-                if let Ok(code) = parts[1].parse::<u16>() {
-                    code
-                } else {
-                    eprintln!("Warning: Could not parse status code from: {status_str}");
-                    0
-                }
-            } else {
-                eprintln!("Warning: Invalid status line format: {status_str}");
-                0
-            }
-        } else {
-            eprintln!("Warning: Status line is not valid UTF-8");
-            0
-        }
-    } else {
+    // Read the HTTP response: the whole header block, then up to
+    // `body_limit` bytes of body (plus one so truncation is detectable). Each
+    // socket read is bounded by `--read-timeout` and the loop as a whole never
+    // exceeds that deadline either, so a silent server costs one timeout.
+    let response_buffer = read_http_response(&mut ssl_stream, read_timeout_secs, body_limit);
+    let capture = HttpResponseCapture::parse(&response_buffer, body_limit);
+    let http_response_code = capture.status;
+    if response_buffer.is_empty() {
         eprintln!("Warning: No response data received");
-        0
-    };
+    } else if http_response_code == 0 {
+        eprintln!(
+            "Warning: Could not parse HTTP status line: {}",
+            String::from_utf8_lossy(&response_buffer[..response_buffer.len().min(100)])
+        );
+    }
 
     let l7_latency = l7_start.elapsed().as_millis();
 
@@ -896,7 +1003,7 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
     debug_log!(debug, "Layer 7 complete ({} ms)", l7_latency);
 
     let pem = peer_chain_pem(ssl_stream.ssl())?;
-    let session = session_summary(ssl_stream.ssl(), &capture, debug);
+    let session = session_summary(ssl_stream.ssl(), &verify, debug);
 
     Ok(TlsConnectionInfo {
         pem_data: pem,
@@ -908,6 +1015,10 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
         tls_cipher_iana: session.tls_cipher_iana,
         negotiated_protocol: session.negotiated_protocol,
         http_response_code,
+        http_reason: capture.reason.clone(),
+        http_headers: capture.headers.clone(),
+        http_body_excerpt: capture.body_text(),
+        http_body_truncated: capture.body_truncated,
         verify_result: session.verify_result,
         chain_validation_errors: session.chain_validation_errors,
         client_auth_required: false,
@@ -1152,6 +1263,10 @@ pub fn fetch_tls_chain_starttls(opts: &StarttlsFetchOptions<'_>) -> Result<TlsCo
         tls_cipher_iana: session.tls_cipher_iana,
         negotiated_protocol: session.negotiated_protocol,
         http_response_code: 0,
+        http_reason: None,
+        http_headers: Vec::new(),
+        http_body_excerpt: None,
+        http_body_truncated: false,
         verify_result: session.verify_result,
         chain_validation_errors: session.chain_validation_errors,
         client_auth_required: false,

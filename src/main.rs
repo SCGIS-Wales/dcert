@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use clap::CommandFactory;
 use clap::Parser;
 use colored::*;
-use dcert::{cert, cli, connect, convert, csr, output, proxy, trust, vault};
+use dcert::{cert, cli, connect, convert, csr, diagnose, output, proxy, trust, vault};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -264,6 +264,22 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
     let mut exit_code = exit_code::SUCCESS;
     let mut all_results: Vec<TargetResult> = Vec::new();
 
+    // Diagnostics: load the knowledge base once, and describe the probe so
+    // signals about the proxy and client identity can be evaluated.
+    let kb = if args.no_diagnose {
+        None
+    } else {
+        Some(diagnose::KnowledgeBase::load(
+            args.kb_file.as_deref().map(std::path::Path::new),
+        )?)
+    };
+    let probe = diagnose::ProbeContext {
+        proxy: Some(&proxy_config),
+        client_cert_supplied: args.client_cert.is_some() || args.pkcs12.is_some(),
+        sni_overridden: args.sni.is_some(),
+    };
+    let mut diagnose_outputs: Vec<DiagnoseOutput> = Vec::new();
+
     for target in &targets {
         match process_target(
             target,
@@ -274,7 +290,38 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
             body_data.as_deref(),
             stdin_pem.as_deref(),
         ) {
-            Ok(result) => {
+            Ok(mut result) => {
+                let mut keep_body = args.show_body;
+                if let Some(kb) = &kb {
+                    let evidence = diagnose::Evidence::from_result(
+                        target,
+                        &probe,
+                        result.conn_info.as_ref(),
+                        &result.infos,
+                        result.root_trust.as_ref(),
+                    );
+                    let report = diagnose::diagnose(kb, &evidence);
+                    keep_body |= report.body_matched;
+                    result.diagnosis = report.findings;
+                }
+                // The body excerpt is evidence, not output: keep it only when
+                // asked for or when a finding cites it.
+                if !keep_body && let Some(conn) = result.conn_info.as_mut() {
+                    conn.http_body_excerpt = None;
+                    conn.http_body_truncated = false;
+                }
+                if args.diagnose_only {
+                    diagnose_outputs.push(DiagnoseOutput {
+                        target: target.clone(),
+                        error: None,
+                        http_status: result
+                            .conn_info
+                            .as_ref()
+                            .map(|c| c.http_response_code)
+                            .filter(|c| *c > 0),
+                        diagnosis: result.diagnosis.clone(),
+                    });
+                }
                 // Promote to CLIENT_CERT_ERROR when the server demanded an mTLS
                 // client cert we didn't supply. This is more specific than the
                 // generic VERIFY_FAILED and tells callers what to fix.
@@ -296,8 +343,31 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
                 if exit_code < exit_code::ERROR {
                     exit_code = exit_code::ERROR;
                 }
+                if let Some(kb) = &kb {
+                    let evidence = diagnose::Evidence::from_error(target, &probe, &e);
+                    let report = diagnose::diagnose(kb, &evidence);
+                    if args.diagnose_only {
+                        diagnose_outputs.push(DiagnoseOutput {
+                            target: target.clone(),
+                            error: Some(format!("{e:#}")),
+                            http_status: None,
+                            diagnosis: report.findings,
+                        });
+                    } else if !report.findings.is_empty() && matches!(args.format, OutputFormat::Pretty) {
+                        // Failed probes have no stdout record; keep the
+                        // diagnosis next to the error on stderr.
+                        let _ = output::write_diagnosis(&mut std::io::stderr().lock(), &report.findings);
+                    }
+                }
             }
         }
+    }
+
+    if args.diagnose_only {
+        print_structured(args.format, &diagnose_outputs, || {
+            print_diagnose_output_pretty(&diagnose_outputs);
+        })?;
+        return Ok(exit_code);
     }
 
     // Diff mode
@@ -320,26 +390,17 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
     if multi_target && matches!(args.format, OutputFormat::Json) {
         let mut map = serde_json::Map::new();
         for result in &all_results {
-            let output = StructuredOutput {
-                certificates: result.infos.clone(),
-                connection: result.conn_info.clone(),
-                compliance: result.compliance_report.clone(),
-                root_trust: result.root_trust.clone(),
-            };
-            map.insert(result.target.clone(), serde_json::to_value(&output)?);
+            map.insert(
+                result.target.clone(),
+                serde_json::to_value(StructuredOutput::from(result))?,
+            );
         }
         println!("{}", serde_json::to_string_pretty(&map)?);
     } else if multi_target && matches!(args.format, OutputFormat::Yaml) {
-        let mut map = std::collections::BTreeMap::new();
-        for result in &all_results {
-            let output = StructuredOutput {
-                certificates: result.infos.clone(),
-                connection: result.conn_info.clone(),
-                compliance: result.compliance_report.clone(),
-                root_trust: result.root_trust.clone(),
-            };
-            map.insert(result.target.clone(), output);
-        }
+        let map: std::collections::BTreeMap<&str, StructuredOutput> = all_results
+            .iter()
+            .map(|r| (r.target.as_str(), StructuredOutput::from(r)))
+            .collect();
         println!("{}", serde_yaml_ng::to_string(&map)?);
     } else {
         for result in &all_results {
@@ -1136,6 +1197,107 @@ fn run() -> Result<i32> {
         Command::VerifyKey(args) => run_verify_key(args),
         Command::Csr(args) => run_csr(args),
         Command::Vault(args) => run_vault(*args),
+        Command::Diagnose(mut args) => {
+            args.diagnose_only = true;
+            run_check(*args)
+        }
+        Command::Kb(args) => run_kb(args),
+    }
+}
+
+/// One target's diagnosis, the shape printed by `dcert diagnose`.
+#[derive(Debug, serde::Serialize)]
+struct DiagnoseOutput {
+    target: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    http_status: Option<u16>,
+    diagnosis: Vec<diagnose::Diagnosis>,
+}
+
+fn print_diagnose_output_pretty(items: &[DiagnoseOutput]) {
+    for item in items {
+        println!("{}", format!("--- {} ---", item.target).bold().cyan());
+        if let Some(e) = &item.error {
+            println!("{} {e}", "Probe failed:".red().bold());
+        } else if let Some(s) = item.http_status {
+            println!("Probe completed: HTTP {s}");
+        } else {
+            println!("Probe completed");
+        }
+        if item.diagnosis.is_empty() {
+            println!("No knowledge base entry matched. Re-run with --debug for the raw exchange.");
+            println!();
+        } else {
+            output::print_diagnosis_pretty(&item.diagnosis);
+        }
+    }
+}
+
+fn run_kb(args: cli::KbArgs) -> Result<i32> {
+    use cli::KbMode;
+    match args.mode {
+        KbMode::List { format, kb_file } => {
+            let kb = diagnose::KnowledgeBase::load(kb_file.as_deref().map(std::path::Path::new))?;
+            #[derive(serde::Serialize)]
+            struct Row<'a> {
+                id: &'a str,
+                layer: diagnose::Layer,
+                category: diagnose::Category,
+                title: &'a str,
+            }
+            let rows: Vec<Row<'_>> = kb
+                .entries
+                .iter()
+                .map(|e| Row {
+                    id: &e.id,
+                    layer: e.layer,
+                    category: e.category,
+                    title: &e.title,
+                })
+                .collect();
+            print_structured(format, &rows, || {
+                println!("{} entries (knowledge base version {})", kb.entries.len(), kb.version);
+                for e in &kb.entries {
+                    println!("  {:<46} {:<24} {}", e.id, e.layer.label(), e.title);
+                }
+            })?;
+            Ok(exit_code::SUCCESS)
+        }
+        KbMode::Show { id, format, kb_file } => {
+            let kb = diagnose::KnowledgeBase::load(kb_file.as_deref().map(std::path::Path::new))?;
+            let entry = kb
+                .get(&id)
+                .ok_or_else(|| anyhow::anyhow!("no knowledge base entry with id '{id}'"))?;
+            print_structured(format, entry, || {
+                println!("{}", serde_yaml_ng::to_string(entry).unwrap_or_default());
+            })?;
+            Ok(exit_code::SUCCESS)
+        }
+        KbMode::Validate { file } => {
+            let text = std::fs::read_to_string(&file).with_context(|| format!("Failed to read {file}"))?;
+            let kb = diagnose::KnowledgeBase::parse(&text)
+                .with_context(|| format!("{file} is not a valid knowledge base"))?;
+            let mut merged = diagnose::KnowledgeBase::builtin()?;
+            let builtin_count = merged.entries.len();
+            let file_count = kb.entries.len();
+            merged.merge(kb);
+            let replaced = builtin_count + file_count - merged.entries.len();
+            println!(
+                "{} {file}: {file_count} entries ({replaced} override built in entries, {} new)",
+                "OK".green().bold(),
+                file_count - replaced
+            );
+            Ok(exit_code::SUCCESS)
+        }
+        KbMode::Schema => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&diagnose::KnowledgeBase::json_schema())?
+            );
+            Ok(exit_code::SUCCESS)
+        }
     }
 }
 

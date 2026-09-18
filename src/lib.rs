@@ -11,6 +11,7 @@ pub mod connect;
 pub mod convert;
 pub mod csr;
 pub mod debug;
+pub mod diagnose;
 pub mod http;
 pub mod ocsp;
 pub mod output;

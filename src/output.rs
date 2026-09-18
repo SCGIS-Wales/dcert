@@ -14,6 +14,7 @@ use crate::compliance::{self, ChainComplianceReport, Severity};
 use crate::connect::ConnectOverrides;
 use crate::convert::{CertRole, ConvertResult};
 use crate::debug::debug_log;
+use crate::diagnose::Diagnosis;
 use crate::ocsp::check_ocsp_status;
 use crate::proxy::ProxyConfig;
 use crate::tls::{
@@ -317,6 +318,8 @@ pub struct TargetResult {
     pub pem_data: String,
     pub compliance_report: Option<ChainComplianceReport>,
     pub root_trust: Option<RootTrustInfo>,
+    /// CloudFront, mTLS and proxy findings, earliest layer first.
+    pub diagnosis: Vec<Diagnosis>,
 }
 
 /// JSON/YAML wrapper that includes both certificates and connection metadata.
@@ -329,6 +332,20 @@ pub struct StructuredOutput {
     pub compliance: Option<ChainComplianceReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub root_trust: Option<RootTrustInfo>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub diagnosis: Vec<Diagnosis>,
+}
+
+impl From<&TargetResult> for StructuredOutput {
+    fn from(result: &TargetResult) -> Self {
+        Self {
+            certificates: result.infos.clone(),
+            connection: result.conn_info.clone(),
+            compliance: result.compliance_report.clone(),
+            root_trust: result.root_trust.clone(),
+            diagnosis: result.diagnosis.clone(),
+        }
+    }
 }
 
 /// Process a single target (PEM file, HTTPS URL, or stdin PEM data) and return results.
@@ -429,6 +446,7 @@ pub fn process_target(
             pkcs12_path: args.pkcs12.as_deref(),
             cert_password: args.cert_password.as_deref(),
             ca_cert_path: args.ca_cert.as_deref(),
+            body_limit: args.body_limit,
         })?;
         let pem = conn.pem_data.clone();
         (pem, Some(conn))
@@ -514,6 +532,7 @@ pub fn process_target(
         pem_data,
         compliance_report,
         root_trust,
+        diagnosis: Vec::new(),
     })
 }
 
@@ -709,12 +728,7 @@ pub fn output_results(
         None
     };
 
-    let output = StructuredOutput {
-        certificates: result.infos.clone(),
-        connection: result.conn_info.clone(),
-        compliance: result.compliance_report.clone(),
-        root_trust: result.root_trust.clone(),
-    };
+    let output = StructuredOutput::from(result);
     print_structured(format, &output, || {
         let debug = PrettyDebugInfo {
             hostname: hostname.as_deref(),
@@ -733,7 +747,80 @@ pub fn output_results(
         if let Some(ref report) = result.compliance_report {
             print_compliance_pretty(report);
         }
+
+        if !result.diagnosis.is_empty() {
+            print_diagnosis_pretty(&result.diagnosis);
+        }
     })
+}
+
+/// Render diagnostics findings for humans. The first finding is the primary
+/// attribution; the rest are secondary possibilities in path order.
+pub fn print_diagnosis_pretty(findings: &[Diagnosis]) {
+    let mut out = std::io::stdout().lock();
+    let _ = write_diagnosis(&mut out, findings);
+}
+
+/// Same as [`print_diagnosis_pretty`] but to any writer (stderr for failed probes).
+pub fn write_diagnosis(w: &mut impl std::io::Write, findings: &[Diagnosis]) -> std::io::Result<()> {
+    writeln!(w, "{}", "=== Diagnosis ===".bold())?;
+    for (i, d) in findings.iter().enumerate() {
+        let badge = if i == 0 {
+            "PRIMARY  ".red().bold()
+        } else {
+            "SECONDARY".yellow()
+        };
+        let pct = (d.confidence * 100.0).round();
+        writeln!(
+            w,
+            "{badge} {} {} ({}, {pct}% confidence)",
+            d.title.bold(),
+            format!("[{}]", d.id).dimmed(),
+            d.layer.label()
+        )?;
+        for line in textwrap_lines(&d.root_cause, 96) {
+            writeln!(w, "    {line}")?;
+        }
+        if !d.evidence.is_empty() {
+            writeln!(w, "    {}", "Evidence:".bold())?;
+            for e in &d.evidence {
+                writeln!(w, "      - {e}")?;
+            }
+        }
+        if !d.remediation.is_empty() {
+            writeln!(w, "    {}", "Next steps:".bold())?;
+            for r in &d.remediation {
+                writeln!(w, "      - {r}")?;
+            }
+        }
+        if !d.references.is_empty() {
+            writeln!(w, "    {}", "References:".bold())?;
+            for r in &d.references {
+                writeln!(w, "      {}", r.dimmed())?;
+            }
+        }
+        writeln!(w)?;
+    }
+    Ok(())
+}
+
+/// Greedy word wrap, so long root cause paragraphs stay readable in a terminal.
+fn textwrap_lines(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        if !current.is_empty() && current.len() + 1 + word.len() > width {
+            lines.push(std::mem::take(&mut current));
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(word);
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
 }
 
 /// Render the result of a `dcert convert ...` operation in the requested
