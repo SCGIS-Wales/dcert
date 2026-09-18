@@ -18,10 +18,14 @@ pub struct ProxyConfig {
 
 impl ProxyConfig {
     pub fn from_env() -> Self {
-        let https_proxy = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]
+        // Same precedence as curl: scheme specific variables first, then
+        // ALL_PROXY. HTTPS traffic is never routed through HTTP_PROXY alone,
+        // because that is the classic misconfiguration the diagnostics layer
+        // reports rather than silently follows.
+        let https_proxy = ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"]
             .iter()
             .find_map(|var| env::var(var).ok().filter(|v| !v.is_empty()));
-        let http_proxy = ["HTTP_PROXY", "http_proxy"]
+        let http_proxy = ["http_proxy", "HTTP_PROXY", "ALL_PROXY", "all_proxy"]
             .iter()
             .find_map(|var| env::var(var).ok().filter(|v| !v.is_empty()));
         let no_proxy = env::var("no_proxy")
@@ -224,6 +228,77 @@ pub fn connect_through_proxy(proxy_url: &str, target_host: &str, target_port: u1
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn with_env(vars: &[(&str, Option<&str>)], f: impl FnOnce()) {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let names = [
+            "HTTPS_PROXY",
+            "https_proxy",
+            "HTTP_PROXY",
+            "http_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+            "NO_PROXY",
+            "no_proxy",
+        ];
+        let saved: Vec<(&str, Option<String>)> = names.iter().map(|n| (*n, env::var(n).ok())).collect();
+        // Safe: ENV_LOCK serialises every environment mutation in this module.
+        #[allow(unsafe_code)]
+        unsafe {
+            for n in names {
+                env::remove_var(n);
+            }
+            for (k, v) in vars {
+                if let Some(v) = v {
+                    env::set_var(k, v);
+                }
+            }
+        }
+        f();
+        #[allow(unsafe_code)]
+        unsafe {
+            for (n, v) in saved {
+                match v {
+                    Some(v) => env::set_var(n, v),
+                    None => env::remove_var(n),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn https_never_falls_back_to_http_proxy_alone() {
+        with_env(&[("HTTP_PROXY", Some("http://proxy:3128"))], || {
+            let cfg = ProxyConfig::from_env();
+            assert_eq!(cfg.http_proxy.as_deref(), Some("http://proxy:3128"));
+            assert!(cfg.https_proxy.is_none(), "HTTPS must not inherit HTTP_PROXY");
+        });
+    }
+
+    #[test]
+    fn all_proxy_applies_to_both_schemes() {
+        with_env(&[("ALL_PROXY", Some("http://all:3128"))], || {
+            let cfg = ProxyConfig::from_env();
+            assert_eq!(cfg.http_proxy.as_deref(), Some("http://all:3128"));
+            assert_eq!(cfg.https_proxy.as_deref(), Some("http://all:3128"));
+        });
+    }
+
+    #[test]
+    fn scheme_specific_wins_over_all_proxy() {
+        with_env(
+            &[
+                ("ALL_PROXY", Some("http://all:3128")),
+                ("HTTPS_PROXY", Some("http://secure:3128")),
+            ],
+            || {
+                let cfg = ProxyConfig::from_env();
+                assert_eq!(cfg.https_proxy.as_deref(), Some("http://secure:3128"));
+            },
+        );
+    }
 
     // ---------------------------------------------------------------
     // ProxyConfig::should_bypass tests

@@ -59,6 +59,7 @@ percent-encoding = "2.3"
 rust_xlsxwriter = "0.99"
 zeroize = { version = "1.8", features = ["derive"] }
 webpki-root-certs = "1"
+rpassword = "7.5"
 
 # Windows has no system OpenSSL. Build it from source via the `vendored`
 # feature (gated to Windows so Linux/macOS keep using system/Homebrew OpenSSL).

@@ -8,7 +8,8 @@ use openssl::x509::extension::SubjectAlternativeName;
 use openssl::x509::{X509Name, X509NameBuilder, X509NameRef, X509Req, X509ReqBuilder};
 use std::fs;
 
-use crate::convert::restrict_file_permissions;
+use crate::convert::write_private_file;
+use crate::secret::Secret;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -71,7 +72,7 @@ pub struct CsrCreateOptions {
     pub san: Vec<String>,
     pub key_algo: KeyAlgorithm,
     pub encrypt_key: bool,
-    pub key_password: Option<String>,
+    pub key_password: Option<Secret>,
 }
 
 /// Result of CSR creation.
@@ -144,7 +145,9 @@ pub fn create_csr(opts: &CsrCreateOptions, csr_path: &str, key_path: &str) -> Re
 
     // Build CSR
     let mut req_builder = X509ReqBuilder::new().with_context(|| "Failed to create X509 request builder")?;
-    req_builder.set_version(0).ok(); // PKCS#10 v1
+    req_builder
+        .set_version(0)
+        .with_context(|| "Failed to set CSR version")?; // PKCS#10 v1
     req_builder
         .set_pubkey(&pkey)
         .with_context(|| "Failed to set public key on CSR")?;
@@ -199,16 +202,19 @@ pub fn create_csr(opts: &CsrCreateOptions, csr_path: &str, key_path: &str) -> Re
     fs::write(csr_path, &csr_pem).with_context(|| format!("Failed to write CSR to: {csr_path}"))?;
 
     // Serialize private key
-    let key_pem = if opts.encrypt_key {
-        let password = opts.key_password.as_deref().unwrap_or("").as_bytes();
-        pkey.private_key_to_pem_pkcs8_passphrase(openssl::symm::Cipher::aes_256_cbc(), password)
+    let key_pem = zeroize::Zeroizing::new(if opts.encrypt_key {
+        let password = opts
+            .key_password
+            .as_deref()
+            .filter(|p| !p.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("Private key encryption requires a non-empty passphrase"))?;
+        pkey.private_key_to_pem_pkcs8_passphrase(openssl::symm::Cipher::aes_256_cbc(), password.as_bytes())
             .with_context(|| "Failed to encrypt private key")?
     } else {
         pkey.private_key_to_pem_pkcs8()
             .with_context(|| "Failed to encode private key as PEM")?
-    };
-    fs::write(key_path, &key_pem).with_context(|| format!("Failed to write private key to: {key_path}"))?;
-    restrict_file_permissions(key_path);
+    });
+    write_private_file(key_path, &key_pem).with_context(|| format!("Failed to write private key to: {key_path}"))?;
 
     // Build subject string for display
     let subject_str = format_subject_name(&opts.subject);
@@ -390,8 +396,7 @@ pub fn interactive_create() -> Result<(CsrCreateOptions, String, String)> {
         Some("y") | Some("Y") | Some("yes") | Some("Yes")
     );
     let key_password = if encrypt_key {
-        let pw = prompt_required("Enter passphrase for private key")?;
-        Some(pw)
+        Some(prompt_secret("Enter passphrase for private key")?)
     } else {
         None
     };
@@ -444,6 +449,30 @@ pub fn prompt_required(label: &str) -> Result<String> {
         let input = input.trim().to_string();
         if !input.is_empty() {
             return Ok(input);
+        }
+        eprintln!("  This field is required.");
+    }
+}
+
+/// Prompt for a secret without echoing it. Falls back to a plain line read
+/// when stdin is not a terminal (piped input in scripts and tests).
+pub fn prompt_secret(label: &str) -> Result<Secret> {
+    use std::io::{self, IsTerminal, Write};
+    loop {
+        eprint!("{label}: ");
+        io::stderr().flush().ok();
+        let value = if io::stdin().is_terminal() {
+            let pw = rpassword::read_password().with_context(|| "Failed to read passphrase")?;
+            Secret::new(pw)
+        } else {
+            let mut input = String::new();
+            io::stdin()
+                .read_line(&mut input)
+                .with_context(|| "Failed to read input")?;
+            Secret::new(input.trim_end_matches(['\r', '\n']))
+        };
+        if !value.is_empty() {
+            return Ok(value);
         }
         eprintln!("  This field is required.");
     }
@@ -840,7 +869,7 @@ mod tests {
             san: vec!["DNS:encrypted.example.com".to_string()],
             key_algo: KeyAlgorithm::Rsa4096,
             encrypt_key: true,
-            key_password: Some("test-password-123".to_string()),
+            key_password: Some(Secret::new("test-password-123")),
         };
 
         let result = create_csr(&opts, &csr_path, &key_path).unwrap();

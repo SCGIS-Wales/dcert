@@ -25,6 +25,18 @@ const MAX_STDIN_SIZE: usize = 10 * 1024 * 1024;
 /// Conventional Unix exit code for SIGINT-terminated processes (128 + SIGINT(2)).
 const EXIT_INTERRUPTED: i32 = 130;
 
+/// Warn when a secret was supplied on the command line rather than through
+/// its environment variable, since argv is visible to every local user.
+fn warn_secret_on_argv(flag: &str, env_var: &str, provided: bool) {
+    if provided && std::env::var_os(env_var).is_none() {
+        eprintln!(
+            "{} {}",
+            "WARNING:".yellow().bold(),
+            format!("Secret passed via {flag} is visible in process listings. Set {env_var} instead.").yellow()
+        );
+    }
+}
+
 /// Register a single, process-wide Ctrl+C handler that prints a friendly
 /// message and exits with code 130. Returns an `AtomicBool` that long-running
 /// loops (e.g. `--watch`) can poll for graceful shutdown — the handler also
@@ -83,15 +95,7 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
         }
     }
 
-    // Warn when passwords are passed via CLI args (visible in process listing)
-    if args.cert_password.is_some() && std::env::var("DCERT_CERT_PASSWORD").is_err() {
-        eprintln!(
-            "{} {}",
-            "WARNING:".yellow().bold(),
-            "Password passed via --cert-password is visible in process listings. Consider using DCERT_CERT_PASSWORD env var instead."
-                .yellow()
-        );
-    }
+    warn_secret_on_argv("--cert-password", "DCERT_CERT_PASSWORD", args.cert_password.is_some());
 
     // Resolve request body from --data or --data-file
     let body_data: Option<Vec<u8>> = if let Some(ref data) = args.data {
@@ -190,7 +194,7 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
             args.fingerprint = true;
         }
 
-        // The global SIGINT handler (registered in `run()`) flips this bool to
+        // The global SIGINT handler (registered in `main()`) flips this bool to
         // false before exiting, but we re-register here for the rare case where
         // run() wasn't entered (e.g. tests calling run_check_with_stdin directly).
         // ctrlc::set_handler() returns an error on second registration, which is
@@ -207,7 +211,9 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
 
         while running.load(Ordering::SeqCst) {
             iteration += 1;
-            let now = OffsetDateTime::now_utc().format(&Rfc3339).unwrap_or_default();
+            let now = OffsetDateTime::now_utc()
+                .format(&Rfc3339)
+                .unwrap_or_else(|_| "unknown time".to_string());
             println!(
                 "{}",
                 format!("=== Watch iteration {iteration} at {now} ===").bold().cyan()
@@ -355,6 +361,15 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
         {
             exit_code = exit_code::CERT_REVOKED;
         }
+        // A revocation check that could not complete is not a clean result.
+        if result
+            .infos
+            .iter()
+            .any(|c| c.revocation_status.as_deref().is_some_and(|s| s.starts_with("error")))
+            && exit_code < exit_code::REVOCATION_CHECK_FAILED
+        {
+            exit_code = exit_code::REVOCATION_CHECK_FAILED;
+        }
     }
 
     // Check expiry warnings (overrides lower exit codes)
@@ -410,19 +425,14 @@ const KEYSTORE_EXPLAIN: &str = "About keystores\n  \
 
 fn run_convert(args: cli::ConvertArgs) -> Result<i32> {
     // Warn when passwords are passed via CLI args (visible in process listing)
-    let password_via_cli = match &args.mode {
-        cli::ConvertMode::PfxToPem { .. } => std::env::var("DCERT_CERT_PASSWORD").is_err(),
-        cli::ConvertMode::PemToPfx { .. } => std::env::var("DCERT_CERT_PASSWORD").is_err(),
-        cli::ConvertMode::CreateKeystore { .. } => std::env::var("DCERT_KEYSTORE_PASSWORD").is_err(),
-        cli::ConvertMode::CreateTruststore { .. } => false, // truststore password is low-sensitivity
-    };
-    if password_via_cli {
-        eprintln!(
-            "{} {}",
-            "WARNING:".yellow().bold(),
-            "Password passed via CLI argument is visible in process listings. Consider using the corresponding env var instead."
-                .yellow()
-        );
+    match &args.mode {
+        cli::ConvertMode::PfxToPem { .. } | cli::ConvertMode::PemToPfx { .. } => {
+            warn_secret_on_argv("--password", "DCERT_CERT_PASSWORD", true);
+        }
+        cli::ConvertMode::CreateKeystore { .. } => {
+            warn_secret_on_argv("--password", "DCERT_KEYSTORE_PASSWORD", true);
+        }
+        cli::ConvertMode::CreateTruststore { .. } => {} // truststore password is low-sensitivity
     }
 
     let format = args.format;
@@ -700,15 +710,11 @@ fn run_csr_create(args: cli::CsrCreateArgs) -> Result<i32> {
         );
     }
 
-    // Warn about key password on CLI
-    if opts.encrypt_key && opts.key_password.is_some() && std::env::var("DCERT_KEY_PASSWORD").is_err() {
-        eprintln!(
-            "{} {}",
-            "WARNING:".yellow().bold(),
-            "Password passed via --key-password is visible in process listings. Consider using DCERT_KEY_PASSWORD env var."
-                .yellow()
-        );
-    }
+    warn_secret_on_argv(
+        "--key-password",
+        "DCERT_KEY_PASSWORD",
+        opts.encrypt_key && opts.key_password.is_some(),
+    );
 
     let result = csr::create_csr(&opts, &csr_path, &key_path)?;
 
@@ -806,6 +812,19 @@ fn print_csr_validation_pretty(result: &csr::CsrValidationResult) {
 }
 
 fn run_vault(args: cli::VaultArgs) -> Result<i32> {
+    warn_secret_on_argv("--ldap-password", "DCERT_LDAP_PASSWORD", args.ldap_password.is_some());
+    warn_secret_on_argv(
+        "--approle-secret-id",
+        "DCERT_APPROLE_SECRET_ID",
+        args.approle_secret_id.is_some(),
+    );
+    let pfx_on_argv = match &args.mode {
+        cli::VaultMode::Issue(a) => a.pfx_password.is_some(),
+        cli::VaultMode::Sign(a) => a.pfx_password.is_some(),
+        _ => false,
+    };
+    warn_secret_on_argv("--pfx-password", "DCERT_CERT_PASSWORD", pfx_on_argv);
+
     // Discover Vault token and address
     let addr = vault::vault_addr()?;
     let auth_method: vault::VaultAuthMethod = args.auth_method.parse()?;

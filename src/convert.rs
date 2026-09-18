@@ -5,6 +5,7 @@ use openssl::pkey::PKey;
 use openssl::stack::Stack;
 use openssl::x509::X509;
 use std::fs;
+use std::path::Path;
 use x509_parser::prelude::FromDer;
 
 /// Role of a certificate within a chain — used to surface clear, beginner-friendly
@@ -151,7 +152,7 @@ pub fn pfx_to_pem(input: &str, password: &str, output_dir: &str) -> Result<Conve
     // Write certificate
     if let Some(ref cert) = parsed.cert {
         let cert_pem = cert.to_pem().with_context(|| "Failed to encode certificate as PEM")?;
-        let cert_path = format!("{output_dir}/cert.pem");
+        let cert_path = output_file_path(output_dir, "cert.pem")?;
         fs::write(&cert_path, &cert_pem).with_context(|| format!("Failed to write certificate: {cert_path}"))?;
         output_files.push(cert_path);
 
@@ -160,12 +161,12 @@ pub fn pfx_to_pem(input: &str, password: &str, output_dir: &str) -> Result<Conve
 
     // Write private key
     if let Some(ref pkey) = parsed.pkey {
-        let key_pem = pkey
-            .private_key_to_pem_pkcs8()
-            .with_context(|| "Failed to encode private key as PEM")?;
-        let key_path = format!("{output_dir}/key.pem");
-        fs::write(&key_path, &key_pem).with_context(|| format!("Failed to write private key: {key_path}"))?;
-        restrict_file_permissions(&key_path);
+        let key_pem = zeroize::Zeroizing::new(
+            pkey.private_key_to_pem_pkcs8()
+                .with_context(|| "Failed to encode private key as PEM")?,
+        );
+        let key_path = output_file_path(output_dir, "key.pem")?;
+        write_private_file(&key_path, &key_pem)?;
         output_files.push(key_path);
 
         key_type = Some(key_type_name(pkey));
@@ -183,7 +184,7 @@ pub fn pfx_to_pem(input: &str, password: &str, output_dir: &str) -> Result<Conve
                 .with_context(|| "Failed to encode CA certificate as PEM")?;
             ca_pem.push_str(&String::from_utf8_lossy(&pem_bytes));
         }
-        let ca_path = format!("{output_dir}/ca.pem");
+        let ca_path = output_file_path(output_dir, "ca.pem")?;
         fs::write(&ca_path, &ca_pem).with_context(|| format!("Failed to write CA certificates: {ca_path}"))?;
         output_files.push(ca_path);
     }
@@ -235,9 +236,7 @@ pub fn pem_to_pfx(
 
     let pkcs12 = builder.build2(password).with_context(|| "Failed to build PKCS12")?;
     let der = pkcs12.to_der().with_context(|| "Failed to serialize PKCS12 to DER")?;
-    fs::write(output, &der).with_context(|| format!("Failed to write PKCS12 file: {output}"))?;
-    // PFX contains private key material — restrict file permissions
-    restrict_file_permissions(output);
+    write_private_file(output, &der).with_context(|| format!("Failed to write PKCS12 file: {output}"))?;
 
     Ok(ConvertResult {
         input_format: "PEM".to_string(),
@@ -333,9 +332,7 @@ pub fn create_keystore(
         .build2(password)
         .with_context(|| "Failed to build PKCS12 keystore")?;
     let der = pkcs12.to_der().with_context(|| "Failed to serialize keystore")?;
-    fs::write(output, &der).with_context(|| format!("Failed to write keystore: {output}"))?;
-    // Keystore contains private key material — restrict file permissions
-    restrict_file_permissions(output);
+    write_private_file(output, &der).with_context(|| format!("Failed to write keystore: {output}"))?;
 
     Ok(ConvertResult {
         input_format: "PEM".to_string(),
@@ -542,9 +539,7 @@ pub fn create_truststore(
         .build2(password)
         .with_context(|| "Failed to build PKCS12 truststore")?;
     let der = pkcs12.to_der().with_context(|| "Failed to serialize truststore")?;
-    fs::write(output, &der).with_context(|| format!("Failed to write truststore: {output}"))?;
-    // Truststore contains ephemeral private key — restrict file permissions
-    restrict_file_permissions(output);
+    write_private_file(output, &der).with_context(|| format!("Failed to write truststore: {output}"))?;
 
     Ok(ConvertResult {
         input_format: "PEM".to_string(),
@@ -577,6 +572,60 @@ fn warn_unrestricted(path: &str, detail: &str) {
         "warning: could not restrict permissions on '{path}' ({detail}). \
          This file may contain a private key — secure it manually."
     );
+}
+
+/// Write key material or a keystore so it is never world readable, even for
+/// an instant. Any existing file (or symlink) at `path` is removed first and
+/// the new file is created with mode 0600 on Unix; on Windows the ACL is
+/// restricted immediately after the write.
+pub fn write_private_file(path: &str, contents: &[u8]) -> Result<()> {
+    use std::io::Write;
+
+    match fs::symlink_metadata(path) {
+        Ok(_) => fs::remove_file(path).with_context(|| format!("Failed to replace existing file: {path}"))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).with_context(|| format!("Failed to inspect output path: {path}")),
+    }
+
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("Failed to create file: {path}"))?;
+    file.write_all(contents)
+        .with_context(|| format!("Failed to write file: {path}"))?;
+    file.sync_all().ok();
+    drop(file);
+
+    #[cfg(not(unix))]
+    restrict_file_permissions(path);
+    Ok(())
+}
+
+/// Resolve `name` inside `output_dir`, refusing to write through a symlink
+/// so `--output-dir` pointed at an attacker prepared directory cannot
+/// overwrite arbitrary files.
+pub fn output_file_path(output_dir: &str, name: &str) -> Result<String> {
+    let dir = Path::new(output_dir);
+    if fs::symlink_metadata(dir)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        anyhow::bail!("Output directory '{output_dir}' is a symlink; refusing to write through it");
+    }
+    let candidate = dir.join(name);
+    if fs::symlink_metadata(&candidate)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        anyhow::bail!("Refusing to overwrite '{}': it is a symlink", candidate.display());
+    }
+    Ok(candidate.to_string_lossy().into_owned())
 }
 
 /// Set file permissions to owner-only (0600) on Unix.
@@ -638,6 +687,42 @@ mod tests {
     use openssl::x509::extension::{BasicConstraints, SubjectAlternativeName};
     use openssl::x509::{X509, X509NameBuilder};
     use tempfile::TempDir;
+
+    #[cfg(unix)]
+    #[test]
+    fn write_private_file_creates_owner_only_and_replaces_symlink() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("victim.txt");
+        fs::write(&target, b"do not touch").unwrap();
+        let link = dir.path().join("key.pem");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        write_private_file(link.to_str().unwrap(), b"SECRET").unwrap();
+
+        // The symlink was replaced by a regular file; the target is untouched.
+        assert!(!fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read(&target).unwrap(), b"do not touch");
+        assert_eq!(fs::read(&link).unwrap(), b"SECRET");
+        let mode = fs::metadata(&link).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_file_path_refuses_symlinks() {
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("elsewhere");
+        fs::write(&target, b"x").unwrap();
+        std::os::unix::fs::symlink(&target, dir.path().join("cert.pem")).unwrap();
+
+        let err = output_file_path(dir.path().to_str().unwrap(), "cert.pem").unwrap_err();
+        assert!(err.to_string().contains("symlink"), "{err}");
+
+        let ok = output_file_path(dir.path().to_str().unwrap(), "key.pem").unwrap();
+        assert!(ok.ends_with("key.pem"));
+    }
 
     #[cfg(unix)]
     #[test]

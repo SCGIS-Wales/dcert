@@ -468,6 +468,7 @@ Options:
 | 5 | Certificate revoked (OCSP) |
 | 6 | Client certificate error (invalid, unreadable, wrong password) — also returned when the **server requires mTLS** but no `--client-cert` / `--pkcs12` was supplied |
 | 7 | Key mismatch (private key doesn't match certificate) |
+| 8 | Revocation check failed -- `--check-revocation` could not determine the status (responder unreachable, malformed or unverifiable response) |
 
 ---
 
@@ -1077,7 +1078,8 @@ In corporate environments behind forward proxies, `dcert-mcp` inherits proxy set
 | `DCERT_PROXY` | Forward proxy URL; takes precedence over the variables below (equivalent to `--proxy`) |
 | `DCERT_NOPROXY` | Proxy bypass list; takes precedence over `NO_PROXY` (equivalent to `--noproxy`) |
 | `HTTPS_PROXY` / `https_proxy` | Forward proxy URL for HTTPS connections |
-| `HTTP_PROXY` / `http_proxy` | Forward proxy URL for HTTP connections (fallback for HTTPS) |
+| `HTTP_PROXY` / `http_proxy` | Forward proxy URL for plain HTTP connections. Never used for HTTPS on its own; set `HTTPS_PROXY` or `ALL_PROXY` for that |
+| `ALL_PROXY` / `all_proxy` | Forward proxy URL for every scheme when no scheme specific variable is set |
 | `NO_PROXY` / `no_proxy` | Comma-separated list of hosts to bypass the proxy |
 | `SSL_CERT_FILE` | Custom CA certificate file for proxy TLS interception |
 | `SSL_CERT_DIR` | Custom CA certificate directory |

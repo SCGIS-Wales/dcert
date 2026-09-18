@@ -133,7 +133,15 @@ pub fn check_ocsp_status(cert_der: &[u8], issuer_der: Option<&[u8]>, ocsp_url: &
     debug_log!(debug, "OCSP check: {}:{}{}", host, port, path);
 
     let tcp_stream = match direct_tcp_connect(&host, port, Duration::from_secs(5)) {
-        Ok((s, _dns_ms, _addr)) => {
+        Ok((s, _dns_ms, addr)) => {
+            // Re-check the address the name actually resolved to, so a DNS
+            // answer pointing at an internal service is refused as well.
+            if !is_safe_ocsp_host(&addr.ip().to_string()) {
+                return format!(
+                    "unknown (OCSP responder rejected: {host} resolved to private/loopback address {})",
+                    addr.ip()
+                );
+            }
             debug_log!(debug, "OCSP responder connected: {}:{}", host, port);
             s
         }

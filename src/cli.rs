@@ -2,6 +2,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use openssl::ssl::SslVersion;
 
 use crate::connect::{ConnectOverride, parse_connect_to, parse_resolve};
+pub use crate::secret::Secret;
 
 /// Return the version string for `--version` output.
 ///
@@ -32,6 +33,9 @@ pub mod exit_code {
     pub const CLIENT_CERT_ERROR: i32 = 6;
     /// Private key does not match the certificate.
     pub const KEY_MISMATCH: i32 = 7;
+    /// `--check-revocation` could not determine the status (responder
+    /// unreachable, malformed or unverifiable response).
+    pub const REVOCATION_CHECK_FAILED: i32 = 8;
 }
 
 // -- Value enums --
@@ -428,7 +432,7 @@ pub struct CheckArgs {
 
     /// Password for the PKCS12/PFX file (or set DCERT_CERT_PASSWORD env var)
     #[arg(long, value_name = "PASS", env = "DCERT_CERT_PASSWORD")]
-    pub cert_password: Option<String>,
+    pub cert_password: Option<Secret>,
 
     /// Custom CA certificate bundle PEM file for server verification (overrides system CAs)
     #[arg(long, value_name = "PATH")]
@@ -500,7 +504,7 @@ pub enum ConvertMode {
         input: String,
         /// Password for PKCS12 file (or set DCERT_CERT_PASSWORD env var)
         #[arg(long, env = "DCERT_CERT_PASSWORD")]
-        password: String,
+        password: Secret,
         /// Output directory for PEM files (cert.pem, key.pem, ca.pem)
         #[arg(short, long, default_value = ".")]
         output_dir: String,
@@ -520,7 +524,7 @@ pub enum ConvertMode {
         output: String,
         /// Password for the output PKCS12 file
         #[arg(long, env = "DCERT_CERT_PASSWORD")]
-        password: String,
+        password: Secret,
         /// Additional CA certificate PEM file to include in the chain
         #[arg(long)]
         ca: Option<String>,
@@ -540,7 +544,7 @@ pub enum ConvertMode {
         output: String,
         /// KeyStore password
         #[arg(long, env = "DCERT_KEYSTORE_PASSWORD")]
-        password: String,
+        password: Secret,
         /// Alias for the key entry
         #[arg(long, default_value = "server")]
         alias: String,
@@ -684,7 +688,7 @@ pub struct CsrCreateArgs {
     /// Passphrase for private key encryption (or set DCERT_KEY_PASSWORD env var).
     /// Required when --encrypt-key is set.
     #[arg(long, env = "DCERT_KEY_PASSWORD", requires = "encrypt_key")]
-    pub key_password: Option<String>,
+    pub key_password: Option<Secret>,
 
     /// Output CSR file path [default: <cn>.csr]
     #[arg(long)]
@@ -750,7 +754,7 @@ pub struct VaultArgs {
 
     /// LDAP password (required when auth_method is "ldap"). Also: DCERT_LDAP_PASSWORD
     #[arg(long, global = true, value_name = "PASSWORD", env = "DCERT_LDAP_PASSWORD")]
-    pub ldap_password: Option<String>,
+    pub ldap_password: Option<Secret>,
 
     /// LDAP auth mount point (default: "ldap")
     #[arg(long, global = true, value_name = "PATH", default_value = "ldap")]
@@ -762,7 +766,7 @@ pub struct VaultArgs {
 
     /// AppRole secret_id (required when auth_method is "approle"). Also: DCERT_APPROLE_SECRET_ID
     #[arg(long, global = true, value_name = "ID", env = "DCERT_APPROLE_SECRET_ID")]
-    pub approle_secret_id: Option<String>,
+    pub approle_secret_id: Option<Secret>,
 
     /// AppRole auth mount point (default: "approle")
     #[arg(long, global = true, value_name = "PATH", default_value = "approle")]
@@ -840,7 +844,7 @@ pub struct VaultIssueArgs {
 
     /// PFX password — if provided, output will be PKCS12/PFX instead of PEM
     #[arg(long, env = "DCERT_CERT_PASSWORD")]
-    pub pfx_password: Option<String>,
+    pub pfx_password: Option<Secret>,
 
     /// Store certificate and key in Vault KV at this path after issuance
     #[arg(long)]
@@ -891,7 +895,7 @@ pub struct VaultSignArgs {
 
     /// PFX password — if provided, output will be PKCS12/PFX instead of PEM
     #[arg(long, env = "DCERT_CERT_PASSWORD")]
-    pub pfx_password: Option<String>,
+    pub pfx_password: Option<Secret>,
 
     /// Store certificate in Vault KV at this path after signing
     #[arg(long)]

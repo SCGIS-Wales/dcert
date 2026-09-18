@@ -162,6 +162,10 @@ pub struct TlsConnectionInfo {
     /// handshake aborted, so the user can still inspect the server identity.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub client_auth_required: bool,
+    /// `true` when `--no-verify` was set: the chain was accepted without
+    /// validation and `verify_result` must not be read as a pass.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub verification_disabled: bool,
     /// Address actually dialled, e.g. "10.0.0.5:443". `None` when a forward
     /// proxy performed the connection on our behalf.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -733,6 +737,7 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
                         verify_result: Some("client certificate required (mTLS)".to_string()),
                         chain_validation_errors: capture.errors(),
                         client_auth_required: true,
+                        verification_disabled: no_verify,
                         peer_address: peer_address.map(|a| a.to_string()),
                         connect_override,
                     });
@@ -818,44 +823,36 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
         .flush()
         .map_err(|e| anyhow::anyhow!("Failed to flush stream: {e}"))?;
 
-    // Read HTTP response to get status code
-    // We need to read the response in a loop to handle partial reads.
-    // Hard cap prevents memory exhaustion from a malicious server sending endless data.
+    // Read the HTTP response. Partial reads are accumulated until the status
+    // line is complete, the buffer cap is hit, or the read deadline passes.
+    // The deadline is the documented `--read-timeout`: each socket read is
+    // bounded by it, and the loop as a whole never exceeds it either.
     const MAX_RESPONSE_SIZE: usize = 64 * 1024; // 64 KB — we only need the status line
     let mut response_buffer = Vec::new();
     let mut temp_buffer = [0u8; 1024];
-    let mut attempts = 0;
-    const MAX_ATTEMPTS: usize = 10;
+    let deadline = std::time::Instant::now() + Duration::from_secs(read_timeout_secs);
 
-    // Keep reading until we have at least the status line
-    while attempts < MAX_ATTEMPTS && response_buffer.len() < MAX_RESPONSE_SIZE {
+    while response_buffer.len() < MAX_RESPONSE_SIZE && std::time::Instant::now() < deadline {
         match ssl_stream.read(&mut temp_buffer) {
             Ok(0) => break, // EOF
             Ok(n) => {
                 response_buffer.extend_from_slice(&temp_buffer[..n]);
-
-                // Check if we have a complete status line (HTTP/1.1 200 OK\r\n)
-                if let Some(end_pos) = response_buffer.windows(2).position(|w| w == b"\r\n") {
-                    // We found the end of the first line
-                    if end_pos >= 12 {
-                        // Minimum valid status line length
-                        break;
-                    }
-                }
-            }
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                // Timeout, but we might have partial data
-                if !response_buffer.is_empty() {
+                // Stop once the status line (`HTTP/1.1 200 OK\r\n`) is complete.
+                if let Some(end_pos) = response_buffer.windows(2).position(|w| w == b"\r\n")
+                    && end_pos >= 12
+                {
                     break;
                 }
             }
+            Err(ref e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
+                // Read timeout: report whatever arrived rather than waiting again.
+                break;
+            }
             Err(e) => {
-                // Log the error but continue if we have some data
                 eprintln!("Warning: Error reading HTTP response: {e}");
                 break;
             }
         }
-        attempts += 1;
     }
 
     // Parse HTTP status code
@@ -914,6 +911,7 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
         verify_result: session.verify_result,
         chain_validation_errors: session.chain_validation_errors,
         client_auth_required: false,
+        verification_disabled: no_verify,
         peer_address: peer_address.map(|a| a.to_string()),
         connect_override,
     })
@@ -1157,6 +1155,7 @@ pub fn fetch_tls_chain_starttls(opts: &StarttlsFetchOptions<'_>) -> Result<TlsCo
         verify_result: session.verify_result,
         chain_validation_errors: session.chain_validation_errors,
         client_auth_required: false,
+        verification_disabled: no_verify,
         peer_address: peer_address.map(|a| a.to_string()),
         connect_override,
     })

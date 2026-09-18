@@ -146,11 +146,22 @@ impl PublicRoots {
                     source = "embedded+refreshed";
                 }
                 Err(e) => {
-                    eprintln!(
-                        "{} failed to refresh public roots ({}); using embedded set",
-                        "WARNING:".yellow().bold(),
-                        e
-                    );
+                    if let Some((cached, age)) = read_cached_roots() {
+                        eprintln!(
+                            "{} failed to refresh public roots ({}); using cached bundle from {} hours ago",
+                            "Warning:".yellow().bold(),
+                            e,
+                            age.as_secs() / 3600
+                        );
+                        certs.extend(cached);
+                        source = "embedded+cached";
+                    } else {
+                        eprintln!(
+                            "{} failed to refresh public roots ({}); using embedded set",
+                            "Warning:".yellow().bold(),
+                            e
+                        );
+                    }
                 }
             }
         }
@@ -443,28 +454,40 @@ fn fetch_issuer(url: &str, opts: &TrustOpts, proxy: &ProxyConfig) -> Result<Vec<
     if !resp.status().is_success() {
         anyhow::bail!("HTTP {}", resp.status());
     }
-    let bytes = resp.bytes().map_err(|e| anyhow::anyhow!("read failed: {e}"))?;
-    if bytes.len() > MAX_ISSUER_BYTES {
-        anyhow::bail!("issuer response too large ({} bytes)", bytes.len());
+    read_capped(resp, MAX_ISSUER_BYTES, "issuer response")
+}
+
+/// Read a response body without ever buffering more than `cap` bytes. The
+/// declared `Content-Length` is checked first, then the stream is cut off
+/// one byte past the cap so an oversized body is rejected before it lands
+/// in memory.
+fn read_capped(resp: reqwest::blocking::Response, cap: usize, what: &str) -> Result<Vec<u8>> {
+    use std::io::Read;
+    if let Some(len) = resp.content_length()
+        && len > cap as u64
+    {
+        anyhow::bail!("{what} too large ({len} bytes, limit {cap})");
     }
-    Ok(bytes.to_vec())
+    let mut buf = Vec::with_capacity(cap.min(64 * 1024));
+    resp.take(cap as u64 + 1)
+        .read_to_end(&mut buf)
+        .map_err(|e| anyhow::anyhow!("read failed: {e}"))?;
+    if buf.len() > cap {
+        anyhow::bail!("{what} too large (more than {cap} bytes)");
+    }
+    Ok(buf)
 }
 
 /// Fetch and parse the upstream Mozilla/CCADB PEM bundle, caching it best-effort.
 fn refresh_public_roots(proxy: &ProxyConfig, timeout: Duration, debug: bool) -> Result<Vec<X509>> {
     let client = http_client(proxy, timeout)?;
-    let pem = client
+    let resp = client
         .get(CCADB_BUNDLE_URL)
         .send()
         .map_err(|e| anyhow::anyhow!("request failed: {e}"))?
         .error_for_status()
-        .map_err(|e| anyhow::anyhow!("{e}"))?
-        .bytes()
-        .map_err(|e| anyhow::anyhow!("read failed: {e}"))?;
-
-    if pem.len() > MAX_BUNDLE_BYTES {
-        anyhow::bail!("CCADB bundle too large ({} bytes)", pem.len());
-    }
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let pem = read_capped(resp, MAX_BUNDLE_BYTES, "CCADB bundle")?;
 
     let certs = X509::stack_from_pem(&pem).map_err(|e| anyhow::anyhow!("failed to parse CCADB bundle: {e}"))?;
 
@@ -487,6 +510,24 @@ fn cache_path() -> Option<std::path::PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))
         .unwrap_or_else(std::env::temp_dir);
     Some(base.join("dcert").join("public-roots.pem"))
+}
+
+/// Load a previously cached bundle, returning the certificates and the age of
+/// the cache file. Used when a refresh fails so an outage does not silently
+/// downgrade trust classification to the embedded set.
+fn read_cached_roots() -> Option<(Vec<X509>, Duration)> {
+    let path = cache_path()?;
+    let meta = std::fs::metadata(&path).ok()?;
+    if meta.len() > MAX_BUNDLE_BYTES as u64 {
+        return None;
+    }
+    let age = meta.modified().ok().and_then(|m| m.elapsed().ok()).unwrap_or_default();
+    let pem = std::fs::read(&path).ok()?;
+    let certs = X509::stack_from_pem(&pem).ok()?;
+    if certs.is_empty() {
+        return None;
+    }
+    Some((certs, age))
 }
 
 // --- small helpers ---------------------------------------------------------

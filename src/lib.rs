@@ -15,6 +15,7 @@ pub mod http;
 pub mod ocsp;
 pub mod output;
 pub mod proxy;
+pub mod secret;
 pub mod tls;
 pub mod trust;
 pub mod vault;

@@ -6,8 +6,9 @@ use std::fs;
 
 use crate::cert::{CertProcessOpts, parse_cert_infos_from_pem};
 use crate::convert;
-use crate::csr::{prompt_optional, prompt_required, prompt_with_default};
+use crate::csr::{prompt_optional, prompt_required, prompt_secret, prompt_with_default};
 use crate::output::{PrettyDebugInfo, print_pretty};
+use crate::secret::Secret;
 
 /// Percent-encode an arbitrary string for use as a single Vault API path
 /// segment. Vault treats `/`, `?`, `#` as path/query/fragment delimiters, so
@@ -245,7 +246,11 @@ pub fn validate_vault_addr(addr: &str) -> Result<()> {
     match url.scheme() {
         "https" => Ok(()),
         "http" => {
-            let host = url.host_str().unwrap_or("");
+            let host = url
+                .host_str()
+                .unwrap_or("")
+                .trim_start_matches('[')
+                .trim_end_matches(']');
             let loopback = host == "localhost"
                 || host
                     .parse::<std::net::IpAddr>()
@@ -381,6 +386,14 @@ impl VaultClient {
 
     /// Make an authenticated GET request.
     fn get(&self, path: &str) -> Result<serde_json::Value> {
+        self.get_optional(path)?
+            .ok_or_else(|| anyhow::anyhow!("Not found: {path}\n\n  The path does not exist in Vault."))
+    }
+
+    /// Authenticated GET that distinguishes "does not exist" (`Ok(None)`)
+    /// from permission and transport failures (`Err`), so callers never
+    /// mistake a 403 or a network error for an absent secret.
+    fn get_optional(&self, path: &str) -> Result<Option<serde_json::Value>> {
         let url = format!("{}/v1/{}", self.base_url, path);
         let hint = PolicyHint {
             path: path.to_string(),
@@ -393,7 +406,10 @@ impl VaultClient {
             .send()
             .map_err(|e| vault_connection_error(e, &self.base_url, self.debug))?;
 
-        handle_vault_response(resp, &hint)
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        handle_vault_response(resp, &hint).map(Some)
     }
 
     /// Make an authenticated POST request with JSON body.
@@ -933,13 +949,14 @@ pub fn list_certificates(
                     }
                 }
             }
-            Err(_) => {
+            Err(e) => {
+                let first_line = e.to_string().lines().next().unwrap_or("unknown error").to_string();
                 entries.push(VaultCertListEntry {
                     serial_number: serial.clone(),
                     common_name: None,
                     not_before: String::new(),
                     not_after: String::new(),
-                    status: "error reading".to_string(),
+                    status: format!("error reading: {}", truncate_upstream_error(&first_line)),
                 });
             }
         }
@@ -1096,8 +1113,8 @@ pub fn write_pem_files(
 
     let key_path = if let Some(key) = private_key_pem {
         let kp = format!("{base_name}.key");
-        fs::write(&kp, key).with_context(|| format!("Failed to write private key file: {kp}"))?;
-        convert::restrict_file_permissions(&kp);
+        convert::write_private_file(&kp, key.as_bytes())
+            .with_context(|| format!("Failed to write private key file: {kp}"))?;
         Some(kp)
     } else {
         None
@@ -1206,7 +1223,7 @@ pub fn kv_store(
     let api_path = kv_api_path(kv_path, kv_version);
 
     // Check if secret already exists
-    let exists = client.get(&api_path).is_ok();
+    let exists = client.get_optional(&api_path)?.is_some();
     if exists {
         eprintln!(
             "{} Secret already exists at path '{}'.",
@@ -1608,7 +1625,7 @@ pub struct IssueWizardResult {
     pub sans: Vec<String>,
     pub ip_sans: Vec<String>,
     pub ttl: String,
-    pub pfx_password: Option<String>,
+    pub pfx_password: Option<Secret>,
     pub output: String,
     pub store_path: Option<String>,
 }
@@ -1622,7 +1639,7 @@ pub struct SignWizardResult {
     pub cn_override: Option<String>,
     pub sans: Vec<String>,
     pub ttl: String,
-    pub pfx_password: Option<String>,
+    pub pfx_password: Option<Secret>,
     pub output: String,
     pub store_path: Option<String>,
 }
@@ -1659,7 +1676,7 @@ pub fn interactive_issue(client: &VaultClient) -> Result<IssueWizardResult> {
     eprintln!("  2. PFX/PKCS12 — bundled with passphrase");
     let format_choice = prompt_with_default("Output format [1-2]", "1")?;
     let pfx_password = if format_choice == "2" {
-        Some(prompt_required("PFX passphrase")?)
+        Some(prompt_secret("PFX passphrase")?)
     } else {
         None
     };
@@ -1713,7 +1730,7 @@ pub fn interactive_sign(client: &VaultClient) -> Result<SignWizardResult> {
     eprintln!("  2. PFX/PKCS12 — bundled with passphrase (requires local private key)");
     let format_choice = prompt_with_default("Output format [1-2]", "1")?;
     let pfx_password = if format_choice == "2" {
-        Some(prompt_required("PFX passphrase")?)
+        Some(prompt_secret("PFX passphrase")?)
     } else {
         None
     };
@@ -1792,6 +1809,46 @@ mod tests {
     }
 
     // -- VAULT_ADDR --
+
+    #[test]
+    fn validate_vault_addr_accepts_https_and_loopback_http_only() {
+        assert!(validate_vault_addr("https://vault.example.com:8200").is_ok());
+        assert!(validate_vault_addr("http://127.0.0.1:8200").is_ok());
+        assert!(validate_vault_addr("http://localhost:8200").is_ok());
+        assert!(validate_vault_addr("http://[::1]:8200").is_ok());
+        let err = validate_vault_addr("http://vault.example.com:8200")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("cleartext"), "{err}");
+        assert!(validate_vault_addr("ftp://vault.example.com").is_err());
+        assert!(validate_vault_addr("not a url").is_err());
+    }
+
+    #[test]
+    fn vault_tls_settings_prefer_flags_over_env() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let settings = VaultTlsSettings::resolve(Some("/tmp/ca.pem"), true);
+        assert!(settings.skip_verify);
+        assert_eq!(settings.cacert.as_deref(), Some("/tmp/ca.pem"));
+        assert_eq!(settings.cacert_source, Some("--vault-cacert"));
+    }
+
+    #[test]
+    fn kv_write_body_wraps_v2_in_data_envelope() {
+        let v2 = kv_write_body(2, "cert", "C", "key", "K");
+        assert_eq!(v2["data"]["cert"], "C");
+        assert_eq!(v2["data"]["key"], "K");
+        let v1 = kv_write_body(1, "cert", "C", "key", "K");
+        assert_eq!(v1["cert"], "C");
+        assert!(v1.get("data").is_none());
+    }
+
+    #[test]
+    fn parse_csv_list_trims_and_drops_empties() {
+        assert_eq!(parse_csv_list(Some(" a, b ,,c ".to_string())), vec!["a", "b", "c"]);
+        assert!(parse_csv_list(None).is_empty());
+        assert!(parse_csv_list(Some("  ".to_string())).is_empty());
+    }
 
     #[test]
     fn test_vault_addr_from_env() {

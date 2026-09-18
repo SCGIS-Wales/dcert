@@ -115,7 +115,15 @@ pub fn print_pretty(infos: &[CertInfo], debug: &PrettyDebugInfo<'_>) {
         println!("  Certificate transparency: {ct_str}");
 
         // Verification result
-        if let Some(ref err) = conn.verify_result {
+        if conn.verification_disabled {
+            println!(
+                "  Chain verification: {}",
+                "DISABLED (--no-verify; result not trustworthy)".yellow().bold()
+            );
+            for detail in &conn.chain_validation_errors {
+                println!("    {}", detail.yellow());
+            }
+        } else if let Some(ref err) = conn.verify_result {
             println!("  Chain verification: {}", err.red());
             for detail in &conn.chain_validation_errors {
                 println!("    {}", detail.red());
@@ -199,7 +207,8 @@ HTTP status line (not the full response body)."
         if let Some(ref rev) = info.revocation_status {
             let colored_status = match rev.as_str() {
                 "good" => rev.green(),
-                "revoked" => rev.red(),
+                "revoked" => rev.red().bold(),
+                r if r.starts_with("error") => rev.red(),
                 _ => rev.yellow(),
             };
             println!("  Revocation   : {colored_status}");
@@ -439,13 +448,14 @@ pub fn process_target(
             .map(pem::Pem::contents)
             .collect();
 
-        for (i, info) in infos.iter_mut().enumerate() {
-            // Parse the x509 cert to extract OCSP URL
-            if let Some(der) = cert_ders.get(i)
+        // Pair each info with its DER by the original chain index, not by
+        // position: `--expired-only` drops entries from `infos`.
+        for info in infos.iter_mut() {
+            if let Some(der) = cert_ders.get(info.index)
                 && let Ok((_, cert)) = X509Certificate::from_der(der)
             {
                 if let Some(ocsp_url) = extract_ocsp_url(&cert) {
-                    let issuer_der = cert_ders.get(i + 1).copied();
+                    let issuer_der = cert_ders.get(info.index + 1).copied();
                     info.revocation_status = Some(check_ocsp_status(der, issuer_der, &ocsp_url, args.debug));
                 } else {
                     info.revocation_status = Some("unknown (no OCSP responder)".to_string());
@@ -469,8 +479,8 @@ pub fn process_target(
             .collect();
 
         // Per-cert: flag any presented cert that is itself a public root.
-        for (i, info) in infos.iter_mut().enumerate() {
-            if let Some(der) = chain_ders.get(i)
+        for info in infos.iter_mut() {
+            if let Some(der) = chain_ders.get(info.index)
                 && public_roots.is_public_root_der(der)
             {
                 info.is_public_root = Some(true);
