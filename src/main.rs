@@ -90,9 +90,7 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
         };
         if min_ord > max_ord {
             return Err(anyhow::anyhow!(
-                "--min-tls ({}) must not be greater than --max-tls ({})",
-                min,
-                max
+                "--min-tls ({min}) must not be greater than --max-tls ({max})"
             ));
         }
     }
@@ -111,7 +109,7 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
     let body_data: Option<Vec<u8>> = if let Some(ref data) = args.data {
         Some(data.as_bytes().to_vec())
     } else if let Some(ref path) = args.data_file {
-        Some(std::fs::read(path).with_context(|| format!("Failed to read data file: {}", path))?)
+        Some(std::fs::read(path).with_context(|| format!("Failed to read data file: {path}"))?)
     } else {
         None
     };
@@ -224,9 +222,7 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
             let now = OffsetDateTime::now_utc().format(&Rfc3339).unwrap_or_default();
             println!(
                 "{}",
-                format!("=== Watch iteration {} at {} ===", iteration, now)
-                    .bold()
-                    .cyan()
+                format!("=== Watch iteration {iteration} at {now} ===").bold().cyan()
             );
 
             for target in &targets {
@@ -247,7 +243,7 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
                         if let Some(prev) = prev_fingerprints.get(target)
                             && prev != &current_fps
                         {
-                            println!("{}", format!("CHANGE DETECTED for {}", target).red().bold());
+                            println!("{}", format!("CHANGE DETECTED for {target}").red().bold());
                         }
                         prev_fingerprints.insert(target.clone(), current_fps);
 
@@ -472,7 +468,7 @@ fn run_convert(args: cli::ConvertArgs) -> Result<i32> {
             explain,
         } => {
             if explain && matches!(format, OutputFormat::Pretty) {
-                eprintln!("{}", KEYSTORE_EXPLAIN);
+                eprintln!("{KEYSTORE_EXPLAIN}");
             }
             let result = convert::create_keystore(&cert, &key, &password, &output, &alias)?;
             output::render_convert_result(&result, format)?;
@@ -486,7 +482,7 @@ fn run_convert(args: cli::ConvertArgs) -> Result<i32> {
             explain,
         } => {
             if explain && matches!(format, OutputFormat::Pretty) {
-                eprintln!("{}", TRUSTSTORE_EXPLAIN);
+                eprintln!("{TRUSTSTORE_EXPLAIN}");
             }
             let result = convert::create_truststore(&certs, &password, &output, allow_non_ca)?;
             output::render_convert_result(&result, format)?;
@@ -502,10 +498,10 @@ fn run_convert(args: cli::ConvertArgs) -> Result<i32> {
 fn discover_cert_key_pairs(dir: &str) -> Result<Vec<(String, String)>> {
     let dir_path = std::path::Path::new(dir);
     if !dir_path.is_dir() {
-        return Err(anyhow::anyhow!("'{}' is not a directory", dir));
+        return Err(anyhow::anyhow!("'{dir}' is not a directory"));
     }
 
-    let entries = std::fs::read_dir(dir_path).with_context(|| format!("Failed to read directory '{}'", dir))?;
+    let entries = std::fs::read_dir(dir_path).with_context(|| format!("Failed to read directory '{dir}'"))?;
 
     let mut pairs: Vec<(String, String)> = Vec::new();
 
@@ -553,8 +549,8 @@ fn discover_cert_key_pairs(dir: &str) -> Result<Vec<(String, String)>> {
 
 fn print_single_result(result: &cert::KeyMatchResult, cert_path: Option<&str>, key_path: Option<&str>) {
     if let (Some(cert), Some(key)) = (cert_path, key_path) {
-        println!("  Cert file      : {}", cert);
-        println!("  Key file       : {}", key);
+        println!("  Cert file      : {cert}");
+        println!("  Key file       : {key}");
     }
     if result.matches {
         println!("{}", "  Key matches certificate".green().bold());
@@ -686,7 +682,7 @@ fn run_csr_create(args: cli::CsrCreateArgs) -> Result<i32> {
         // Build SANs — auto-add CN as DNS SAN if no SANs provided
         let mut sans = args.san;
         if sans.is_empty() {
-            sans.push(format!("DNS:{}", cn));
+            sans.push(format!("DNS:{cn}"));
         }
 
         // Validate key password requirement
@@ -696,8 +692,8 @@ fn run_csr_create(args: cli::CsrCreateArgs) -> Result<i32> {
 
         // Determine output paths
         let base = cn.replace('*', "wildcard").replace('.', "-");
-        let csr_path = args.csr_out.unwrap_or_else(|| format!("{}.csr", base));
-        let key_path = args.key_out.unwrap_or_else(|| format!("{}.key", base));
+        let csr_path = args.csr_out.unwrap_or_else(|| format!("{base}.csr"));
+        let key_path = args.key_out.unwrap_or_else(|| format!("{base}.key"));
 
         let subject = CsrSubject {
             common_name: cn,
@@ -793,25 +789,25 @@ fn run_csr_validate(args: cli::CsrValidateArgs) -> Result<i32> {
             // Subject
             println!("{}", "Subject:".bold());
             if let Some(ref cn) = result.subject.common_name {
-                println!("  Common Name    : {}", cn);
+                println!("  Common Name    : {cn}");
             }
             if let Some(ref org) = result.subject.organization {
-                println!("  Organization   : {}", org);
+                println!("  Organization   : {org}");
             }
             for ou in &result.subject.organizational_units {
-                println!("  Org Unit       : {}", ou);
+                println!("  Org Unit       : {ou}");
             }
             if let Some(ref c) = result.subject.country {
-                println!("  Country        : {}", c);
+                println!("  Country        : {c}");
             }
             if let Some(ref st) = result.subject.state {
-                println!("  State          : {}", st);
+                println!("  State          : {st}");
             }
             if let Some(ref l) = result.subject.locality {
-                println!("  Locality       : {}", l);
+                println!("  Locality       : {l}");
             }
             if let Some(ref email) = result.subject.email {
-                println!("  Email          : {}", email);
+                println!("  Email          : {email}");
             }
             println!();
 
@@ -826,7 +822,7 @@ fn run_csr_validate(args: cli::CsrValidateArgs) -> Result<i32> {
             if !result.subject_alternative_names.is_empty() {
                 println!("{}", "Subject Alternative Names:".bold());
                 for san in &result.subject_alternative_names {
-                    println!("  {}", san);
+                    println!("  {san}");
                 }
                 println!();
             }
@@ -834,7 +830,7 @@ fn run_csr_validate(args: cli::CsrValidateArgs) -> Result<i32> {
             // Findings
             println!("{}", "Compliance Findings:".bold());
             for finding in &result.findings {
-                let (icon, color_fn): (&str, fn(&str) -> colored::ColoredString) = match finding.severity {
+                let (icon, color_fn): (&str, fn(&str) -> ColoredString) = match finding.severity {
                     csr::Severity::Error => ("ERROR", |s: &str| s.red().bold()),
                     csr::Severity::Warning => ("WARN ", |s: &str| s.yellow()),
                     csr::Severity::Info => ("INFO ", |s: &str| s.cyan()),
@@ -943,7 +939,7 @@ fn run_vault_issue(client: &vault::VaultClient, args: cli::VaultIssueArgs) -> Re
             .private_key
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("Vault did not return a private key"))?;
-        let pfx_path = format!("{}.pfx", output_base);
+        let pfx_path = format!("{output_base}.pfx");
         // Write temp files for PFX conversion
         let temp_dir = tempfile::TempDir::new()?;
         let cert_path = temp_dir.path().join("cert.pem");
@@ -963,7 +959,7 @@ fn run_vault_issue(client: &vault::VaultClient, args: cli::VaultIssueArgs) -> Re
             &pfx_path,
             None,
         )?;
-        println!("{}", format!("PFX written to {}", pfx_path).green());
+        println!("{}", format!("PFX written to {pfx_path}").green());
     } else {
         let key_pem = data.private_key.as_deref();
         vault::write_pem_files(&full_chain, key_pem, &output_base)?;
@@ -1014,8 +1010,7 @@ fn run_vault_sign(client: &vault::VaultClient, args: cli::VaultSignArgs) -> Resu
             )
         };
 
-    let csr_pem =
-        std::fs::read_to_string(&csr_file).with_context(|| format!("Failed to read CSR file: {}", csr_file))?;
+    let csr_pem = std::fs::read_to_string(&csr_file).with_context(|| format!("Failed to read CSR file: {csr_file}"))?;
 
     let data = vault::sign_csr(
         client,
@@ -1055,7 +1050,7 @@ fn run_vault_sign(client: &vault::VaultClient, args: cli::VaultSignArgs) -> Resu
 
 fn run_vault_revoke(client: &vault::VaultClient, args: cli::VaultRevokeArgs) -> Result<i32> {
     let cert_pem = if let Some(ref path) = args.cert_file {
-        Some(std::fs::read_to_string(path).with_context(|| format!("Failed to read certificate file: {}", path))?)
+        Some(std::fs::read_to_string(path).with_context(|| format!("Failed to read certificate file: {path}"))?)
     } else {
         None
     };

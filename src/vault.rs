@@ -79,9 +79,9 @@ pub fn vault_authenticate(
         .timeout(std::time::Duration::from_secs(30));
 
     if let Some(ca_path) = vault_cacert {
-        let ca_data = fs::read(ca_path).with_context(|| format!("Failed to read CA cert: {}", ca_path))?;
-        let ca_cert = reqwest::Certificate::from_pem(&ca_data)
-            .with_context(|| format!("Failed to parse CA cert: {}", ca_path))?;
+        let ca_data = fs::read(ca_path).with_context(|| format!("Failed to read CA cert: {ca_path}"))?;
+        let ca_cert =
+            reqwest::Certificate::from_pem(&ca_data).with_context(|| format!("Failed to parse CA cert: {ca_path}"))?;
         client_builder = client_builder.add_root_certificate(ca_cert);
     }
 
@@ -95,7 +95,7 @@ pub fn vault_authenticate(
             let password = ldap_password.ok_or_else(|| anyhow::anyhow!("--ldap-password is required for LDAP auth"))?;
             let encoded_mount = utf8_percent_encode(ldap_mount, NON_ALPHANUMERIC).to_string();
             let encoded_username = utf8_percent_encode(username, NON_ALPHANUMERIC).to_string();
-            let url = format!("{}/v1/auth/{}/login/{}", vault_addr, encoded_mount, encoded_username);
+            let url = format!("{vault_addr}/v1/auth/{encoded_mount}/login/{encoded_username}");
 
             let resp = client
                 .post(&url)
@@ -106,7 +106,7 @@ pub fn vault_authenticate(
             if !resp.status().is_success() {
                 let status = resp.status();
                 let body = truncate_upstream_error(&resp.text().unwrap_or_default());
-                return Err(anyhow::anyhow!("LDAP auth failed (HTTP {}): {}", status, body));
+                return Err(anyhow::anyhow!("LDAP auth failed (HTTP {status}): {body}"));
             }
 
             let json: serde_json::Value = resp.json().context("Failed to parse LDAP auth response")?;
@@ -121,7 +121,7 @@ pub fn vault_authenticate(
             let secret_id =
                 approle_secret_id.ok_or_else(|| anyhow::anyhow!("--approle-secret-id is required for AppRole auth"))?;
             let encoded_mount = utf8_percent_encode(approle_mount, NON_ALPHANUMERIC).to_string();
-            let url = format!("{}/v1/auth/{}/login", vault_addr, encoded_mount);
+            let url = format!("{vault_addr}/v1/auth/{encoded_mount}/login");
 
             let resp = client
                 .post(&url)
@@ -132,7 +132,7 @@ pub fn vault_authenticate(
             if !resp.status().is_success() {
                 let status = resp.status();
                 let body = truncate_upstream_error(&resp.text().unwrap_or_default());
-                return Err(anyhow::anyhow!("AppRole auth failed (HTTP {}): {}", status, body));
+                return Err(anyhow::anyhow!("AppRole auth failed (HTTP {status}): {body}"));
             }
 
             let json: serde_json::Value = resp.json().context("Failed to parse AppRole auth response")?;
@@ -142,8 +142,7 @@ pub fn vault_authenticate(
                 .ok_or_else(|| anyhow::anyhow!("AppRole auth response did not contain a client_token"))
         }
         _ => Err(anyhow::anyhow!(
-            "Invalid auth method '{}': must be \"token\", \"ldap\", or \"approle\"",
-            auth_method
+            "Invalid auth method '{auth_method}': must be \"token\", \"ldap\", or \"approle\""
         )),
     }
 }
@@ -227,7 +226,7 @@ impl VaultClient {
 
         if config.debug {
             eprintln!("{}", "  Vault TLS configuration:".dimmed());
-            eprintln!("    skip_verify   : {}", skip_verify);
+            eprintln!("    skip_verify   : {skip_verify}");
             eprintln!("    native roots  : {} (system CA store)", "enabled".green());
         }
 
@@ -247,10 +246,10 @@ impl VaultClient {
             .or_else(|| std::env::var("SSL_CERT_FILE").ok());
 
         if let Some(ref cacert_path) = cacert_path {
-            let pem_data = fs::read(cacert_path)
-                .with_context(|| format!("Failed to read CA certificate file: {}", cacert_path))?;
+            let pem_data =
+                fs::read(cacert_path).with_context(|| format!("Failed to read CA certificate file: {cacert_path}"))?;
             let cert = reqwest::Certificate::from_pem(&pem_data)
-                .with_context(|| format!("Failed to parse CA certificate from: {}", cacert_path))?;
+                .with_context(|| format!("Failed to parse CA certificate from: {cacert_path}"))?;
             builder = builder.add_root_certificate(cert);
 
             if config.debug {
@@ -261,7 +260,7 @@ impl VaultClient {
                 } else {
                     "SSL_CERT_FILE"
                 };
-                eprintln!("    CA cert       : {} (from {})", cacert_path, source);
+                eprintln!("    CA cert       : {cacert_path} (from {source})");
             }
         }
 
@@ -271,12 +270,10 @@ impl VaultClient {
             .or_else(|| std::env::var("SSL_CERT_DIR").ok());
         if let Some(capath) = capath {
             if config.debug {
-                eprintln!("    CA cert dir   : {}", capath);
+                eprintln!("    CA cert dir   : {capath}");
             }
             let mut loaded = 0usize;
-            for entry in
-                fs::read_dir(&capath).with_context(|| format!("Failed to read CA path directory: {}", capath))?
-            {
+            for entry in fs::read_dir(&capath).with_context(|| format!("Failed to read CA path directory: {capath}"))? {
                 let entry = entry?;
                 let path = entry.path();
                 let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
@@ -289,7 +286,7 @@ impl VaultClient {
                 }
             }
             if config.debug {
-                eprintln!("    CA certs loaded: {}", loaded);
+                eprintln!("    CA certs loaded: {loaded}");
             }
         }
 
@@ -298,7 +295,7 @@ impl VaultClient {
             .with_context(|| "Failed to build HTTP client for Vault")?;
 
         if config.debug {
-            eprintln!("    Target        : {}", addr);
+            eprintln!("    Target        : {addr}");
             eprintln!();
         }
 
@@ -402,14 +399,14 @@ impl VaultClient {
         let json = handle_vault_response(resp, &hint)?;
         json["data"]["certificate"]
             .as_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| anyhow::anyhow!("No certificate data returned from {}", path))
+            .map(ToString::to_string)
+            .ok_or_else(|| anyhow::anyhow!("No certificate data returned from {path}"))
     }
 }
 
 fn vault_connection_error(e: reqwest::Error, base_url: &str, debug: bool) -> anyhow::Error {
     let debug_detail = if debug {
-        format!("\n\n  Debug detail: {:#}", e)
+        format!("\n\n  Debug detail: {e:#}")
     } else {
         String::new()
     };
@@ -428,21 +425,16 @@ fn vault_connection_error(e: reqwest::Error, base_url: &str, debug: bool) -> any
         };
 
         anyhow::anyhow!(
-            "Failed to connect to Vault at {}.\n\
-             Check that VAULT_ADDR is correct and the Vault server is running.{}{}",
-            base_url,
-            tls_hint,
-            debug_detail
+            "Failed to connect to Vault at {base_url}.\n\
+             Check that VAULT_ADDR is correct and the Vault server is running.{tls_hint}{debug_detail}"
         )
     } else if e.is_timeout() {
         anyhow::anyhow!(
-            "Connection to Vault at {} timed out.\n\
-             Check network connectivity and Vault server health.{}",
-            base_url,
-            debug_detail
+            "Connection to Vault at {base_url} timed out.\n\
+             Check network connectivity and Vault server health.{debug_detail}"
         )
     } else {
-        anyhow::anyhow!("Vault HTTP request failed: {}{}", e, debug_detail)
+        anyhow::anyhow!("Vault HTTP request failed: {e}{debug_detail}")
     }
 }
 
@@ -577,7 +569,7 @@ pub fn discover_role_from_token(client: &VaultClient) -> Result<Option<String>> 
         Err(e) => {
             // Only swallow 403/404 (permission denied or endpoint not found).
             // Propagate connection errors so TLS issues are surfaced.
-            let err_str = format!("{}", e);
+            let err_str = format!("{e}");
             if err_str.contains("Permission denied") || err_str.contains("Not found") {
                 if client.debug {
                     eprintln!("  {} token lookup-self failed (non-fatal): {}", "DEBUG:".dimmed(), e);
@@ -633,10 +625,10 @@ pub fn discover_role_from_token(client: &VaultClient) -> Result<Option<String>> 
     let idx: usize = selection
         .trim()
         .parse::<usize>()
-        .map_err(|_| anyhow::anyhow!("Invalid selection: '{}'", selection))?;
+        .map_err(|_| anyhow::anyhow!("Invalid selection: '{selection}'"))?;
 
     if idx < 1 || idx > roles.len() {
-        return Err(anyhow::anyhow!("Selection out of range: {}", idx));
+        return Err(anyhow::anyhow!("Selection out of range: {idx}"));
     }
 
     Ok(Some(roles[idx - 1].clone()))
@@ -786,14 +778,14 @@ pub fn revoke_certificate(
     let path = format!("{}/revoke", encode_path_segment(mount));
     let resp = client.post(&path, &body)?;
 
-    let revocation_time = resp["data"]["revocation_time"].as_f64();
+    let revocation_time = resp["data"]["revocation_time"].as_i64();
     if let Some(ts) = revocation_time {
-        let dt = time::OffsetDateTime::from_unix_timestamp(ts as i64).unwrap_or(time::OffsetDateTime::now_utc());
+        let dt = time::OffsetDateTime::from_unix_timestamp(ts).unwrap_or(time::OffsetDateTime::now_utc());
         let formatted = dt
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap_or_else(|_| dt.to_string());
         println!("{}", "Certificate revoked successfully".green().bold());
-        println!("  Revocation time: {}", formatted);
+        println!("  Revocation time: {formatted}");
     } else {
         println!("{}", "Certificate revoked successfully".green().bold());
     }
@@ -821,7 +813,7 @@ pub fn list_certificates(
         .unwrap_or_default();
 
     if serials.is_empty() {
-        println!("No certificates found in {}", mount);
+        println!("No certificates found in {mount}");
         return Ok(Vec::new());
     }
 
@@ -928,14 +920,14 @@ pub fn export_cert_list(entries: &[VaultCertListEntry], export_path: &str) -> Re
                 csv_escape(&entry.status),
             ));
         }
-        fs::write(export_path, &csv).with_context(|| format!("Failed to write CSV file: {}", export_path))?;
+        fs::write(export_path, &csv).with_context(|| format!("Failed to write CSV file: {export_path}"))?;
     } else {
         // Default to JSON
         let json = serde_json::to_string_pretty(entries).with_context(|| "Failed to serialize certificate list")?;
-        fs::write(export_path, &json).with_context(|| format!("Failed to write JSON file: {}", export_path))?;
+        fs::write(export_path, &json).with_context(|| format!("Failed to write JSON file: {export_path}"))?;
     }
 
-    println!("Certificate list exported to {}", export_path);
+    println!("Certificate list exported to {export_path}");
     Ok(())
 }
 
@@ -946,7 +938,7 @@ fn export_cert_list_xlsx(entries: &[VaultCertListEntry], export_path: &str) -> R
     let worksheet = workbook.add_worksheet();
     worksheet
         .set_name("Certificates")
-        .map_err(|e| anyhow::anyhow!("Failed to set worksheet name: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to set worksheet name: {e}"))?;
 
     let header_format = Format::new().set_bold();
 
@@ -954,33 +946,33 @@ fn export_cert_list_xlsx(entries: &[VaultCertListEntry], export_path: &str) -> R
     let headers = ["Serial Number", "Common Name", "Not Before", "Not After", "Status"];
     for (col, header) in headers.iter().enumerate() {
         worksheet
-            .write_string_with_format(0, col as u16, *header, &header_format)
-            .map_err(|e| anyhow::anyhow!("Failed to write header: {}", e))?;
+            .write_string_with_format(0, u16::try_from(col).unwrap_or(u16::MAX), *header, &header_format)
+            .map_err(|e| anyhow::anyhow!("Failed to write header: {e}"))?;
     }
 
     // Write data rows
     for (row, entry) in entries.iter().enumerate() {
-        let r = (row + 1) as u32;
+        let r = u32::try_from(row + 1).unwrap_or(u32::MAX);
         worksheet
             .write_string(r, 0, &entry.serial_number)
-            .map_err(|e| anyhow::anyhow!("Failed to write cell: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to write cell: {e}"))?;
         worksheet
             .write_string(r, 1, entry.common_name.as_deref().unwrap_or(""))
-            .map_err(|e| anyhow::anyhow!("Failed to write cell: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to write cell: {e}"))?;
         worksheet
             .write_string(r, 2, &entry.not_before)
-            .map_err(|e| anyhow::anyhow!("Failed to write cell: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to write cell: {e}"))?;
         worksheet
             .write_string(r, 3, &entry.not_after)
-            .map_err(|e| anyhow::anyhow!("Failed to write cell: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to write cell: {e}"))?;
         worksheet
             .write_string(r, 4, &entry.status)
-            .map_err(|e| anyhow::anyhow!("Failed to write cell: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to write cell: {e}"))?;
     }
 
     workbook
         .save(export_path)
-        .map_err(|e| anyhow::anyhow!("Failed to save Excel file: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to save Excel file: {e}"))?;
 
     Ok(())
 }
@@ -1035,13 +1027,12 @@ pub fn write_pem_files(
     private_key_pem: Option<&str>,
     base_name: &str,
 ) -> Result<(String, Option<String>)> {
-    let cert_path = format!("{}.crt", base_name);
-    fs::write(&cert_path, cert_chain_pem)
-        .with_context(|| format!("Failed to write certificate file: {}", cert_path))?;
+    let cert_path = format!("{base_name}.crt");
+    fs::write(&cert_path, cert_chain_pem).with_context(|| format!("Failed to write certificate file: {cert_path}"))?;
 
     let key_path = if let Some(key) = private_key_pem {
-        let kp = format!("{}.key", base_name);
-        fs::write(&kp, key).with_context(|| format!("Failed to write private key file: {}", kp))?;
+        let kp = format!("{base_name}.key");
+        fs::write(&kp, key).with_context(|| format!("Failed to write private key file: {kp}"))?;
         convert::restrict_file_permissions(&kp);
         Some(kp)
     } else {
@@ -1095,7 +1086,7 @@ fn kv_api_path(user_path: &str, kv_version: u8) -> String {
         if let Some(idx) = user_path.find('/') {
             format!("{}/data/{}", &user_path[..idx], &user_path[idx + 1..])
         } else {
-            format!("{}/data", user_path)
+            format!("{user_path}/data")
         }
     } else {
         user_path.to_string()
@@ -1159,7 +1150,7 @@ pub fn kv_store(
 
     println!(
         "{}",
-        format!("Certificate and key stored at '{}' (KV v{})", kv_path, kv_version).green()
+        format!("Certificate and key stored at '{kv_path}' (KV v{kv_version})").green()
     );
     println!("  Format: base64 PEM certificate, unencrypted private key");
 
@@ -1179,12 +1170,12 @@ pub fn kv_read_cert_key(
 
     let data = kv_extract_data(&resp, kv_version);
     if data.is_null() {
-        return Err(anyhow::anyhow!("No data found at path '{}'", kv_path));
+        return Err(anyhow::anyhow!("No data found at path '{kv_path}'"));
     }
 
-    let cert = data[cert_key_name].as_str().map(|s| s.to_string());
+    let cert = data[cert_key_name].as_str().map(ToString::to_string);
 
-    let key = data[key_key_name].as_str().map(|s| s.to_string());
+    let key = data[key_key_name].as_str().map(ToString::to_string);
 
     match cert {
         Some(c) => Ok((c, key)),
@@ -1213,7 +1204,7 @@ pub fn validate_from_kv(
 ) -> Result<()> {
     let (cert_pem, key_pem) = kv_read_cert_key(client, kv_path, cert_key_name, key_key_name, kv_version)?;
 
-    println!("{}", format!("=== Certificate from Vault KV: {} ===", kv_path).bold());
+    println!("{}", format!("=== Certificate from Vault KV: {kv_path} ===").bold());
     println!();
 
     display_certificate(&cert_pem);
@@ -1284,7 +1275,7 @@ pub fn renew_certificate(
     // Step 1: Read existing cert from KV
     println!("{}", "=== Certificate Renewal ===".bold());
     println!();
-    println!("Reading existing certificate from '{}'...", kv_path);
+    println!("Reading existing certificate from '{kv_path}'...");
 
     let (cert_pem, _) = kv_read_cert_key(client, kv_path, cert_key_name, key_key_name, kv_version)?;
 
@@ -1311,7 +1302,7 @@ pub fn renew_certificate(
     } else {
         info.subject_alternative_names
             .iter()
-            .filter_map(|san| san.strip_prefix("DNS:").map(|s| s.to_string()))
+            .filter_map(|san| san.strip_prefix("DNS:").map(ToString::to_string))
             .collect()
     };
 
@@ -1320,14 +1311,14 @@ pub fn renew_certificate(
     } else {
         info.subject_alternative_names
             .iter()
-            .filter_map(|san| san.strip_prefix("IP:").map(|s| s.to_string()))
+            .filter_map(|san| san.strip_prefix("IP:").map(ToString::to_string))
             .collect()
     };
 
     // Step 3: Display current cert details
     println!();
     println!("{}", "Current certificate:".bold());
-    println!("  Common Name  : {}", cn);
+    println!("  Common Name  : {cn}");
     if !sans.is_empty() {
         println!("  SANs         : {}", sans.join(", "));
     }
@@ -1341,11 +1332,11 @@ pub fn renew_certificate(
     } else {
         "valid".green().to_string()
     };
-    println!("  Status       : {}", status);
+    println!("  Status       : {status}");
     println!();
 
     // Step 4: Issue new certificate with same CN + SANs
-    println!("Issuing new certificate from {}/issue/{} ...", mount, role);
+    println!("Issuing new certificate from {mount}/issue/{role} ...");
 
     let new_data = issue_certificate(client, mount, role, cn, &sans, &ip_sans, ttl)?;
 
@@ -1398,7 +1389,7 @@ pub fn renew_certificate(
     println!();
     println!(
         "{}",
-        format!("Certificate and key successfully renewed and stored at '{}'", kv_path)
+        format!("Certificate and key successfully renewed and stored at '{kv_path}'")
             .green()
             .bold()
     );
@@ -1413,7 +1404,7 @@ pub fn renew_certificate(
 /// Print Vault connectivity info and optionally check server health.
 pub fn print_vault_connectivity(client: &VaultClient, addr: &str, token: &str) {
     eprintln!("{}", "Vault connectivity:".bold());
-    eprintln!("  VAULT_ADDR : {}", addr);
+    eprintln!("  VAULT_ADDR : {addr}");
     let source = if std::env::var("VAULT_TOKEN").is_ok() {
         "VAULT_TOKEN env"
     } else {
@@ -1439,18 +1430,18 @@ pub fn print_vault_connectivity(client: &VaultClient, addr: &str, token: &str) {
                 } else {
                     "active".green().to_string()
                 };
-                eprintln!("  Status     : {}", status_str);
+                eprintln!("  Status     : {status_str}");
                 if let Some(ref cluster) = health.cluster_name {
-                    eprintln!("  Cluster    : {}", cluster);
+                    eprintln!("  Cluster    : {cluster}");
                 }
                 if let Some(ref cluster_id) = health.cluster_id {
-                    eprintln!("  Cluster ID : {}", cluster_id);
+                    eprintln!("  Cluster ID : {cluster_id}");
                 }
                 if let Some(ref dr_mode) = health.replication_dr_mode {
-                    eprintln!("  DR mode    : {}", dr_mode);
+                    eprintln!("  DR mode    : {dr_mode}");
                 }
                 if let Some(ref perf_mode) = health.replication_perf_mode {
-                    eprintln!("  Perf repl  : {}", perf_mode);
+                    eprintln!("  Perf repl  : {perf_mode}");
                 }
                 if let Some(ref expiry) = health.license_expiry {
                     // Parse the expiry to check for warnings
@@ -1472,11 +1463,11 @@ pub fn print_vault_connectivity(client: &VaultClient, addr: &str, token: &str) {
                                     expiry
                                 );
                             } else {
-                                eprintln!("  License    : expires {} ({} days)", expiry, days_left);
+                                eprintln!("  License    : expires {expiry} ({days_left} days)");
                             }
                         }
                         Err(_) => {
-                            eprintln!("  License    : expires {}", expiry);
+                            eprintln!("  License    : expires {expiry}");
                         }
                     }
                 }
@@ -1671,6 +1662,7 @@ pub fn interactive_sign(client: &VaultClient) -> Result<SignWizardResult> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(unsafe_code)]
 mod tests {
     use super::*;
 
@@ -1717,15 +1709,15 @@ mod tests {
         let result = discover_vault_token_from(None, Some(temp_dir.path().to_path_buf()));
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("No Vault token found"), "Error: {}", err);
-        assert!(err.contains("VAULT_TOKEN"), "Error should mention VAULT_TOKEN: {}", err);
+        assert!(err.contains("No Vault token found"), "Error: {err}");
+        assert!(err.contains("VAULT_TOKEN"), "Error should mention VAULT_TOKEN: {err}");
     }
 
     // -- VAULT_ADDR --
 
     #[test]
     fn test_vault_addr_from_env() {
-        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let prev = std::env::var("VAULT_ADDR").ok();
         // Safe: ENV_LOCK guarantees no other test mutates the environment concurrently.
         unsafe { std::env::set_var("VAULT_ADDR", "https://vault.example.com:8200") };
@@ -1740,7 +1732,7 @@ mod tests {
 
     #[test]
     fn test_vault_addr_strips_trailing_slash() {
-        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let prev = std::env::var("VAULT_ADDR").ok();
         // Safe: ENV_LOCK guarantees no other test mutates the environment concurrently.
         unsafe { std::env::set_var("VAULT_ADDR", "https://vault.example.com:8200/") };
@@ -1755,7 +1747,7 @@ mod tests {
 
     #[test]
     fn test_vault_addr_missing_error() {
-        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let prev = std::env::var("VAULT_ADDR").ok();
         // Safe: ENV_LOCK guarantees no other test mutates the environment concurrently.
         unsafe { std::env::remove_var("VAULT_ADDR") };
@@ -1765,7 +1757,7 @@ mod tests {
         }
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("VAULT_ADDR"), "Error: {}", err);
+        assert!(err.contains("VAULT_ADDR"), "Error: {err}");
     }
 
     // -- Response Parsing --
@@ -1820,9 +1812,8 @@ mod tests {
                 "revocation_time": 1654105687
             }
         });
-        let revocation_time = json["data"]["revocation_time"].as_f64();
-        assert!(revocation_time.is_some());
-        assert_eq!(revocation_time.unwrap() as i64, 1654105687);
+        let revocation_time = json["data"]["revocation_time"].as_i64();
+        assert_eq!(revocation_time, Some(1654105687));
     }
 
     #[test]
@@ -1978,10 +1969,10 @@ mod tests {
         );
 
         let msg = err.to_string();
-        assert!(msg.contains("Permission denied"), "msg: {}", msg);
-        assert!(msg.contains("vault_intermediate/issue/my-role"), "msg: {}", msg);
-        assert!(msg.contains("create"), "msg: {}", msg);
-        assert!(msg.contains("capabilities"), "msg: {}", msg);
+        assert!(msg.contains("Permission denied"), "msg: {msg}");
+        assert!(msg.contains("vault_intermediate/issue/my-role"), "msg: {msg}");
+        assert!(msg.contains("create"), "msg: {msg}");
+        assert!(msg.contains("capabilities"), "msg: {msg}");
     }
 
     #[test]
@@ -2005,8 +1996,8 @@ mod tests {
         );
 
         let msg = err.to_string();
-        assert!(msg.contains("Not found"), "msg: {}", msg);
-        assert!(msg.contains("mount point or role may not exist"), "msg: {}", msg);
+        assert!(msg.contains("Not found"), "msg: {msg}");
+        assert!(msg.contains("mount point or role may not exist"), "msg: {msg}");
     }
 
     #[test]
@@ -2274,16 +2265,16 @@ mod tests {
         // RFC 3986 unreserved characters: A-Z a-z 0-9 - . _ ~
         // NON_ALPHANUMERIC encodes everything except A-Z a-z 0-9 — this is
         // stricter than RFC 3986 but safer for Vault's path semantics.
-        assert_eq!(super::encode_path_segment("abcXYZ123"), "abcXYZ123");
+        assert_eq!(encode_path_segment("abcXYZ123"), "abcXYZ123");
     }
 
     #[test]
     fn test_encode_path_segment_escapes_path_delimiters() {
         // The whole reason this helper exists: prevent injection via /, ?, #.
-        let encoded = super::encode_path_segment("aa/bb?cc#dd");
-        assert!(!encoded.contains('/'), "/ must be encoded: got {}", encoded);
-        assert!(!encoded.contains('?'), "? must be encoded: got {}", encoded);
-        assert!(!encoded.contains('#'), "# must be encoded: got {}", encoded);
+        let encoded = encode_path_segment("aa/bb?cc#dd");
+        assert!(!encoded.contains('/'), "/ must be encoded: got {encoded}");
+        assert!(!encoded.contains('?'), "? must be encoded: got {encoded}");
+        assert!(!encoded.contains('#'), "# must be encoded: got {encoded}");
         assert_eq!(encoded, "aa%2Fbb%3Fcc%23dd");
     }
 
@@ -2292,8 +2283,8 @@ mod tests {
         // Vault PKI returns serials like "aa:bb:cc:dd". Colons need
         // encoding because some HTTP clients and proxies treat them
         // specially in paths.
-        let encoded = super::encode_path_segment("aa:bb:cc:dd:ee:ff");
-        assert!(!encoded.contains(':'), ": must be encoded: got {}", encoded);
+        let encoded = encode_path_segment("aa:bb:cc:dd:ee:ff");
+        assert!(!encoded.contains(':'), ": must be encoded: got {encoded}");
         assert_eq!(encoded, "aa%3Abb%3Acc%3Add%3Aee%3Aff");
     }
 }

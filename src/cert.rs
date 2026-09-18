@@ -7,10 +7,8 @@ use x509_parser::certificate::X509Certificate;
 use x509_parser::extensions::{GeneralName, ParsedExtension};
 use x509_parser::prelude::FromDer;
 
-pub static OID_X509_SCT_LIST: std::sync::LazyLock<x509_parser::asn1_rs::Oid<'static>> =
-    std::sync::LazyLock::new(|| {
-        x509_parser::asn1_rs::Oid::from(&[1, 3, 6, 1, 4, 1, 11129, 2, 4, 2]).expect("hardcoded SCT list OID is valid")
-    });
+pub const OID_X509_SCT_LIST: x509_parser::asn1_rs::Oid<'static> =
+    x509_parser::oid_registry::asn1_rs::oid!(1.3.6.1.4.1.11129.2.4.2);
 
 #[derive(Debug, serde::Serialize, Clone)]
 pub struct CertInfo {
@@ -114,9 +112,8 @@ fn count_scts(data: &[u8]) -> Option<usize> {
     // on a malicious input; on overflow we stop counting cleanly.
     while offset.checked_add(2).is_some_and(|o| o <= end) {
         let sct_len = ((inner[offset] as usize) << 8) | (inner[offset + 1] as usize);
-        let next = match offset.checked_add(2).and_then(|o| o.checked_add(sct_len)) {
-            Some(n) => n,
-            None => break,
+        let Some(next) = offset.checked_add(2).and_then(|o| o.checked_add(sct_len)) else {
+            break;
         };
         if next > end {
             break;
@@ -140,7 +137,7 @@ pub fn process_certificate(
 
     // Serial as uppercase hex
     let serial_bytes = cert.raw_serial();
-    let serial_number = serial_bytes.iter().map(|b| format!("{:02X}", b)).collect::<String>();
+    let serial_number = serial_bytes.iter().map(|b| format!("{b:02X}")).collect::<String>();
 
     // Validity converted to RFC3339 strings
     let nb: OffsetDateTime = cert.validity().not_before.to_datetime();
@@ -158,7 +155,7 @@ pub fn process_certificate(
     let common_name = extract_common_name(&cert);
     let subject_alternative_names = extract_sans(&cert);
 
-    let sct_ext = cert.extensions().iter().find(|ext| ext.oid == *OID_X509_SCT_LIST);
+    let sct_ext = cert.extensions().iter().find(|ext| ext.oid == OID_X509_SCT_LIST);
     let ct_present = sct_ext.is_some();
 
     let sct_count: Option<usize> = if opts.extensions {
@@ -171,13 +168,7 @@ pub fn process_certificate(
     let sha256_fingerprint = if opts.fingerprint {
         let digest = openssl::hash::hash(MessageDigest::sha256(), der_bytes)
             .map_err(|e| anyhow::anyhow!("SHA-256 hash failed: {e}"))?;
-        Some(
-            digest
-                .iter()
-                .map(|b| format!("{:02X}", b))
-                .collect::<Vec<_>>()
-                .join(":"),
-        )
+        Some(digest.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(":"))
     } else {
         None
     };
@@ -211,14 +202,14 @@ pub fn process_certificate(
                 // Parse the modulus length from the DER encoding
                 openssl::rsa::Rsa::public_key_from_der(&spki.subject_public_key.data)
                     .map(|rsa| rsa.size() * 8)
-                    .unwrap_or(spki.subject_public_key.data.len() as u32 * 8)
+                    .unwrap_or_else(|_| u32::try_from(spki.subject_public_key.data.len() * 8).unwrap_or(u32::MAX))
             }
             "1.2.840.10045.2.1" => {
                 // EC: uncompressed point is 1 + 2*field_size bytes; field_size = (key_bits + 7) / 8
                 // For P-256: 65 bytes → 256 bits, P-384: 97 bytes → 384 bits, P-521: 133 bytes → 521 bits
                 let point_len = spki.subject_public_key.data.len();
                 if point_len > 1 {
-                    (((point_len - 1) / 2) * 8) as u32
+                    u32::try_from(((point_len - 1) / 2) * 8).unwrap_or(u32::MAX)
                 } else {
                     0
                 }
@@ -226,7 +217,7 @@ pub fn process_certificate(
             "1.3.101.112" => 256, // Ed25519
             "1.3.101.113" => 448, // Ed448
             "1.3.101.110" => 256, // X25519
-            _ => (spki.subject_public_key.data.len() * 8) as u32,
+            _ => u32::try_from(spki.subject_public_key.data.len() * 8).unwrap_or(u32::MAX),
         };
         (Some(alg_name), Some(key_bits))
     } else {
@@ -316,10 +307,10 @@ pub fn process_certificate(
                         };
                         match &desc.access_location {
                             GeneralName::URI(uri) => {
-                                urls.push(format!("{}: {}", method, uri));
+                                urls.push(format!("{method}: {uri}"));
                             }
                             _ => {
-                                urls.push(format!("{}: (non-URI)", method));
+                                urls.push(format!("{method}: (non-URI)"));
                             }
                         }
                     }
@@ -380,11 +371,11 @@ pub fn parse_cert_infos_from_pem(pem_data: &str, opts: &CertProcessOpts) -> Resu
                 match process_certificate(cert, block.contents(), cert_idx, opts) {
                     Ok(Some(info)) => infos.push(info),
                     Ok(None) => {} // Filtered out (e.g., not expired when expired_only is true)
-                    Err(e) => errors.push(format!("Certificate {}: {}", cert_idx, e)),
+                    Err(e) => errors.push(format!("Certificate {cert_idx}: {e}")),
                 }
             }
             Err(e) => {
-                errors.push(format!("Certificate {} parsing failed: {}", cert_idx, e));
+                errors.push(format!("Certificate {cert_idx} parsing failed: {e}"));
             }
         }
         cert_idx += 1;
@@ -394,7 +385,7 @@ pub fn parse_cert_infos_from_pem(pem_data: &str, opts: &CertProcessOpts) -> Resu
     if !errors.is_empty() {
         eprintln!("Warning: Some certificates had issues:");
         for error in &errors {
-            eprintln!("  - {}", error);
+            eprintln!("  - {error}");
         }
     }
 
@@ -408,12 +399,12 @@ pub fn parse_cert_infos_from_pem(pem_data: &str, opts: &CertProcessOpts) -> Resu
     Ok(infos)
 }
 
-pub fn extract_common_name(cert: &x509_parser::certificate::X509Certificate<'_>) -> Option<String> {
+pub fn extract_common_name(cert: &X509Certificate<'_>) -> Option<String> {
     cert.subject()
         .iter_attributes()
         .find(|attr| *attr.attr_type() == x509_parser::oid_registry::OID_X509_COMMON_NAME)
         .and_then(|attr| attr.attr_value().as_str().ok())
-        .map(|s| s.to_string())
+        .map(ToString::to_string)
 }
 
 pub fn extract_sans(cert: &X509Certificate<'_>) -> Vec<String> {
@@ -423,9 +414,9 @@ pub fn extract_sans(cert: &X509Certificate<'_>) -> Vec<String> {
         if let ParsedExtension::SubjectAlternativeName(san) = ext.parsed_extension() {
             for gn in &san.general_names {
                 match gn {
-                    GeneralName::DNSName(d) => out.push(format!("DNS:{}", d)),
-                    GeneralName::RFC822Name(e) => out.push(format!("Email:{}", e)),
-                    GeneralName::URI(u) => out.push(format!("URI:{}", u)),
+                    GeneralName::DNSName(d) => out.push(format!("DNS:{d}")),
+                    GeneralName::RFC822Name(e) => out.push(format!("Email:{e}")),
+                    GeneralName::URI(u) => out.push(format!("URI:{u}")),
                     GeneralName::IPAddress(bytes) => match bytes.len() {
                         4 => {
                             if let Ok(v4) = <[u8; 4]>::try_from(&bytes[..]) {
@@ -478,7 +469,7 @@ pub(crate) fn pkey_algorithm<T>(pkey: &openssl::pkey::PKey<T>) -> String {
         Id::ED25519 => "Ed25519".to_string(),
         Id::ED448 => "Ed448".to_string(),
         Id::DSA => "DSA".to_string(),
-        other => format!("Unknown ({:?})", other),
+        other => format!("Unknown ({other:?})"),
     }
 }
 
@@ -489,9 +480,9 @@ pub fn verify_key_matches_cert(key_path: &str, target: &str, debug: bool) -> Res
     // Load private key
     debug_log!(debug, "Loading private key from: {}", key_path);
     let key_data =
-        std::fs::read(key_path).map_err(|e| anyhow::anyhow!("Failed to read private key '{}': {}", key_path, e))?;
+        std::fs::read(key_path).map_err(|e| anyhow::anyhow!("Failed to read private key '{key_path}': {e}"))?;
     let private_key = PKey::private_key_from_pem(&key_data)
-        .map_err(|e| anyhow::anyhow!("Failed to parse private key '{}': {}", key_path, e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to parse private key '{key_path}': {e}"))?;
 
     let key_type = pkey_algorithm(&private_key);
     let key_size_bits = private_key.bits();
@@ -528,13 +519,12 @@ pub fn verify_key_matches_cert(key_path: &str, target: &str, debug: bool) -> Res
         })?;
         conn.pem_data
     } else {
-        std::fs::read_to_string(target)
-            .map_err(|e| anyhow::anyhow!("Failed to read certificate '{}': {}", target, e))?
+        std::fs::read_to_string(target).map_err(|e| anyhow::anyhow!("Failed to read certificate '{target}': {e}"))?
     };
 
     // Parse the first certificate
     let cert = openssl::x509::X509::from_pem(cert_pem.as_bytes())
-        .map_err(|e| anyhow::anyhow!("Failed to parse PEM certificate: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to parse PEM certificate: {e}"))?;
 
     let cert_subject = cert.subject_name().entries().fold(String::new(), |mut acc, e| {
         if !acc.is_empty() {
@@ -549,7 +539,7 @@ pub fn verify_key_matches_cert(key_path: &str, target: &str, debug: bool) -> Res
 
     let cert_pubkey = cert
         .public_key()
-        .map_err(|e| anyhow::anyhow!("Failed to extract public key from certificate: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to extract public key from certificate: {e}"))?;
 
     let cert_key_alg = pkey_algorithm(&cert_pubkey);
     let cert_key_size = cert_pubkey.bits();
@@ -560,10 +550,7 @@ pub fn verify_key_matches_cert(key_path: &str, target: &str, debug: bool) -> Res
     let details = if matches {
         "Public key from private key matches certificate's public key".to_string()
     } else if key_type != cert_key_alg {
-        format!(
-            "Key type mismatch: private key is {} but certificate uses {}",
-            key_type, cert_key_alg
-        )
+        format!("Key type mismatch: private key is {key_type} but certificate uses {cert_key_alg}")
     } else {
         "Public key from private key does not match certificate's public key".to_string()
     };
@@ -646,10 +633,10 @@ pub mod tests {
     pub fn make_test_cert(common_name: Option<&str>, sans: Vec<&str>) -> CertInfo {
         CertInfo {
             index: 0,
-            subject: common_name.map(|cn| format!("CN={}", cn)).unwrap_or_default(),
+            subject: common_name.map(|cn| format!("CN={cn}")).unwrap_or_default(),
             issuer: "CN=Test CA".to_string(),
-            common_name: common_name.map(|s| s.to_string()),
-            subject_alternative_names: sans.into_iter().map(|s| s.to_string()).collect(),
+            common_name: common_name.map(ToString::to_string),
+            subject_alternative_names: sans.into_iter().map(ToString::to_string).collect(),
             serial_number: "AABB".to_string(),
             not_before: "2026-01-01T00:00:00Z".to_string(),
             not_after: "2027-01-01T00:00:00Z".to_string(),
@@ -758,8 +745,7 @@ pub mod tests {
         let serial = &infos[0].serial_number;
         assert!(
             serial.chars().all(|c| c.is_ascii_hexdigit()),
-            "serial should be hex, got: {}",
-            serial
+            "serial should be hex, got: {serial}"
         );
     }
 
@@ -780,10 +766,7 @@ pub mod tests {
 
     #[test]
     fn test_pem_with_non_certificate_blocks() {
-        let mixed = format!(
-            "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBg==\n-----END PRIVATE KEY-----\n{}",
-            VALID_PEM
-        );
+        let mixed = format!("-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBg==\n-----END PRIVATE KEY-----\n{VALID_PEM}");
         let infos = parse_cert_infos_from_pem(&mixed, &default_opts()).unwrap();
         assert_eq!(infos.len(), 1, "should skip non-CERTIFICATE blocks");
     }
@@ -853,7 +836,7 @@ pub mod tests {
     // ---------------------------------------------------------------
 
     #[test]
-    fn test_valid_cert_from_file() -> anyhow::Result<()> {
+    fn test_valid_cert_from_file() -> Result<()> {
         let path = PathBuf::from("tests/data/valid.pem");
         assert!(path.exists(), "tests/data/valid.pem is missing");
         let pem = std::fs::read_to_string(&path)?;
@@ -864,7 +847,7 @@ pub mod tests {
     }
 
     #[test]
-    fn test_chain_from_external_file() -> anyhow::Result<()> {
+    fn test_chain_from_external_file() -> Result<()> {
         let path = PathBuf::from("tests/data/test.pem");
         assert!(path.exists(), "tests/data/test.pem is missing");
         let pem = std::fs::read_to_string(&path)?;
@@ -954,7 +937,7 @@ pub mod tests {
 
     #[test]
     fn count_scts_handles_empty_input() {
-        assert_eq!(super::count_scts(&[]), None);
+        assert_eq!(count_scts(&[]), None);
     }
 
     #[test]
@@ -962,14 +945,14 @@ pub mod tests {
         // OCTET STRING tag + length byte but no value: parser falls through to
         // treating the raw bytes as the TLS list, total_len exceeds the slice
         // so end clamps and the loop yields zero SCTs without panicking.
-        assert_eq!(super::count_scts(&[0x04, 0x01]), Some(0));
+        assert_eq!(count_scts(&[0x04, 0x01]), Some(0));
     }
 
     #[test]
     fn count_scts_counts_simple_two_sct_list() {
         // OCTET STRING (0x04) of len 8: total_len=6, SCT1 len=1, SCT2 len=1
         let data = &[0x04, 0x08, 0x00, 0x06, 0x00, 0x01, b'A', 0x00, 0x01, b'B'];
-        assert_eq!(super::count_scts(data), Some(2));
+        assert_eq!(count_scts(data), Some(2));
     }
 
     #[test]
@@ -985,9 +968,9 @@ pub mod tests {
             b'X', // 1 byte of payload
         ];
         // Should return Some(0) — we couldn't fit the claimed SCT and bailed.
-        let result = super::count_scts(data);
-        assert!(result.is_some(), "must return Some, got {:?}", result);
-        assert!(result.unwrap() < 100, "must not loop into a huge count: {:?}", result);
+        let result = count_scts(data);
+        assert!(result.is_some(), "must return Some, got {result:?}");
+        assert!(result.unwrap() < 100, "must not loop into a huge count: {result:?}");
     }
 
     #[test]
@@ -995,7 +978,7 @@ pub mod tests {
         // total_len far exceeds the inner slice — `end` clamps to inner.len()
         // and the loop terminates immediately.
         let data = &[0x04, 0x04, 0xff, 0xff, 0x00, 0x00];
-        let result = super::count_scts(data);
+        let result = count_scts(data);
         assert!(result.is_some());
     }
 }

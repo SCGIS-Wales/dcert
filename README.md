@@ -1236,16 +1236,6 @@ When running in HTTP mode, `dcert-mcp` supports OIDC/OAuth2 JWT authentication f
 
 OIDC tokens are validated against JWKS (JSON Web Key Sets) with automatic key rotation. Validated tokens are cached in-memory with a configurable sliding window TTL.
 
-#### On-Behalf-Of (OBO) Token Exchange
-
-> **Status:** the OBO token-exchange module is included in the codebase but is **not yet wired to environment configuration** — there is currently no env-var switch that enables it at runtime. It is documented here as the intended design for a future release.
-
-For downstream API calls that require user context, the OBO token exchange flow is designed so that:
-
-- User tokens are **never forwarded** to downstream APIs
-- OBO exchange acquires a new token scoped to the downstream resource
-- Classified error handling with actionable guidance for each failure mode
-
 #### Authentication Environment Variables
 
 | Variable | Description |

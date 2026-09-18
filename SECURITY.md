@@ -40,14 +40,6 @@ JWT tokens are validated against:
 
 Supported algorithms: RS256, RS384, RS512, ES256, ES384.
 
-### On-Behalf-Of (OBO) Token Exchange
-
-For downstream API calls requiring user context, dcert-mcp supports the OBO token exchange flow (RFC jwt-bearer grant type):
-
-- User tokens are **never forwarded** to downstream APIs (no passthrough)
-- OBO exchange acquires a new token scoped to the downstream resource
-- Classified error handling with actionable guidance for each failure mode
-
 ### Session Cache
 
 Validated tokens are cached in-memory with:
@@ -62,7 +54,6 @@ All authentication events are logged as structured JSON:
 - `auth_success` — successful authentication with principal, tenant, scopes
 - `auth_failure` — failed attempts with reason and remote address
 - `authz_denied` — authorization denials with action context
-- `obo_exchange` — OBO token exchanges with latency and outcome
 
 ### Static Token Mode
 
@@ -81,7 +72,6 @@ For simpler deployments, a static bearer token can be used:
 
 ### Error Handling
 - Sensitive information (tokens, credentials, URLs with passwords) is scrubbed from error messages
-- OBO errors are classified with actionable guidance without leaking secrets
 - JWKS fetch errors do not expose internal URLs
 
 ### Network Security
@@ -112,9 +102,6 @@ For simpler deployments, a static bearer token can be used:
 | `DCERT_MCP_ALLOWED_CLIENTS` | Comma-separated allowed client app IDs |
 | `DCERT_MCP_SESSION_TTL` | Session cache inactivity TTL in seconds (default: 300) |
 | `DCERT_MCP_AUTH_TOKEN` | Static bearer token (lower priority than OIDC) |
-| `DCERT_MCP_OBO_TOKEN_URL` | OBO token exchange endpoint |
-| `DCERT_MCP_OBO_CLIENT_ID` | OBO client application ID |
-| `DCERT_MCP_OBO_CLIENT_SECRET` | OBO client secret |
 | `DCERT_MCP_ALLOWED_ORIGINS` | Comma-separated CORS allowlist for HTTP mode (default: none; `*` = any origin) |
 | `DCERT_PROXY` | Forward proxy URL for the `dcert` binary; overrides `HTTPS_PROXY`/`HTTP_PROXY` |
 | `DCERT_NOPROXY` | Proxy bypass list for the `dcert` binary; overrides `NO_PROXY` |

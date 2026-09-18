@@ -253,9 +253,8 @@ struct AnchorInfo {
 fn classify(roots: &PublicRoots, certs: &[X509], info: &mut RootTrustInfo) {
     let leaf = &certs[0];
 
-    let mut stack = match Stack::new() {
-        Ok(s) => s,
-        Err(_) => return,
+    let Ok(mut stack) = Stack::new() else {
+        return;
     };
     for c in &certs[1..] {
         let _ = stack.push(c.clone());
@@ -263,9 +262,8 @@ fn classify(roots: &PublicRoots, certs: &[X509], info: &mut RootTrustInfo) {
 
     // verify_cert against the public store; capture the anchoring root details.
     let verdict: std::result::Result<(bool, Option<AnchorInfo>), openssl::error::ErrorStack> = {
-        let mut ctx = match X509StoreContext::new() {
-            Ok(c) => c,
-            Err(_) => return,
+        let Ok(mut ctx) = X509StoreContext::new() else {
+            return;
         };
         ctx.init(&roots.store, leaf, &stack, |c| {
             let ok = c.verify_cert()?;
@@ -302,7 +300,9 @@ fn classify(roots: &PublicRoots, certs: &[X509], info: &mut RootTrustInfo) {
         }
         _ => {
             info.publicly_trusted = false;
-            let top = certs.last().expect("chain is non-empty");
+            let Some(top) = certs.last() else {
+                return;
+            };
             if is_self_signed(top) {
                 info.trust_anchor_subject = Some(format_name(top.subject_name()));
                 info.trust_anchor_sha256 = Some(fingerprint_hex(top));
@@ -337,13 +337,14 @@ fn resolve_issuers(certs: &mut Vec<X509>, opts: &TrustOpts, proxy: &ProxyConfig)
     let mut reachable: Option<bool> = None;
 
     for _ in 0..MAX_AIA_HOPS {
-        let top = certs.last().expect("chain is non-empty");
+        let Some(top) = certs.last() else {
+            break;
+        };
         if is_self_signed(top) {
             break; // already at a root
         }
-        let der = match top.to_der() {
-            Ok(d) => d,
-            Err(_) => break,
+        let Ok(der) = top.to_der() else {
+            break;
         };
         let urls = match X509Certificate::from_der(&der) {
             Ok((_, parsed)) => extract_ca_issuer_urls(&parsed),
@@ -536,7 +537,7 @@ fn format_name(name: &X509NameRef) -> String {
     for entry in name.entries() {
         let key = entry.object().nid().short_name().unwrap_or("?");
         if let Ok(value) = entry.data().to_string() {
-            parts.push(format!("{}={}", key, value));
+            parts.push(format!("{key}={value}"));
         }
     }
     parts.join(", ")
@@ -545,7 +546,7 @@ fn format_name(name: &X509NameRef) -> String {
 /// Colon-separated uppercase SHA-256 fingerprint (matches dcert's cert output).
 fn fingerprint_hex(cert: &X509Ref) -> String {
     cert.digest(MessageDigest::sha256())
-        .map(|d| d.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(":"))
+        .map(|d| d.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(":"))
         .unwrap_or_default()
 }
 

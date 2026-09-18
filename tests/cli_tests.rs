@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -119,8 +121,7 @@ fn test_parse_chain_pem_pretty() {
     let cert_count = stdout.matches("Certificate").count();
     assert!(
         cert_count >= 3,
-        "expected at least 3 Certificate sections, got {}",
-        cert_count
+        "expected at least 3 Certificate sections, got {cert_count}"
     );
 }
 
@@ -196,7 +197,7 @@ fn test_parse_valid_pem_yaml() {
 #[test]
 fn test_export_pem() {
     let pem_path = test_data("valid.pem");
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir().unwrap();
     let export_path = dir.path().join("exported.pem");
 
     let output = dcert_bin()
@@ -238,7 +239,7 @@ fn test_sort_expiry_asc_json() {
     for i in 1..arr.len() {
         let prev = arr[i - 1]["not_after"].as_str().unwrap();
         let curr = arr[i]["not_after"].as_str().unwrap();
-        assert!(prev <= curr, "expected ascending order: {} <= {}", prev, curr);
+        assert!(prev <= curr, "expected ascending order: {prev} <= {curr}");
     }
 }
 
@@ -261,7 +262,7 @@ fn test_sort_expiry_desc_json() {
     for i in 1..arr.len() {
         let prev = arr[i - 1]["not_after"].as_str().unwrap();
         let curr = arr[i]["not_after"].as_str().unwrap();
-        assert!(prev >= curr, "expected descending order: {} >= {}", prev, curr);
+        assert!(prev >= curr, "expected descending order: {prev} >= {curr}");
     }
 }
 
@@ -900,7 +901,7 @@ fn test_verify_key_auto_discovery_json() {
 
 #[test]
 fn test_verify_key_auto_discovery_empty_dir() {
-    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let dir = tempdir().expect("failed to create temp dir");
     let output = dcert_bin()
         .args(["verify-key", "--dir", dir.path().to_str().unwrap()])
         .output()

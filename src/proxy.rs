@@ -90,7 +90,7 @@ impl ProxyConfig {
             if pattern.starts_with('.') && host.ends_with(&pattern) {
                 return true;
             }
-            if !pattern.starts_with('.') && host.ends_with(&format!(".{}", pattern)) {
+            if !pattern.starts_with('.') && host.ends_with(&format!(".{pattern}")) {
                 return true;
             }
             if pattern == "localhost" && (host == "localhost" || host == "127.0.0.1" || host == "::1") {
@@ -104,31 +104,25 @@ impl ProxyConfig {
 /// Reject proxy URLs we cannot actually tunnel through, so the failure lands at
 /// argument-handling time rather than mid-connection.
 fn validate_proxy_url(proxy: &str) -> Result<()> {
-    let url = Url::parse(proxy).map_err(|e| {
-        anyhow::anyhow!(
-            "Invalid --proxy URL '{}': {} (expected e.g. http://proxy.corp:3128)",
-            proxy,
-            e
-        )
-    })?;
+    let url = Url::parse(proxy)
+        .map_err(|e| anyhow::anyhow!("Invalid --proxy URL '{proxy}': {e} (expected e.g. http://proxy.corp:3128)"))?;
     match url.scheme() {
         "http" | "https" => {}
         other => {
             return Err(anyhow::anyhow!(
-                "Unsupported --proxy scheme '{}': dcert tunnels over HTTP CONNECT, so the proxy URL must be http:// or https://",
-                other
+                "Unsupported --proxy scheme '{other}': dcert tunnels over HTTP CONNECT, so the proxy URL must be http:// or https://"
             ));
         }
     }
     if url.host_str().is_none_or(str::is_empty) {
-        return Err(anyhow::anyhow!("--proxy URL '{}' must include a host", proxy));
+        return Err(anyhow::anyhow!("--proxy URL '{proxy}' must include a host"));
     }
     Ok(())
 }
 
 /// Connect through HTTP proxy using CONNECT method
 pub fn connect_through_proxy(proxy_url: &str, target_host: &str, target_port: u16, debug: bool) -> Result<TcpStream> {
-    let proxy = Url::parse(proxy_url).map_err(|e| anyhow::anyhow!("Invalid proxy URL {}: {}", proxy_url, e))?;
+    let proxy = Url::parse(proxy_url).map_err(|e| anyhow::anyhow!("Invalid proxy URL {proxy_url}: {e}"))?;
 
     let proxy_host = proxy
         .host_str()
@@ -136,20 +130,20 @@ pub fn connect_through_proxy(proxy_url: &str, target_host: &str, target_port: u1
     let proxy_port = proxy.port().unwrap_or(8080);
 
     // Connect to proxy
-    let proxy_addr = format!("{}:{}", proxy_host, proxy_port)
+    let proxy_addr = format!("{proxy_host}:{proxy_port}")
         .to_socket_addrs()
-        .map_err(|e| anyhow::anyhow!("Failed to resolve proxy {}: {}", proxy_host, e))?
+        .map_err(|e| anyhow::anyhow!("Failed to resolve proxy {proxy_host}: {e}"))?
         .next()
-        .ok_or_else(|| anyhow::anyhow!("No valid address found for proxy {}", proxy_host))?;
+        .ok_or_else(|| anyhow::anyhow!("No valid address found for proxy {proxy_host}"))?;
 
     debug_log!(debug, "Proxy resolved: {} -> {}", proxy_host, proxy_addr);
 
     let mut stream = TcpStream::connect_timeout(&proxy_addr, Duration::from_secs(CONNECTION_TIMEOUT_SECS))
-        .map_err(|e| anyhow::anyhow!("Failed to connect to proxy: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to connect to proxy: {e}"))?;
 
     stream
         .set_read_timeout(Some(Duration::from_secs(READ_TIMEOUT_SECS)))
-        .map_err(|e| anyhow::anyhow!("Failed to set proxy read timeout: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to set proxy read timeout: {e}"))?;
 
     // Build Proxy-Authorization header if credentials are present in the proxy URL
     let auth_header = match (proxy.username(), proxy.password()) {
@@ -158,23 +152,22 @@ pub fn connect_through_proxy(proxy_url: &str, target_host: &str, target_port: u1
             let decoded_user = percent_encoding::percent_decode_str(username).decode_utf8_lossy();
             let decoded_pass = percent_encoding::percent_decode_str(password).decode_utf8_lossy();
             let credentials =
-                base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", decoded_user, decoded_pass));
-            format!("Proxy-Authorization: Basic {}\r\n", credentials)
+                base64::engine::general_purpose::STANDARD.encode(format!("{decoded_user}:{decoded_pass}"));
+            format!("Proxy-Authorization: Basic {credentials}\r\n")
         }
         _ => String::new(),
     };
 
     // Send CONNECT request
     let connect_request = format!(
-        "CONNECT {}:{} HTTP/1.1\r\nHost: {}:{}\r\n{}Proxy-Connection: keep-alive\r\n\r\n",
-        target_host, target_port, target_host, target_port, auth_header
+        "CONNECT {target_host}:{target_port} HTTP/1.1\r\nHost: {target_host}:{target_port}\r\n{auth_header}Proxy-Connection: keep-alive\r\n\r\n"
     );
 
     debug_log!(debug, "CONNECT {}:{} HTTP/1.1 sent to proxy", target_host, target_port);
 
     stream
         .write_all(connect_request.as_bytes())
-        .map_err(|e| anyhow::anyhow!("Failed to send CONNECT request: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to send CONNECT request: {e}"))?;
 
     // Read proxy response with size limit to prevent unbounded allocation
     const MAX_PROXY_HEADER_SIZE: usize = 64 * 1024; // 64 KB
@@ -185,7 +178,7 @@ pub fn connect_through_proxy(proxy_url: &str, target_host: &str, target_port: u1
     loop {
         let n = stream
             .read(&mut buffer)
-            .map_err(|e| anyhow::anyhow!("Failed to read proxy response: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to read proxy response: {e}"))?;
 
         if n == 0 {
             break;
@@ -219,7 +212,7 @@ pub fn connect_through_proxy(proxy_url: &str, target_host: &str, target_port: u1
         .map(|code| code == "200")
         .unwrap_or(false);
     if !status_ok {
-        return Err(anyhow::anyhow!("Proxy CONNECT failed: {}", status_line));
+        return Err(anyhow::anyhow!("Proxy CONNECT failed: {status_line}"));
     }
 
     debug_log!(debug, "Proxy CONNECT tunnel established");

@@ -68,13 +68,13 @@ pub(crate) fn is_safe_ocsp_host(host: &str) -> bool {
 pub fn check_ocsp_status(cert_der: &[u8], issuer_der: Option<&[u8]>, ocsp_url: &str, debug: bool) -> String {
     let cert = match X509::from_der(cert_der) {
         Ok(c) => c,
-        Err(e) => return format!("error: failed to parse cert: {}", e),
+        Err(e) => return format!("error: failed to parse cert: {e}"),
     };
 
     let issuer = match issuer_der {
         Some(der) => match X509::from_der(der) {
             Ok(c) => c,
-            Err(e) => return format!("error: failed to parse issuer: {}", e),
+            Err(e) => return format!("error: failed to parse issuer: {e}"),
         },
         None => return "unknown (no issuer certificate available)".to_string(),
     };
@@ -82,27 +82,27 @@ pub fn check_ocsp_status(cert_der: &[u8], issuer_der: Option<&[u8]>, ocsp_url: &
     // Build OCSP request
     let cert_id = match openssl::ocsp::OcspCertId::from_cert(MessageDigest::sha1(), &cert, &issuer) {
         Ok(id) => id,
-        Err(e) => return format!("error: OCSP cert ID creation failed: {}", e),
+        Err(e) => return format!("error: OCSP cert ID creation failed: {e}"),
     };
 
     let mut ocsp_req_builder = match openssl::ocsp::OcspRequest::new() {
         Ok(r) => r,
-        Err(e) => return format!("error: OCSP request creation failed: {}", e),
+        Err(e) => return format!("error: OCSP request creation failed: {e}"),
     };
 
     if let Err(e) = ocsp_req_builder.add_id(cert_id) {
-        return format!("error: failed to add cert ID: {}", e);
+        return format!("error: failed to add cert ID: {e}");
     }
 
     let request_bytes = match ocsp_req_builder.to_der() {
         Ok(b) => b,
-        Err(e) => return format!("error: OCSP request serialization failed: {}", e),
+        Err(e) => return format!("error: OCSP request serialization failed: {e}"),
     };
 
     // Send OCSP request via HTTP POST
     let url = match Url::parse(ocsp_url) {
         Ok(u) => u,
-        Err(e) => return format!("error: invalid OCSP URL: {}", e),
+        Err(e) => return format!("error: invalid OCSP URL: {e}"),
     };
 
     // Defence-in-depth against SSRF via attacker-controlled AIA extension:
@@ -142,13 +142,12 @@ pub fn check_ocsp_status(cert_der: &[u8], issuer_der: Option<&[u8]>, ocsp_url: &
             // This is frequently a firewall blocking outbound access to the CA
             // rather than a problem with the certificate itself — say so clearly.
             return format!(
-                "unknown (could not reach OCSP responder at {}:{} — CA endpoint unreachable, possibly firewall-blocked: {})",
-                host, port, e
+                "unknown (could not reach OCSP responder at {host}:{port} — CA endpoint unreachable, possibly firewall-blocked: {e})"
             );
         }
     };
     if let Err(e) = tcp_stream.set_read_timeout(Some(Duration::from_secs(5))) {
-        eprintln!("Warning: failed to set OCSP read timeout: {}", e);
+        eprintln!("Warning: failed to set OCSP read timeout: {e}");
     }
 
     let http_req = format!(
@@ -166,9 +165,8 @@ pub fn check_ocsp_status(cert_der: &[u8], issuer_der: Option<&[u8]>, ocsp_url: &
         return "error: failed to send OCSP request".to_string();
     }
 
-    let mut tcp_stream = match buf_stream.into_inner() {
-        Ok(s) => s,
-        Err(_) => return "error: failed to flush stream".to_string(),
+    let Ok(mut tcp_stream) = buf_stream.into_inner() else {
+        return "error: failed to flush stream".to_string();
     };
 
     // Read response with a size limit to prevent OOM from malicious responders
@@ -209,7 +207,7 @@ pub fn check_ocsp_status(cert_der: &[u8], issuer_der: Option<&[u8]>, ocsp_url: &
             .next()
             .unwrap_or("(empty)")
             .to_string();
-        return format!("error: OCSP responder returned non-200: {}", status_line);
+        return format!("error: OCSP responder returned non-200: {status_line}");
     }
 
     let ocsp_bytes = &response[header_end..];
@@ -219,18 +217,18 @@ pub fn check_ocsp_status(cert_der: &[u8], issuer_der: Option<&[u8]>, ocsp_url: &
 
     let ocsp_response = match openssl::ocsp::OcspResponse::from_der(ocsp_bytes) {
         Ok(r) => r,
-        Err(e) => return format!("error: OCSP response parse failed: {}", e),
+        Err(e) => return format!("error: OCSP response parse failed: {e}"),
     };
 
     match ocsp_response.status() {
         openssl::ocsp::OcspResponseStatus::SUCCESSFUL => {}
-        status => return format!("error: OCSP response status: {:?}", status),
+        status => return format!("error: OCSP response status: {status:?}"),
     }
 
     // Parse the basic response to check cert status
     let basic = match ocsp_response.basic() {
         Ok(b) => b,
-        Err(e) => return format!("error: OCSP basic response failed: {}", e),
+        Err(e) => return format!("error: OCSP basic response failed: {e}"),
     };
 
     // Verify the OCSP response signature against the issuer certificate.
@@ -238,29 +236,28 @@ pub fn check_ocsp_status(cert_der: &[u8], issuer_der: Option<&[u8]>, ocsp_url: &
     {
         let mut store_builder = match openssl::x509::store::X509StoreBuilder::new() {
             Ok(b) => b,
-            Err(e) => return format!("error: failed to create X509 store: {}", e),
+            Err(e) => return format!("error: failed to create X509 store: {e}"),
         };
         if let Err(e) = store_builder.add_cert(issuer.clone()) {
-            return format!("error: failed to add issuer to store: {}", e);
+            return format!("error: failed to add issuer to store: {e}");
         }
         let store = store_builder.build();
         let mut certs = match openssl::stack::Stack::new() {
             Ok(s) => s,
-            Err(e) => return format!("error: failed to create cert stack: {}", e),
+            Err(e) => return format!("error: failed to create cert stack: {e}"),
         };
         if let Err(e) = certs.push(issuer.clone()) {
-            return format!("error: failed to push issuer to stack: {}", e);
+            return format!("error: failed to push issuer to stack: {e}");
         }
         if let Err(e) = basic.verify(&certs, &store, openssl::ocsp::OcspFlag::empty()) {
-            return format!("error: OCSP response signature verification failed: {}", e);
+            return format!("error: OCSP response signature verification failed: {e}");
         }
         debug_log!(debug, "OCSP response signature verified");
     }
 
     // Re-create cert_id for status lookup
-    let cert_id2 = match openssl::ocsp::OcspCertId::from_cert(MessageDigest::sha1(), &cert, &issuer) {
-        Ok(id) => id,
-        Err(_) => return "error: cert ID re-creation failed".to_string(),
+    let Ok(cert_id2) = openssl::ocsp::OcspCertId::from_cert(MessageDigest::sha1(), &cert, &issuer) else {
+        return "error: cert ID re-creation failed".to_string();
     };
 
     let result = match basic.find_status(&cert_id2) {

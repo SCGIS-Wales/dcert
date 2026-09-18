@@ -385,15 +385,15 @@ pub struct CheckArgs {
     pub extensions: bool,
 
     /// Warn if any certificate expires within the given number of days (exit code 1)
-    #[arg(long, value_name = "DAYS")]
+    #[arg(long, value_name = "DAYS", value_parser = clap::value_parser!(u64).range(0..=36_500))]
     pub expiry_warn: Option<u64>,
 
     /// Compare certificates between exactly two targets
     #[arg(long)]
     pub diff: bool,
 
-    /// Periodically re-check targets at the given interval in seconds
-    #[arg(long, value_name = "SECONDS")]
+    /// Periodically re-check targets at the given interval in seconds (minimum 1)
+    #[arg(long, value_name = "SECONDS", value_parser = clap::value_parser!(u64).range(1..))]
     pub watch: Option<u64>,
 
     /// Check certificate revocation status via OCSP

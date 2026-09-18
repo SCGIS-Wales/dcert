@@ -68,31 +68,6 @@ impl AuditLogger {
             "security_audit"
         );
     }
-
-    /// Logs an OBO token exchange event.
-    pub fn log_obo_exchange(
-        &self,
-        claims: &TokenClaims,
-        target: &str,
-        token_source: &str,
-        duration_ms: u64,
-        error: Option<&str>,
-    ) {
-        let result = if error.is_some() { "error" } else { "success" };
-        info!(
-            audit.event_type = "obo_exchange",
-            audit.result = result,
-            audit.principal_id = claims.object_id.as_str(),
-            audit.principal_name = claims.preferred_username.as_str(),
-            audit.tenant_id = claims.tenant_id.as_str(),
-            audit.client_app_id = claims.authorized_party.as_str(),
-            audit.obo_target = target,
-            audit.obo_token_source = token_source,
-            audit.duration_ms = duration_ms,
-            audit.error = error.unwrap_or(""),
-            "security_audit"
-        );
-    }
 }
 
 impl Default for AuditLogger {
@@ -140,26 +115,6 @@ mod tests {
         let logger = AuditLogger::new();
         let claims = make_test_claims();
         logger.log_authz_denied(&claims, "cert_analysis", "insufficient scope");
-    }
-
-    #[test]
-    fn test_log_obo_exchange_success_does_not_panic() {
-        let logger = AuditLogger::new();
-        let claims = make_test_claims();
-        logger.log_obo_exchange(&claims, "https://downstream.api", "provider", 150, None);
-    }
-
-    #[test]
-    fn test_log_obo_exchange_error_does_not_panic() {
-        let logger = AuditLogger::new();
-        let claims = make_test_claims();
-        logger.log_obo_exchange(
-            &claims,
-            "https://downstream.api",
-            "provider",
-            150,
-            Some("consent_required"),
-        );
     }
 
     #[test]

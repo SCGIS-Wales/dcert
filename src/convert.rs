@@ -41,13 +41,11 @@ impl CertRole {
 /// extension is absent we assume `CA:FALSE` (the legacy default for end-entity
 /// certs). Self-signed is determined by structural subject == issuer match.
 pub fn classify_cert(cert: &X509) -> CertRole {
-    let der = match cert.to_der() {
-        Ok(d) => d,
-        Err(_) => return CertRole::Leaf,
+    let Ok(der) = cert.to_der() else {
+        return CertRole::Leaf;
     };
-    let parsed = match x509_parser::certificate::X509Certificate::from_der(&der) {
-        Ok((_, c)) => c,
-        Err(_) => return CertRole::Leaf,
+    let Ok((_, parsed)) = x509_parser::certificate::X509Certificate::from_der(&der) else {
+        return CertRole::Leaf;
     };
     let mut is_ca = false;
     for ext in parsed.extensions() {
@@ -103,11 +101,7 @@ fn cert_summary(cert: &X509) -> Result<CertSummary> {
         .map_err(|e| anyhow::anyhow!("DER conversion failed: {e}"))?;
     let digest =
         openssl::hash::hash(MessageDigest::sha256(), &der).map_err(|e| anyhow::anyhow!("SHA-256 hash failed: {e}"))?;
-    let fingerprint_sha256 = digest
-        .iter()
-        .map(|b| format!("{:02X}", b))
-        .collect::<Vec<_>>()
-        .join(":");
+    let fingerprint_sha256 = digest.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(":");
 
     let (not_after, expired) = match x509_parser::certificate::X509Certificate::from_der(&der) {
         Ok((_, parsed)) => {
@@ -154,16 +148,16 @@ pub struct ConvertResult {
 
 /// Convert a PKCS12/PFX file to PEM certificate + key files.
 pub fn pfx_to_pem(input: &str, password: &str, output_dir: &str) -> Result<ConvertResult> {
-    let p12_data = fs::read(input).with_context(|| format!("Failed to read PKCS12 file: {}", input))?;
+    let p12_data = fs::read(input).with_context(|| format!("Failed to read PKCS12 file: {input}"))?;
 
-    let pkcs12 = Pkcs12::from_der(&p12_data).with_context(|| format!("Failed to parse PKCS12 file: {}", input))?;
+    let pkcs12 = Pkcs12::from_der(&p12_data).with_context(|| format!("Failed to parse PKCS12 file: {input}"))?;
 
     let parsed = pkcs12
         .parse2(password)
-        .with_context(|| format!("Failed to decrypt PKCS12 '{}' (wrong password?)", input))?;
+        .with_context(|| format!("Failed to decrypt PKCS12 '{input}' (wrong password?)"))?;
 
     // Ensure output directory exists
-    fs::create_dir_all(output_dir).with_context(|| format!("Failed to create output directory: {}", output_dir))?;
+    fs::create_dir_all(output_dir).with_context(|| format!("Failed to create output directory: {output_dir}"))?;
 
     let mut output_files = Vec::new();
     let mut cert_subject = None;
@@ -172,8 +166,8 @@ pub fn pfx_to_pem(input: &str, password: &str, output_dir: &str) -> Result<Conve
     // Write certificate
     if let Some(ref cert) = parsed.cert {
         let cert_pem = cert.to_pem().with_context(|| "Failed to encode certificate as PEM")?;
-        let cert_path = format!("{}/cert.pem", output_dir);
-        fs::write(&cert_path, &cert_pem).with_context(|| format!("Failed to write certificate: {}", cert_path))?;
+        let cert_path = format!("{output_dir}/cert.pem");
+        fs::write(&cert_path, &cert_pem).with_context(|| format!("Failed to write certificate: {cert_path}"))?;
         output_files.push(cert_path);
 
         cert_subject = Some(format_x509_name(cert.subject_name()));
@@ -184,8 +178,8 @@ pub fn pfx_to_pem(input: &str, password: &str, output_dir: &str) -> Result<Conve
         let key_pem = pkey
             .private_key_to_pem_pkcs8()
             .with_context(|| "Failed to encode private key as PEM")?;
-        let key_path = format!("{}/key.pem", output_dir);
-        fs::write(&key_path, &key_pem).with_context(|| format!("Failed to write private key: {}", key_path))?;
+        let key_path = format!("{output_dir}/key.pem");
+        fs::write(&key_path, &key_pem).with_context(|| format!("Failed to write private key: {key_path}"))?;
         restrict_file_permissions(&key_path);
         output_files.push(key_path);
 
@@ -204,8 +198,8 @@ pub fn pfx_to_pem(input: &str, password: &str, output_dir: &str) -> Result<Conve
                 .with_context(|| "Failed to encode CA certificate as PEM")?;
             ca_pem.push_str(&String::from_utf8_lossy(&pem_bytes));
         }
-        let ca_path = format!("{}/ca.pem", output_dir);
-        fs::write(&ca_path, &ca_pem).with_context(|| format!("Failed to write CA certificates: {}", ca_path))?;
+        let ca_path = format!("{output_dir}/ca.pem");
+        fs::write(&ca_path, &ca_pem).with_context(|| format!("Failed to write CA certificates: {ca_path}"))?;
         output_files.push(ca_path);
     }
 
@@ -229,12 +223,12 @@ pub fn pem_to_pfx(
     output: &str,
     ca_path: Option<&str>,
 ) -> Result<ConvertResult> {
-    let cert_pem = fs::read(cert_path).with_context(|| format!("Failed to read certificate file: {}", cert_path))?;
-    let key_pem = fs::read(key_path).with_context(|| format!("Failed to read private key file: {}", key_path))?;
+    let cert_pem = fs::read(cert_path).with_context(|| format!("Failed to read certificate file: {cert_path}"))?;
+    let key_pem = fs::read(key_path).with_context(|| format!("Failed to read private key file: {key_path}"))?;
 
-    let cert = X509::from_pem(&cert_pem).with_context(|| format!("Failed to parse PEM certificate: {}", cert_path))?;
-    let pkey = PKey::private_key_from_pem(&key_pem)
-        .with_context(|| format!("Failed to parse PEM private key: {}", key_path))?;
+    let cert = X509::from_pem(&cert_pem).with_context(|| format!("Failed to parse PEM certificate: {cert_path}"))?;
+    let pkey =
+        PKey::private_key_from_pem(&key_pem).with_context(|| format!("Failed to parse PEM private key: {key_path}"))?;
 
     let cert_subject = format_x509_name(cert.subject_name());
 
@@ -247,16 +241,16 @@ pub fn pem_to_pfx(
 
     let mut ca_count = 0;
     if let Some(ca_file) = ca_path {
-        let ca_pem = fs::read(ca_file).with_context(|| format!("Failed to read CA certificate file: {}", ca_file))?;
+        let ca_pem = fs::read(ca_file).with_context(|| format!("Failed to read CA certificate file: {ca_file}"))?;
         let ca_certs =
-            X509::stack_from_pem(&ca_pem).with_context(|| format!("Failed to parse CA certificates: {}", ca_file))?;
+            X509::stack_from_pem(&ca_pem).with_context(|| format!("Failed to parse CA certificates: {ca_file}"))?;
         ca_count = ca_certs.len();
         builder.ca(vec_to_stack(ca_certs)?);
     }
 
     let pkcs12 = builder.build2(password).with_context(|| "Failed to build PKCS12")?;
     let der = pkcs12.to_der().with_context(|| "Failed to serialize PKCS12 to DER")?;
-    fs::write(output, &der).with_context(|| format!("Failed to write PKCS12 file: {}", output))?;
+    fs::write(output, &der).with_context(|| format!("Failed to write PKCS12 file: {output}"))?;
     // PFX contains private key material — restrict file permissions
     restrict_file_permissions(output);
 
@@ -286,18 +280,18 @@ pub fn create_keystore(
     output: &str,
     alias: &str,
 ) -> Result<ConvertResult> {
-    let cert_pem = fs::read(cert_path).with_context(|| format!("Failed to read certificate file: {}", cert_path))?;
-    let key_pem = fs::read(key_path).with_context(|| format!("Failed to read private key file: {}", key_path))?;
+    let cert_pem = fs::read(cert_path).with_context(|| format!("Failed to read certificate file: {cert_path}"))?;
+    let key_pem = fs::read(key_path).with_context(|| format!("Failed to read private key file: {key_path}"))?;
 
     let certs =
-        X509::stack_from_pem(&cert_pem).with_context(|| format!("Failed to parse PEM certificates: {}", cert_path))?;
+        X509::stack_from_pem(&cert_pem).with_context(|| format!("Failed to parse PEM certificates: {cert_path}"))?;
 
     if certs.is_empty() {
-        return Err(anyhow::anyhow!("No certificates found in: {}", cert_path));
+        return Err(anyhow::anyhow!("No certificates found in: {cert_path}"));
     }
 
-    let pkey = PKey::private_key_from_pem(&key_pem)
-        .with_context(|| format!("Failed to parse PEM private key: {}", key_path))?;
+    let pkey =
+        PKey::private_key_from_pem(&key_pem).with_context(|| format!("Failed to parse PEM private key: {key_path}"))?;
 
     let leaf_cert = &certs[0];
     let cert_subject = format_x509_name(leaf_cert.subject_name());
@@ -354,7 +348,7 @@ pub fn create_keystore(
         .build2(password)
         .with_context(|| "Failed to build PKCS12 keystore")?;
     let der = pkcs12.to_der().with_context(|| "Failed to serialize keystore")?;
-    fs::write(output, &der).with_context(|| format!("Failed to write keystore: {}", output))?;
+    fs::write(output, &der).with_context(|| format!("Failed to write keystore: {output}"))?;
     // Keystore contains private key material — restrict file permissions
     restrict_file_permissions(output);
 
@@ -390,9 +384,9 @@ pub fn create_truststore(
     let mut all_certs: Vec<X509> = Vec::new();
 
     for path in cert_paths {
-        let pem_data = fs::read(path).with_context(|| format!("Failed to read certificate file: {}", path))?;
+        let pem_data = fs::read(path).with_context(|| format!("Failed to read certificate file: {path}"))?;
         let certs =
-            X509::stack_from_pem(&pem_data).with_context(|| format!("Failed to parse PEM certificates: {}", path))?;
+            X509::stack_from_pem(&pem_data).with_context(|| format!("Failed to parse PEM certificates: {path}"))?;
         all_certs.extend(certs);
     }
 
@@ -449,7 +443,7 @@ pub fn create_truststore(
              chain that issued it, then build the truststore from those CAs only.\n\n  \
              Override (not recommended): pass --allow-non-ca to include leaves anyway.",
         );
-        return Err(anyhow::anyhow!("{}", msg));
+        return Err(anyhow::anyhow!("{msg}"));
     }
     if !leaf_summaries.is_empty() && allow_non_ca {
         warnings.push(format!(
@@ -515,7 +509,7 @@ pub fn create_truststore(
     // call is `?`-propagated with context so a malformed placeholder produces
     // a precise OpenSSL error instead of a silently-corrupted truststore that
     // Java would later reject with a confusing message.
-    let mut x509_builder = openssl::x509::X509::builder().with_context(|| "Failed to create X509 builder")?;
+    let mut x509_builder = X509::builder().with_context(|| "Failed to create X509 builder")?;
     x509_builder
         .set_version(2)
         .with_context(|| "Failed to set placeholder cert version")?;
@@ -549,7 +543,7 @@ pub fn create_truststore(
         .set_pubkey(&pkey)
         .with_context(|| "Failed to set placeholder cert public key")?;
     x509_builder
-        .sign(&pkey, openssl::hash::MessageDigest::sha256())
+        .sign(&pkey, MessageDigest::sha256())
         .with_context(|| "Failed to sign ephemeral certificate")?;
     let placeholder_cert = x509_builder.build();
 
@@ -563,7 +557,7 @@ pub fn create_truststore(
         .build2(password)
         .with_context(|| "Failed to build PKCS12 truststore")?;
     let der = pkcs12.to_der().with_context(|| "Failed to serialize truststore")?;
-    fs::write(output, &der).with_context(|| format!("Failed to write truststore: {}", output))?;
+    fs::write(output, &der).with_context(|| format!("Failed to write truststore: {output}"))?;
     // Truststore contains ephemeral private key — restrict file permissions
     restrict_file_permissions(output);
 

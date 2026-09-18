@@ -124,8 +124,7 @@ fn check_key_compliance(info: &CertInfo, findings: &mut Vec<CertFinding>) {
                     severity: Severity::Error,
                     category: "Key Size".to_string(),
                     message: format!(
-                        "RSA key size {} bits is below the minimum 2048-bit requirement (CA/B Forum BR)",
-                        bits
+                        "RSA key size {bits} bits is below the minimum 2048-bit requirement (CA/B Forum BR)"
                     ),
                 });
             } else if bits == 2048 {
@@ -138,7 +137,7 @@ fn check_key_compliance(info: &CertInfo, findings: &mut Vec<CertFinding>) {
                 findings.push(CertFinding {
                     severity: Severity::Info,
                     category: "Key Size".to_string(),
-                    message: format!("RSA {} bits meets requirements", bits),
+                    message: format!("RSA {bits} bits meets requirements"),
                 });
             }
         }
@@ -147,16 +146,13 @@ fn check_key_compliance(info: &CertInfo, findings: &mut Vec<CertFinding>) {
                 findings.push(CertFinding {
                     severity: Severity::Error,
                     category: "Key Size".to_string(),
-                    message: format!(
-                        "EC key size {} bits is below the minimum 256-bit (P-256) requirement",
-                        bits
-                    ),
+                    message: format!("EC key size {bits} bits is below the minimum 256-bit (P-256) requirement"),
                 });
             } else {
                 findings.push(CertFinding {
                     severity: Severity::Info,
                     category: "Key Size".to_string(),
-                    message: format!("EC {} bits meets requirements", bits),
+                    message: format!("EC {bits} bits meets requirements"),
                 });
             }
         }
@@ -164,7 +160,7 @@ fn check_key_compliance(info: &CertInfo, findings: &mut Vec<CertFinding>) {
             findings.push(CertFinding {
                 severity: Severity::Info,
                 category: "Key Size".to_string(),
-                message: format!("Key algorithm: {} ({} bits)", alg, bits),
+                message: format!("Key algorithm: {alg} ({bits} bits)"),
             });
         }
     }
@@ -219,7 +215,7 @@ fn check_signature_algorithm(info: &CertInfo, findings: &mut Vec<CertFinding>) {
             findings.push(CertFinding {
                 severity: Severity::Info,
                 category: "Signature Algorithm".to_string(),
-                message: format!("Signature algorithm OID: {}", sig_alg),
+                message: format!("Signature algorithm OID: {sig_alg}"),
             });
             return;
         }
@@ -228,7 +224,7 @@ fn check_signature_algorithm(info: &CertInfo, findings: &mut Vec<CertFinding>) {
     findings.push(CertFinding {
         severity,
         category: "Signature Algorithm".to_string(),
-        message: format!("{}: {}", name, msg),
+        message: format!("{name}: {msg}"),
     });
 }
 
@@ -265,7 +261,7 @@ fn check_expiry_compliance(info: &CertInfo, findings: &mut Vec<CertFinding>) {
             findings.push(CertFinding {
                 severity: Severity::Info,
                 category: "Expiry".to_string(),
-                message: format!("Certificate valid for {} more days", days_left),
+                message: format!("Certificate valid for {days_left} more days"),
             });
         }
     }
@@ -273,13 +269,11 @@ fn check_expiry_compliance(info: &CertInfo, findings: &mut Vec<CertFinding>) {
 
 /// Check validity period does not exceed CA/B Forum maximum (398 days since Sep 2020).
 fn check_validity_period(info: &CertInfo, findings: &mut Vec<CertFinding>) {
-    let not_before = match OffsetDateTime::parse(&info.not_before, &Rfc3339) {
-        Ok(dt) => dt,
-        Err(_) => return,
+    let Ok(not_before) = OffsetDateTime::parse(&info.not_before, &Rfc3339) else {
+        return;
     };
-    let not_after = match OffsetDateTime::parse(&info.not_after, &Rfc3339) {
-        Ok(dt) => dt,
-        Err(_) => return,
+    let Ok(not_after) = OffsetDateTime::parse(&info.not_after, &Rfc3339) else {
+        return;
     };
 
     let validity_days = (not_after - not_before).whole_days();
@@ -288,19 +282,15 @@ fn check_validity_period(info: &CertInfo, findings: &mut Vec<CertFinding>) {
             severity: Severity::Warning,
             category: "Validity Period".to_string(),
             message: format!(
-                "Certificate validity of {} days exceeds CA/B Forum maximum of 398 days (since Sep 2020). \
-                 Publicly-trusted CAs must not issue certificates with longer validity.",
-                validity_days
+                "Certificate validity of {validity_days} days exceeds CA/B Forum maximum of 398 days (since Sep 2020). \
+                 Publicly-trusted CAs must not issue certificates with longer validity."
             ),
         });
     } else {
         findings.push(CertFinding {
             severity: Severity::Info,
             category: "Validity Period".to_string(),
-            message: format!(
-                "Certificate validity period: {} days (within 398-day limit)",
-                validity_days
-            ),
+            message: format!("Certificate validity period: {validity_days} days (within 398-day limit)"),
         });
     }
 }
@@ -309,10 +299,7 @@ fn check_validity_period(info: &CertInfo, findings: &mut Vec<CertFinding>) {
 fn check_certificate_transparency(info: &CertInfo, findings: &mut Vec<CertFinding>) {
     if info.ct_present {
         let sct_msg = match info.sct_count {
-            Some(count) => format!(
-                "Certificate Transparency: {} SCT(s) embedded (compliant with CT policy)",
-                count
-            ),
+            Some(count) => format!("Certificate Transparency: {count} SCT(s) embedded (compliant with CT policy)"),
             None => "Certificate Transparency: SCTs present".to_string(),
         };
         findings.push(CertFinding {
@@ -361,8 +348,7 @@ fn check_san_compliance(info: &CertInfo, findings: &mut Vec<CertFinding>) {
                     severity: Severity::Warning,
                     category: "SAN".to_string(),
                     message: format!(
-                        "Common Name '{}' is not included in SANs. Per RFC 6125, CN should be present in SANs.",
-                        cn
+                        "Common Name '{cn}' is not included in SANs. Per RFC 6125, CN should be present in SANs."
                     ),
                 });
             }
@@ -378,8 +364,7 @@ fn check_san_compliance(info: &CertInfo, findings: &mut Vec<CertFinding>) {
                     severity: Severity::Error,
                     category: "SAN".to_string(),
                     message: format!(
-                        "Invalid wildcard '{}': wildcards must only appear as the leftmost label (e.g., *.example.com)",
-                        dns
+                        "Invalid wildcard '{dns}': wildcards must only appear as the leftmost label (e.g., *.example.com)"
                     ),
                 });
             }

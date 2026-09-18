@@ -227,7 +227,7 @@ impl OidcValidator {
 fn extract_claims(m: &HashMap<String, serde_json::Value>) -> TokenClaims {
     let get_str = |key: &str| -> String { m.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string() };
 
-    let get_i64 = |key: &str| -> i64 { m.get(key).and_then(|v| v.as_i64()).unwrap_or(0) };
+    let get_i64 = |key: &str| -> i64 { m.get(key).and_then(serde_json::Value::as_i64).unwrap_or(0) };
 
     // aud can be string or array.
     let audience = match m.get("aud") {
@@ -401,9 +401,8 @@ async fn fetch_jwks(client: &Client, jwks_url: &str) -> Result<HashMap<String, J
 
         let cached_key = match k.kty.as_str() {
             "RSA" => {
-                let (n_str, e_str) = match (&k.n, &k.e) {
-                    (Some(n), Some(e)) => (n, e),
-                    _ => continue,
+                let (Some(n_str), Some(e_str)) = (&k.n, &k.e) else {
+                    continue;
                 };
                 match (decode_b64(n_str), decode_b64(e_str)) {
                     (Ok(n), Ok(e)) => JwksCachedKey::Rsa { n, e },

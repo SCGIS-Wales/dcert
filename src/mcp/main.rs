@@ -1,7 +1,7 @@
 use clap::Parser;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo};
+use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
 use rmcp::{ServerHandler, ServiceExt, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -154,7 +154,7 @@ fn log_startup_diagnostics(config: &McpConfig) {
         None => eprintln!("[dcert-mcp] HTTP proxy: (none)"),
     }
     match &config.proxy_config.no_proxy {
-        Some(no_proxy) => eprintln!("[dcert-mcp] NO_PROXY: {}", no_proxy),
+        Some(no_proxy) => eprintln!("[dcert-mcp] NO_PROXY: {no_proxy}"),
         None => eprintln!("[dcert-mcp] NO_PROXY: (none)"),
     }
 
@@ -184,8 +184,7 @@ fn format_timeout_error(config: &McpConfig) -> String {
         msg.push_str("\n  - Check that the target host is allowed through your proxy.");
         if let Some(ref no_proxy) = config.proxy_config.no_proxy {
             msg.push_str(&format!(
-                "\n  - NO_PROXY is set to '{}'. Verify the target isn't incorrectly bypassed.",
-                no_proxy
+                "\n  - NO_PROXY is set to '{no_proxy}'. Verify the target isn't incorrectly bypassed."
             ));
         }
     } else {
@@ -238,8 +237,7 @@ fn validate_target(target: &str) -> Result<(), String> {
     }
     if target.starts_with('-') {
         return Err(format!(
-            "Invalid target '{}': targets must not start with '-' (looks like a CLI flag)",
-            target
+            "Invalid target '{target}': targets must not start with '-' (looks like a CLI flag)"
         ));
     }
     // Reject targets with embedded null bytes
@@ -252,13 +250,13 @@ fn validate_target(target: &str) -> Result<(), String> {
 /// Validate a file path parameter to prevent argument injection and path traversal.
 fn validate_path(path: &str, param_name: &str) -> Result<(), String> {
     if path.is_empty() {
-        return Err(format!("{} must not be empty", param_name));
+        return Err(format!("{param_name} must not be empty"));
     }
     if path.starts_with('-') {
-        return Err(format!("Invalid {}: '{}' must not start with '-'", param_name, path));
+        return Err(format!("Invalid {param_name}: '{path}' must not start with '-'"));
     }
     if path.contains('\0') {
-        return Err(format!("{} must not contain null bytes", param_name));
+        return Err(format!("{param_name} must not contain null bytes"));
     }
     // Reject path traversal precisely. The previous implementation used
     // `path.contains("..")` which both false-negatived on URL-encoded forms
@@ -269,7 +267,7 @@ fn validate_path(path: &str, param_name: &str) -> Result<(), String> {
         .components()
         .any(|c| matches!(c, std::path::Component::ParentDir))
     {
-        return Err(format!("{} must not contain '..' path traversal sequences", param_name));
+        return Err(format!("{param_name} must not contain '..' path traversal sequences"));
     }
     Ok(())
 }
@@ -319,8 +317,7 @@ fn validate_alias(alias: &str) -> Result<(), String> {
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
     {
         return Err(format!(
-            "Invalid alias '{}': must contain only alphanumeric characters, hyphens, underscores, or dots",
-            alias
+            "Invalid alias '{alias}': must contain only alphanumeric characters, hyphens, underscores, or dots"
         ));
     }
     Ok(())
@@ -328,14 +325,10 @@ fn validate_alias(alias: &str) -> Result<(), String> {
 
 /// Truncate subprocess output if it exceeds the maximum allowed size.
 /// Walks back to a UTF-8 char boundary so the truncated output never splits a
-/// multi-byte character. Equivalent to `str::floor_char_boundary` but works on
-/// our MSRV (1.88; `floor_char_boundary` is stable from 1.91).
+/// multi-byte character.
 fn truncate_output(output: String) -> String {
     if output.len() > MAX_OUTPUT_SIZE {
-        let mut boundary = MAX_OUTPUT_SIZE.min(output.len());
-        while boundary > 0 && !output.is_char_boundary(boundary) {
-            boundary -= 1;
-        }
+        let boundary = output.floor_char_boundary(MAX_OUTPUT_SIZE);
         let mut truncated = output[..boundary].to_string();
         truncated.push_str("\n--- output truncated (exceeded 10 MB limit) ---");
         truncated
@@ -464,7 +457,7 @@ async fn run_child_with_timeout(
     // Wait for the child with a timeout
     match tokio::time::timeout(config.subprocess_timeout, child.wait()).await {
         Ok(result) => {
-            let status = result.map_err(|e| format!("Failed waiting for dcert: {}", e))?;
+            let status = result.map_err(|e| format!("Failed waiting for dcert: {e}"))?;
 
             // Read pipes after the process has exited
             let mut stdout_buf = Vec::new();
@@ -1200,8 +1193,7 @@ impl VaultParams {
             }
             _ => {
                 return Err(format!(
-                    "Invalid auth_method '{}': must be \"token\", \"ldap\", or \"approle\"",
-                    method
+                    "Invalid auth_method '{method}': must be \"token\", \"ldap\", or \"approle\""
                 ));
             }
         }
@@ -1249,9 +1241,9 @@ async fn vault_authenticate(vault_params: &VaultParams) -> Result<String, String
 
     let client = reqwest::Client::builder()
         .danger_accept_invalid_certs(skip_verify)
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(Duration::from_secs(30))
         .build()
-        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+        .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
 
     match method {
         "ldap" => {
@@ -1267,25 +1259,25 @@ async fn vault_authenticate(vault_params: &VaultParams) -> Result<String, String
             let mount = vault_params.ldap_mount.as_deref().unwrap_or("ldap");
             let encoded_mount = utf8_percent_encode(mount, NON_ALPHANUMERIC).to_string();
             let encoded_username = utf8_percent_encode(username, NON_ALPHANUMERIC).to_string();
-            let url = format!("{}/v1/auth/{}/login/{}", vault_addr, encoded_mount, encoded_username);
+            let url = format!("{vault_addr}/v1/auth/{encoded_mount}/login/{encoded_username}");
 
             let resp = client
                 .post(&url)
                 .json(&serde_json::json!({"password": password}))
                 .send()
                 .await
-                .map_err(|e| format!("LDAP auth request failed: {}", e))?;
+                .map_err(|e| format!("LDAP auth request failed: {e}"))?;
 
             if !resp.status().is_success() {
                 let status = resp.status();
                 let body = truncate_upstream_error(&resp.text().await.unwrap_or_default());
-                return Err(format!("LDAP auth failed (HTTP {}): {}", status, body));
+                return Err(format!("LDAP auth failed (HTTP {status}): {body}"));
             }
 
             let json: serde_json::Value = resp
                 .json()
                 .await
-                .map_err(|e| format!("Failed to parse LDAP auth response: {}", e))?;
+                .map_err(|e| format!("Failed to parse LDAP auth response: {e}"))?;
 
             json["auth"]["client_token"]
                 .as_str()
@@ -1304,32 +1296,32 @@ async fn vault_authenticate(vault_params: &VaultParams) -> Result<String, String
                 .ok_or_else(|| "approle_secret_id is required for AppRole auth".to_string())?;
             let mount = vault_params.approle_mount.as_deref().unwrap_or("approle");
             let encoded_mount = utf8_percent_encode(mount, NON_ALPHANUMERIC).to_string();
-            let url = format!("{}/v1/auth/{}/login", vault_addr, encoded_mount);
+            let url = format!("{vault_addr}/v1/auth/{encoded_mount}/login");
 
             let resp = client
                 .post(&url)
                 .json(&serde_json::json!({"role_id": role_id, "secret_id": secret_id}))
                 .send()
                 .await
-                .map_err(|e| format!("AppRole auth request failed: {}", e))?;
+                .map_err(|e| format!("AppRole auth request failed: {e}"))?;
 
             if !resp.status().is_success() {
                 let status = resp.status();
                 let body = truncate_upstream_error(&resp.text().await.unwrap_or_default());
-                return Err(format!("AppRole auth failed (HTTP {}): {}", status, body));
+                return Err(format!("AppRole auth failed (HTTP {status}): {body}"));
             }
 
             let json: serde_json::Value = resp
                 .json()
                 .await
-                .map_err(|e| format!("Failed to parse AppRole auth response: {}", e))?;
+                .map_err(|e| format!("Failed to parse AppRole auth response: {e}"))?;
 
             json["auth"]["client_token"]
                 .as_str()
                 .map(String::from)
                 .ok_or_else(|| "AppRole auth response did not contain a client_token".to_string())
         }
-        _ => Err(format!("Unsupported auth method for authentication: {}", method)),
+        _ => Err(format!("Unsupported auth method for authentication: {method}")),
     }
 }
 
@@ -1372,7 +1364,7 @@ async fn run_dcert_vault(
     }
 
     let mut cmd = Command::new(&config.dcert_binary);
-    let args_refs: Vec<&str> = full_args.iter().map(|s| s.as_str()).collect();
+    let args_refs: Vec<&str> = full_args.iter().map(String::as_str).collect();
     cmd.args(&args_refs);
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
@@ -1591,8 +1583,7 @@ fn validate_key_algorithm(algo: &str) -> Result<(), String> {
     match algo {
         "rsa-4096" | "rsa-2048" | "ecdsa-p256" | "ecdsa-p384" | "ed25519" => Ok(()),
         _ => Err(format!(
-            "Invalid key algorithm '{}': must be one of \"rsa-4096\", \"rsa-2048\", \"ecdsa-p256\", \"ecdsa-p384\", \"ed25519\"",
-            algo
+            "Invalid key algorithm '{algo}': must be one of \"rsa-4096\", \"rsa-2048\", \"ecdsa-p256\", \"ecdsa-p384\", \"ed25519\""
         )),
     }
 }
@@ -1601,7 +1592,7 @@ fn validate_key_algorithm(algo: &str) -> Result<(), String> {
 fn validate_tls_version(version: &str) -> Result<(), String> {
     match version {
         "1.2" | "1.3" => Ok(()),
-        _ => Err(format!("Invalid TLS version '{}': must be \"1.2\" or \"1.3\"", version)),
+        _ => Err(format!("Invalid TLS version '{version}': must be \"1.2\" or \"1.3\"")),
     }
 }
 
@@ -1693,7 +1684,7 @@ impl DcertMcpServer {
         let mut env_refs = params.mtls.env_vars();
         env_refs.extend(params.http_tls.env_vars());
 
-        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         match run_dcert_with_env(&args_refs, &self.config, Some(&env_refs)).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = stdout;
@@ -1702,7 +1693,7 @@ impl DcertMcpServer {
                     output.push_str(&stderr);
                 }
                 if code != 0 {
-                    output.push_str(&format!("\n--- exit code: {} ---", code));
+                    output.push_str(&format!("\n--- exit code: {code} ---"));
                 }
                 ok_text(output)
             }
@@ -1746,7 +1737,7 @@ impl DcertMcpServer {
         let mut env_refs = params.mtls.env_vars();
         env_refs.extend(params.http_tls.env_vars());
 
-        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         match run_dcert_with_env(&args_refs, &self.config, Some(&env_refs)).await {
             Ok((stdout, stderr, code)) => {
                 let status = match code {
@@ -1755,7 +1746,7 @@ impl DcertMcpServer {
                     4 => "ALREADY_EXPIRED",
                     _ => "ERROR",
                 };
-                let mut output = format!("expiry_status: {}\n\n", status);
+                let mut output = format!("expiry_status: {status}\n\n");
                 output.push_str(&stdout);
                 if !stderr.is_empty() {
                     output.push_str("\n--- warnings ---\n");
@@ -1798,7 +1789,7 @@ impl DcertMcpServer {
         let mut env_refs = params.mtls.env_vars();
         env_refs.extend(params.http_tls.env_vars());
 
-        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         match run_dcert_with_env(&args_refs, &self.config, Some(&env_refs)).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = stdout;
@@ -1840,11 +1831,11 @@ impl DcertMcpServer {
             (Ok((stdout_a, _, _)), Ok((stdout_b, _, _))) => {
                 let json_a: serde_json::Value = match serde_json::from_str(&stdout_a) {
                     Ok(v) => v,
-                    Err(e) => return ok_error(format!("Failed to parse target_a output: {}", e)),
+                    Err(e) => return ok_error(format!("Failed to parse target_a output: {e}")),
                 };
                 let json_b: serde_json::Value = match serde_json::from_str(&stdout_b) {
                     Ok(v) => v,
-                    Err(e) => return ok_error(format!("Failed to parse target_b output: {}", e)),
+                    Err(e) => return ok_error(format!("Failed to parse target_b output: {e}")),
                 };
 
                 let diff = serde_json::json!({
@@ -1860,11 +1851,11 @@ impl DcertMcpServer {
 
                 match serde_json::to_string_pretty(&diff) {
                     Ok(output) => ok_text(output),
-                    Err(e) => ok_error(format!("Failed to serialize diff: {}", e)),
+                    Err(e) => ok_error(format!("Failed to serialize diff: {e}")),
                 }
             }
-            (Err(e), _) => ok_error(format!("Failed to fetch target_a: {}", e)),
-            (_, Err(e)) => ok_error(format!("Failed to fetch target_b: {}", e)),
+            (Err(e), _) => ok_error(format!("Failed to fetch target_a: {e}")),
+            (_, Err(e)) => ok_error(format!("Failed to fetch target_b: {e}")),
         }
     }
 
@@ -1921,7 +1912,7 @@ impl DcertMcpServer {
         let mut env_refs = params.mtls.env_vars();
         env_refs.extend(params.http_tls.env_vars());
 
-        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         match run_dcert_with_env(&args_refs, &self.config, Some(&env_refs)).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = stdout;
@@ -1930,7 +1921,7 @@ impl DcertMcpServer {
                     output.push_str(&stderr);
                 }
                 if code != 0 {
-                    output.push_str(&format!("\n--- exit code: {} ---", code));
+                    output.push_str(&format!("\n--- exit code: {code} ---"));
                 }
                 ok_text(output)
             }
@@ -1975,7 +1966,7 @@ impl DcertMcpServer {
         let mut env_refs = params.mtls.env_vars();
         env_refs.extend(params.http_tls.env_vars());
 
-        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         match run_dcert_with_env(&args_refs, &self.config, Some(&env_refs)).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = String::new();
@@ -1983,11 +1974,8 @@ impl DcertMcpServer {
                 // If no output_path, extract PEM data from stderr debug output
                 // or just return JSON with cert info. The user can also specify
                 // an output_path to write to file.
-                if params.output_path.is_some() {
-                    output.push_str(&format!(
-                        "PEM chain exported to: {}\n\n",
-                        params.output_path.as_ref().unwrap()
-                    ));
+                if let Some(path) = &params.output_path {
+                    output.push_str(&format!("PEM chain exported to: {path}\n\n"));
                 }
                 output.push_str(&stdout);
                 if !stderr.is_empty() {
@@ -1995,7 +1983,7 @@ impl DcertMcpServer {
                     output.push_str(&stderr);
                 }
                 if code != 0 {
-                    output.push_str(&format!("\n--- exit code: {} ---", code));
+                    output.push_str(&format!("\n--- exit code: {code} ---"));
                 }
                 ok_text(output)
             }
@@ -2036,7 +2024,7 @@ impl DcertMcpServer {
                     output.push_str(&stderr);
                 }
                 if code != 0 && code != 7 {
-                    output.push_str(&format!("\n--- exit code: {} ---", code));
+                    output.push_str(&format!("\n--- exit code: {code} ---"));
                 }
                 ok_text(output)
             }
@@ -2067,7 +2055,7 @@ impl DcertMcpServer {
                     output.push_str(&stderr);
                 }
                 if code != 0 && code != 7 {
-                    output.push_str(&format!("\n--- exit code: {} ---", code));
+                    output.push_str(&format!("\n--- exit code: {code} ---"));
                 }
                 ok_text(output)
             }
@@ -2114,7 +2102,7 @@ impl DcertMcpServer {
                     output.push_str(&stderr);
                 }
                 if code != 0 {
-                    output.push_str(&format!("\n--- exit code: {} ---", code));
+                    output.push_str(&format!("\n--- exit code: {code} ---"));
                 }
                 ok_text(output)
             }
@@ -2168,7 +2156,7 @@ impl DcertMcpServer {
         // Pass password via env var to avoid exposure in process listings
         let env_vars = [("DCERT_CERT_PASSWORD", params.password.as_str())];
 
-        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         match run_dcert_raw(&args_refs, &self.config, Some(&env_vars)).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = stdout;
@@ -2177,7 +2165,7 @@ impl DcertMcpServer {
                     output.push_str(&stderr);
                 }
                 if code != 0 {
-                    output.push_str(&format!("\n--- exit code: {} ---", code));
+                    output.push_str(&format!("\n--- exit code: {code} ---"));
                 }
                 ok_text(output)
             }
@@ -2235,7 +2223,7 @@ impl DcertMcpServer {
                     output.push_str(&stderr);
                 }
                 if code != 0 {
-                    output.push_str(&format!("\n--- exit code: {} ---", code));
+                    output.push_str(&format!("\n--- exit code: {code} ---"));
                 }
                 ok_text(output)
             }
@@ -2280,8 +2268,7 @@ impl DcertMcpServer {
             && (country.len() != 2 || !country.chars().all(|c| c.is_ascii_uppercase()))
         {
             return ok_error(format!(
-                "country must be a 2-letter ISO 3166-1 alpha-2 code (e.g., 'GB', 'US'), got '{}'",
-                country
+                "country must be a 2-letter ISO 3166-1 alpha-2 code (e.g., 'GB', 'US'), got '{country}'"
             ));
         }
         if params.subject_alternative_names.len() > 100 {
@@ -2338,7 +2325,7 @@ impl DcertMcpServer {
             }
         }
 
-        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         match run_dcert_raw(&args_refs, &self.config, None).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = stdout;
@@ -2347,7 +2334,7 @@ impl DcertMcpServer {
                     output.push_str(&stderr);
                 }
                 if code != 0 {
-                    output.push_str(&format!("\n--- exit code: {} ---", code));
+                    output.push_str(&format!("\n--- exit code: {code} ---"));
                 }
                 ok_text(output)
             }
@@ -2379,7 +2366,7 @@ impl DcertMcpServer {
             args.push("--warnings-as-errors".to_string());
         }
 
-        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         match run_dcert_raw(&args_refs, &self.config, None).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = stdout;
@@ -2388,7 +2375,7 @@ impl DcertMcpServer {
                     output.push_str(&stderr);
                 }
                 if code != 0 {
-                    output.push_str(&format!("\n--- exit code: {} ---", code));
+                    output.push_str(&format!("\n--- exit code: {code} ---"));
                 }
                 ok_text(output)
             }
@@ -2422,7 +2409,7 @@ impl DcertMcpServer {
         let mtls_env = params.mtls.env_vars();
         let env_refs = mtls_env.to_vec();
 
-        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         match run_dcert_with_env(&args_refs, &self.config, Some(&env_refs)).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = stdout;
@@ -2431,7 +2418,7 @@ impl DcertMcpServer {
                     output.push_str(&stderr);
                 }
                 if code != 0 {
-                    output.push_str(&format!("\n--- exit code: {} ---", code));
+                    output.push_str(&format!("\n--- exit code: {code} ---"));
                 }
                 ok_text(output)
             }
@@ -2489,7 +2476,7 @@ impl DcertMcpServer {
             args.push("--allow-non-ca".to_string());
         }
 
-        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         match run_dcert_raw(&args_refs, &self.config, None).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = stdout;
@@ -2498,7 +2485,7 @@ impl DcertMcpServer {
                     output.push_str(&stderr);
                 }
                 if code != 0 {
-                    output.push_str(&format!("\n--- exit code: {} ---", code));
+                    output.push_str(&format!("\n--- exit code: {code} ---"));
                 }
                 ok_text(output)
             }
@@ -2564,7 +2551,7 @@ impl DcertMcpServer {
             args.push(params.kv_version.to_string());
         }
 
-        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         match run_dcert_vault(&args_refs, &params.vault, &self.config).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = stdout;
@@ -2573,7 +2560,7 @@ impl DcertMcpServer {
                     output.push_str(&stderr);
                 }
                 if code != 0 {
-                    output.push_str(&format!("\n--- exit code: {} ---", code));
+                    output.push_str(&format!("\n--- exit code: {code} ---"));
                 }
                 ok_text(output)
             }
@@ -2635,7 +2622,7 @@ impl DcertMcpServer {
             args.push(params.kv_version.to_string());
         }
 
-        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         match run_dcert_vault(&args_refs, &params.vault, &self.config).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = stdout;
@@ -2644,7 +2631,7 @@ impl DcertMcpServer {
                     output.push_str(&stderr);
                 }
                 if code != 0 {
-                    output.push_str(&format!("\n--- exit code: {} ---", code));
+                    output.push_str(&format!("\n--- exit code: {code} ---"));
                 }
                 ok_text(output)
             }
@@ -2681,7 +2668,7 @@ impl DcertMcpServer {
             args.push(cert.clone());
         }
 
-        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         match run_dcert_vault(&args_refs, &params.vault, &self.config).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = stdout;
@@ -2690,7 +2677,7 @@ impl DcertMcpServer {
                     output.push_str(&stderr);
                 }
                 if code != 0 {
-                    output.push_str(&format!("\n--- exit code: {} ---", code));
+                    output.push_str(&format!("\n--- exit code: {code} ---"));
                 }
                 ok_text(output)
             }
@@ -2735,7 +2722,7 @@ impl DcertMcpServer {
             args.push(export.clone());
         }
 
-        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         match run_dcert_vault(&args_refs, &params.vault, &self.config).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = stdout;
@@ -2744,7 +2731,7 @@ impl DcertMcpServer {
                     output.push_str(&stderr);
                 }
                 if code != 0 {
-                    output.push_str(&format!("\n--- exit code: {} ---", code));
+                    output.push_str(&format!("\n--- exit code: {code} ---"));
                 }
                 ok_text(output)
             }
@@ -2795,7 +2782,7 @@ impl DcertMcpServer {
                     output.push_str(&stderr);
                 }
                 if code != 0 {
-                    output.push_str(&format!("\n--- exit code: {} ---", code));
+                    output.push_str(&format!("\n--- exit code: {code} ---"));
                 }
                 ok_text(output)
             }
@@ -2836,7 +2823,7 @@ impl DcertMcpServer {
                     output.push_str(&stderr);
                 }
                 if code != 0 {
-                    output.push_str(&format!("\n--- exit code: {} ---", code));
+                    output.push_str(&format!("\n--- exit code: {code} ---"));
                 }
                 ok_text(output)
             }
@@ -2885,7 +2872,7 @@ impl DcertMcpServer {
             args.push(ip.clone());
         }
 
-        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         match run_dcert_vault(&args_refs, &params.vault, &self.config).await {
             Ok((stdout, stderr, code)) => {
                 let mut output = stdout;
@@ -2894,7 +2881,7 @@ impl DcertMcpServer {
                     output.push_str(&stderr);
                 }
                 if code != 0 {
-                    output.push_str(&format!("\n--- exit code: {} ---", code));
+                    output.push_str(&format!("\n--- exit code: {code} ---"));
                 }
                 ok_text(output)
             }
@@ -2905,13 +2892,13 @@ impl DcertMcpServer {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for DcertMcpServer {
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         let impl_info = Implementation::new("dcert-mcp", dcert_mcp_version())
             .with_title("dcert MCP Server")
             .with_description(MCP_DESCRIPTION)
             .with_website_url("https://github.com/SCGIS-Wales/dcert");
 
-        let mut info = ServerInfo::default().with_server_info(impl_info);
+        let mut info = ServerConfig::default().with_server_info(impl_info);
         info.capabilities = ServerCapabilities::builder().enable_tools().build();
         info
     }
@@ -3318,13 +3305,13 @@ async fn dispatch_tool_call(config: &McpConfig, tool_name: &str, arguments: &ser
                 args.push(target.to_string());
             }
             args.extend(["--format".to_string(), "json".to_string()]);
-            if arguments.get("fingerprint").and_then(|v| v.as_bool()) == Some(true) {
+            if arguments.get("fingerprint").and_then(serde_json::Value::as_bool) == Some(true) {
                 args.push("--fingerprint".to_string());
             }
-            if arguments.get("extensions").and_then(|v| v.as_bool()) == Some(true) {
+            if arguments.get("extensions").and_then(serde_json::Value::as_bool) == Some(true) {
                 args.push("--extensions".to_string());
             }
-            if arguments.get("check_revocation").and_then(|v| v.as_bool()) == Some(true) {
+            if arguments.get("check_revocation").and_then(serde_json::Value::as_bool) == Some(true) {
                 args.push("--check-revocation".to_string());
             }
             // HTTP/TLS params, including the connection and proxy overrides.
@@ -3349,7 +3336,7 @@ async fn dispatch_tool_call(config: &McpConfig, tool_name: &str, arguments: &ser
         }
     }
 
-    let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let env_refs = http_tls.env_vars();
     match run_dcert_with_env(&args_refs, config, Some(&env_refs)).await {
         Ok((stdout, stderr, code)) => {
@@ -3371,7 +3358,7 @@ async fn dispatch_tool_call(config: &McpConfig, tool_name: &str, arguments: &ser
 // VaultParams implements Drop (to zeroize secrets), which forbids the
 // `..Default::default()` functional-update syntax; tests build via
 // `VaultParams::default()` then assign fields, so allow the related lint here.
-#[allow(clippy::field_reassign_with_default)]
+#[allow(clippy::field_reassign_with_default, unsafe_code)]
 mod tests {
     use super::*;
 
@@ -3895,14 +3882,14 @@ mod tests {
             .unwrap()
             .join("dcert");
         if !dcert_path.exists() {
-            eprintln!("Skipping test: dcert binary not found at {:?}", dcert_path);
+            eprintln!("Skipping test: dcert binary not found at {dcert_path:?}");
             return;
         }
 
         let config = test_config(dcert_path);
         let result = run_dcert(&["tests/data/valid.pem", "--format", "json"], &config).await;
 
-        assert!(result.is_ok(), "run_dcert should succeed: {:?}", result);
+        assert!(result.is_ok(), "run_dcert should succeed: {result:?}");
         let (stdout, _stderr, code) = result.unwrap();
         assert_eq!(code, 0, "exit code should be 0");
         assert!(stdout.contains("certificates"), "should contain JSON output");
@@ -3918,7 +3905,7 @@ mod tests {
             .unwrap()
             .join("dcert");
         if !dcert_path.exists() {
-            eprintln!("Skipping test: dcert binary not found at {:?}", dcert_path);
+            eprintln!("Skipping test: dcert binary not found at {dcert_path:?}");
             return;
         }
 
@@ -3948,7 +3935,7 @@ mod tests {
             .unwrap()
             .join("dcert");
         if !dcert_path.exists() {
-            eprintln!("Skipping test: dcert binary not found at {:?}", dcert_path);
+            eprintln!("Skipping test: dcert binary not found at {dcert_path:?}");
             return;
         }
 
@@ -3982,7 +3969,7 @@ mod tests {
             )
             .await;
 
-        assert!(result.is_ok(), "Tool call should succeed: {:?}", result);
+        assert!(result.is_ok(), "Tool call should succeed: {result:?}");
         let response = result.unwrap();
         let text = response
             .content
@@ -4054,8 +4041,7 @@ mod tests {
             .unwrap_or("");
         assert!(
             text.contains("must not start with '-'"),
-            "Error should mention flag rejection: {}",
-            text
+            "Error should mention flag rejection: {text}"
         );
 
         client.cancel().await.unwrap();
@@ -4106,8 +4092,7 @@ mod tests {
             .unwrap_or("");
         assert!(
             text.contains("Invalid TLS version"),
-            "Error should mention invalid TLS version: {}",
-            text
+            "Error should mention invalid TLS version: {text}"
         );
 
         client.cancel().await.unwrap();
@@ -4127,7 +4112,7 @@ mod tests {
             .unwrap()
             .join("dcert");
         if !dcert_path.exists() {
-            eprintln!("Skipping test: dcert binary not found at {:?}", dcert_path);
+            eprintln!("Skipping test: dcert binary not found at {dcert_path:?}");
             return;
         }
 
@@ -4159,7 +4144,7 @@ mod tests {
             )
             .await;
 
-        assert!(result.is_ok(), "Tool call should succeed: {:?}", result);
+        assert!(result.is_ok(), "Tool call should succeed: {result:?}");
         let response = result.unwrap();
         let text = response
             .content
@@ -4221,8 +4206,7 @@ mod tests {
             .unwrap_or("");
         assert!(
             text.contains("must not be empty"),
-            "Error should mention empty target: {}",
-            text
+            "Error should mention empty target: {text}"
         );
 
         client.cancel().await.unwrap();
@@ -4304,7 +4288,7 @@ mod tests {
         // Build a string where MAX_OUTPUT_SIZE falls in the middle of a multi-byte char.
         // '€' is 3 bytes in UTF-8. Fill up to just before MAX_OUTPUT_SIZE, then add '€'.
         let padding = "a".repeat(MAX_OUTPUT_SIZE - 1);
-        let input = format!("{}€extra", padding); // '€' starts at MAX_OUTPUT_SIZE-1
+        let input = format!("{padding}€extra"); // '€' starts at MAX_OUTPUT_SIZE-1
         let result = truncate_output(input);
         assert!(result.contains("output truncated"));
         // Must not panic — the key property being tested
@@ -4360,8 +4344,7 @@ mod tests {
             .unwrap_or("");
         assert!(
             text.contains("must not be greater than"),
-            "Error should mention TLS version ordering: {}",
-            text
+            "Error should mention TLS version ordering: {text}"
         );
 
         client.cancel().await.unwrap();
@@ -4414,11 +4397,7 @@ mod tests {
             .and_then(|c| c.as_text())
             .map(|t| t.text.as_str())
             .unwrap_or("");
-        assert!(
-            text.contains("at most 3650"),
-            "Error should mention days limit: {}",
-            text
-        );
+        assert!(text.contains("at most 3650"), "Error should mention days limit: {text}");
 
         client.cancel().await.unwrap();
         server_handle.abort();
@@ -4518,7 +4497,7 @@ mod tests {
         };
         let msg = format_timeout_error(&config);
         assert!(msg.contains("120s"), "should mention timeout duration");
-        assert!(msg.contains("proxy"), "should mention proxy: {}", msg);
+        assert!(msg.contains("proxy"), "should mention proxy: {msg}");
         assert!(msg.contains("DCERT_MCP_TIMEOUT"), "should mention env var");
         assert!(msg.contains("NO_PROXY"), "should mention NO_PROXY");
     }
@@ -4540,8 +4519,7 @@ mod tests {
         assert!(msg.contains("60s"));
         assert!(
             msg.contains("No proxy configured"),
-            "should hint to set HTTPS_PROXY: {}",
-            msg
+            "should hint to set HTTPS_PROXY: {msg}"
         );
         assert!(msg.contains("HTTPS_PROXY"));
     }
@@ -4566,8 +4544,7 @@ mod tests {
         let err = params.validate().unwrap_err();
         assert!(
             err.contains("ldap_username"),
-            "Error should mention ldap_username: {}",
-            err
+            "Error should mention ldap_username: {err}"
         );
     }
 
@@ -4580,8 +4557,7 @@ mod tests {
         let err = params.validate().unwrap_err();
         assert!(
             err.contains("ldap_password"),
-            "Error should mention ldap_password: {}",
-            err
+            "Error should mention ldap_password: {err}"
         );
     }
 
@@ -4604,8 +4580,7 @@ mod tests {
         let err = params.validate().unwrap_err();
         assert!(
             err.contains("approle_role_id"),
-            "Error should mention approle_role_id: {}",
-            err
+            "Error should mention approle_role_id: {err}"
         );
     }
 
@@ -4618,8 +4593,7 @@ mod tests {
         let err = params.validate().unwrap_err();
         assert!(
             err.contains("approle_secret_id"),
-            "Error should mention approle_secret_id: {}",
-            err
+            "Error should mention approle_secret_id: {err}"
         );
     }
 
@@ -4638,7 +4612,7 @@ mod tests {
         let mut params = VaultParams::default();
         params.auth_method = Some("invalid".to_string());
         let err = params.validate().unwrap_err();
-        assert!(err.contains("Invalid auth_method"), "Error: {}", err);
+        assert!(err.contains("Invalid auth_method"), "Error: {err}");
     }
 
     #[test]

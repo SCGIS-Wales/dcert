@@ -195,7 +195,7 @@ pub fn create_csr(opts: &CsrCreateOptions, csr_path: &str, key_path: &str) -> Re
             // For Ed25519/Ed448, OpenSSL expects a null digest
             req_builder
                 .sign(&pkey, MessageDigest::null())
-                .with_context(|| "Failed to sign CSR with Ed25519")?
+                .with_context(|| "Failed to sign CSR with Ed25519")?;
         }
     };
 
@@ -203,7 +203,7 @@ pub fn create_csr(opts: &CsrCreateOptions, csr_path: &str, key_path: &str) -> Re
 
     // Serialize CSR
     let csr_pem = req.to_pem().with_context(|| "Failed to encode CSR as PEM")?;
-    fs::write(csr_path, &csr_pem).with_context(|| format!("Failed to write CSR to: {}", csr_path))?;
+    fs::write(csr_path, &csr_pem).with_context(|| format!("Failed to write CSR to: {csr_path}"))?;
 
     // Serialize private key
     let key_pem = if opts.encrypt_key {
@@ -214,7 +214,7 @@ pub fn create_csr(opts: &CsrCreateOptions, csr_path: &str, key_path: &str) -> Re
         pkey.private_key_to_pem_pkcs8()
             .with_context(|| "Failed to encode private key as PEM")?
     };
-    fs::write(key_path, &key_pem).with_context(|| format!("Failed to write private key to: {}", key_path))?;
+    fs::write(key_path, &key_pem).with_context(|| format!("Failed to write private key to: {key_path}"))?;
     restrict_file_permissions(key_path);
 
     // Build subject string for display
@@ -359,15 +359,15 @@ pub fn interactive_create() -> Result<(CsrCreateOptions, String, String)> {
 
     let mut sans: Vec<String> = Vec::new();
     // Auto-add CN as a SAN
-    let cn_san = format!("DNS:{}", cn);
+    let cn_san = format!("DNS:{cn}");
     sans.push(cn_san);
-    eprintln!("  Auto-added: DNS:{}", cn);
+    eprintln!("  Auto-added: DNS:{cn}");
 
     loop {
         let label = "Additional SAN [press Enter to finish]";
         match prompt_optional(label)? {
             Some(san) => {
-                let san = if san.contains(':') { san } else { format!("DNS:{}", san) };
+                let san = if san.contains(':') { san } else { format!("DNS:{san}") };
                 sans.push(san);
             }
             None => break,
@@ -406,8 +406,8 @@ pub fn interactive_create() -> Result<(CsrCreateOptions, String, String)> {
     // Output paths
     eprintln!("\n--- Output Files ---");
     let default_base = cn.replace('*', "wildcard").replace('.', "-");
-    let default_csr = format!("{}.csr", default_base);
-    let default_key = format!("{}.key", default_base);
+    let default_csr = format!("{default_base}.csr");
+    let default_key = format!("{default_base}.key");
     let csr_path = prompt_with_default("CSR output file", &default_csr)?;
     let key_path = prompt_with_default("Key output file", &default_key)?;
 
@@ -415,10 +415,7 @@ pub fn interactive_create() -> Result<(CsrCreateOptions, String, String)> {
     if let Some(ref c) = country
         && (c.len() != 2 || !c.chars().all(|ch| ch.is_ascii_uppercase()))
     {
-        eprintln!(
-            "\nWARNING: Country code '{}' should be a 2-letter ISO 3166 code (e.g., GB, US)",
-            c
-        );
+        eprintln!("\nWARNING: Country code '{c}' should be a 2-letter ISO 3166 code (e.g., GB, US)");
     }
 
     let subject = CsrSubject {
@@ -445,7 +442,7 @@ pub fn interactive_create() -> Result<(CsrCreateOptions, String, String)> {
 pub(crate) fn prompt_required(label: &str) -> Result<String> {
     use std::io::{self, Write};
     loop {
-        eprint!("{}: ", label);
+        eprint!("{label}: ");
         io::stderr().flush().ok();
         let mut input = String::new();
         io::stdin()
@@ -461,7 +458,7 @@ pub(crate) fn prompt_required(label: &str) -> Result<String> {
 
 pub(crate) fn prompt_optional(label: &str) -> Result<Option<String>> {
     use std::io::{self, Write};
-    eprint!("{}: ", label);
+    eprint!("{label}: ");
     io::stderr().flush().ok();
     let mut input = String::new();
     io::stdin()
@@ -473,7 +470,7 @@ pub(crate) fn prompt_optional(label: &str) -> Result<Option<String>> {
 
 pub(crate) fn prompt_with_default(label: &str, default: &str) -> Result<String> {
     use std::io::{self, Write};
-    eprint!("{} [{}]: ", label, default);
+    eprint!("{label} [{default}]: ");
     io::stderr().flush().ok();
     let mut input = String::new();
     io::stdin()
@@ -541,7 +538,7 @@ fn build_subject_name(subject: &CsrSubject) -> Result<X509Name> {
     for ou in &subject.organizational_units {
         builder
             .append_entry_by_text("OU", ou)
-            .with_context(|| format!("Failed to set OU: {}", ou))?;
+            .with_context(|| format!("Failed to set OU: {ou}"))?;
     }
     builder
         .append_entry_by_text("CN", &subject.common_name)
@@ -568,23 +565,23 @@ fn select_digest(algo: KeyAlgorithm) -> Option<MessageDigest> {
 fn format_subject_name(subject: &CsrSubject) -> String {
     let mut parts = Vec::new();
     if let Some(ref c) = subject.country {
-        parts.push(format!("C={}", c));
+        parts.push(format!("C={c}"));
     }
     if let Some(ref st) = subject.state {
-        parts.push(format!("ST={}", st));
+        parts.push(format!("ST={st}"));
     }
     if let Some(ref l) = subject.locality {
-        parts.push(format!("L={}", l));
+        parts.push(format!("L={l}"));
     }
     if let Some(ref o) = subject.organization {
-        parts.push(format!("O={}", o));
+        parts.push(format!("O={o}"));
     }
     for ou in &subject.organizational_units {
-        parts.push(format!("OU={}", ou));
+        parts.push(format!("OU={ou}"));
     }
     parts.push(format!("CN={}", subject.common_name));
     if let Some(ref email) = subject.email {
-        parts.push(format!("emailAddress={}", email));
+        parts.push(format!("emailAddress={email}"));
     }
     parts.join(", ")
 }
@@ -614,8 +611,7 @@ fn extract_subject_info(name: &X509NameRef) -> CsrSubjectInfo {
 fn extract_pubkey_info(pkey: &PKey<openssl::pkey::Public>) -> (String, u32) {
     let algo = if pkey.rsa().is_ok() {
         "RSA".to_string()
-    } else if pkey.ec_key().is_ok() {
-        let ec = pkey.ec_key().unwrap();
+    } else if let Ok(ec) = pkey.ec_key() {
         let nid = ec.group().curve_name();
         match nid {
             Some(Nid::X9_62_PRIME256V1) => "ECDSA P-256".to_string(),
@@ -637,7 +633,7 @@ fn extract_signature_algorithm(req: &X509Req) -> String {
     if let Ok(pem_data) = req.to_pem() {
         let pem_str = String::from_utf8_lossy(&pem_data);
         // Re-parse to get the DER bytes and inspect
-        if let Ok(parsed_req) = openssl::x509::X509Req::from_pem(pem_str.as_bytes()) {
+        if let Ok(parsed_req) = X509Req::from_pem(pem_str.as_bytes()) {
             // Use the to_text() method if available, otherwise infer from key type
             if let Ok(text) = parsed_req.to_text() {
                 let text_str = String::from_utf8_lossy(&text);
@@ -710,8 +706,7 @@ fn check_key_compliance(algo: &str, bits: u32, findings: &mut Vec<CsrFinding>) {
                 severity: Severity::Error,
                 category: "Key Size".to_string(),
                 message: format!(
-                    "RSA key size {} bits is below the minimum 2048 bits required by CA/Browser Forum Baseline Requirements",
-                    bits
+                    "RSA key size {bits} bits is below the minimum 2048 bits required by CA/Browser Forum Baseline Requirements"
                 ),
             });
         } else if bits == 2048 {
@@ -724,7 +719,7 @@ fn check_key_compliance(algo: &str, bits: u32, findings: &mut Vec<CsrFinding>) {
             findings.push(CsrFinding {
                 severity: Severity::Info,
                 category: "Key Size".to_string(),
-                message: format!("RSA {} bits — strong key size", bits),
+                message: format!("RSA {bits} bits — strong key size"),
             });
         }
         // Suggest ECDSA as modern alternative
@@ -738,20 +733,20 @@ fn check_key_compliance(algo: &str, bits: u32, findings: &mut Vec<CsrFinding>) {
             findings.push(CsrFinding {
                 severity: Severity::Error,
                 category: "Key Size".to_string(),
-                message: format!("EC key size {} bits is below the minimum 256 bits", bits),
+                message: format!("EC key size {bits} bits is below the minimum 256 bits"),
             });
         } else {
             findings.push(CsrFinding {
                 severity: Severity::Info,
                 category: "Key Size".to_string(),
-                message: format!("{} {} bits — excellent choice for modern deployments", algo, bits),
+                message: format!("{algo} {bits} bits — excellent choice for modern deployments"),
             });
         }
     } else {
         findings.push(CsrFinding {
             severity: Severity::Warning,
             category: "Key Algorithm".to_string(),
-            message: format!("Unknown key algorithm: {}. Verify CA support.", algo),
+            message: format!("Unknown key algorithm: {algo}. Verify CA support."),
         });
     }
 }
@@ -771,10 +766,7 @@ fn check_subject_compliance(subject: &CsrSubjectInfo, findings: &mut Vec<CsrFind
         findings.push(CsrFinding {
             severity: Severity::Error,
             category: "Subject".to_string(),
-            message: format!(
-                "Country code '{}' is not a valid 2-letter ISO 3166 code (e.g., GB, US, DE)",
-                country
-            ),
+            message: format!("Country code '{country}' is not a valid 2-letter ISO 3166 code (e.g., GB, US, DE)"),
         });
     }
 
@@ -814,8 +806,7 @@ fn check_san_compliance(sans: &[String], cn: &Option<String>, findings: &mut Vec
                     severity: Severity::Warning,
                     category: "SAN".to_string(),
                     message: format!(
-                        "CN '{}' is not included in SANs. Best practice is to include the CN as a SAN entry.",
-                        cn_val
+                        "CN '{cn_val}' is not included in SANs. Best practice is to include the CN as a SAN entry."
                     ),
                 });
             }
@@ -847,7 +838,7 @@ fn check_signature_algorithm_compliance(sig_algo: &str, findings: &mut Vec<CsrFi
         findings.push(CsrFinding {
             severity: Severity::Info,
             category: "Signature Algorithm".to_string(),
-            message: format!("Signature algorithm '{}' is compliant", sig_algo),
+            message: format!("Signature algorithm '{sig_algo}' is compliant"),
         });
     }
 }
