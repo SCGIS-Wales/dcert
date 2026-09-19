@@ -12,6 +12,13 @@ on:
   pull_request:
     branches: [ main, develop ]
 
+# A newer push to the same branch supersedes an in-flight run, so a busy
+# branch does not queue behind its own older builds. Runs on main are never
+# cancelled: they carry the release.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -20,6 +27,7 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       matrix:
         rust: [ stable ]
@@ -57,6 +65,7 @@ jobs:
   security-audit:
     name: Security audit
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -76,20 +85,18 @@ jobs:
           key: ${{ runner.os }}-audit-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-audit-
 
-      - name: Install cargo-audit
-        run: cargo install cargo-audit
+      # Prebuilt binaries rather than `cargo install`, which rebuilt each
+      # tool from source on every run.
+      - name: Install audit tooling
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit,cargo-deny,cargo-cyclonedx
 
       - name: Run cargo audit
         run: cargo audit
 
-      - name: Install cargo-deny
-        run: cargo install cargo-deny
-
       - name: Run cargo deny
         run: cargo deny check
-
-      - name: Install cargo-cyclonedx (SBOM)
-        run: cargo install cargo-cyclonedx
 
       - name: Generate SBOM
         run: cargo cyclonedx --format json --all
@@ -102,8 +109,9 @@ jobs:
           if-no-files-found: warn
 
   python-lint:
-    name: Python lint
+    name: Python lint and types
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: python
@@ -116,21 +124,33 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install ruff
-        run: pip install ruff
+      # The dev extra pins ruff and mypy, so CI and a developer's machine run
+      # the same versions.
+      - name: Install package with dev dependencies
+        run: pip install -e ".[dev]"
 
+      # The build scripts live outside the package but ship with it, so they
+      # are linted and type checked under the same configuration.
       - name: Ruff check
-        run: ruff check src/ tests/
+        run: ruff check src tests ../scripts
 
       - name: Ruff format check
-        run: ruff format --check src/ tests/
+        run: ruff format --check src tests ../scripts
+
+      - name: Mypy (strict)
+        run: mypy
+
+      - name: Mypy (build scripts)
+        run: mypy --strict ../scripts/build_wheels.py
 
   python-test:
     name: Python test (${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.10", "3.12", "3.14"]
+        python-version: ["3.12", "3.13", "3.14"]
     defaults:
       run:
         working-directory: python
@@ -147,12 +167,15 @@ jobs:
       - name: Install package with dev dependencies
         run: pip install -e ".[dev]"
 
+      # Timeout, coverage target and the coverage gate live in pyproject.toml,
+      # so a local run enforces exactly what CI does.
       - name: Run tests with coverage
-        run: pytest -v --timeout=120 --cov=dcert --cov-report=term-missing --cov-report=xml:coverage.xml --cov-fail-under=80 tests/
+        run: pytest -v --cov-report=xml:coverage.xml
 
   wheel-builder-test:
     name: Wheel builder test
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -162,8 +185,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      # The build scripts read the packaged config.yaml for the platform table.
       - name: Install test dependencies
-        run: pip install pytest
+        run: pip install pytest pyyaml
 
       - name: Run wheel builder tests
         run: pytest -v scripts/test_build_wheels.py
@@ -174,6 +198,7 @@ jobs:
   wheel-install-test:
     name: Wheel install test (Ubuntu 22.04)
     runs-on: ubuntu-22.04
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -184,7 +209,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install test dependencies
-        run: pip install pytest build
+        run: pip install pytest build pyyaml
 
       - name: Run wheel install functional tests
         run: pytest -v scripts/test_wheel_install.py
@@ -192,6 +217,9 @@ jobs:
   python-build:
     name: Python build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [ auto-tag ]
+    if: always() && (needs.auto-tag.result == 'success' || needs.auto-tag.result == 'skipped')
     defaults:
       run:
         working-directory: python
@@ -204,20 +232,37 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Set Python package version
+        if: needs.auto-tag.outputs.version != ''
+        working-directory: .
+        run: |
+          VERSION="${{ needs.auto-tag.outputs.version }}"
+          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" python/pyproject.toml
+          sed -i "s/^__version__ = \".*\"/__version__ = \"$VERSION\"/" python/src/dcert/__init__.py
+
       - name: Install build tools
         run: pip install build twine
 
+      # Builds both the sdist and the wheel. The sdist was previously built
+      # and then thrown away, so nothing but wheels reached PyPI.
       - name: Build package
         run: python -m build
 
       - name: Check package
         run: twine check dist/*
 
+      - name: Upload source distribution
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-sdist
+          path: python/dist/*.tar.gz
+
   # Integration tests: build the Rust binary and run Python integration tests
   # against the real dcert-mcp binary
   integration-test:
     name: Integration test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: python
@@ -271,6 +316,7 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     needs: [ test, security-audit ]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     outputs:
@@ -366,6 +412,7 @@ jobs:
     # Ubuntu 22.04+.  ubuntu-latest resolves to 24.04 (GLIBC 2.39) which
     # breaks dcert-mcp on older distros.
     runs-on: ubuntu-22.04
+    timeout-minutes: 45
     needs: [ test, auto-tag ]
     if: always() && needs.test.result == 'success' && (needs.auto-tag.result == 'success' || needs.auto-tag.result == 'skipped')
     strategy:
@@ -423,6 +470,7 @@ jobs:
   build-macos-intel:
     name: Build macOS Intel
     runs-on: macos-15-intel
+    timeout-minutes: 45
     needs: [ test, auto-tag ]
     if: always() && needs.test.result == 'success' && (needs.auto-tag.result == 'success' || needs.auto-tag.result == 'skipped')
     steps:
@@ -474,6 +522,7 @@ jobs:
   build-macos-arm:
     name: Build macOS ARM64
     runs-on: macos-latest
+    timeout-minutes: 45
     needs: [ test, auto-tag ]
     if: always() && needs.test.result == 'success' && (needs.auto-tag.result == 'success' || needs.auto-tag.result == 'skipped')
     steps:
@@ -525,6 +574,7 @@ jobs:
   build-windows:
     name: Build Windows x86_64
     runs-on: windows-latest
+    timeout-minutes: 60
     needs: [ test, auto-tag ]
     if: always() && needs.test.result == 'success' && (needs.auto-tag.result == 'success' || needs.auto-tag.result == 'skipped')
     steps:
@@ -591,6 +641,7 @@ jobs:
     needs: [ auto-tag, build-linux, build-macos-intel, build-macos-arm, build-windows, python-build ]
     if: always() && needs.python-build.result == 'success' && needs.build-linux.result == 'success' && needs.build-macos-intel.result == 'success' && needs.build-macos-arm.result == 'success' && needs.build-windows.result == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -610,9 +661,6 @@ jobs:
       - name: Install build tools
         run: pip install build
 
-      - name: Build universal wheel
-        run: python -m build --wheel python/
-
       - name: Download all release artifacts
         uses: actions/download-artifact@v8
         with:
@@ -623,25 +671,44 @@ jobs:
       - name: List release assets
         run: ls -la release-assets/
 
+      # Checksums are generated BEFORE the wheel is built. They are package
+      # data: build_wheels.py copies the universal wheel's contents verbatim
+      # into every platform wheel, so a wheel built first would ship the empty
+      # placeholder and the auto-download path could never verify a binary.
       - name: Generate checksums.json
         run: |
-          python3 -c "
-          import hashlib, json, os
-          checksums = {
-              'version': '${{ needs.auto-tag.outputs.version || '0.0.0' }}',
-              'archives': {}
-          }
-          assets_dir = 'release-assets'
-          for f in sorted(os.listdir(assets_dir)):
-              if f.startswith('dcert-') and (f.endswith('.tar.gz') or f.endswith('.zip')):
-                  path = os.path.join(assets_dir, f)
-                  sha = hashlib.sha256(open(path, 'rb').read()).hexdigest()
-                  checksums['archives'][f] = sha
-          with open('python/src/dcert/checksums.json', 'w') as out:
+          python3 - "${{ needs.auto-tag.outputs.version || '0.0.0' }}" <<'PYEOF'
+          import hashlib, json, os, sys
+
+          checksums = {"version": sys.argv[1], "archives": {}}
+          assets_dir = "release-assets"
+          for name in sorted(os.listdir(assets_dir)):
+              if name.startswith("dcert-") and name.endswith((".tar.gz", ".zip")):
+                  with open(os.path.join(assets_dir, name), "rb") as fh:
+                      checksums["archives"][name] = hashlib.file_digest(fh, "sha256").hexdigest()
+          if not checksums["archives"]:
+              sys.exit("no release archives found; refusing to ship empty checksums")
+          with open("python/src/dcert/checksums.json", "w") as out:
               json.dump(checksums, out, indent=2)
-              out.write('\n')
+              out.write("\n")
           print(json.dumps(checksums, indent=2))
-          "
+          PYEOF
+
+      - name: Build universal wheel
+        run: python -m build --wheel python/
+
+      - name: Verify checksums are inside the wheel
+        run: |
+          python3 - <<'PYEOF'
+          import glob, json, sys, zipfile
+
+          wheel = sorted(glob.glob("python/dist/dcert-*.whl"))[-1]
+          with zipfile.ZipFile(wheel) as zf:
+              data = json.loads(zf.read("dcert/checksums.json"))
+          if not data.get("archives"):
+              sys.exit(f"{wheel} ships checksums with no archives")
+          print(f"{wheel} carries {len(data['archives'])} checksums for version {data['version']}")
+          PYEOF
 
       - name: Build platform-specific wheels
         run: |
@@ -671,6 +738,7 @@ jobs:
     name: Build & Push Docker Image
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [ auto-tag, build-linux ]
     permissions:
       contents: read
@@ -725,6 +793,7 @@ jobs:
     if: needs.auto-tag.outputs.created == 'true'
     needs: [ auto-tag, build-linux, build-macos-intel, build-macos-arm ]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -854,6 +923,7 @@ jobs:
     if: needs.auto-tag.outputs.created == 'true'
     needs: [ auto-tag, test, security-audit, build-linux, build-macos-intel, build-macos-arm, build-windows, create-homebrew-formula ]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: write
       packages: write
@@ -1013,6 +1083,7 @@ jobs:
   test-chocolatey-package:
     name: Test Chocolatey package (install/uninstall)
     runs-on: windows-latest
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -1114,6 +1185,7 @@ jobs:
     if: needs.auto-tag.outputs.created == 'true'
     needs: [ auto-tag, build-windows, release ]
     runs-on: windows-latest
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -1177,6 +1249,7 @@ jobs:
     if: needs.auto-tag.outputs.created == 'true'
     needs: [ auto-tag, create-chocolatey-package ]
     runs-on: windows-latest
+    timeout-minutes: 20
     permissions:
       contents: read
     env:
@@ -1241,6 +1314,7 @@ jobs:
     if: needs.auto-tag.outputs.created == 'true'
     needs: [ auto-tag, release, python-lint, python-test, python-build, build-platform-wheels, integration-test, wheel-install-test ]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       id-token: write
     environment:
@@ -1262,10 +1336,10 @@ jobs:
       - name: Download source distribution
         uses: actions/download-artifact@v8
         with:
-          pattern: python-wheel-universal
-          path: sdist-tmp/
+          name: python-sdist
+          path: dist/
 
-      - name: List wheels to publish
+      - name: List distributions to publish
         run: ls -la dist/
 
       # PyPI publishing occasionally fails on transient upstream errors — most
