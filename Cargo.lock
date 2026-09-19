@@ -555,7 +555,7 @@ checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
 
 [[package]]
 name = "dcert"
-version = "3.0.45"
+version = "3.0.46"
 dependencies = [
  "anyhow",
  "axum",
