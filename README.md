@@ -25,6 +25,8 @@
   - [dcert convert -- Format Conversion](#dcert-convert--format-conversion)
   - [dcert verify-key -- Key Matching](#dcert-verify-key--key-matching)
   - [dcert vault -- HashiCorp Vault PKI](#dcert-vault--hashicorp-vault-pki)
+  - [dcert diagnose -- CloudFront, mTLS and Proxy Diagnostics](#dcert-diagnose--cloudfront-mtls-and-proxy-diagnostics)
+  - [dcert kb -- Diagnostics Knowledge Base](#dcert-kb--diagnostics-knowledge-base)
 - [MCP Server (AI IDE Integration)](#mcp-server-ai-ide-integration)
   - [Proxy and Timeout Configuration](#proxy-and-timeout-configuration)
   - [Troubleshooting](#troubleshooting)
@@ -72,6 +74,9 @@ dcert vault issue --cn www.example.com --role my-role
 
 # Renew a certificate stored in Vault KV
 dcert vault renew secret/certs/www-example-com --role my-role
+
+# Diagnose why a CloudFront endpoint, mTLS handshake or proxy is failing
+dcert diagnose https://api.example.com
 ```
 
 ## Installation
@@ -148,6 +153,8 @@ dcert csr create [OPTIONS]             # Create a CSR and private key
 dcert csr validate <CSR_FILE>          # Validate a CSR for compliance
 dcert convert <MODE> [OPTIONS]         # Format conversion (PFX/PEM/keystore/truststore)
 dcert verify-key <target> --key <KEY>  # Key-certificate matching (single pair)
+dcert diagnose <target> [OPTIONS]      # CloudFront, mTLS and forward proxy diagnostics
+dcert kb <list|show|validate|schema>   # Inspect the diagnostics knowledge base
 dcert verify-key [--dir <DIR>]         # Auto-discover and verify all cert/key pairs
 dcert vault issue [OPTIONS]            # Issue a TLS certificate from Vault PKI
 dcert vault sign [OPTIONS]             # Sign a CSR using Vault PKI
@@ -939,11 +946,111 @@ dcert vault renew [OPTIONS] <PATH>
 
 ---
 
+### dcert diagnose -- CloudFront, mTLS and Proxy Diagnostics
+
+`dcert diagnose` probes a target the way `dcert check` does, then explains **why** it failed. It captures the TLS handshake, the certificate chain and its trust anchor, the HTTP status, response headers and a bounded body excerpt, plus the forward-proxy `CONNECT` reply and the local proxy environment, and scores that evidence against a knowledge base of failure signatures.
+
+```bash
+# Explain a failing endpoint
+dcert diagnose https://api.example.com
+
+# Machine-readable, for a CI gate or a ticket
+dcert diagnose https://api.example.com --format json
+
+# Probe an mTLS endpoint with a client identity
+dcert diagnose https://api.example.com --client-cert client.pem --key client.key
+
+# Probe a specific origin behind the distribution
+dcert diagnose https://api.example.com --connect-to origin.internal:8443
+```
+
+Findings are reported earliest layer first, so the primary attribution names the hop that actually failed:
+
+| Layer | What it covers |
+|-------|----------------|
+| Local proxy environment | `HTTP_PROXY` set without `HTTPS_PROXY`, unreachable proxy, TLS spoken to a plain proxy port |
+| Proxy `CONNECT` | 407 authentication, 403 policy denial, 5xx upstream failure (including `X-Squid-Error`), `CONNECT` not supported, captive portal |
+| TLS handshake | No common protocol version or cipher, SNI not served, CloudFront's default `*.cloudfront.net` certificate, incomplete chain |
+| Viewer mTLS | Client certificate required but absent, unknown CA, expired, or rejected after validation |
+| TLS interception | Chain re-signed by a known inspection product (Zscaler, Netskope, Umbrella, FortiGate, Palo Alto, Blue Coat, Forcepoint and others), or a public hostname anchored to a private root |
+| CloudFront edge | Alternate domain not configured, AWS WAF block, geo restriction, missing or invalid signed URL, origin DNS failure, origin TLS failure, origin timeout, Lambda@Edge and CloudFront Functions errors, capacity |
+| Origin | S3 access denied or missing key, API Gateway errors, any origin status forwarded by the edge, origin mTLS not enabled on the distribution |
+
+Each finding carries a confidence figure, the evidence that matched, remediation steps and a link to the authoritative documentation:
+
+```
+=== Diagnosis ===
+PRIMARY   CloudFront could not complete TLS with the origin [cloudfront.edge.origin-tls-failure] (CloudFront edge, 95% confidence)
+    CloudFront reached the origin but the TLS negotiation failed or the origin closed the
+    connection. ...
+    Evidence:
+      - HTTP status 502
+      - body contains "attempted to establish a connection with the origin, ..."
+      - header x-cache: Error from cloudfront
+    Next steps:
+      - Probe the origin directly with dcert, using --connect-to if its DNS name differs, ...
+```
+
+The same `diagnosis` array is added to `dcert check` output in every format, so existing checks gain the explanation without changing command. Pass `--no-diagnose` to skip the pass.
+
+**Related options**
+
+| Option | Description |
+|--------|-------------|
+| `--body-limit <BYTES>` | Response body bytes captured for diagnostics (default 16384, 0 disables) |
+| `--show-body` | Include the captured body excerpt in output even when no finding cites it |
+| `--no-diagnose` | Skip the diagnostics pass entirely |
+| `--kb-file <PATH>` | Merge an extra knowledge base file over the built-in one (also `DCERT_KB_FILE`) |
+
+> The body excerpt is treated as evidence, not output: it is emitted only when a finding cites it or `--show-body` is set.
+
+### dcert kb -- Diagnostics Knowledge Base
+
+The knowledge base is data, not code: a versioned YAML catalogue embedded at build time and extendable at runtime, so a team can add its own signatures without waiting for a release.
+
+```bash
+dcert kb list                                   # every entry: id, layer, title
+dcert kb show cloudfront.edge.waf-blocked       # one entry in full
+dcert kb validate my-entries.yaml               # schema, unique ids, regex check
+dcert kb schema > schema.json                   # JSON schema for editor validation
+
+# Use extra entries for a single run, or export DCERT_KB_FILE
+dcert diagnose https://api.example.com --kb-file my-entries.yaml
+```
+
+An entry declares weighted signals over the captured evidence, the root cause, remediation steps and references. An entry whose `id` matches a built-in one replaces it:
+
+```yaml
+version: 1
+entries:
+  - id: org.edge.custom-block-page
+    title: Blocked by the corporate edge
+    layer: edge_http
+    category: cloudfront
+    weight: 0.95
+    signals:
+      - type: status
+        codes: [403]
+        required: true
+      - type: body
+        pattern: '(?i)blocked by acme security'
+        required: true
+        weight: 3
+    root_cause: >
+      The corporate edge returned its block page rather than forwarding the request.
+    remediation:
+      - Raise a request to allow list the destination.
+    references:
+      - https://intranet.example.com/edge-policy
+```
+
+---
+
 ## MCP Server (AI IDE Integration)
 
 `dcert-mcp` is a Model Context Protocol server that exposes dcert's capabilities as tools for AI-powered IDEs. It supports two transport modes: **stdio** (default, for IDE integration) and **HTTP** (for remote deployment with optional OIDC/OAuth2 authentication).
 
-It implements the current MCP specification revision (**2025-11-25**) via the `rmcp` SDK. On the HTTP transport it negotiates the protocol version with the client: it echoes the client's requested version when supported and otherwise advertises the latest version it implements.
+It implements the current MCP specification revision (**2025-11-25**) via the `rmcp` SDK. Both transports are served by the SDK, so the HTTP transport exposes the same tools, schemas, session handling and protocol negotiation as stdio.
 
 ### Tools
 
@@ -957,6 +1064,7 @@ It implements the current MCP specification revision (**2025-11-25**) via the `r
 | `export_pem` | Export TLS certificate chain from an HTTPS endpoint as PEM. Optionally saves to file and can exclude expired certs. Supports mTLS. |
 | `create_csr` | Create a PKCS#10 CSR and private key. Supports RSA/ECDSA, OU metadata, and encrypted keys. Compliant with CA/B Forum, DigiCert, and X9 standards. |
 | `validate_csr` | Validate a CSR for compliance with CA/B Forum Baseline Requirements, DigiCert, and X9 standards. Returns findings with severity levels. |
+| `diagnose_endpoint` | Diagnose why an endpoint fails: CloudFront edge and origin errors, viewer and origin mTLS, forward proxy failures and TLS interception. Returns findings ordered earliest layer first with confidence, evidence and remediation. |
 | `validate_certificate` | Run compliance checks on a certificate (PEM file or HTTPS endpoint). Checks key size, signature algorithm, validity period, SANs, CT, EKU, and Basic Constraints against CA/B Forum standards. |
 | `verify_key_match` | Verify that a private key matches a certificate (PEM file or HTTPS endpoint). |
 | `verify_key_auto_discover` | Auto-discover and verify all matching cert/key pairs in a directory. |
@@ -1223,10 +1331,31 @@ dcert-mcp --mode http
 ```
 
 The HTTP server exposes:
-- `GET /health` — health check endpoint
-- `POST /mcp` — JSON-RPC endpoint for MCP tool calls
+- `GET /health` — health check endpoint, deliberately outside authentication so probes need no token
+- `/mcp` — the MCP streamable HTTP endpoint (every tool, same schemas as stdio)
 
 > **Security:** the HTTP transport exposes cert tooling that spawns subprocesses. If no authentication is configured (neither `DCERT_MCP_OIDC_ISSUER` nor `DCERT_MCP_AUTH_TOKEN`), `dcert-mcp` **refuses to start when binding to a non-loopback address** (e.g. the default `0.0.0.0:3000`). Either configure authentication, bind to `127.0.0.1`, or set `DCERT_MCP_ALLOW_INSECURE=1` to explicitly opt in to an unauthenticated public bind (not recommended). Unauthenticated binds to loopback are always allowed.
+
+The transport also validates the `Host` header against an allowlist (loopback names and the bind address by default) to defeat DNS rebinding, rejects cross-origin requests unless `DCERT_MCP_ALLOWED_ORIGINS` names the origin, and bounds every request with a concurrency limit, a timeout and a body size limit. Both transports shut down gracefully on `SIGINT` and `SIGTERM`.
+
+#### Per-tool authorization
+
+A token that is admitted to the server is not automatically allowed to call every tool. Scope requirements can be set per tool, or in bulk for the tools that change state:
+
+```bash
+# Reading is open to any authenticated caller; writes need a scope; revocation needs more
+DCERT_MCP_SCOPE_WRITE="pki.write" \
+DCERT_MCP_SCOPE_VAULT_REVOKE="pki.admin" \
+dcert-mcp --mode http
+```
+
+| Variable | Applies to |
+|----------|-----------|
+| `DCERT_MCP_SCOPE_<TOOL>` | One named tool, e.g. `DCERT_MCP_SCOPE_VAULT_REVOKE` |
+| `DCERT_MCP_SCOPE_WRITE` | Every tool that changes state (issue, sign, revoke, store, renew, convert, keystore, truststore, CSR, export) |
+| `DCERT_MCP_SCOPE_READ` | Every read-only tool |
+
+Any listed scope or role satisfies the requirement. A tool with no applicable rule is allowed, so existing deployments keep working until a policy is set.
 
 #### Authentication (OIDC/OAuth2)
 
@@ -1252,6 +1381,15 @@ OIDC tokens are validated against JWKS (JSON Web Key Sets) with automatic key ro
 | `DCERT_MCP_AUTH_TOKEN` | Static bearer token (lower priority than OIDC) |
 | `DCERT_MCP_ALLOWED_ORIGINS` | Comma-separated CORS allowlist for HTTP mode. Unset = no cross-origin access (default); `*` allows any origin (not recommended) |
 | `DCERT_MCP_ALLOW_INSECURE` | Set to `1` to allow starting HTTP mode unauthenticated on a non-loopback address (not recommended) |
+| `DCERT_MCP_ALLOWED_HOSTS` | Comma-separated `Host` header allowlist (default: loopback names and the bind address) |
+| `DCERT_MCP_SCOPE_WRITE` / `_READ` / `_<TOOL>` | Scopes or roles required per tool (see above) |
+| `DCERT_MCP_JWKS_TTL` | How long JWKS keys stay cached, in seconds (default: 3600) |
+| `DCERT_MCP_MAX_CONCURRENT_REQUESTS` | Concurrent in-flight HTTP requests (default: 64) |
+| `DCERT_MCP_REQUEST_TIMEOUT` | Per-request timeout in seconds (default: 120) |
+| `DCERT_MCP_MAX_BODY_BYTES` | Maximum request body size (default: 1048576) |
+| `DCERT_MCP_FILE_ROOT` | Directory that tool file parameters are confined to (default: the server's working directory) |
+| `DCERT_MCP_VAULT_ADDR_ALLOWLIST` | Comma-separated Vault addresses a tool call may target |
+| `DCERT_MCP_VAULT_ALLOW_SKIP_VERIFY` | Set to `1` to let a tool call disable Vault TLS verification (refused by default) |
 
 The server also reads a few non-auth environment variables: `DCERT_MCP_MODE` (`stdio`/`http`, alternative to `--mode`), `DCERT_MCP_ADDR` (bind address, alternative to `--addr`), and `DCERT_MCP_DEBUG` (pass `--debug` to the `dcert` subprocess).
 
