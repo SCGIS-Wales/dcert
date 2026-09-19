@@ -1816,6 +1816,56 @@ fn test_diagnose_identifies_cloudfront_origin_dns_failure() {
 }
 
 #[test]
+fn test_diagnose_output_carries_the_body_excerpt() {
+    // Several knowledge base entries tell the reader to look at the body
+    // excerpt, naming --show-body. That advice is printed by this subcommand,
+    // so the excerpt has to reach this subcommand's output and not only
+    // `check`'s.
+    let port = spawn_loopback_tls_server_with(CLOUDFRONT_502);
+    let output = dcert_bin()
+        .args([
+            "diagnose",
+            &format!("https://127.0.0.1:{port}"),
+            "--no-verify",
+            "--noproxy",
+            "*",
+            "--show-body",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("failed to run dcert");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("JSON");
+    assert!(
+        parsed[0]["body_excerpt"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("could not be satisfied"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn test_diagnose_pretty_prints_the_body_excerpt() {
+    let port = spawn_loopback_tls_server_with(CLOUDFRONT_502);
+    let output = dcert_bin()
+        .args([
+            "diagnose",
+            &format!("https://127.0.0.1:{port}"),
+            "--no-verify",
+            "--noproxy",
+            "*",
+            "--show-body",
+        ])
+        .output()
+        .expect("failed to run dcert");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Response body:"), "{stdout}");
+    assert!(stdout.contains("could not be satisfied"), "{stdout}");
+}
+
+#[test]
 fn test_check_json_carries_headers_and_diagnosis_and_hides_body_by_default() {
     let port = spawn_loopback_tls_server_with(CLOUDFRONT_502);
     let output = dcert_bin()

@@ -320,6 +320,8 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
                             .map(|c| c.http_response_code)
                             .filter(|c| *c > 0),
                         diagnosis: result.diagnosis.clone(),
+                        body_excerpt: result.conn_info.as_ref().and_then(|c| c.http_body_excerpt.clone()),
+                        body_truncated: result.conn_info.as_ref().is_some_and(|c| c.http_body_truncated),
                     });
                 }
                 // Promote to CLIENT_CERT_ERROR when the server demanded an mTLS
@@ -352,6 +354,9 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
                             error: Some(format!("{e:#}")),
                             http_status: None,
                             diagnosis: report.findings,
+                            // A probe that failed outright never read a body.
+                            body_excerpt: None,
+                            body_truncated: false,
                         });
                     } else if !report.findings.is_empty() && matches!(args.format, OutputFormat::Pretty) {
                         // Failed probes have no stdout record; keep the
@@ -1214,6 +1219,13 @@ struct DiagnoseOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     http_status: Option<u16>,
     diagnosis: Vec<diagnose::Diagnosis>,
+    /// The response body the findings were matched against. Carried here
+    /// because several entries tell the reader to look at it, so `--show-body`
+    /// has to mean something on this subcommand and not only on `check`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    body_excerpt: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    body_truncated: bool,
 }
 
 fn print_diagnose_output_pretty(items: &[DiagnoseOutput]) {
@@ -1231,6 +1243,16 @@ fn print_diagnose_output_pretty(items: &[DiagnoseOutput]) {
             println!();
         } else {
             output::print_diagnosis_pretty(&item.diagnosis);
+        }
+        if let Some(body) = &item.body_excerpt {
+            println!("{}", "Response body:".bold());
+            for line in body.lines() {
+                println!("  {line}");
+            }
+            if item.body_truncated {
+                println!("  {}", "[truncated at --body-limit]".dimmed());
+            }
+            println!();
         }
     }
 }
