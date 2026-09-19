@@ -25,17 +25,50 @@ pub(crate) fn validate_target(target: &str) -> Result<(), String> {
 /// Root directory tool file parameters must stay inside. Defaults to the
 /// server's working directory; operators widen or move it with
 /// `DCERT_MCP_FILE_ROOT`.
-pub(crate) fn file_root() -> std::path::PathBuf {
-    std::env::var_os("DCERT_MCP_FILE_ROOT")
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::current_dir().ok())
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
+pub(crate) fn file_roots() -> Vec<std::path::PathBuf> {
+    if let Some(raw) = std::env::var_os("DCERT_MCP_FILE_ROOT") {
+        let roots: Vec<std::path::PathBuf> = raw
+            .to_string_lossy()
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(std::path::PathBuf::from)
+            .collect();
+        if !roots.is_empty() {
+            return roots;
+        }
+    }
+    // Two roots by default: where the server was started (the project an IDE
+    // has open) and the system scratch directory. Both are places a user
+    // naturally asks for certificate files. Everything else, including
+    // `/etc` and `~/.ssh`, needs an explicit `DCERT_MCP_FILE_ROOT`.
+    let mut roots = Vec::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        roots.push(cwd);
+    }
+    roots.push(std::env::temp_dir());
+    roots
+}
+
+/// Canonicalise a path as far as its existing prefix allows, so a symlink in
+/// the middle of the path cannot point outside an allowed root while the
+/// final component does not exist yet.
+fn resolve_existing_prefix(path: &std::path::Path) -> std::path::PathBuf {
+    let mut probe = path.to_path_buf();
+    while !probe.exists() {
+        if !probe.pop() {
+            break;
+        }
+    }
+    probe.canonicalize().unwrap_or(probe)
 }
 
 /// Validate a file path parameter to prevent argument injection and path
-/// traversal. Relative paths are resolved against [`file_root`]; absolute
-/// paths are accepted only when they lie inside it, so a tool call cannot
-/// read `/etc/shadow` or write into `~/.ssh` on the host running the server.
+/// traversal, and confine it to the allowed roots.
+///
+/// Relative paths resolve against the first root; absolute paths are accepted
+/// only when they lie inside one of them. A tool call therefore cannot read
+/// `/etc/shadow` or write into `~/.ssh` on the host running the server.
 pub(crate) fn validate_path(path: &str, param_name: &str) -> Result<(), String> {
     if path.is_empty() {
         return Err(format!("{param_name} must not be empty"));
@@ -50,29 +83,34 @@ pub(crate) fn validate_path(path: &str, param_name: &str) -> Result<(), String> 
     if p.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
         return Err(format!("{param_name} must not contain '..' path traversal sequences"));
     }
-    let root = file_root();
-    let root_canon = root.canonicalize().unwrap_or(root.clone());
+
+    let roots: Vec<std::path::PathBuf> = file_roots()
+        .into_iter()
+        .map(|r| r.canonicalize().unwrap_or(r))
+        .collect();
+    let Some(first) = roots.first() else {
+        return Err(format!(
+            "{param_name} cannot be validated: no allowed root is configured"
+        ));
+    };
+
     let joined = if p.is_absolute() {
         p.to_path_buf()
     } else {
-        root_canon.join(p)
+        first.join(p)
     };
-    // Canonicalise as far as the existing prefix allows so a symlink inside the
-    // root cannot point back outside it.
-    let mut probe = joined.clone();
-    while !probe.exists() {
-        if !probe.pop() {
-            break;
-        }
+    let resolved = resolve_existing_prefix(&joined);
+    if roots.iter().any(|root| resolved.starts_with(root)) {
+        return Ok(());
     }
-    let resolved_prefix = probe.canonicalize().unwrap_or(probe);
-    if !resolved_prefix.starts_with(&root_canon) {
-        return Err(format!(
-            "{param_name} '{path}' is outside the allowed root {} (set DCERT_MCP_FILE_ROOT to widen it)",
-            root_canon.display()
-        ));
-    }
-    Ok(())
+    Err(format!(
+        "{param_name} '{path}' is outside the allowed roots ({}); set DCERT_MCP_FILE_ROOT to widen them",
+        roots
+            .iter()
+            .map(|r| r.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
 }
 
 /// Validate a free form value that reaches the subprocess argv (Vault mount,

@@ -1387,7 +1387,7 @@ OIDC tokens are validated against JWKS (JSON Web Key Sets) with automatic key ro
 | `DCERT_MCP_MAX_CONCURRENT_REQUESTS` | Concurrent in-flight HTTP requests (default: 64) |
 | `DCERT_MCP_REQUEST_TIMEOUT` | Per-request timeout in seconds (default: 120) |
 | `DCERT_MCP_MAX_BODY_BYTES` | Maximum request body size (default: 1048576) |
-| `DCERT_MCP_FILE_ROOT` | Directory that tool file parameters are confined to (default: the server's working directory) |
+| `DCERT_MCP_FILE_ROOT` | Comma-separated directories that tool file parameters are confined to (default: the working directory and the system temp directory) |
 | `DCERT_MCP_VAULT_ADDR_ALLOWLIST` | Comma-separated Vault addresses a tool call may target |
 | `DCERT_MCP_VAULT_ALLOW_SKIP_VERIFY` | Set to `1` to let a tool call disable Vault TLS verification (refused by default) |
 

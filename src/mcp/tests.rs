@@ -148,10 +148,43 @@ fn test_validate_path_confines_to_root() {
     // An absolute path inside the root is fine.
     let inside = root.join("server.pem");
     assert!(validate_path(inside.to_str().expect("utf-8"), "cert").is_ok());
-    // Anything outside it is refused, with the root named in the message.
+    // Anything outside it is refused, with the roots named in the message.
     let err = validate_path("/etc/shadow", "cert").expect_err("outside root must be refused");
-    assert!(err.contains("outside the allowed root"), "{err}");
+    assert!(err.contains("outside the allowed roots"), "{err}");
     assert!(validate_path("/root/.ssh/authorized_keys", "output_path").is_err());
+}
+
+#[test]
+fn test_validate_path_defaults_allow_cwd_and_temp_dir() {
+    let _guard = EnvGuard::unset("DCERT_MCP_FILE_ROOT");
+    // The working directory is where an IDE-launched server writes.
+    assert!(validate_path("exported.pem", "output_path").is_ok());
+    // The system scratch directory is the other place users name.
+    let scratch = std::env::temp_dir().join("dcert-export.pem");
+    assert!(
+        validate_path(scratch.to_str().expect("utf-8"), "output_path").is_ok(),
+        "the temp dir must be writable by default"
+    );
+    // Sensitive locations still need an explicit opt-in.
+    assert!(validate_path("/etc/shadow", "cert").is_err());
+}
+
+#[test]
+fn test_validate_path_accepts_several_configured_roots() {
+    let a = tempfile::tempdir().expect("tempdir");
+    let b = tempfile::tempdir().expect("tempdir");
+    let roots = format!(
+        "{}, {}",
+        a.path().canonicalize().expect("canonicalize").display(),
+        b.path().canonicalize().expect("canonicalize").display()
+    );
+    let _guard = EnvGuard::set("DCERT_MCP_FILE_ROOT", &roots);
+
+    for dir in [a.path(), b.path()] {
+        let p = dir.canonicalize().expect("canonicalize").join("cert.pem");
+        assert!(validate_path(p.to_str().expect("utf-8"), "cert").is_ok(), "{p:?}");
+    }
+    assert!(validate_path("/etc/shadow", "cert").is_err());
 }
 
 #[test]
@@ -168,7 +201,7 @@ fn test_validate_path_refuses_symlink_escaping_root() {
 
     let _guard = EnvGuard::set("DCERT_MCP_FILE_ROOT", root.to_str().expect("utf-8 root"));
     let err = validate_path("link.pem", "cert").expect_err("symlink out of root must be refused");
-    assert!(err.contains("outside the allowed root"), "{err}");
+    assert!(err.contains("outside the allowed roots"), "{err}");
 }
 
 /// Set an environment variable for the duration of a test and restore it after.

@@ -101,7 +101,7 @@ Every authentication failure returns the same bare `401 Unauthorized` with a `WW
 - The `dcert` subprocess is run with both pipes read concurrently, so output larger than the OS pipe buffer cannot deadlock the call, and output is capped while it streams
 - Secrets (certificate, keystore, truststore, CSR and Vault PFX passphrases) travel to the subprocess in its environment, never in `argv`, so they do not appear in `ps` or `/proc/<pid>/cmdline`
 - Every tool parameter that reaches `argv` is validated: no leading `-`, no control characters, bounded length
-- File path parameters are confined to `DCERT_MCP_FILE_ROOT` (default: the server's working directory). Relative paths resolve inside it, absolute paths are accepted only within it, and a symlink pointing outside it is refused
+- File path parameters are confined to the roots in `DCERT_MCP_FILE_ROOT`, which defaults to the server's working directory and the system temp directory: the two places a user naturally asks for certificate files. Relative paths resolve inside the first root, absolute paths are accepted only within one of them, and a symlink pointing outside them is refused. Sensitive locations such as `/etc` and `~/.ssh` need an explicit opt-in
 - Concurrent subprocess invocations are bounded, and a timed-out child is killed rather than orphaned
 
 ### Vault Access Policy
