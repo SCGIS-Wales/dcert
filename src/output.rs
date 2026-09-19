@@ -12,8 +12,9 @@ use crate::cert::{CertInfo, CertProcessOpts, extract_ocsp_url, parse_cert_infos_
 use crate::cli::{CheckArgs, CipherNotation, HttpProtocol, OutputFormat, SortOrder};
 use crate::compliance::{self, ChainComplianceReport, Severity};
 use crate::connect::ConnectOverrides;
-use crate::convert::{CertRole, ConvertResult};
+use crate::convert::{CertRole, ConvertResult, write_public_file};
 use crate::debug::debug_log;
+use crate::diagnose::Diagnosis;
 use crate::ocsp::check_ocsp_status;
 use crate::proxy::ProxyConfig;
 use crate::tls::{
@@ -22,6 +23,7 @@ use crate::tls::{
 use crate::trust::{PublicRoots, RootTrustClass, RootTrustInfo, TrustOpts, assess_root_trust};
 
 /// Debug/connection info for pretty output.
+#[derive(Debug)]
 pub struct PrettyDebugInfo<'a> {
     pub hostname: Option<&'a str>,
     pub conn: Option<&'a TlsConnectionInfo>,
@@ -73,11 +75,11 @@ pub fn print_pretty(infos: &[CertInfo], debug: &PrettyDebugInfo<'_>) {
                 HttpProtocol::Http1_1 => "HTTP/1.1".to_string(),
             },
         };
-        println!("  HTTP protocol: {}", proto_display);
+        println!("  HTTP protocol: {proto_display}");
         if let Some(ref override_desc) = conn.connect_override {
             println!("  Connection override: {}", override_desc.cyan());
         } else if let Some(ref peer) = conn.peer_address {
-            println!("  Connected to: {}", peer);
+            println!("  Connected to: {peer}");
         }
         if conn.http_response_code > 0 {
             let code_color = match conn.http_response_code {
@@ -87,11 +89,11 @@ pub fn print_pretty(infos: &[CertInfo], debug: &PrettyDebugInfo<'_>) {
                 500..=599 => conn.http_response_code.to_string().red().bold(),
                 _ => conn.http_response_code.to_string().normal(),
             };
-            println!("  HTTP response code: {}", code_color);
+            println!("  HTTP response code: {code_color}");
         } else {
             println!("  HTTP response code: not available");
         }
-        println!("  Hostname matches certificate SANs/CN: {}", status);
+        println!("  Hostname matches certificate SANs/CN: {status}");
         println!("  TLS version used: {}", conn.tls_version);
         // Cipher display: always show OpenSSL name in the default line,
         // but when --ciphers is used, show the requested notation prominently
@@ -101,7 +103,7 @@ pub fn print_pretty(infos: &[CertInfo], debug: &PrettyDebugInfo<'_>) {
                     .tls_cipher_iana
                     .as_deref()
                     .unwrap_or("unknown (IANA name not available)");
-                println!("  TLS ciphersuite agreed (IANA): {}", iana_name);
+                println!("  TLS ciphersuite agreed (IANA): {iana_name}");
             }
             Some(CipherNotation::Openssl) => {
                 println!("  TLS ciphersuite agreed (OpenSSL): {}", conn.tls_cipher);
@@ -111,10 +113,18 @@ pub fn print_pretty(infos: &[CertInfo], debug: &PrettyDebugInfo<'_>) {
             }
         }
         let ct_str = if leaf.ct_present { "true".green() } else { "false".red() };
-        println!("  Certificate transparency: {}", ct_str);
+        println!("  Certificate transparency: {ct_str}");
 
         // Verification result
-        if let Some(ref err) = conn.verify_result {
+        if conn.verification_disabled {
+            println!(
+                "  Chain verification: {}",
+                "DISABLED (--no-verify; result not trustworthy)".yellow().bold()
+            );
+            for detail in &conn.chain_validation_errors {
+                println!("    {}", detail.yellow());
+            }
+        } else if let Some(ref err) = conn.verify_result {
             println!("  Chain verification: {}", err.red());
             for detail in &conn.chain_validation_errors {
                 println!("    {}", detail.red());
@@ -140,7 +150,7 @@ HTTP status line (not the full response body)."
         println!("{}", "Certificate".bold());
         println!("  Index        : {}", info.index);
         if let Some(cn) = &info.common_name {
-            println!("  Common Name  : {}", cn);
+            println!("  Common Name  : {cn}");
         }
         println!("  Subject      : {}", info.subject);
         println!("  Issuer       : {}", info.issuer);
@@ -151,24 +161,24 @@ HTTP status line (not the full response body)."
         if !info.subject_alternative_names.is_empty() {
             println!("  SANs         :");
             for san in &info.subject_alternative_names {
-                println!("    - {}", san);
+                println!("    - {san}");
             }
         }
 
         if let Some(ref fp) = info.sha256_fingerprint {
-            println!("  SHA-256      : {}", fp);
+            println!("  SHA-256      : {fp}");
         }
 
         if let Some(ref alg) = info.signature_algorithm {
-            println!("  Sig Algorithm: {}", alg);
+            println!("  Sig Algorithm: {alg}");
         }
 
         if let Some(ref alg) = info.public_key_algorithm {
             let size_str = info
                 .public_key_size_bits
-                .map(|s| format!(" ({} bits)", s))
+                .map(|s| format!(" ({s} bits)"))
                 .unwrap_or_default();
-            println!("  Public Key   : {}{}", alg, size_str);
+            println!("  Public Key   : {alg}{size_str}");
         }
 
         if let Some(ref ku) = info.key_usage {
@@ -183,25 +193,26 @@ HTTP status line (not the full response body)."
             let ca_str = if bc.ca { "true" } else { "false" };
             let path_str = bc
                 .path_len_constraint
-                .map(|p| format!(", pathLen={}", p))
+                .map(|p| format!(", pathLen={p}"))
                 .unwrap_or_default();
-            println!("  Basic Constr : CA={}{}", ca_str, path_str);
+            println!("  Basic Constr : CA={ca_str}{path_str}");
         }
 
         if let Some(ref aia) = info.authority_info_access {
             println!("  Auth Info    :");
             for entry in aia {
-                println!("    - {}", entry);
+                println!("    - {entry}");
             }
         }
 
         if let Some(ref rev) = info.revocation_status {
             let colored_status = match rev.as_str() {
                 "good" => rev.green(),
-                "revoked" => rev.red(),
+                "revoked" => rev.red().bold(),
+                r if r.starts_with("error") => rev.red(),
                 _ => rev.yellow(),
             };
-            println!("  Revocation   : {}", colored_status);
+            println!("  Revocation   : {colored_status}");
         }
 
         let status = if info.is_expired {
@@ -209,7 +220,7 @@ HTTP status line (not the full response body)."
         } else {
             "valid".green()
         };
-        println!("  Status       : {}", status);
+        println!("  Status       : {status}");
         println!();
     }
 }
@@ -225,7 +236,7 @@ pub fn print_root_trust_pretty(trust: &RootTrustInfo) {
     };
 
     println!("{}", "Root CA trust".bold());
-    println!("  Classification : {}", colored_label);
+    println!("  Classification : {colored_label}");
     if let Some(ref subject) = trust.trust_anchor_subject {
         let in_chain = if trust.anchor_present_in_chain {
             " (present in chain)"
@@ -235,7 +246,7 @@ pub fn print_root_trust_pretty(trust: &RootTrustInfo) {
         println!("  Trust anchor   : {}{}", subject, in_chain.dimmed());
     }
     if let Some(ref fp) = trust.trust_anchor_sha256 {
-        println!("  Anchor SHA-256 : {}", fp);
+        println!("  Anchor SHA-256 : {fp}");
     }
     if trust.chain_completed_via_aia {
         println!("  Chain completed via AIA: {}", "yes".cyan());
@@ -246,7 +257,7 @@ pub fn print_root_trust_pretty(trust: &RootTrustInfo) {
         } else {
             "unreachable".red()
         };
-        println!("  Private CA backend: {}", r);
+        println!("  Private CA backend: {r}");
     }
     if let Some(ref detail) = trust.detail {
         println!("  {}", detail.dimmed());
@@ -299,6 +310,7 @@ pub fn cert_matches_hostname(cert: &CertInfo, host: &str) -> bool {
 }
 
 /// Result of processing a single target.
+#[derive(Debug)]
 pub struct TargetResult {
     pub target: String,
     pub conn_info: Option<TlsConnectionInfo>,
@@ -306,10 +318,12 @@ pub struct TargetResult {
     pub pem_data: String,
     pub compliance_report: Option<ChainComplianceReport>,
     pub root_trust: Option<RootTrustInfo>,
+    /// CloudFront, mTLS and proxy findings, earliest layer first.
+    pub diagnosis: Vec<Diagnosis>,
 }
 
 /// JSON/YAML wrapper that includes both certificates and connection metadata.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Debug)]
 pub struct StructuredOutput {
     pub certificates: Vec<CertInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -318,6 +332,20 @@ pub struct StructuredOutput {
     pub compliance: Option<ChainComplianceReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub root_trust: Option<RootTrustInfo>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub diagnosis: Vec<Diagnosis>,
+}
+
+impl From<&TargetResult> for StructuredOutput {
+    fn from(result: &TargetResult) -> Self {
+        Self {
+            certificates: result.infos.clone(),
+            connection: result.conn_info.clone(),
+            compliance: result.compliance_report.clone(),
+            root_trust: result.root_trust.clone(),
+            diagnosis: result.diagnosis.clone(),
+        }
+    }
 }
 
 /// Process a single target (PEM file, HTTPS URL, or stdin PEM data) and return results.
@@ -418,11 +446,12 @@ pub fn process_target(
             pkcs12_path: args.pkcs12.as_deref(),
             cert_password: args.cert_password.as_deref(),
             ca_cert_path: args.ca_cert.as_deref(),
+            body_limit: args.body_limit,
         })?;
         let pem = conn.pem_data.clone();
         (pem, Some(conn))
     } else {
-        let pem = fs::read_to_string(target).with_context(|| format!("Failed to read PEM file: {}", target))?;
+        let pem = fs::read_to_string(target).with_context(|| format!("Failed to read PEM file: {target}"))?;
         (pem, None)
     };
 
@@ -434,16 +463,17 @@ pub fn process_target(
         let cert_ders: Vec<&[u8]> = blocks
             .iter()
             .filter(|b| b.tag() == "CERTIFICATE")
-            .map(|b| b.contents())
+            .map(pem::Pem::contents)
             .collect();
 
-        for (i, info) in infos.iter_mut().enumerate() {
-            // Parse the x509 cert to extract OCSP URL
-            if let Some(der) = cert_ders.get(i)
+        // Pair each info with its DER by the original chain index, not by
+        // position: `--expired-only` drops entries from `infos`.
+        for info in infos.iter_mut() {
+            if let Some(der) = cert_ders.get(info.index)
                 && let Ok((_, cert)) = X509Certificate::from_der(der)
             {
                 if let Some(ocsp_url) = extract_ocsp_url(&cert) {
-                    let issuer_der = cert_ders.get(i + 1).copied();
+                    let issuer_der = cert_ders.get(info.index + 1).copied();
                     info.revocation_status = Some(check_ocsp_status(der, issuer_der, &ocsp_url, args.debug));
                 } else {
                     info.revocation_status = Some("unknown (no OCSP responder)".to_string());
@@ -467,8 +497,8 @@ pub fn process_target(
             .collect();
 
         // Per-cert: flag any presented cert that is itself a public root.
-        for (i, info) in infos.iter_mut().enumerate() {
-            if let Some(der) = chain_ders.get(i)
+        for info in infos.iter_mut() {
+            if let Some(der) = chain_ders.get(info.index)
                 && public_roots.is_public_root_der(der)
             {
                 info.is_public_root = Some(true);
@@ -502,6 +532,7 @@ pub fn process_target(
         pem_data,
         compliance_report,
         root_trust,
+        diagnosis: Vec::new(),
     })
 }
 
@@ -527,7 +558,9 @@ pub fn sort_certs_by_expiry(infos: &mut [CertInfo], sort_order: SortOrder) {
 /// Check expiry warning threshold and return exit code.
 pub fn check_expiry_warnings(infos: &[CertInfo], warn_days: u64) -> i32 {
     let now = OffsetDateTime::now_utc();
-    let threshold = now + time::Duration::days(warn_days as i64);
+    // `--expiry-warn` is range-checked by clap, so the conversion cannot fail
+    // in practice; saturate rather than wrap if it ever does.
+    let threshold = now + time::Duration::days(i64::try_from(warn_days).unwrap_or(i64::MAX).min(36_500));
     let mut has_warning = false;
 
     for info in infos {
@@ -562,8 +595,8 @@ pub fn check_expiry_warnings(infos: &[CertInfo], warn_days: u64) -> i32 {
 /// Print diff between two sets of certificate infos.
 pub fn print_diff(target_a: &str, infos_a: &[CertInfo], target_b: &str, infos_b: &[CertInfo]) {
     println!("{}", "Certificate Diff".bold());
-    println!("  A: {}", target_a);
-    println!("  B: {}", target_b);
+    println!("  A: {target_a}");
+    println!("  B: {target_b}");
     println!();
 
     let max_len = infos_a.len().max(infos_b.len());
@@ -573,7 +606,7 @@ pub fn print_diff(target_a: &str, infos_a: &[CertInfo], target_b: &str, infos_b:
 
         match (a, b) {
             (Some(ca), Some(cb)) => {
-                println!("{}", format!("Certificate [{}]", i).bold());
+                println!("{}", format!("Certificate [{i}]").bold());
                 diff_field("Subject", &ca.subject, &cb.subject);
                 diff_field("Issuer", &ca.issuer, &cb.issuer);
                 diff_field(
@@ -606,7 +639,7 @@ pub fn print_diff(target_a: &str, infos_a: &[CertInfo], target_b: &str, infos_b:
 
 pub fn diff_field(name: &str, a: &str, b: &str) {
     if a == b {
-        println!("  {:<14}: {}", name, a);
+        println!("  {name:<14}: {a}");
     } else {
         println!("  {:<14}: {} → {}", name, a.to_string().red(), b.to_string().green());
     }
@@ -637,10 +670,7 @@ pub fn export_pem_chain(pem_data: &str, export_path: &str, exclude_expired: bool
         }
 
         if filtered_pem.is_empty() {
-            eprintln!(
-                "Warning: All certificates were expired. No certificates exported to {}",
-                export_path
-            );
+            eprintln!("Warning: All certificates were expired. No certificates exported to {export_path}");
             return Ok(());
         }
 
@@ -649,9 +679,34 @@ pub fn export_pem_chain(pem_data: &str, export_path: &str, exclude_expired: bool
         pem_data.to_string()
     };
 
-    fs::write(export_path, export_data).with_context(|| format!("Failed to write PEM file: {}", export_path))?;
-    println!("PEM chain exported to {}", export_path);
+    write_public_file(export_path, export_data.as_bytes())
+        .with_context(|| format!("Failed to write PEM file: {export_path}"))?;
+    println!("PEM chain exported to {export_path}");
     Ok(())
+}
+
+/// Print `value` as JSON or YAML, or run `pretty` for the human readable
+/// format. Every subcommand routes its final output through here so the
+/// three formats cannot drift apart.
+pub fn print_structured<T: serde::Serialize>(format: OutputFormat, value: &T, pretty: impl FnOnce()) -> Result<()> {
+    match format {
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(value)?),
+        OutputFormat::Yaml => println!("{}", serde_yaml_ng::to_string(value)?),
+        OutputFormat::Pretty => pretty(),
+    }
+    Ok(())
+}
+
+/// Print compliance findings with a severity badge, one per line.
+pub fn print_findings(findings: &[compliance::Finding], indent: &str) {
+    for finding in findings {
+        let badge = match finding.severity {
+            Severity::Error => "ERROR".red().bold(),
+            Severity::Warning => "WARN ".yellow(),
+            Severity::Info => "INFO ".cyan(),
+        };
+        println!("{indent}{badge} [{}] {}", finding.category, finding.message);
+    }
 }
 
 /// Output results for a target in the requested format.
@@ -669,51 +724,104 @@ pub fn output_results(
     let hostname = if result.target.starts_with("https://") {
         Url::parse(&result.target)
             .ok()
-            .and_then(|u| u.host_str().map(|s| s.to_lowercase()))
+            .and_then(|u| u.host_str().map(str::to_lowercase))
     } else {
         None
     };
 
-    match format {
-        OutputFormat::Pretty => {
-            let debug = PrettyDebugInfo {
-                hostname: hostname.as_deref(),
-                conn: result.conn_info.as_ref(),
-                http_protocol,
-                cipher_notation: args.ciphers,
-            };
-            print_pretty(&result.infos, &debug);
+    let output = StructuredOutput::from(result);
+    print_structured(format, &output, || {
+        let debug = PrettyDebugInfo {
+            hostname: hostname.as_deref(),
+            conn: result.conn_info.as_ref(),
+            http_protocol,
+            cipher_notation: args.ciphers,
+        };
+        print_pretty(&result.infos, &debug);
 
-            // Print the root-CA trust classification if available
-            if let Some(ref trust) = result.root_trust {
-                print_root_trust_pretty(trust);
-            }
+        // Print the root-CA trust classification if available
+        if let Some(ref trust) = result.root_trust {
+            print_root_trust_pretty(trust);
+        }
 
-            // Print compliance report if available
-            if let Some(ref report) = result.compliance_report {
-                print_compliance_pretty(report);
+        // Print compliance report if available
+        if let Some(ref report) = result.compliance_report {
+            print_compliance_pretty(report);
+        }
+
+        if !result.diagnosis.is_empty() {
+            print_diagnosis_pretty(&result.diagnosis);
+        }
+    })
+}
+
+/// Render diagnostics findings for humans. The first finding is the primary
+/// attribution; the rest are secondary possibilities in path order.
+pub fn print_diagnosis_pretty(findings: &[Diagnosis]) {
+    let mut out = std::io::stdout().lock();
+    let _ = write_diagnosis(&mut out, findings);
+}
+
+/// Same as [`print_diagnosis_pretty`] but to any writer (stderr for failed probes).
+pub fn write_diagnosis(w: &mut impl std::io::Write, findings: &[Diagnosis]) -> std::io::Result<()> {
+    writeln!(w, "{}", "=== Diagnosis ===".bold())?;
+    for (i, d) in findings.iter().enumerate() {
+        let badge = if i == 0 {
+            "PRIMARY  ".red().bold()
+        } else {
+            "SECONDARY".yellow()
+        };
+        let pct = (d.confidence * 100.0).round();
+        writeln!(
+            w,
+            "{badge} {} {} ({}, {pct}% confidence)",
+            d.title.bold(),
+            format!("[{}]", d.id).dimmed(),
+            d.layer.label()
+        )?;
+        for line in textwrap_lines(&d.root_cause, 96) {
+            writeln!(w, "    {line}")?;
+        }
+        if !d.evidence.is_empty() {
+            writeln!(w, "    {}", "Evidence:".bold())?;
+            for e in &d.evidence {
+                writeln!(w, "      - {e}")?;
             }
         }
-        OutputFormat::Json => {
-            let output = StructuredOutput {
-                certificates: result.infos.clone(),
-                connection: result.conn_info.clone(),
-                compliance: result.compliance_report.clone(),
-                root_trust: result.root_trust.clone(),
-            };
-            println!("{}", serde_json::to_string_pretty(&output)?);
+        if !d.remediation.is_empty() {
+            writeln!(w, "    {}", "Next steps:".bold())?;
+            for r in &d.remediation {
+                writeln!(w, "      - {r}")?;
+            }
         }
-        OutputFormat::Yaml => {
-            let output = StructuredOutput {
-                certificates: result.infos.clone(),
-                connection: result.conn_info.clone(),
-                compliance: result.compliance_report.clone(),
-                root_trust: result.root_trust.clone(),
-            };
-            println!("{}", serde_yaml_ng::to_string(&output)?);
+        if !d.references.is_empty() {
+            writeln!(w, "    {}", "References:".bold())?;
+            for r in &d.references {
+                writeln!(w, "      {}", r.dimmed())?;
+            }
         }
+        writeln!(w)?;
     }
     Ok(())
+}
+
+/// Greedy word wrap, so long root cause paragraphs stay readable in a terminal.
+fn textwrap_lines(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        if !current.is_empty() && current.len() + 1 + word.len() > width {
+            lines.push(std::mem::take(&mut current));
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(word);
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
 }
 
 /// Render the result of a `dcert convert ...` operation in the requested
@@ -725,18 +833,7 @@ pub fn output_results(
 /// verbatim, preserving the machine-readable shape that scripts and the MCP
 /// layer rely on.
 pub fn render_convert_result(result: &ConvertResult, format: OutputFormat) -> Result<()> {
-    match format {
-        OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(result)?);
-        }
-        OutputFormat::Yaml => {
-            println!("{}", serde_yaml_ng::to_string(result)?);
-        }
-        OutputFormat::Pretty => {
-            print_convert_result_pretty(result);
-        }
-    }
-    Ok(())
+    print_structured(format, result, || print_convert_result_pretty(result))
 }
 
 fn print_convert_result_pretty(result: &ConvertResult) {
@@ -781,10 +878,10 @@ fn print_convert_result_pretty(result: &ConvertResult) {
 
     if let Some(ref subj) = result.cert_subject {
         println!();
-        println!("Identity subject : {}", subj);
+        println!("Identity subject : {subj}");
     }
     if let Some(ref kt) = result.key_type {
-        println!("Key type         : {}", kt);
+        println!("Key type         : {kt}");
     }
     if result.ca_certs_count > 0 {
         println!("CA certs in chain: {}", result.ca_certs_count);
@@ -812,14 +909,7 @@ pub fn print_compliance_pretty(report: &ChainComplianceReport) {
         println!("{} [{}] {}", "Certificate".bold(), cert_report.index, cn_display);
 
         println!("{}", "  Compliance Findings:".bold());
-        for finding in &cert_report.findings {
-            let (icon, color_fn): (&str, fn(&str) -> colored::ColoredString) = match finding.severity {
-                Severity::Error => ("ERROR", |s: &str| s.red().bold()),
-                Severity::Warning => ("WARN ", |s: &str| s.yellow()),
-                Severity::Info => ("INFO ", |s: &str| s.cyan()),
-            };
-            println!("    {} [{}] {}", color_fn(icon), finding.category, finding.message);
-        }
+        print_findings(&cert_report.findings, "    ");
 
         if cert_report.compliant {
             println!("  {}", "Status: COMPLIANT".green().bold());

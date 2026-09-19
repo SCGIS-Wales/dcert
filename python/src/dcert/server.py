@@ -1,200 +1,71 @@
-"""FastMCP proxy server wrapping the dcert-mcp Rust binary.
+"""FastMCP proxy server wrapping the ``dcert-mcp`` Rust binary.
 
-The proxy pattern ensures forward-compatibility: when new tools are added
-to the Rust binary, they are automatically discovered and exposed by the
-proxy without any Python code changes. The MCP protocol handles tool
-discovery at runtime via the ``tools/list`` method.
+The proxy forwards every MCP request to the Rust binary, so tools added
+there are discovered at runtime without Python changes.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import platform
-import shutil
-import stat
-from pathlib import Path
+from collections.abc import Iterable, Mapping
 
 from fastmcp.client.transports import StdioTransport
 from fastmcp.server import create_proxy
+from fastmcp.server.providers.proxy import FastMCPProxy
+
+from dcert.binary import find_binary
+from dcert.config import load_config
+from dcert.middleware import build_middleware
+from dcert.resilience import ResilienceConfig, resilience_config_from_env
 
 logger = logging.getLogger(__name__)
 
-
-def _is_python_script(path: str) -> bool:
-    """Check if *path* is a Python console-script wrapper (not a compiled binary).
-
-    Reads the first 128 bytes; if the file starts with ``#!`` and the first
-    line contains ``python``, it is a pip-generated console_script wrapper
-    and must be skipped to avoid an infinite exec loop (see helm-mcp PR #33).
-    """
-    try:
-        with open(path, "rb") as fh:
-            head = fh.read(128)
-        first_line = head.split(b"\n", 1)[0].lower()
-        return head[:2] == b"#!" and b"python" in first_line
-    except OSError:
-        return False
+#: Environment variables forwarded to the Rust subprocess (from config.yaml).
+PASSTHROUGH_ENV_VARS: tuple[str, ...] = load_config().passthrough_env
 
 
-# Environment variables forwarded to the Rust subprocess.
-PASSTHROUGH_ENV_VARS: list[str] = [
-    # Core system
-    "HOME",
-    "USER",
-    "PATH",
-    # Dynamic linker paths (needed for OpenSSL on some systems)
-    "LD_LIBRARY_PATH",
-    "DYLD_LIBRARY_PATH",
-    "DYLD_FALLBACK_LIBRARY_PATH",
-    # Forward proxy
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "NO_PROXY",
-    "http_proxy",
-    "https_proxy",
-    "no_proxy",
-    # TLS / CA
-    "SSL_CERT_FILE",
-    "SSL_CERT_DIR",
-    "REQUESTS_CA_BUNDLE",
-    # dcert-mcp specific
-    "DCERT_PATH",
-    "DCERT_MCP_TIMEOUT",
-    "DCERT_MCP_CONNECTION_TIMEOUT",
-    "DCERT_MCP_READ_TIMEOUT",
-]
-
-
-def _find_binary() -> str:
-    """Locate the dcert-mcp binary.
-
-    Search order:
-      1. ``DCERT_MCP_BINARY`` environment variable
-      2. Bundled binary in the package ``bin/`` directory
-      3. ``dcert-mcp`` on ``PATH``
-      4. Auto-download from GitHub Releases (with checksum verification)
-
-    Returns:
-        Absolute path to the dcert-mcp executable.
-
-    Raises:
-        FileNotFoundError: If the binary cannot be located.
-    """
-    # 1. Explicit env var
-    env_path = os.environ.get("DCERT_MCP_BINARY")
-    if env_path:
-        p = Path(env_path)
-        if p.is_file() and os.access(str(p), os.X_OK):
-            logger.debug("Using binary from DCERT_MCP_BINARY: %s", p)
-            return str(p)
-        raise FileNotFoundError(f"DCERT_MCP_BINARY={env_path} does not exist or is not executable")
-
-    # 2. Bundled binary in package data
-    pkg_dir = Path(__file__).parent
-    system = platform.system().lower()
-    machine = platform.machine().lower()
-    arch_map = {"x86_64": "amd64", "aarch64": "arm64", "arm64": "arm64", "amd64": "amd64"}
-    arch = arch_map.get(machine, machine)
-    binary_name = f"dcert-mcp-{system}-{arch}"
-    for candidate in [pkg_dir / "bin" / binary_name, pkg_dir / "bin" / "dcert-mcp"]:
-        if candidate.is_file():
-            # Ensure the binary is executable — pip may not preserve permissions
-            # for package-data files extracted from wheels.
-            if not os.access(str(candidate), os.X_OK):
-                try:
-                    candidate.chmod(
-                        candidate.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH
-                    )
-                except OSError:
-                    continue
-            logger.debug("Using bundled binary: %s", candidate)
-            return str(candidate)
-
-    # 3. PATH lookup (before download — platform wheels put the binary on PATH)
-    # Skip Python console-script wrappers to avoid infinite exec loops.
-    found = shutil.which("dcert-mcp")
-    if found and not _is_python_script(found):
-        logger.debug("Using dcert-mcp from PATH: %s", found)
-        return found
-
-    # 4. Auto-download from GitHub Releases (fallback for universal wheel)
-    from dcert import __version__
-    from dcert.download import ensure_binary
-
-    try:
-        downloaded = ensure_binary(__version__)
-        if downloaded:
-            logger.debug("Using auto-downloaded binary: %s", downloaded)
-            return downloaded
-    except Exception:
-        logger.debug("Auto-download failed, binary not available", exc_info=True)
-
-    raise FileNotFoundError(
-        "dcert-mcp binary not found. Either:\n"
-        "  1. Set DCERT_MCP_BINARY=/path/to/dcert-mcp\n"
-        "  2. Install dcert and ensure dcert-mcp is on your PATH\n"
-        "  3. Run: dcert-python --setup"
-    )
-
-
-def _build_subprocess_env(
-    extra_env: dict[str, str] | None = None,
-    passthrough: list[str] | None = None,
+def build_subprocess_env(
+    extra_env: Mapping[str, str] | None = None,
+    passthrough: Iterable[str] | None = None,
 ) -> dict[str, str]:
-    """Build the environment dict for the Rust subprocess.
+    """Return the environment for the Rust subprocess.
 
-    Collects variables from ``PASSTHROUGH_ENV_VARS`` (or a custom list)
-    and merges in any extra overrides.
-
-    Args:
-        extra_env: Additional variables that take precedence.
-        passthrough: Override the default passthrough list.
-
-    Returns:
-        Environment dict for subprocess execution.
+    Only the variables in *passthrough* (default: the configured allow list)
+    are copied from the current process; *extra_env* entries take precedence.
     """
-    vars_to_pass = passthrough or PASSTHROUGH_ENV_VARS
-    env: dict[str, str] = {}
-    for var in vars_to_pass:
-        val = os.environ.get(var)
-        if val is not None:
-            env[var] = val
+    names = tuple(passthrough) if passthrough is not None else PASSTHROUGH_ENV_VARS
+    env = {name: os.environ[name] for name in names if name in os.environ}
     if extra_env:
         env.update(extra_env)
     return env
 
 
+def create_transport(binary_path: str | None, env: Mapping[str, str] | None) -> StdioTransport:
+    """Return a stdio transport for the resolved ``dcert-mcp`` binary."""
+    binary = binary_path or find_binary("dcert-mcp")
+    return StdioTransport(command=binary, args=[], env=build_subprocess_env(env) or None)
+
+
 def create_server(
     binary_path: str | None = None,
-    name: str = "dcert-mcp",
-    env: dict[str, str] | None = None,
-):
-    """Create a FastMCP proxy server wrapping the dcert-mcp Rust binary.
-
-    The proxy transparently forwards all MCP requests to the Rust binary,
-    which means any new tools added to the binary are automatically
-    available without changing this Python code.
+    name: str | None = None,
+    env: Mapping[str, str] | None = None,
+    resilience: ResilienceConfig | None = None,
+) -> FastMCPProxy:
+    """Create the FastMCP proxy server with the resilience middleware attached.
 
     Args:
-        binary_path: Explicit path to the dcert-mcp binary. Auto-detected if ``None``.
-        name: Server name advertised via MCP.
-        env: Additional environment variables to pass to the subprocess.
+        binary_path: Explicit path to ``dcert-mcp``; auto detected when ``None``.
+        name: Server name advertised over MCP; defaults to the configured name.
+        env: Extra environment variables for the subprocess.
+        resilience: Resilience settings; read from the environment when ``None``.
 
-    Returns:
-        A FastMCP server instance ready to run.
-
-    Example::
-
-        server = create_server()
-        server.run()                                       # stdio
-        server.run(transport="http", host="0.0.0.0", port=8080)  # HTTP
+    Raises:
+        FileNotFoundError: If the binary cannot be located.
     """
-    binary = binary_path or _find_binary()
-    subprocess_env = _build_subprocess_env(extra_env=env)
-    transport = StdioTransport(
-        command=binary,
-        args=[],
-        env=subprocess_env or None,
-    )
-    return create_proxy(transport, name=name)
+    transport = create_transport(binary_path, env)
+    server = create_proxy(transport, name=name or load_config().server.name)
+    for middleware in build_middleware(resilience or resilience_config_from_env()):
+        server.add_middleware(middleware)
+    return server

@@ -87,10 +87,7 @@ impl SessionCache {
             let entry = entries.get(key)?;
 
             let now = Instant::now();
-            let now_unix = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64;
+            let now_unix = now_unix();
 
             // Never use tokens beyond their exp.
             if now_unix >= entry.claims.expires_at {
@@ -182,13 +179,19 @@ async fn cleanup_loop(
 }
 
 /// Removes entries that have exceeded inactivity TTL or token expiry.
+/// Current Unix time in seconds, saturating instead of wrapping.
+fn now_unix() -> i64 {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    i64::try_from(secs).unwrap_or(i64::MAX)
+}
+
 async fn cleanup(entries: &Arc<RwLock<HashMap<String, SessionEntry>>>, config: &SessionConfig) {
     let mut entries = entries.write().await;
     let now = Instant::now();
-    let now_unix = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
+    let now_unix = now_unix();
 
     let before = entries.len();
     entries.retain(|_, entry| {
@@ -242,19 +245,11 @@ mod tests {
     }
 
     fn future_expiry() -> i64 {
-        (std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            + 3600) as i64
+        now_unix() + 3600
     }
 
     fn past_expiry() -> i64 {
-        (std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            - 60) as i64
+        now_unix() - 3600
     }
 
     #[test]

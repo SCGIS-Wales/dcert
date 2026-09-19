@@ -3,8 +3,9 @@ use openssl::hash::MessageDigest;
 use openssl::pkcs12::Pkcs12;
 use openssl::pkey::PKey;
 use openssl::stack::Stack;
-use openssl::x509::{X509, X509NameRef};
+use openssl::x509::X509;
 use std::fs;
+use std::path::Path;
 use x509_parser::prelude::FromDer;
 
 /// Role of a certificate within a chain — used to surface clear, beginner-friendly
@@ -41,13 +42,11 @@ impl CertRole {
 /// extension is absent we assume `CA:FALSE` (the legacy default for end-entity
 /// certs). Self-signed is determined by structural subject == issuer match.
 pub fn classify_cert(cert: &X509) -> CertRole {
-    let der = match cert.to_der() {
-        Ok(d) => d,
-        Err(_) => return CertRole::Leaf,
+    let Ok(der) = cert.to_der() else {
+        return CertRole::Leaf;
     };
-    let parsed = match x509_parser::certificate::X509Certificate::from_der(&der) {
-        Ok((_, c)) => c,
-        Err(_) => return CertRole::Leaf,
+    let Ok((_, parsed)) = x509_parser::certificate::X509Certificate::from_der(&der) else {
+        return CertRole::Leaf;
     };
     let mut is_ca = false;
     for ext in parsed.extensions() {
@@ -66,20 +65,7 @@ pub fn classify_cert(cert: &X509) -> CertRole {
     }
 }
 
-/// Collect the entries of an `X509Name` into a comma-separated `KEY=value` string
-/// (Subject CN, O, OU, …). Folds the four duplicate copies that previously
-/// lived inline in convert.rs and tls.rs into a single helper.
-pub fn format_x509_name(name: &X509NameRef) -> String {
-    name.entries().fold(String::new(), |mut acc, e| {
-        if !acc.is_empty() {
-            acc.push_str(", ");
-        }
-        if let Ok(data) = e.data().to_string() {
-            acc.push_str(&data);
-        }
-        acc
-    })
-}
+pub use crate::cert::format_x509_name;
 
 /// Lightweight summary of a single certificate, used in pre-flight tables and
 /// JSON `cert_roles` arrays.
@@ -101,13 +87,7 @@ fn cert_summary(cert: &X509) -> Result<CertSummary> {
     let der = cert
         .to_der()
         .map_err(|e| anyhow::anyhow!("DER conversion failed: {e}"))?;
-    let digest =
-        openssl::hash::hash(MessageDigest::sha256(), &der).map_err(|e| anyhow::anyhow!("SHA-256 hash failed: {e}"))?;
-    let fingerprint_sha256 = digest
-        .iter()
-        .map(|b| format!("{:02X}", b))
-        .collect::<Vec<_>>()
-        .join(":");
+    let fingerprint_sha256 = crate::cert::fingerprint_sha256_hex(&der)?;
 
     let (not_after, expired) = match x509_parser::certificate::X509Certificate::from_der(&der) {
         Ok((_, parsed)) => {
@@ -154,16 +134,16 @@ pub struct ConvertResult {
 
 /// Convert a PKCS12/PFX file to PEM certificate + key files.
 pub fn pfx_to_pem(input: &str, password: &str, output_dir: &str) -> Result<ConvertResult> {
-    let p12_data = fs::read(input).with_context(|| format!("Failed to read PKCS12 file: {}", input))?;
+    let p12_data = fs::read(input).with_context(|| format!("Failed to read PKCS12 file: {input}"))?;
 
-    let pkcs12 = Pkcs12::from_der(&p12_data).with_context(|| format!("Failed to parse PKCS12 file: {}", input))?;
+    let pkcs12 = Pkcs12::from_der(&p12_data).with_context(|| format!("Failed to parse PKCS12 file: {input}"))?;
 
     let parsed = pkcs12
         .parse2(password)
-        .with_context(|| format!("Failed to decrypt PKCS12 '{}' (wrong password?)", input))?;
+        .with_context(|| format!("Failed to decrypt PKCS12 '{input}' (wrong password?)"))?;
 
     // Ensure output directory exists
-    fs::create_dir_all(output_dir).with_context(|| format!("Failed to create output directory: {}", output_dir))?;
+    fs::create_dir_all(output_dir).with_context(|| format!("Failed to create output directory: {output_dir}"))?;
 
     let mut output_files = Vec::new();
     let mut cert_subject = None;
@@ -172,8 +152,8 @@ pub fn pfx_to_pem(input: &str, password: &str, output_dir: &str) -> Result<Conve
     // Write certificate
     if let Some(ref cert) = parsed.cert {
         let cert_pem = cert.to_pem().with_context(|| "Failed to encode certificate as PEM")?;
-        let cert_path = format!("{}/cert.pem", output_dir);
-        fs::write(&cert_path, &cert_pem).with_context(|| format!("Failed to write certificate: {}", cert_path))?;
+        let cert_path = output_file_path(output_dir, "cert.pem")?;
+        fs::write(&cert_path, &cert_pem).with_context(|| format!("Failed to write certificate: {cert_path}"))?;
         output_files.push(cert_path);
 
         cert_subject = Some(format_x509_name(cert.subject_name()));
@@ -181,12 +161,12 @@ pub fn pfx_to_pem(input: &str, password: &str, output_dir: &str) -> Result<Conve
 
     // Write private key
     if let Some(ref pkey) = parsed.pkey {
-        let key_pem = pkey
-            .private_key_to_pem_pkcs8()
-            .with_context(|| "Failed to encode private key as PEM")?;
-        let key_path = format!("{}/key.pem", output_dir);
-        fs::write(&key_path, &key_pem).with_context(|| format!("Failed to write private key: {}", key_path))?;
-        restrict_file_permissions(&key_path);
+        let key_pem = zeroize::Zeroizing::new(
+            pkey.private_key_to_pem_pkcs8()
+                .with_context(|| "Failed to encode private key as PEM")?,
+        );
+        let key_path = output_file_path(output_dir, "key.pem")?;
+        write_private_file(&key_path, &key_pem)?;
         output_files.push(key_path);
 
         key_type = Some(key_type_name(pkey));
@@ -204,8 +184,8 @@ pub fn pfx_to_pem(input: &str, password: &str, output_dir: &str) -> Result<Conve
                 .with_context(|| "Failed to encode CA certificate as PEM")?;
             ca_pem.push_str(&String::from_utf8_lossy(&pem_bytes));
         }
-        let ca_path = format!("{}/ca.pem", output_dir);
-        fs::write(&ca_path, &ca_pem).with_context(|| format!("Failed to write CA certificates: {}", ca_path))?;
+        let ca_path = output_file_path(output_dir, "ca.pem")?;
+        fs::write(&ca_path, &ca_pem).with_context(|| format!("Failed to write CA certificates: {ca_path}"))?;
         output_files.push(ca_path);
     }
 
@@ -229,12 +209,12 @@ pub fn pem_to_pfx(
     output: &str,
     ca_path: Option<&str>,
 ) -> Result<ConvertResult> {
-    let cert_pem = fs::read(cert_path).with_context(|| format!("Failed to read certificate file: {}", cert_path))?;
-    let key_pem = fs::read(key_path).with_context(|| format!("Failed to read private key file: {}", key_path))?;
+    let cert_pem = fs::read(cert_path).with_context(|| format!("Failed to read certificate file: {cert_path}"))?;
+    let key_pem = fs::read(key_path).with_context(|| format!("Failed to read private key file: {key_path}"))?;
 
-    let cert = X509::from_pem(&cert_pem).with_context(|| format!("Failed to parse PEM certificate: {}", cert_path))?;
-    let pkey = PKey::private_key_from_pem(&key_pem)
-        .with_context(|| format!("Failed to parse PEM private key: {}", key_path))?;
+    let cert = X509::from_pem(&cert_pem).with_context(|| format!("Failed to parse PEM certificate: {cert_path}"))?;
+    let pkey =
+        PKey::private_key_from_pem(&key_pem).with_context(|| format!("Failed to parse PEM private key: {key_path}"))?;
 
     let cert_subject = format_x509_name(cert.subject_name());
 
@@ -247,18 +227,16 @@ pub fn pem_to_pfx(
 
     let mut ca_count = 0;
     if let Some(ca_file) = ca_path {
-        let ca_pem = fs::read(ca_file).with_context(|| format!("Failed to read CA certificate file: {}", ca_file))?;
+        let ca_pem = fs::read(ca_file).with_context(|| format!("Failed to read CA certificate file: {ca_file}"))?;
         let ca_certs =
-            X509::stack_from_pem(&ca_pem).with_context(|| format!("Failed to parse CA certificates: {}", ca_file))?;
+            X509::stack_from_pem(&ca_pem).with_context(|| format!("Failed to parse CA certificates: {ca_file}"))?;
         ca_count = ca_certs.len();
         builder.ca(vec_to_stack(ca_certs)?);
     }
 
     let pkcs12 = builder.build2(password).with_context(|| "Failed to build PKCS12")?;
     let der = pkcs12.to_der().with_context(|| "Failed to serialize PKCS12 to DER")?;
-    fs::write(output, &der).with_context(|| format!("Failed to write PKCS12 file: {}", output))?;
-    // PFX contains private key material — restrict file permissions
-    restrict_file_permissions(output);
+    write_private_file(output, &der).with_context(|| format!("Failed to write PKCS12 file: {output}"))?;
 
     Ok(ConvertResult {
         input_format: "PEM".to_string(),
@@ -286,18 +264,18 @@ pub fn create_keystore(
     output: &str,
     alias: &str,
 ) -> Result<ConvertResult> {
-    let cert_pem = fs::read(cert_path).with_context(|| format!("Failed to read certificate file: {}", cert_path))?;
-    let key_pem = fs::read(key_path).with_context(|| format!("Failed to read private key file: {}", key_path))?;
+    let cert_pem = fs::read(cert_path).with_context(|| format!("Failed to read certificate file: {cert_path}"))?;
+    let key_pem = fs::read(key_path).with_context(|| format!("Failed to read private key file: {key_path}"))?;
 
     let certs =
-        X509::stack_from_pem(&cert_pem).with_context(|| format!("Failed to parse PEM certificates: {}", cert_path))?;
+        X509::stack_from_pem(&cert_pem).with_context(|| format!("Failed to parse PEM certificates: {cert_path}"))?;
 
     if certs.is_empty() {
-        return Err(anyhow::anyhow!("No certificates found in: {}", cert_path));
+        return Err(anyhow::anyhow!("No certificates found in: {cert_path}"));
     }
 
-    let pkey = PKey::private_key_from_pem(&key_pem)
-        .with_context(|| format!("Failed to parse PEM private key: {}", key_path))?;
+    let pkey =
+        PKey::private_key_from_pem(&key_pem).with_context(|| format!("Failed to parse PEM private key: {key_path}"))?;
 
     let leaf_cert = &certs[0];
     let cert_subject = format_x509_name(leaf_cert.subject_name());
@@ -354,9 +332,7 @@ pub fn create_keystore(
         .build2(password)
         .with_context(|| "Failed to build PKCS12 keystore")?;
     let der = pkcs12.to_der().with_context(|| "Failed to serialize keystore")?;
-    fs::write(output, &der).with_context(|| format!("Failed to write keystore: {}", output))?;
-    // Keystore contains private key material — restrict file permissions
-    restrict_file_permissions(output);
+    write_private_file(output, &der).with_context(|| format!("Failed to write keystore: {output}"))?;
 
     Ok(ConvertResult {
         input_format: "PEM".to_string(),
@@ -390,9 +366,9 @@ pub fn create_truststore(
     let mut all_certs: Vec<X509> = Vec::new();
 
     for path in cert_paths {
-        let pem_data = fs::read(path).with_context(|| format!("Failed to read certificate file: {}", path))?;
+        let pem_data = fs::read(path).with_context(|| format!("Failed to read certificate file: {path}"))?;
         let certs =
-            X509::stack_from_pem(&pem_data).with_context(|| format!("Failed to parse PEM certificates: {}", path))?;
+            X509::stack_from_pem(&pem_data).with_context(|| format!("Failed to parse PEM certificates: {path}"))?;
         all_certs.extend(certs);
     }
 
@@ -449,7 +425,7 @@ pub fn create_truststore(
              chain that issued it, then build the truststore from those CAs only.\n\n  \
              Override (not recommended): pass --allow-non-ca to include leaves anyway.",
         );
-        return Err(anyhow::anyhow!("{}", msg));
+        return Err(anyhow::anyhow!("{msg}"));
     }
     if !leaf_summaries.is_empty() && allow_non_ca {
         warnings.push(format!(
@@ -515,7 +491,7 @@ pub fn create_truststore(
     // call is `?`-propagated with context so a malformed placeholder produces
     // a precise OpenSSL error instead of a silently-corrupted truststore that
     // Java would later reject with a confusing message.
-    let mut x509_builder = openssl::x509::X509::builder().with_context(|| "Failed to create X509 builder")?;
+    let mut x509_builder = X509::builder().with_context(|| "Failed to create X509 builder")?;
     x509_builder
         .set_version(2)
         .with_context(|| "Failed to set placeholder cert version")?;
@@ -549,7 +525,7 @@ pub fn create_truststore(
         .set_pubkey(&pkey)
         .with_context(|| "Failed to set placeholder cert public key")?;
     x509_builder
-        .sign(&pkey, openssl::hash::MessageDigest::sha256())
+        .sign(&pkey, MessageDigest::sha256())
         .with_context(|| "Failed to sign ephemeral certificate")?;
     let placeholder_cert = x509_builder.build();
 
@@ -563,9 +539,7 @@ pub fn create_truststore(
         .build2(password)
         .with_context(|| "Failed to build PKCS12 truststore")?;
     let der = pkcs12.to_der().with_context(|| "Failed to serialize truststore")?;
-    fs::write(output, &der).with_context(|| format!("Failed to write truststore: {}", output))?;
-    // Truststore contains ephemeral private key — restrict file permissions
-    restrict_file_permissions(output);
+    write_private_file(output, &der).with_context(|| format!("Failed to write truststore: {output}"))?;
 
     Ok(ConvertResult {
         input_format: "PEM".to_string(),
@@ -600,11 +574,89 @@ fn warn_unrestricted(path: &str, detail: &str) {
     );
 }
 
+/// Write key material or a keystore so it is never world readable, even for
+/// an instant. Any existing file (or symlink) at `path` is removed first and
+/// the new file is created with mode 0600 on Unix; on Windows the ACL is
+/// restricted immediately after the write.
+pub fn write_private_file(path: &str, contents: &[u8]) -> Result<()> {
+    write_replacing_links(path, contents, Some(0o600))?;
+    #[cfg(not(unix))]
+    restrict_file_permissions(path);
+    Ok(())
+}
+
+/// Remove whatever is at `path` and create the file fresh, with `mode` on Unix
+/// when one is given.
+///
+/// `create_new` is what makes this safe rather than merely tidy. Checking for a
+/// symlink and then writing leaves a window in which one can be planted, and an
+/// ordinary write would follow it; `create_new` fails instead, so the worst
+/// outcome of losing that race is an error rather than a write to a file the
+/// caller never named. Creating the file rather than truncating it is also what
+/// lets the mode apply from the first byte, so key material is never world
+/// readable even for an instant.
+fn write_replacing_links(path: &str, contents: &[u8], mode: Option<u32>) -> Result<()> {
+    use std::io::Write;
+
+    match fs::symlink_metadata(path) {
+        Ok(_) => fs::remove_file(path).with_context(|| format!("Failed to replace existing file: {path}"))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).with_context(|| format!("Failed to inspect output path: {path}")),
+    }
+
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    if let Some(mode) = mode {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(mode);
+    }
+    #[cfg(not(unix))]
+    let _ = mode;
+
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("Failed to create file: {path}"))?;
+    file.write_all(contents)
+        .with_context(|| format!("Failed to write file: {path}"))?;
+    file.sync_all().ok();
+    Ok(())
+}
+
+/// Write a file that carries no secret, refusing to follow a symlink at the
+/// destination. The contents are public (a CSR, a certificate chain), so the
+/// mode is left to the process umask; what matters is that an attacker cannot
+/// pre-plant a link at the output path and redirect the write elsewhere.
+pub fn write_public_file(path: &str, contents: &[u8]) -> Result<()> {
+    write_replacing_links(path, contents, None)
+}
+
+/// Resolve `name` inside `output_dir`, refusing to write through a symlink
+/// so `--output-dir` pointed at an attacker prepared directory cannot
+/// overwrite arbitrary files.
+pub fn output_file_path(output_dir: &str, name: &str) -> Result<String> {
+    let dir = Path::new(output_dir);
+    if fs::symlink_metadata(dir)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        anyhow::bail!("Output directory '{output_dir}' is a symlink; refusing to write through it");
+    }
+    let candidate = dir.join(name);
+    if fs::symlink_metadata(&candidate)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        anyhow::bail!("Refusing to overwrite '{}': it is a symlink", candidate.display());
+    }
+    Ok(candidate.to_string_lossy().into_owned())
+}
+
 /// Set file permissions to owner-only (0600) on Unix.
 /// Best-effort: on failure we warn rather than aborting, since the file is already
 /// written and the caller may still want the output.
 #[cfg(unix)]
-pub(crate) fn restrict_file_permissions(path: &str) {
+pub fn restrict_file_permissions(path: &str) {
     use std::os::unix::fs::PermissionsExt;
     if let Err(e) = fs::set_permissions(path, fs::Permissions::from_mode(0o600)) {
         warn_unrestricted(path, &e.to_string());
@@ -614,7 +666,7 @@ pub(crate) fn restrict_file_permissions(path: &str) {
 /// On Windows, restrict file permissions using icacls.
 /// Removes inherited ACLs and grants access only to the current user.
 #[cfg(windows)]
-pub(crate) fn restrict_file_permissions(path: &str) {
+pub fn restrict_file_permissions(path: &str) {
     use std::process::Command;
     let username = std::env::var("USERNAME").unwrap_or_default();
     if username.is_empty() {
@@ -642,7 +694,7 @@ pub(crate) fn restrict_file_permissions(path: &str) {
 
 /// No-op on platforms that are neither Unix nor Windows.
 #[cfg(not(any(unix, windows)))]
-pub(crate) fn restrict_file_permissions(_path: &str) {}
+pub fn restrict_file_permissions(_path: &str) {}
 
 fn key_type_name(pkey: &PKey<openssl::pkey::Private>) -> String {
     format!("{} ({} bits)", crate::cert::pkey_algorithm(pkey), pkey.bits())
@@ -659,6 +711,72 @@ mod tests {
     use openssl::x509::extension::{BasicConstraints, SubjectAlternativeName};
     use openssl::x509::{X509, X509NameBuilder};
     use tempfile::TempDir;
+
+    #[cfg(unix)]
+    #[test]
+    fn write_private_file_creates_owner_only_and_replaces_symlink() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("victim.txt");
+        fs::write(&target, b"do not touch").unwrap();
+        let link = dir.path().join("key.pem");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        write_private_file(link.to_str().unwrap(), b"SECRET").unwrap();
+
+        // The symlink was replaced by a regular file; the target is untouched.
+        assert!(!fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read(&target).unwrap(), b"do not touch");
+        assert_eq!(fs::read(&link).unwrap(), b"SECRET");
+        let mode = fs::metadata(&link).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_public_file_replaces_a_symlink_instead_of_following_it() {
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("victim.txt");
+        fs::write(&target, b"do not touch").unwrap();
+        let link = dir.path().join("request.csr");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        write_public_file(link.to_str().unwrap(), b"CSR").unwrap();
+
+        assert!(!fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read(&target).unwrap(), b"do not touch");
+        assert_eq!(fs::read(&link).unwrap(), b"CSR");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_public_file_replaces_a_dangling_symlink() {
+        let dir = TempDir::new().unwrap();
+        let absent = dir.path().join("not-created-yet.txt");
+        let link = dir.path().join("chain.pem");
+        std::os::unix::fs::symlink(&absent, &link).unwrap();
+
+        write_public_file(link.to_str().unwrap(), b"PEM").unwrap();
+
+        assert!(!absent.exists(), "the write must not have followed the link");
+        assert_eq!(fs::read(&link).unwrap(), b"PEM");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_file_path_refuses_symlinks() {
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("elsewhere");
+        fs::write(&target, b"x").unwrap();
+        std::os::unix::fs::symlink(&target, dir.path().join("cert.pem")).unwrap();
+
+        let err = output_file_path(dir.path().to_str().unwrap(), "cert.pem").unwrap_err();
+        assert!(err.to_string().contains("symlink"), "{err}");
+
+        let ok = output_file_path(dir.path().to_str().unwrap(), "key.pem").unwrap();
+        assert!(ok.ends_with("key.pem"));
+    }
 
     #[cfg(unix)]
     #[test]

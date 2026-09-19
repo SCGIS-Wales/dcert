@@ -1,535 +1,554 @@
-"""Tests for dcert async tool wrappers."""
+"""Tests for dcert.tools."""
+
+from __future__ import annotations
 
 import asyncio
+import inspect
+from contextlib import asynccontextmanager
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from dcert.resilience import ResilienceConfig
+from dcert import tools as tools_mod
+from dcert.resilience import resilience_config_from_env
 from dcert.tools import (
-    DcertClient,
+    TOOL_FUNCTIONS,
     DcertConnectionError,
     DcertError,
     DcertTimeoutError,
     DcertToolError,
-    _extract_text,
-    _validate_required,
+    Session,
+    analyze_certificate,
+    build_arguments,
+    call_tool,
+    check_expiry,
+    check_revocation,
+    close_default_session,
+    compare_certificates,
+    content_blocks,
+    convert_pem_to_pfx,
+    convert_pfx_to_pem,
+    create_keystore,
+    create_session,
+    create_truststore,
+    default_session,
+    error_message,
+    export_pem,
+    extract_text,
+    tls_connection_info,
+    verify_key_match,
 )
 
+OK = SimpleNamespace(content=[SimpleNamespace(type="text", text='{"status": "ok"}')])
 
-def _make_stub_client(**overrides):
-    """Create a DcertClient stub bypassing __init__ with resilience attrs set."""
-    client = DcertClient.__new__(DcertClient)
-    client._timeout = overrides.pop("timeout", 300.0)
-    client._max_reconnects = overrides.pop("max_reconnects", 3)
-    client._binary_path = overrides.pop("binary_path", "/fake/dcert-mcp")
-    client._env = overrides.pop("env", None)
-    client._resilience = overrides.pop(
-        "resilience",
-        ResilienceConfig(circuit_breaker_enabled=False, rate_limit_enabled=False),
+
+class FakeClient:
+    """Minimal stand in for ``fastmcp.Client``."""
+
+    def __init__(self, call_tool):
+        self.call_tool = call_tool
+        self.entered = 0
+        self.exited = 0
+
+    async def __aenter__(self):
+        self.entered += 1
+        return self
+
+    async def __aexit__(self, *exc):
+        self.exited += 1
+
+
+@pytest.fixture
+def config(monkeypatch):
+    for name in list(__import__("os").environ):
+        if name.startswith("DCERT_MCP_"):
+            monkeypatch.delenv(name)
+    return replace(
+        resilience_config_from_env(),
+        retry_base_delay=0.0,
+        retry_max_delay=0.0,
+        circuit_breaker_enabled=False,
+        rate_limit_enabled=False,
     )
-    client._semaphore = asyncio.Semaphore(client._resilience.bulkhead_max)
-    client._circuit_breaker = None
-    client._rate_limiter = None
-    client._client = overrides.pop("mock_client", None)
-    client._connected = overrides.pop("connected", True)
-    return client
+
+
+@pytest.fixture
+def open_session(config):
+    """Return ``open_session(call_tool, **overrides)`` yielding a connected session."""
+
+    @asynccontextmanager
+    async def opener(call_tool, **overrides):
+        clients: list[FakeClient] = []
+
+        def factory():
+            clients.append(FakeClient(call_tool))
+            return clients[-1]
+
+        options = {"timeout": 5.0, "max_reconnects": 0, "resilience": config}
+        options.update(overrides)
+        async with create_session(
+            binary_path="/fake/dcert-mcp", client_factory=factory, **options
+        ) as session:
+            yield session, clients
+
+    return opener
 
 
 # ---------------------------------------------------------------------------
-# Exception hierarchy
+# Exceptions and helpers
 # ---------------------------------------------------------------------------
 
 
-class TestExceptionHierarchy:
-    """Test the dcert exception class hierarchy."""
-
-    def test_base_error(self):
-        assert issubclass(DcertError, Exception)
-
-    def test_timeout_is_dcert_error(self):
-        assert issubclass(DcertTimeoutError, DcertError)
-
-    def test_connection_is_dcert_error(self):
-        assert issubclass(DcertConnectionError, DcertError)
-
-    def test_tool_error_is_dcert_error(self):
-        assert issubclass(DcertToolError, DcertError)
-
-    def test_tool_error_attributes(self):
-        err = DcertToolError("msg", tool="analyze_certificate", error_content=["err"])
-        assert err.tool == "analyze_certificate"
-        assert err.error_content == ["err"]
-        assert str(err) == "msg"
+def test_exception_hierarchy():
+    assert issubclass(DcertError, Exception)
+    for cls in (DcertTimeoutError, DcertConnectionError, DcertToolError):
+        assert issubclass(cls, DcertError)
+    err = DcertToolError("msg", tool="analyze_certificate", error_content=["err"])
+    assert (err.tool, err.error_content, str(err)) == ("analyze_certificate", ["err"], "msg")
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+def test_content_blocks_and_extract_text():
+    assert content_blocks([SimpleNamespace(text="a")]) == [SimpleNamespace(text="a")]
+    assert content_blocks(SimpleNamespace(content=None)) == []
+    assert extract_text([SimpleNamespace(text="hello")]) == "hello"
+    assert extract_text([SimpleNamespace(text="a"), SimpleNamespace(text="b")]) == "a\nb"
+    assert extract_text([]) is None
+    assert extract_text([SimpleNamespace(value=42)]) is None
+    assert extract_text(SimpleNamespace(content=[SimpleNamespace(text="x")])) == "x"
 
 
-class TestExtractText:
-    """Test the _extract_text helper."""
-
-    def test_single_text_content(self):
-        item = SimpleNamespace(text="hello")
-        assert _extract_text([item]) == "hello"
-
-    def test_multiple_items_joins_text(self):
-        items = [SimpleNamespace(text="a"), SimpleNamespace(text="b")]
-        assert _extract_text(items) == "a\nb"
-
-    def test_non_list_returns_raw(self):
-        assert _extract_text("raw") == "raw"
-
-    def test_empty_list_returns_raw(self):
-        assert _extract_text([]) == []
-
-    def test_single_item_no_text(self):
-        item = SimpleNamespace(value=42)
-        assert _extract_text([item]) == [item]
+def test_error_message():
+    assert error_message(OK) is None
+    assert error_message([SimpleNamespace(type="error", text="boom")]) == "boom"
+    flagged = SimpleNamespace(is_error=True, content=[SimpleNamespace(text="bad")])
+    assert error_message(flagged) == "bad"
+    assert error_message(SimpleNamespace(is_error=True, content=[])) is not None
 
 
-class TestValidateRequired:
-    """Test the _validate_required helper."""
-
-    def test_all_present(self):
-        _validate_required({"a": 1, "b": 2}, ["a", "b"], "test_tool")
-
-    def test_missing_raises(self):
-        with pytest.raises(ValueError, match="test_tool.*'target'"):
-            _validate_required({"other": 1}, ["target"], "test_tool")
-
-    def test_none_value_raises(self):
-        with pytest.raises(ValueError, match="'target'"):
-            _validate_required({"target": None}, ["target"], "test_tool")
+def test_build_arguments():
+    assert build_arguments("t", {"a": 1}) == {"a": 1}
+    assert build_arguments("t", {"a": 1}, {"b": None, "c": ""}) == {"a": 1, "c": ""}
+    assert build_arguments("t", {"a": 1}, defaulted={"d": (30, 30), "e": (1, 2)}) == {
+        "a": 1,
+        "e": 1,
+    }
+    with pytest.raises(ValueError, match="t\\(\\) requires 'a' parameter"):
+        build_arguments("t", {"a": None})
 
 
 # ---------------------------------------------------------------------------
-# Client lifecycle
+# Session lifecycle
 # ---------------------------------------------------------------------------
 
 
-class TestClientLifecycle:
-    """Test DcertClient connect/disconnect."""
+async def test_session_connects_and_disconnects(open_session):
+    async with open_session(AsyncMock(return_value=OK)) as (session, clients):
+        assert isinstance(session, Session)
+        assert session.binary == "/fake/dcert-mcp"
+        assert session.connected() is True
+        assert clients[0].entered == 1
+    assert clients[0].exited == 1
+    assert session.connected() is False
 
-    @pytest.mark.asyncio
-    async def test_context_manager(self):
-        """Test async context manager connects and disconnects."""
-        with (
-            patch("dcert.tools._find_binary", return_value="/fake/dcert-mcp"),
-            patch("dcert.tools.Client") as mock_client_cls,
-        ):
-            mock_instance = AsyncMock()
-            mock_client_cls.return_value = mock_instance
 
-            async with DcertClient(binary_path="/fake/dcert-mcp") as client:
-                assert client._connected is True
-                mock_instance.__aenter__.assert_awaited_once()
+async def test_session_disconnect_errors_are_logged(open_session, caplog):
+    call = AsyncMock(return_value=OK)
+    async with open_session(call) as (session, clients):
+        clients[0].__aexit__ = AsyncMock(side_effect=RuntimeError("boom"))
+    assert session.connected() is False
 
-            mock_instance.__aexit__.assert_awaited_once()
 
-    @pytest.mark.asyncio
-    async def test_disconnect_on_error(self):
-        """Test client disconnects even when __aexit__ raises."""
-        with (
-            patch("dcert.tools._find_binary", return_value="/fake/dcert-mcp"),
-            patch("dcert.tools.Client") as mock_client_cls,
-        ):
-            mock_instance = AsyncMock()
-            mock_instance.__aexit__.side_effect = RuntimeError("boom")
-            mock_client_cls.return_value = mock_instance
-
-            async with DcertClient(binary_path="/fake/dcert-mcp") as client:
-                pass
-
-            # Client should be disconnected despite error
-            assert client._connected is False
+async def test_session_is_frozen(open_session):
+    async with open_session(AsyncMock(return_value=OK)) as (session, _clients):
+        with pytest.raises(AttributeError, match="cannot assign"):
+            session.binary = "x"  # type: ignore[misc]
 
 
 # ---------------------------------------------------------------------------
-# Tool calls — happy path
+# Tool wrappers: payload construction
 # ---------------------------------------------------------------------------
 
 
-class TestToolCallHappyPath:
-    """Test tool wrappers with successful results."""
+CASES = [
+    (
+        analyze_certificate,
+        {"target": "example.com"},
+        "analyze_certificate",
+        {"target": "example.com"},
+    ),
+    (
+        analyze_certificate,
+        {"target": "e", "fingerprint": False, "extensions": False, "check_revocation": True},
+        "analyze_certificate",
+        {"target": "e", "fingerprint": False, "extensions": False, "check_revocation": True},
+    ),
+    (check_expiry, {"target": "e", "days": 60}, "check_expiry", {"target": "e", "days": 60}),
+    (check_expiry, {"target": "e", "days": 30}, "check_expiry", {"target": "e"}),
+    (check_revocation, {"target": "e"}, "check_revocation", {"target": "e"}),
+    (
+        compare_certificates,
+        {"target_a": "a", "target_b": "b"},
+        "compare_certificates",
+        {"target_a": "a", "target_b": "b"},
+    ),
+    (
+        tls_connection_info,
+        {"target": "e", "min_tls": "1.2", "max_tls": "1.3"},
+        "tls_connection_info",
+        {"target": "e", "min_tls": "1.2", "max_tls": "1.3"},
+    ),
+    (
+        export_pem,
+        {"target": "e", "exclude_expired": True, "output_path": "c.pem"},
+        "export_pem",
+        {"target": "e", "exclude_expired": True, "output_path": "c.pem"},
+    ),
+    (
+        verify_key_match,
+        {"target": "cert.pem", "key_path": "key.pem"},
+        "verify_key_match",
+        {"target": "cert.pem", "key_path": "key.pem"},
+    ),
+    (
+        convert_pfx_to_pem,
+        {"pkcs12_path": "t.pfx", "password": "p", "output_dir": "/out"},
+        "convert_pfx_to_pem",
+        {"pkcs12_path": "t.pfx", "password": "p", "output_dir": "/out"},
+    ),
+    (
+        convert_pfx_to_pem,
+        {"pkcs12_path": "t.pfx", "password": "p"},
+        "convert_pfx_to_pem",
+        {"pkcs12_path": "t.pfx", "password": "p"},
+    ),
+    (
+        convert_pem_to_pfx,
+        {"cert_path": "c", "key_path": "k", "password": "p", "output_path": "o", "ca_path": "ca"},
+        "convert_pem_to_pfx",
+        {"cert_path": "c", "key_path": "k", "password": "p", "output_path": "o", "ca_path": "ca"},
+    ),
+    (
+        create_keystore,
+        {"cert_path": "c", "key_path": "k", "password": "p", "output_path": "o", "alias": "mykey"},
+        "create_keystore",
+        {"cert_path": "c", "key_path": "k", "password": "p", "output_path": "o", "alias": "mykey"},
+    ),
+    (
+        create_keystore,
+        {"cert_path": "c", "key_path": "k", "password": "p", "output_path": "o", "alias": "server"},
+        "create_keystore",
+        {"cert_path": "c", "key_path": "k", "password": "p", "output_path": "o"},
+    ),
+    (
+        create_truststore,
+        {"cert_paths": ["ca1.pem", "ca2.pem"], "output_path": "t.p12", "password": "secret"},
+        "create_truststore",
+        {"cert_paths": ["ca1.pem", "ca2.pem"], "output_path": "t.p12", "password": "secret"},
+    ),
+    (
+        create_truststore,
+        {"cert_paths": ["ca.pem"], "output_path": "t.p12"},
+        "create_truststore",
+        {"cert_paths": ["ca.pem"], "output_path": "t.p12"},
+    ),
+    (
+        create_truststore,
+        {"cert_paths": ["ca.pem"], "output_path": "t.p12", "password": "changeit"},
+        "create_truststore",
+        {"cert_paths": ["ca.pem"], "output_path": "t.p12"},
+    ),
+]
 
-    @pytest.fixture
-    def mock_client(self):
-        """Create a connected DcertClient with mocked transport."""
-        mock = AsyncMock()
-        text_result = SimpleNamespace(text='{"status": "ok"}')
-        mock.call_tool = AsyncMock(return_value=[text_result])
-        return _make_stub_client(mock_client=mock)
 
-    @pytest.mark.asyncio
-    async def test_analyze_certificate(self, mock_client):
-        result = await mock_client.analyze_certificate(target="example.com")
-        assert result == '{"status": "ok"}'
-        mock_client._client.call_tool.assert_awaited_once_with(
-            "analyze_certificate", {"target": "example.com"}
-        )
+@pytest.mark.parametrize(("func", "kwargs", "tool", "expected"), CASES)
+async def test_tool_payloads(open_session, func, kwargs, tool, expected):
+    call = AsyncMock(return_value=OK)
+    async with open_session(call) as (session, _clients):
+        result = await func(session=session, **kwargs)
+    assert result == '{"status": "ok"}'
+    call.assert_awaited_once_with(tool, expected, raise_on_error=False)
 
-    @pytest.mark.asyncio
-    async def test_check_expiry(self, mock_client):
-        result = await mock_client.check_expiry(target="example.com", days=60)
-        assert result == '{"status": "ok"}'
-        mock_client._client.call_tool.assert_awaited_once_with(
-            "check_expiry", {"target": "example.com", "days": 60}
-        )
 
-    @pytest.mark.asyncio
-    async def test_check_revocation(self, mock_client):
-        result = await mock_client.check_revocation(target="example.com")
-        assert result == '{"status": "ok"}'
-        mock_client._client.call_tool.assert_awaited_once_with(
-            "check_revocation", {"target": "example.com"}
-        )
-
-    @pytest.mark.asyncio
-    async def test_compare_certificates(self, mock_client):
-        result = await mock_client.compare_certificates(
-            target_a="example.com", target_b="example.org"
-        )
-        assert result == '{"status": "ok"}'
-        mock_client._client.call_tool.assert_awaited_once_with(
-            "compare_certificates",
-            {"target_a": "example.com", "target_b": "example.org"},
-        )
-
-    @pytest.mark.asyncio
-    async def test_tls_connection_info(self, mock_client):
-        result = await mock_client.tls_connection_info(target="example.com", min_tls="1.2")
-        assert result == '{"status": "ok"}'
-        mock_client._client.call_tool.assert_awaited_once_with(
-            "tls_connection_info", {"target": "example.com", "min_tls": "1.2"}
-        )
-
-    @pytest.mark.asyncio
-    async def test_export_pem(self, mock_client):
-        result = await mock_client.export_pem(target="example.com", exclude_expired=True)
-        assert result == '{"status": "ok"}'
-        mock_client._client.call_tool.assert_awaited_once_with(
-            "export_pem", {"target": "example.com", "exclude_expired": True}
-        )
-
-    @pytest.mark.asyncio
-    async def test_connection_overrides_are_forwarded(self, mock_client):
-        await mock_client.analyze_certificate(
+async def test_connection_overrides_are_forwarded(open_session):
+    call = AsyncMock(return_value=OK)
+    async with open_session(call) as (session, _clients):
+        await analyze_certificate(
+            session=session,
             target="https://api.example.com",
             connect_to="10.0.0.5",
             resolve="api.example.com:443:10.0.0.6",
             proxy="http://proxy.corp:3128",
             noproxy="internal.corp",
+            client_cert="c.pem",
+            client_key="k.pem",
+            pkcs12="c.p12",
+            cert_password="pw",
+            ca_cert="ca.pem",
         )
-        mock_client._client.call_tool.assert_awaited_once_with(
-            "analyze_certificate",
-            {
-                "target": "https://api.example.com",
-                "connect_to": "10.0.0.5",
-                "resolve": "api.example.com:443:10.0.0.6",
-                "proxy": "http://proxy.corp:3128",
-                "noproxy": "internal.corp",
-            },
-        )
-
-    @pytest.mark.asyncio
-    async def test_connection_overrides_accept_lists(self, mock_client):
-        await mock_client.tls_connection_info(
-            target="https://api.example.com",
-            connect_to=["api.example.com:443:origin.internal:8443"],
-            resolve=["api.example.com:443:10.0.0.5", "*:8443:10.0.0.6"],
-        )
-        mock_client._client.call_tool.assert_awaited_once_with(
-            "tls_connection_info",
-            {
-                "target": "https://api.example.com",
-                "connect_to": ["api.example.com:443:origin.internal:8443"],
-                "resolve": ["api.example.com:443:10.0.0.5", "*:8443:10.0.0.6"],
-            },
-        )
-
-    @pytest.mark.asyncio
-    async def test_empty_proxy_and_noproxy_are_forwarded(self, mock_client):
-        # "" is meaningful for both — it forces a direct connection and clears
-        # an inherited NO_PROXY — so it must not be dropped as falsy.
-        await mock_client.check_expiry(target="example.com", proxy="", noproxy="")
-        mock_client._client.call_tool.assert_awaited_once_with(
-            "check_expiry", {"target": "example.com", "proxy": "", "noproxy": ""}
-        )
-
-    @pytest.mark.asyncio
-    async def test_connection_overrides_omitted_when_unset(self, mock_client):
-        await mock_client.export_pem(target="example.com")
-        mock_client._client.call_tool.assert_awaited_once_with(
-            "export_pem", {"target": "example.com"}
-        )
-
-    @pytest.mark.asyncio
-    async def test_verify_key_match(self, mock_client):
-        result = await mock_client.verify_key_match(target="cert.pem", key_path="key.pem")
-        assert result == '{"status": "ok"}'
-        mock_client._client.call_tool.assert_awaited_once_with(
-            "verify_key_match", {"target": "cert.pem", "key_path": "key.pem"}
-        )
-
-    @pytest.mark.asyncio
-    async def test_convert_pfx_to_pem(self, mock_client):
-        result = await mock_client.convert_pfx_to_pem(
-            pkcs12_path="test.pfx", password="pass123", output_dir="/tmp/out"
-        )
-        assert result == '{"status": "ok"}'
-        mock_client._client.call_tool.assert_awaited_once_with(
-            "convert_pfx_to_pem",
-            {"pkcs12_path": "test.pfx", "password": "pass123", "output_dir": "/tmp/out"},
-        )
-
-    @pytest.mark.asyncio
-    async def test_convert_pem_to_pfx(self, mock_client):
-        result = await mock_client.convert_pem_to_pfx(
-            cert_path="cert.pem",
-            key_path="key.pem",
-            password="pass",
-            output_path="out.pfx",
-        )
-        assert result == '{"status": "ok"}'
-        mock_client._client.call_tool.assert_awaited_once_with(
-            "convert_pem_to_pfx",
-            {
-                "cert_path": "cert.pem",
-                "key_path": "key.pem",
-                "password": "pass",
-                "output_path": "out.pfx",
-            },
-        )
-
-    @pytest.mark.asyncio
-    async def test_create_keystore(self, mock_client):
-        result = await mock_client.create_keystore(
-            cert_path="cert.pem",
-            key_path="key.pem",
-            password="pass",
-            output_path="keystore.p12",
-            alias="mykey",
-        )
-        assert result == '{"status": "ok"}'
-        mock_client._client.call_tool.assert_awaited_once_with(
-            "create_keystore",
-            {
-                "cert_path": "cert.pem",
-                "key_path": "key.pem",
-                "password": "pass",
-                "output_path": "keystore.p12",
-                "alias": "mykey",
-            },
-        )
-
-    @pytest.mark.asyncio
-    async def test_create_truststore(self, mock_client):
-        result = await mock_client.create_truststore(
-            cert_paths=["ca1.pem", "ca2.pem"],
-            output_path="truststore.p12",
-            password="secret",
-        )
-        assert result == '{"status": "ok"}'
-        mock_client._client.call_tool.assert_awaited_once_with(
-            "create_truststore",
-            {
-                "cert_paths": ["ca1.pem", "ca2.pem"],
-                "output_path": "truststore.p12",
-                "password": "secret",
-            },
-        )
-
-
-# ---------------------------------------------------------------------------
-# Timeout
-# ---------------------------------------------------------------------------
-
-
-class TestTimeout:
-    """Test timeout behavior."""
-
-    @pytest.mark.asyncio
-    async def test_timeout_raises(self):
-        mock = AsyncMock()
-        mock.call_tool = AsyncMock(side_effect=asyncio.TimeoutError)
-        client = _make_stub_client(timeout=0.01, max_reconnects=0, mock_client=mock)
-
-        with pytest.raises(DcertTimeoutError, match="analyze_certificate.*timed out"):
-            await client.analyze_certificate(target="example.com")
-
-
-# ---------------------------------------------------------------------------
-# Reconnection
-# ---------------------------------------------------------------------------
-
-
-class TestReconnection:
-    """Test automatic reconnection on failure."""
-
-    @pytest.mark.asyncio
-    async def test_reconnect_on_connection_failure(self):
-        mock = AsyncMock()
-        text_result = SimpleNamespace(text="ok")
-        # First call fails, second succeeds
-        mock.call_tool = AsyncMock(side_effect=[RuntimeError("connection lost"), [text_result]])
-        client = _make_stub_client(max_reconnects=2, mock_client=mock)
-
-        # Patch _reconnect to just reset the connection
-        async def fake_reconnect():
-            client._connected = True
-
-        client._reconnect = fake_reconnect
-
-        result = await client._call("test_tool", {})
-        assert result == "ok"
-
-
-# ---------------------------------------------------------------------------
-# Tool errors
-# ---------------------------------------------------------------------------
-
-
-class TestToolErrors:
-    """Test MCP tool error handling."""
-
-    @pytest.mark.asyncio
-    async def test_error_content_raises(self):
-        error_item = SimpleNamespace(type="error", text="something went wrong")
-        mock = AsyncMock()
-        mock.call_tool = AsyncMock(return_value=[error_item])
-        client = _make_stub_client(max_reconnects=0, mock_client=mock)
-
-        with pytest.raises(DcertToolError, match="something went wrong"):
-            await client._call("test_tool", {})
-
-
-# ---------------------------------------------------------------------------
-# Input validation
-# ---------------------------------------------------------------------------
-
-
-class TestInputValidation:
-    """Test input validation for required parameters."""
-
-    @pytest.mark.asyncio
-    async def test_analyze_certificate_requires_target(self):
-        client = _make_stub_client(max_reconnects=0)
-        with pytest.raises(TypeError):
-            await client.analyze_certificate()
-
-    @pytest.mark.asyncio
-    async def test_compare_certificates_requires_both(self):
-        client = _make_stub_client(max_reconnects=0)
-        with pytest.raises(TypeError):
-            await client.compare_certificates(target_a="a")
-
-    @pytest.mark.asyncio
-    async def test_create_truststore_empty_paths(self):
-        client = _make_stub_client(max_reconnects=0)
-        with pytest.raises(ValueError, match="at least one cert_path"):
-            await client.create_truststore(cert_paths=[], output_path="out.p12")
-
-
-# ---------------------------------------------------------------------------
-# All methods exist
-# ---------------------------------------------------------------------------
-
-
-class TestAllMethodsExist:
-    """Verify all 11 tool wrapper methods exist."""
-
-    EXPECTED_METHODS = [
+    call.assert_awaited_once_with(
         "analyze_certificate",
-        "check_expiry",
-        "check_revocation",
-        "compare_certificates",
-        "tls_connection_info",
-        "export_pem",
-        "verify_key_match",
-        "convert_pfx_to_pem",
-        "convert_pem_to_pfx",
-        "create_keystore",
-        "create_truststore",
-    ]
-
-    def test_all_methods_present(self):
-        for method in self.EXPECTED_METHODS:
-            assert hasattr(DcertClient, method), f"Missing method: {method}"
-            assert callable(getattr(DcertClient, method))
-
-    def test_method_count(self):
-        methods = [
-            m
-            for m in dir(DcertClient)
-            if not m.startswith("_") and callable(getattr(DcertClient, m))
-        ]
-        assert len(methods) == 11
+        {
+            "target": "https://api.example.com",
+            "connect_to": "10.0.0.5",
+            "resolve": "api.example.com:443:10.0.0.6",
+            "proxy": "http://proxy.corp:3128",
+            "noproxy": "internal.corp",
+            "client_cert": "c.pem",
+            "client_key": "k.pem",
+            "pkcs12": "c.p12",
+            "cert_password": "pw",
+            "ca_cert": "ca.pem",
+        },
+        raise_on_error=False,
+    )
 
 
-# ---------------------------------------------------------------------------
-# Module-level convenience functions
-# ---------------------------------------------------------------------------
-
-
-class TestModuleLevelFunctions:
-    """Test module-level convenience function imports."""
-
-    def test_all_functions_importable(self):
-        from dcert.tools import (
-            analyze_certificate,
-            check_expiry,
-            check_revocation,
-            compare_certificates,
-            convert_pem_to_pfx,
-            convert_pfx_to_pem,
-            create_keystore,
-            create_truststore,
-            export_pem,
-            tls_connection_info,
-            verify_key_match,
+async def test_connection_overrides_accept_lists_and_empty_strings(open_session):
+    call = AsyncMock(return_value=OK)
+    async with open_session(call) as (session, _clients):
+        await tls_connection_info(
+            session=session,
+            target="e",
+            connect_to=["a:443:b:8443"],
+            resolve=["a:443:10.0.0.5", "*:8443:10.0.0.6"],
         )
+        await check_expiry(session=session, target="e", proxy="", noproxy="")
+        await export_pem(session=session, target="e")
+    assert call.await_args_list[0].args[1] == {
+        "target": "e",
+        "connect_to": ["a:443:b:8443"],
+        "resolve": ["a:443:10.0.0.5", "*:8443:10.0.0.6"],
+    }
+    assert call.await_args_list[1].args[1] == {"target": "e", "proxy": "", "noproxy": ""}
+    assert call.await_args_list[2].args[1] == {"target": "e"}
 
-        funcs = [
-            analyze_certificate,
-            check_expiry,
-            check_revocation,
-            compare_certificates,
-            tls_connection_info,
-            export_pem,
-            verify_key_match,
-            convert_pfx_to_pem,
-            convert_pem_to_pfx,
-            create_keystore,
-            create_truststore,
-        ]
-        assert all(callable(f) for f in funcs)
-        assert len(funcs) == 11
+
+async def test_input_validation(open_session):
+    async with open_session(AsyncMock(return_value=OK)) as (session, _clients):
+        with pytest.raises(TypeError, match="target"):
+            await analyze_certificate(session=session)  # type: ignore[call-arg]
+        with pytest.raises(TypeError, match="target_b"):
+            await compare_certificates(session=session, target_a="a")  # type: ignore[call-arg]
+        with pytest.raises(ValueError, match="at least one cert_path"):
+            await create_truststore(session=session, cert_paths=[], output_path="o")
+        with pytest.raises(ValueError, match="requires 'target'"):
+            await analyze_certificate(session=session, target=None)  # type: ignore[arg-type]
+
+
+def test_all_tool_functions_present():
+    assert len(TOOL_FUNCTIONS) == 11
+    # inspect, not asyncio: asyncio.iscoroutinefunction is deprecated from 3.14.
+    assert all(inspect.iscoroutinefunction(f) for f in TOOL_FUNCTIONS)
 
 
 # ---------------------------------------------------------------------------
-# Concurrent calls
+# Session.call behaviour
 # ---------------------------------------------------------------------------
 
 
-class TestConcurrentCalls:
-    """Test concurrent tool calls on the same client."""
+async def test_call_returns_raw_result_without_text(open_session):
+    raw = SimpleNamespace(content=[SimpleNamespace(type="image", data="AA==")])
+    async with open_session(AsyncMock(return_value=raw)) as (session, _clients):
+        assert await session.call("tool", {}) is raw
 
-    @pytest.mark.asyncio
-    async def test_concurrent_calls(self):
-        text_result = SimpleNamespace(text="ok")
-        mock = AsyncMock()
-        mock.call_tool = AsyncMock(return_value=[text_result])
-        client = _make_stub_client(max_reconnects=0, mock_client=mock)
 
+async def test_call_truncates_long_text(open_session, config):
+    long_result = SimpleNamespace(content=[SimpleNamespace(text="x" * 5000)])
+    cfg = replace(config, max_response_bytes=100)
+    async with open_session(AsyncMock(return_value=long_result), resilience=cfg) as (s, _c):
+        result = await s.call("tool", {})
+    assert "[Truncated:" in result
+
+
+async def test_timeout_raises(open_session):
+    async def slow(*_args, **_kwargs):
+        await asyncio.sleep(1)
+
+    async with open_session(slow, timeout=0.01) as (session, _clients):
+        with pytest.raises(DcertTimeoutError, match="analyze_certificate timed out after 0.01s"):
+            await analyze_certificate(session=session, target="e")
+
+
+async def test_per_call_timeout_override(open_session):
+    async def slow(*_args, **_kwargs):
+        await asyncio.sleep(1)
+
+    async with open_session(slow, timeout=5.0) as (session, _clients):
+        with pytest.raises(DcertTimeoutError, match="0.01s"):
+            await session.call("tool", {}, timeout=0.01)
+
+
+async def test_tool_error_content_raises(open_session):
+    bad = [SimpleNamespace(type="error", text="something went wrong")]
+    async with open_session(AsyncMock(return_value=bad)) as (session, _clients):
+        with pytest.raises(DcertToolError, match="something went wrong") as info:
+            await session.call("test_tool", {})
+    assert info.value.tool == "test_tool"
+    assert info.value.error_content is bad
+
+
+async def test_is_error_result_raises(open_session):
+    bad = SimpleNamespace(is_error=True, content=[SimpleNamespace(text="denied")])
+    async with open_session(AsyncMock(return_value=bad)) as (session, _clients):
+        with pytest.raises(DcertToolError, match="denied"):
+            await session.call("test_tool", {})
+
+
+async def test_reconnect_on_connection_failure(open_session):
+    closed = RuntimeError("closed")
+    closed.__cause__ = ConnectionResetError("gone")
+    call = AsyncMock(side_effect=[closed, OK])
+    with patch("dcert.resilience.asyncio.sleep", new=AsyncMock()) as sleep:
+        async with open_session(call, max_reconnects=2) as (session, clients):
+            assert await session.call("tool", {}) == '{"status": "ok"}'
+            assert len(clients) == 2
+            assert clients[0].exited == 1
+    sleep.assert_awaited_once()
+
+
+async def test_reconnects_exhausted(open_session):
+    call = AsyncMock(side_effect=ConnectionResetError("gone"))
+    with patch("dcert.resilience.asyncio.sleep", new=AsyncMock()):
+        async with open_session(call, max_reconnects=2) as (session, clients):
+            with pytest.raises(DcertConnectionError, match="gone"):
+                await session.call("tool", {})
+            assert call.await_count == 3
+            assert len(clients) == 3
+
+
+@pytest.mark.parametrize("exc", [ValueError("bad value"), TypeError("bad type")])
+async def test_non_connection_errors_surface_immediately(open_session, exc):
+    call = AsyncMock(side_effect=exc)
+    async with open_session(call, max_reconnects=3) as (session, clients):
+        with pytest.raises(type(exc), match="bad"):
+            await session.call("tool", {})
+        assert call.await_count == 1
+        assert len(clients) == 1
+        assert session.connected() is True
+
+
+async def test_cancellation_is_never_caught(open_session):
+    call = AsyncMock(side_effect=asyncio.CancelledError())
+    async with open_session(call, max_reconnects=3) as (session, _clients):
+        with pytest.raises(asyncio.CancelledError):
+            await session.call("tool", {})
+    assert call.await_count == 1
+
+
+async def test_circuit_breaker_rejects_after_failures(open_session, config):
+    cfg = replace(config, circuit_breaker_enabled=True, circuit_breaker_threshold=1)
+    call = AsyncMock(side_effect=ConnectionResetError("gone"))
+    async with open_session(call, resilience=cfg) as (session, _clients):
+        with pytest.raises(DcertConnectionError, match="gone"):
+            await session.call("tool", {})
+        with pytest.raises(DcertConnectionError, match="Circuit breaker is open"):
+            await session.call("tool", {})
+    assert call.await_count == 1
+
+
+async def test_circuit_breaker_records_success(open_session, config):
+    cfg = replace(config, circuit_breaker_enabled=True, circuit_breaker_threshold=2)
+    call = AsyncMock(side_effect=[ConnectionResetError("gone"), OK, ConnectionResetError("x"), OK])
+    async with open_session(call, resilience=cfg) as (session, _clients):
+        for _ in range(2):
+            with pytest.raises(DcertConnectionError, match="gone|x"):
+                await session.call("tool", {})
+            assert await session.call("tool", {}) == '{"status": "ok"}'
+
+
+async def test_rate_limiter_is_applied(open_session, config):
+    cfg = replace(config, rate_limit_enabled=True, rate_limit_rps=1000.0, rate_limit_burst=1)
+    with patch("dcert.resilience.asyncio.sleep", new=AsyncMock()) as sleep:
+        async with open_session(AsyncMock(return_value=OK), resilience=cfg) as (session, _c):
+            await session.call("tool", {})
+            await session.call("tool", {})
+    sleep.assert_awaited_once()
+
+
+async def test_concurrent_calls(open_session):
+    call = AsyncMock(return_value=OK)
+    async with open_session(call) as (session, _clients):
         results = await asyncio.gather(
-            client.analyze_certificate(target="a.com"),
-            client.check_expiry(target="b.com"),
-            client.tls_connection_info(target="c.com"),
+            analyze_certificate(session=session, target="a.com"),
+            check_expiry(session=session, target="b.com"),
+            tls_connection_info(session=session, target="c.com"),
         )
-        assert len(results) == 3
-        assert all(r == "ok" for r in results)
-        assert mock.call_tool.await_count == 3
+    assert results == ['{"status": "ok"}'] * 3
+    assert call.await_count == 3
+
+
+async def test_connect_failure_propagates(config):
+    def factory():
+        raise ConnectionRefusedError("cannot spawn")
+
+    with pytest.raises(ConnectionRefusedError, match="cannot spawn"):
+        async with create_session(
+            binary_path="/fake/dcert-mcp", client_factory=factory, resilience=config
+        ):
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Shared default session
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def fake_default(monkeypatch):
+    """Replace create_session with a fake yielding fresh Session records."""
+    created: list[Session] = []
+    calls: list[tuple[str, dict]] = []
+
+    @asynccontextmanager
+    async def fake_create_session(*_args, **_kwargs):
+        state = {"connected": True}
+
+        async def call(tool, params, *, timeout=None):
+            calls.append((tool, dict(params)))
+            return "ok"
+
+        session = Session(binary="/fake", call=call, connected=lambda: state["connected"])
+        created.append(session)
+        try:
+            yield session
+        finally:
+            state["connected"] = False
+
+    monkeypatch.setattr(tools_mod, "create_session", fake_create_session)
+    await close_default_session()
+    yield created, calls
+    await close_default_session()
+
+
+async def test_default_session_is_shared(fake_default):
+    created, calls = fake_default
+    assert await analyze_certificate(target="a.com") == "ok"
+    assert await check_expiry(target="b.com") == "ok"
+    assert len(created) == 1
+    assert calls == [
+        ("analyze_certificate", {"target": "a.com"}),
+        ("check_expiry", {"target": "b.com"}),
+    ]
+    assert await default_session() is created[0]
+
+
+async def test_default_session_reconnects_when_disconnected(fake_default):
+    created, _calls = fake_default
+    await call_tool("t", {})
+    await close_default_session()
+    assert created[0].connected() is False
+    await call_tool("t", {})
+    assert len(created) == 2
+
+
+async def test_default_session_concurrent_first_use_creates_one(fake_default):
+    created, _calls = fake_default
+    await asyncio.gather(*(call_tool("t", {}) for _ in range(5)))
+    assert len(created) == 1
+
+
+async def test_close_default_session_when_none():
+    await close_default_session()
+    await close_default_session()

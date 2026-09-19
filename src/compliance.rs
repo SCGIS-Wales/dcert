@@ -15,12 +15,142 @@ pub enum Severity {
     Info,
 }
 
-/// A single compliance finding for a certificate.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct CertFinding {
+/// A single compliance finding for a certificate or CSR.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Finding {
     pub severity: Severity,
     pub category: String,
     pub message: String,
+}
+
+impl Finding {
+    pub fn new(severity: Severity, category: &str, message: impl Into<String>) -> Self {
+        Self {
+            severity,
+            category: category.to_string(),
+            message: message.into(),
+        }
+    }
+}
+
+/// Name kept for the certificate report; identical to [`Finding`].
+pub type CertFinding = Finding;
+
+/// `true` when no finding is an error.
+pub fn is_compliant(findings: &[Finding]) -> bool {
+    !findings.iter().any(|f| f.severity == Severity::Error)
+}
+
+// ---------------------------------------------------------------------------
+// Shared checks (used by certificate and CSR validation)
+// ---------------------------------------------------------------------------
+
+/// Findings for a public key algorithm and size against the CA/Browser Forum
+/// Baseline Requirements. `alg` is a free form name such as `RSA`, `EC` or
+/// `ECDSA P-256`.
+pub fn key_size_findings(alg: &str, bits: u32) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    let upper = alg.to_ascii_uppercase();
+    if upper.starts_with("RSA") {
+        if bits < 2048 {
+            findings.push(Finding::new(
+                Severity::Error,
+                "Key Size",
+                format!("RSA key size {bits} bits is below the minimum 2048 bits required by the CA/Browser Forum Baseline Requirements"),
+            ));
+        } else if bits == 2048 {
+            findings.push(Finding::new(
+                Severity::Warning,
+                "Key Size",
+                "RSA 2048 meets the minimum requirement; RSA 3072 or larger, or ECDSA P-256, is recommended for stronger security",
+            ));
+        } else {
+            findings.push(Finding::new(
+                Severity::Info,
+                "Key Size",
+                format!("RSA {bits} bits meets requirements"),
+            ));
+        }
+        findings.push(Finding::new(
+            Severity::Info,
+            "Key Algorithm",
+            "Consider ECDSA P-256 for better performance with security equivalent to RSA 3072",
+        ));
+    } else if upper.contains("EC") {
+        if bits < 256 {
+            findings.push(Finding::new(
+                Severity::Error,
+                "Key Size",
+                format!("EC key size {bits} bits is below the minimum 256 bits (P-256)"),
+            ));
+        } else {
+            findings.push(Finding::new(
+                Severity::Info,
+                "Key Size",
+                format!("{alg} {bits} bits meets requirements"),
+            ));
+        }
+    } else {
+        findings.push(Finding::new(
+            Severity::Info,
+            "Key Size",
+            format!("Key algorithm: {alg} ({bits} bits). Verify CA support."),
+        ));
+    }
+    findings
+}
+
+/// Verdict for a signature algorithm given its human readable name (for
+/// example `sha256WithRSAEncryption` or `ecdsa-with-SHA384`).
+pub fn signature_name_finding(sig_algo: &str) -> Option<Finding> {
+    let lower = sig_algo.to_ascii_lowercase();
+    if lower.contains("md5") || lower.contains("md2") {
+        Some(Finding::new(
+            Severity::Error,
+            "Signature Algorithm",
+            format!("{sig_algo}: MD5 and MD2 signatures are cryptographically broken and must not be used"),
+        ))
+    } else if lower.contains("sha1") || lower.contains("sha-1") {
+        Some(Finding::new(
+            Severity::Error,
+            "Signature Algorithm",
+            format!("{sig_algo}: SHA-1 signatures are insecure and rejected by all major CAs and browsers since 2017"),
+        ))
+    } else if lower.contains("sha256")
+        || lower.contains("sha384")
+        || lower.contains("sha512")
+        || lower.contains("ed25519")
+        || lower.contains("ed448")
+        || lower.contains("pss")
+    {
+        Some(Finding::new(
+            Severity::Info,
+            "Signature Algorithm",
+            format!("Signature algorithm '{sig_algo}' is compliant"),
+        ))
+    } else {
+        None
+    }
+}
+
+/// Warn when the Common Name is not repeated as a DNS SAN (RFC 6125).
+pub fn cn_in_sans_finding(cn: Option<&str>, sans: &[String]) -> Option<Finding> {
+    let cn = cn?;
+    let cn_lower = cn.to_lowercase();
+    let present = sans
+        .iter()
+        .any(|san| san.strip_prefix("DNS:").is_some_and(|d| d.to_lowercase() == cn_lower));
+    if present {
+        None
+    } else {
+        Some(Finding::new(
+            Severity::Warning,
+            "SAN",
+            format!(
+                "Common Name '{cn}' is not included in SANs. Per RFC 6125, the CN should also be present as a SAN."
+            ),
+        ))
+    }
 }
 
 /// Full compliance report for a single certificate.
@@ -62,7 +192,7 @@ pub fn check_chain_compliance(infos: &[CertInfo]) -> ChainComplianceReport {
     for info in infos {
         let is_leaf = info.index == 0;
         let findings = check_certificate_compliance(info, is_leaf);
-        let compliant = !findings.iter().any(|f| f.severity == Severity::Error);
+        let compliant = is_compliant(&findings);
         reports.push(CertComplianceReport {
             index: info.index,
             subject: info.subject.clone(),
@@ -105,68 +235,13 @@ fn check_certificate_compliance(info: &CertInfo, is_leaf: bool) -> Vec<CertFindi
 
 /// Check public key algorithm and size against CA/B Forum requirements.
 fn check_key_compliance(info: &CertInfo, findings: &mut Vec<CertFinding>) {
-    let (alg, bits) = match (&info.public_key_algorithm, info.public_key_size_bits) {
-        (Some(alg), Some(bits)) => (alg.as_str(), bits),
-        _ => {
-            findings.push(CertFinding {
-                severity: Severity::Info,
-                category: "Key Size".to_string(),
-                message: "Public key information not available (use --extensions to extract)".to_string(),
-            });
-            return;
-        }
-    };
-
-    match alg {
-        "RSA" => {
-            if bits < 2048 {
-                findings.push(CertFinding {
-                    severity: Severity::Error,
-                    category: "Key Size".to_string(),
-                    message: format!(
-                        "RSA key size {} bits is below the minimum 2048-bit requirement (CA/B Forum BR)",
-                        bits
-                    ),
-                });
-            } else if bits == 2048 {
-                findings.push(CertFinding {
-                    severity: Severity::Warning,
-                    category: "Key Size".to_string(),
-                    message: "RSA 2048-bit meets minimum requirements but 3072+ bits is recommended for long-lived certificates".to_string(),
-                });
-            } else {
-                findings.push(CertFinding {
-                    severity: Severity::Info,
-                    category: "Key Size".to_string(),
-                    message: format!("RSA {} bits meets requirements", bits),
-                });
-            }
-        }
-        "EC" => {
-            if bits < 256 {
-                findings.push(CertFinding {
-                    severity: Severity::Error,
-                    category: "Key Size".to_string(),
-                    message: format!(
-                        "EC key size {} bits is below the minimum 256-bit (P-256) requirement",
-                        bits
-                    ),
-                });
-            } else {
-                findings.push(CertFinding {
-                    severity: Severity::Info,
-                    category: "Key Size".to_string(),
-                    message: format!("EC {} bits meets requirements", bits),
-                });
-            }
-        }
-        _ => {
-            findings.push(CertFinding {
-                severity: Severity::Info,
-                category: "Key Size".to_string(),
-                message: format!("Key algorithm: {} ({} bits)", alg, bits),
-            });
-        }
+    match (&info.public_key_algorithm, info.public_key_size_bits) {
+        (Some(alg), Some(bits)) => findings.extend(key_size_findings(alg, bits)),
+        _ => findings.push(Finding::new(
+            Severity::Info,
+            "Key Size",
+            "Public key information not available (use --extensions to extract)",
+        )),
     }
 }
 
@@ -219,7 +294,7 @@ fn check_signature_algorithm(info: &CertInfo, findings: &mut Vec<CertFinding>) {
             findings.push(CertFinding {
                 severity: Severity::Info,
                 category: "Signature Algorithm".to_string(),
-                message: format!("Signature algorithm OID: {}", sig_alg),
+                message: format!("Signature algorithm OID: {sig_alg}"),
             });
             return;
         }
@@ -228,7 +303,7 @@ fn check_signature_algorithm(info: &CertInfo, findings: &mut Vec<CertFinding>) {
     findings.push(CertFinding {
         severity,
         category: "Signature Algorithm".to_string(),
-        message: format!("{}: {}", name, msg),
+        message: format!("{name}: {msg}"),
     });
 }
 
@@ -265,7 +340,7 @@ fn check_expiry_compliance(info: &CertInfo, findings: &mut Vec<CertFinding>) {
             findings.push(CertFinding {
                 severity: Severity::Info,
                 category: "Expiry".to_string(),
-                message: format!("Certificate valid for {} more days", days_left),
+                message: format!("Certificate valid for {days_left} more days"),
             });
         }
     }
@@ -273,13 +348,11 @@ fn check_expiry_compliance(info: &CertInfo, findings: &mut Vec<CertFinding>) {
 
 /// Check validity period does not exceed CA/B Forum maximum (398 days since Sep 2020).
 fn check_validity_period(info: &CertInfo, findings: &mut Vec<CertFinding>) {
-    let not_before = match OffsetDateTime::parse(&info.not_before, &Rfc3339) {
-        Ok(dt) => dt,
-        Err(_) => return,
+    let Ok(not_before) = OffsetDateTime::parse(&info.not_before, &Rfc3339) else {
+        return;
     };
-    let not_after = match OffsetDateTime::parse(&info.not_after, &Rfc3339) {
-        Ok(dt) => dt,
-        Err(_) => return,
+    let Ok(not_after) = OffsetDateTime::parse(&info.not_after, &Rfc3339) else {
+        return;
     };
 
     let validity_days = (not_after - not_before).whole_days();
@@ -288,19 +361,15 @@ fn check_validity_period(info: &CertInfo, findings: &mut Vec<CertFinding>) {
             severity: Severity::Warning,
             category: "Validity Period".to_string(),
             message: format!(
-                "Certificate validity of {} days exceeds CA/B Forum maximum of 398 days (since Sep 2020). \
-                 Publicly-trusted CAs must not issue certificates with longer validity.",
-                validity_days
+                "Certificate validity of {validity_days} days exceeds CA/B Forum maximum of 398 days (since Sep 2020). \
+                 Publicly-trusted CAs must not issue certificates with longer validity."
             ),
         });
     } else {
         findings.push(CertFinding {
             severity: Severity::Info,
             category: "Validity Period".to_string(),
-            message: format!(
-                "Certificate validity period: {} days (within 398-day limit)",
-                validity_days
-            ),
+            message: format!("Certificate validity period: {validity_days} days (within 398-day limit)"),
         });
     }
 }
@@ -309,10 +378,7 @@ fn check_validity_period(info: &CertInfo, findings: &mut Vec<CertFinding>) {
 fn check_certificate_transparency(info: &CertInfo, findings: &mut Vec<CertFinding>) {
     if info.ct_present {
         let sct_msg = match info.sct_count {
-            Some(count) => format!(
-                "Certificate Transparency: {} SCT(s) embedded (compliant with CT policy)",
-                count
-            ),
+            Some(count) => format!("Certificate Transparency: {count} SCT(s) embedded (compliant with CT policy)"),
             None => "Certificate Transparency: SCTs present".to_string(),
         };
         findings.push(CertFinding {
@@ -349,24 +415,10 @@ fn check_san_compliance(info: &CertInfo, findings: &mut Vec<CertFinding>) {
         });
 
         // Check CN is in SANs
-        if let Some(ref cn) = info.common_name {
-            let cn_lower = cn.to_lowercase();
-            let cn_in_sans = info.subject_alternative_names.iter().any(|san| {
-                san.strip_prefix("DNS:")
-                    .map(|d| d.to_lowercase() == cn_lower)
-                    .unwrap_or(false)
-            });
-            if !cn_in_sans {
-                findings.push(CertFinding {
-                    severity: Severity::Warning,
-                    category: "SAN".to_string(),
-                    message: format!(
-                        "Common Name '{}' is not included in SANs. Per RFC 6125, CN should be present in SANs.",
-                        cn
-                    ),
-                });
-            }
-        }
+        findings.extend(cn_in_sans_finding(
+            info.common_name.as_deref(),
+            &info.subject_alternative_names,
+        ));
 
         // Check for wildcard validity
         for san in &info.subject_alternative_names {
@@ -378,8 +430,7 @@ fn check_san_compliance(info: &CertInfo, findings: &mut Vec<CertFinding>) {
                     severity: Severity::Error,
                     category: "SAN".to_string(),
                     message: format!(
-                        "Invalid wildcard '{}': wildcards must only appear as the leftmost label (e.g., *.example.com)",
-                        dns
+                        "Invalid wildcard '{dns}': wildcards must only appear as the leftmost label (e.g., *.example.com)"
                     ),
                 });
             }

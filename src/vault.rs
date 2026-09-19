@@ -6,8 +6,9 @@ use std::fs;
 
 use crate::cert::{CertProcessOpts, parse_cert_infos_from_pem};
 use crate::convert;
-use crate::csr::{prompt_optional, prompt_required, prompt_with_default};
+use crate::csr::{prompt_optional, prompt_required, prompt_secret, prompt_with_default};
 use crate::output::{PrettyDebugInfo, print_pretty};
+use crate::secret::Secret;
 
 /// Percent-encode an arbitrary string for use as a single Vault API path
 /// segment. Vault treats `/`, `?`, `#` as path/query/fragment delimiters, so
@@ -57,94 +58,214 @@ fn discover_vault_token_from(env_token: Option<String>, home: Option<std::path::
     ))
 }
 
-/// Authenticate with Vault using LDAP or AppRole and return a client token.
-/// This mirrors the MCP server's authentication logic for CLI parity.
-#[allow(clippy::too_many_arguments)]
-pub fn vault_authenticate(
-    vault_addr: &str,
-    auth_method: &str,
-    ldap_username: Option<&str>,
-    ldap_password: Option<&str>,
-    ldap_mount: &str,
-    approle_role_id: Option<&str>,
-    approle_secret_id: Option<&str>,
-    approle_mount: &str,
-    skip_verify: bool,
-    vault_cacert: Option<&str>,
-) -> Result<String> {
-    use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
+/// TLS settings for talking to Vault, resolved from CLI flags and the standard
+/// Vault environment variables (`VAULT_SKIP_VERIFY`, `VAULT_CACERT`,
+/// `VAULT_CAPATH`, with `SSL_CERT_FILE` and `SSL_CERT_DIR` as fallbacks).
+///
+/// Every Vault HTTP client, including the one used for the LDAP and AppRole
+/// login, is built from this one resolution so the login request never sees
+/// weaker verification than the authenticated session that follows.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct VaultTlsSettings {
+    pub skip_verify: bool,
+    pub cacert: Option<String>,
+    /// Where `cacert` came from, for debug output.
+    pub cacert_source: Option<&'static str>,
+    pub capath: Option<String>,
+}
 
-    let mut client_builder = reqwest::blocking::Client::builder()
-        .danger_accept_invalid_certs(skip_verify)
-        .timeout(std::time::Duration::from_secs(30));
+impl VaultTlsSettings {
+    /// Resolve settings from explicit flags plus the environment.
+    pub fn resolve(flag_cacert: Option<&str>, flag_skip_verify: bool) -> Self {
+        let env_true = |name: &str| {
+            std::env::var(name)
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
+                .unwrap_or(false)
+        };
+        let skip_verify = flag_skip_verify || env_true("VAULT_SKIP_VERIFY");
 
-    if let Some(ca_path) = vault_cacert {
-        let ca_data = fs::read(ca_path).with_context(|| format!("Failed to read CA cert: {}", ca_path))?;
-        let ca_cert = reqwest::Certificate::from_pem(&ca_data)
-            .with_context(|| format!("Failed to parse CA cert: {}", ca_path))?;
-        client_builder = client_builder.add_root_certificate(ca_cert);
+        let (cacert, cacert_source) = if let Some(p) = flag_cacert {
+            (Some(p.to_string()), Some("--vault-cacert"))
+        } else if let Ok(p) = std::env::var("VAULT_CACERT") {
+            (Some(p), Some("VAULT_CACERT"))
+        } else if let Ok(p) = std::env::var("SSL_CERT_FILE") {
+            (Some(p), Some("SSL_CERT_FILE"))
+        } else {
+            (None, None)
+        };
+
+        let capath = std::env::var("VAULT_CAPATH")
+            .ok()
+            .or_else(|| std::env::var("SSL_CERT_DIR").ok());
+
+        Self {
+            skip_verify,
+            cacert,
+            cacert_source,
+            capath,
+        }
     }
 
-    let client = client_builder
-        .build()
-        .context("Failed to create HTTP client for Vault auth")?;
+    /// Print the insecure warning once, when verification is off.
+    pub fn warn_if_insecure(&self) {
+        if self.skip_verify {
+            eprintln!(
+                "{} {}",
+                "WARNING:".yellow().bold(),
+                "TLS certificate verification is disabled for Vault. Connection is NOT secure.".yellow()
+            );
+        }
+    }
 
-    match auth_method {
-        "ldap" => {
-            let username = ldap_username.ok_or_else(|| anyhow::anyhow!("--ldap-username is required for LDAP auth"))?;
-            let password = ldap_password.ok_or_else(|| anyhow::anyhow!("--ldap-password is required for LDAP auth"))?;
-            let encoded_mount = utf8_percent_encode(ldap_mount, NON_ALPHANUMERIC).to_string();
+    fn client(&self, timeout: std::time::Duration) -> Result<(reqwest::blocking::Client, crate::http::CaDirSummary)> {
+        crate::http::blocking_client_with_summary(&crate::http::HttpClientOptions {
+            timeout: Some(timeout),
+            proxy: None,
+            accept_invalid_certs: self.skip_verify,
+            ca_file: self.cacert.as_deref(),
+            ca_dir: self.capath.as_deref(),
+            ..Default::default()
+        })
+    }
+}
+
+/// Which login method to use with Vault.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VaultAuthMethod {
+    Token,
+    Ldap,
+    AppRole,
+}
+
+impl std::str::FromStr for VaultAuthMethod {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "token" => Ok(Self::Token),
+            "ldap" => Ok(Self::Ldap),
+            "approle" => Ok(Self::AppRole),
+            other => Err(anyhow::anyhow!(
+                "Invalid auth method '{other}': must be \"token\", \"ldap\", or \"approle\""
+            )),
+        }
+    }
+}
+
+/// Credentials for a Vault LDAP or AppRole login.
+#[derive(Debug, Clone, Default)]
+pub struct VaultLogin<'a> {
+    pub ldap_username: Option<&'a str>,
+    pub ldap_password: Option<&'a str>,
+    pub ldap_mount: &'a str,
+    pub approle_role_id: Option<&'a str>,
+    pub approle_secret_id: Option<&'a str>,
+    pub approle_mount: &'a str,
+}
+
+/// Authenticate with Vault using LDAP or AppRole and return a client token.
+///
+/// The returned token is wrapped in `Zeroizing` so it is wiped when dropped.
+/// The same TLS settings as the authenticated client are applied, and the
+/// insecure warning is printed before any credential leaves the machine.
+pub fn vault_authenticate(
+    vault_addr: &str,
+    method: VaultAuthMethod,
+    login: &VaultLogin<'_>,
+    tls: &VaultTlsSettings,
+) -> Result<zeroize::Zeroizing<String>> {
+    use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
+
+    validate_vault_addr(vault_addr)?;
+    tls.warn_if_insecure();
+    let (client, _) = tls.client(std::time::Duration::from_secs(30))?;
+
+    let (url, body, label) = match method {
+        VaultAuthMethod::Ldap => {
+            let username = login
+                .ldap_username
+                .ok_or_else(|| anyhow::anyhow!("--ldap-username is required for LDAP auth"))?;
+            let password = login
+                .ldap_password
+                .ok_or_else(|| anyhow::anyhow!("--ldap-password is required for LDAP auth"))?;
+            let encoded_mount = utf8_percent_encode(login.ldap_mount, NON_ALPHANUMERIC).to_string();
             let encoded_username = utf8_percent_encode(username, NON_ALPHANUMERIC).to_string();
-            let url = format!("{}/v1/auth/{}/login/{}", vault_addr, encoded_mount, encoded_username);
-
-            let resp = client
-                .post(&url)
-                .json(&serde_json::json!({"password": password}))
-                .send()
-                .with_context(|| "LDAP auth request failed")?;
-
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let body = truncate_upstream_error(&resp.text().unwrap_or_default());
-                return Err(anyhow::anyhow!("LDAP auth failed (HTTP {}): {}", status, body));
-            }
-
-            let json: serde_json::Value = resp.json().context("Failed to parse LDAP auth response")?;
-            json["auth"]["client_token"]
-                .as_str()
-                .map(String::from)
-                .ok_or_else(|| anyhow::anyhow!("LDAP auth response did not contain a client_token"))
+            (
+                format!("{vault_addr}/v1/auth/{encoded_mount}/login/{encoded_username}"),
+                serde_json::json!({"password": password}),
+                "LDAP",
+            )
         }
-        "approle" => {
-            let role_id =
-                approle_role_id.ok_or_else(|| anyhow::anyhow!("--approle-role-id is required for AppRole auth"))?;
-            let secret_id =
-                approle_secret_id.ok_or_else(|| anyhow::anyhow!("--approle-secret-id is required for AppRole auth"))?;
-            let encoded_mount = utf8_percent_encode(approle_mount, NON_ALPHANUMERIC).to_string();
-            let url = format!("{}/v1/auth/{}/login", vault_addr, encoded_mount);
-
-            let resp = client
-                .post(&url)
-                .json(&serde_json::json!({"role_id": role_id, "secret_id": secret_id}))
-                .send()
-                .with_context(|| "AppRole auth request failed")?;
-
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let body = truncate_upstream_error(&resp.text().unwrap_or_default());
-                return Err(anyhow::anyhow!("AppRole auth failed (HTTP {}): {}", status, body));
-            }
-
-            let json: serde_json::Value = resp.json().context("Failed to parse AppRole auth response")?;
-            json["auth"]["client_token"]
-                .as_str()
-                .map(String::from)
-                .ok_or_else(|| anyhow::anyhow!("AppRole auth response did not contain a client_token"))
+        VaultAuthMethod::AppRole => {
+            let role_id = login
+                .approle_role_id
+                .ok_or_else(|| anyhow::anyhow!("--approle-role-id is required for AppRole auth"))?;
+            let secret_id = login
+                .approle_secret_id
+                .ok_or_else(|| anyhow::anyhow!("--approle-secret-id is required for AppRole auth"))?;
+            let encoded_mount = utf8_percent_encode(login.approle_mount, NON_ALPHANUMERIC).to_string();
+            (
+                format!("{vault_addr}/v1/auth/{encoded_mount}/login"),
+                serde_json::json!({"role_id": role_id, "secret_id": secret_id}),
+                "AppRole",
+            )
         }
-        _ => Err(anyhow::anyhow!(
-            "Invalid auth method '{}': must be \"token\", \"ldap\", or \"approle\"",
-            auth_method
-        )),
+        VaultAuthMethod::Token => {
+            return Err(anyhow::anyhow!(
+                "vault_authenticate called with the token method; use discover_vault_token"
+            ));
+        }
+    };
+
+    let resp = client
+        .post(&url)
+        .json(&body)
+        .send()
+        .with_context(|| format!("{label} auth request failed"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = truncate_upstream_error(&resp.text().unwrap_or_default());
+        return Err(anyhow::anyhow!("{label} auth failed (HTTP {status}): {text}"));
+    }
+
+    let json: serde_json::Value = resp
+        .json()
+        .with_context(|| format!("Failed to parse {label} auth response"))?;
+    json["auth"]["client_token"]
+        .as_str()
+        .map(|t| zeroize::Zeroizing::new(t.to_string()))
+        .ok_or_else(|| anyhow::anyhow!("{label} auth response did not contain a client_token"))
+}
+
+/// Reject Vault addresses that would send the token or login credentials in
+/// cleartext. Only `https://` is accepted, except for loopback addresses which
+/// are allowed over `http://` for local development servers.
+pub fn validate_vault_addr(addr: &str) -> Result<()> {
+    let url = url::Url::parse(addr).with_context(|| format!("VAULT_ADDR '{addr}' is not a valid URL"))?;
+    match url.scheme() {
+        "https" => Ok(()),
+        "http" => {
+            let host = url
+                .host_str()
+                .unwrap_or("")
+                .trim_start_matches('[')
+                .trim_end_matches(']');
+            let loopback = host == "localhost"
+                || host
+                    .parse::<std::net::IpAddr>()
+                    .map(|ip| ip.is_loopback())
+                    .unwrap_or(false);
+            if loopback {
+                Ok(())
+            } else {
+                Err(anyhow::anyhow!(
+                    "VAULT_ADDR '{addr}' uses plain http; the Vault token and login credentials would be sent \
+                     in cleartext. Use https:// (http:// is only accepted for loopback addresses)."
+                ))
+            }
+        }
+        other => Err(anyhow::anyhow!("VAULT_ADDR '{addr}' has unsupported scheme '{other}'")),
     }
 }
 
@@ -164,16 +285,15 @@ fn home_dir() -> Option<std::path::PathBuf> {
     std::env::var("HOME").ok().map(std::path::PathBuf::from)
 }
 
-/// Mask a token for display: show first 4 and last 4 chars.
+/// Mask a token for display. Only the token type prefix (`hvs.`, `hvb.`,
+/// `s.`) is shown, so nothing usable is written to the terminal or a log.
 fn mask_token(token: &str) -> String {
-    let chars: Vec<char> = token.chars().collect();
-    if chars.len() <= 8 {
-        "****".to_string()
-    } else {
-        let prefix: String = chars[..4].iter().collect();
-        let suffix: String = chars[chars.len() - 4..].iter().collect();
-        format!("{prefix}****{suffix}")
-    }
+    let prefix = token
+        .split_once('.')
+        .filter(|(p, _)| p.len() <= 4 && p.chars().all(|c| c.is_ascii_alphanumeric()))
+        .map(|(p, _)| format!("{p}."))
+        .unwrap_or_default();
+    format!("{prefix}**** ({} chars)", token.chars().count())
 }
 
 // ---------------------------------------------------------------------------
@@ -201,6 +321,16 @@ pub struct VaultClient {
     debug: bool,
 }
 
+impl std::fmt::Debug for VaultClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VaultClient")
+            .field("base_url", &self.base_url)
+            .field("token", &"<redacted>")
+            .field("debug", &self.debug)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Describes the required Vault policy capability for an endpoint.
 struct PolicyHint {
     path: String,
@@ -216,89 +346,33 @@ impl VaultClient {
     /// - `VAULT_CAPATH` env var — directory of CA PEM files
     /// - System native root certificates (corporate CAs installed system-wide)
     pub fn new(addr: &str, token: &str, config: &VaultClientConfig) -> Result<Self> {
-        let skip_verify = config.skip_verify
-            || std::env::var("VAULT_SKIP_VERIFY")
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
-                .unwrap_or(false);
-
-        let mut builder = reqwest::blocking::Client::builder()
-            .danger_accept_invalid_certs(skip_verify)
-            .timeout(std::time::Duration::from_secs(30));
+        validate_vault_addr(addr)?;
+        let tls = VaultTlsSettings::resolve(config.cacert.as_deref(), config.skip_verify);
 
         if config.debug {
             eprintln!("{}", "  Vault TLS configuration:".dimmed());
-            eprintln!("    skip_verify   : {}", skip_verify);
+            eprintln!("    skip_verify   : {}", tls.skip_verify);
             eprintln!("    native roots  : {} (system CA store)", "enabled".green());
-        }
-
-        if skip_verify {
-            eprintln!(
-                "{} {}",
-                "WARNING:".yellow().bold(),
-                "TLS certificate verification is disabled for Vault. Connection is NOT secure.".yellow()
-            );
-        }
-
-        // Load custom CA cert from CLI flag, VAULT_CACERT, or SSL_CERT_FILE env var
-        let cacert_path = config
-            .cacert
-            .clone()
-            .or_else(|| std::env::var("VAULT_CACERT").ok())
-            .or_else(|| std::env::var("SSL_CERT_FILE").ok());
-
-        if let Some(ref cacert_path) = cacert_path {
-            let pem_data = fs::read(cacert_path)
-                .with_context(|| format!("Failed to read CA certificate file: {}", cacert_path))?;
-            let cert = reqwest::Certificate::from_pem(&pem_data)
-                .with_context(|| format!("Failed to parse CA certificate from: {}", cacert_path))?;
-            builder = builder.add_root_certificate(cert);
-
-            if config.debug {
-                let source = if config.cacert.as_deref() == Some(cacert_path.as_str()) {
-                    "--vault-cacert"
-                } else if std::env::var("VAULT_CACERT").ok().as_deref() == Some(cacert_path.as_str()) {
-                    "VAULT_CACERT"
-                } else {
-                    "SSL_CERT_FILE"
-                };
-                eprintln!("    CA cert       : {} (from {})", cacert_path, source);
+            if let (Some(path), Some(source)) = (&tls.cacert, tls.cacert_source) {
+                eprintln!("    CA cert       : {path} (from {source})");
+            }
+            if let Some(dir) = &tls.capath {
+                eprintln!("    CA cert dir   : {dir}");
             }
         }
 
-        // Load CA certs from VAULT_CAPATH or SSL_CERT_DIR env var
-        let capath = std::env::var("VAULT_CAPATH")
-            .ok()
-            .or_else(|| std::env::var("SSL_CERT_DIR").ok());
-        if let Some(capath) = capath {
-            if config.debug {
-                eprintln!("    CA cert dir   : {}", capath);
-            }
-            let mut loaded = 0usize;
-            for entry in
-                fs::read_dir(&capath).with_context(|| format!("Failed to read CA path directory: {}", capath))?
-            {
-                let entry = entry?;
-                let path = entry.path();
-                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                if (ext == "pem" || ext == "crt" || ext == "cer")
-                    && let Ok(pem_data) = fs::read(&path)
-                    && let Ok(cert) = reqwest::Certificate::from_pem(&pem_data)
-                {
-                    builder = builder.add_root_certificate(cert);
-                    loaded += 1;
-                }
-            }
-            if config.debug {
-                eprintln!("    CA certs loaded: {}", loaded);
-            }
-        }
+        tls.warn_if_insecure();
 
-        let client = builder
-            .build()
+        let (client, ca_summary) = tls
+            .client(std::time::Duration::from_secs(30))
             .with_context(|| "Failed to build HTTP client for Vault")?;
 
+        if config.debug && tls.capath.is_some() {
+            eprintln!("    CA certs loaded: {}", ca_summary.loaded);
+        }
+
         if config.debug {
-            eprintln!("    Target        : {}", addr);
+            eprintln!("    Target        : {addr}");
             eprintln!();
         }
 
@@ -312,6 +386,14 @@ impl VaultClient {
 
     /// Make an authenticated GET request.
     fn get(&self, path: &str) -> Result<serde_json::Value> {
+        self.get_optional(path)?
+            .ok_or_else(|| anyhow::anyhow!("Not found: {path}\n\n  The path does not exist in Vault."))
+    }
+
+    /// Authenticated GET that distinguishes "does not exist" (`Ok(None)`)
+    /// from permission and transport failures (`Err`), so callers never
+    /// mistake a 403 or a network error for an absent secret.
+    fn get_optional(&self, path: &str) -> Result<Option<serde_json::Value>> {
         let url = format!("{}/v1/{}", self.base_url, path);
         let hint = PolicyHint {
             path: path.to_string(),
@@ -324,7 +406,10 @@ impl VaultClient {
             .send()
             .map_err(|e| vault_connection_error(e, &self.base_url, self.debug))?;
 
-        handle_vault_response(resp, &hint)
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        handle_vault_response(resp, &hint).map(Some)
     }
 
     /// Make an authenticated POST request with JSON body.
@@ -365,25 +450,6 @@ impl VaultClient {
         handle_vault_response(resp, &hint)
     }
 
-    /// Make an authenticated PUT request (for KV v2 writes).
-    #[allow(dead_code)]
-    fn put(&self, path: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
-        let url = format!("{}/v1/{}", self.base_url, path);
-        let hint = PolicyHint {
-            path: path.to_string(),
-            capability: "create, update",
-        };
-        let resp = self
-            .client
-            .put(&url)
-            .header("X-Vault-Token", self.token.as_str())
-            .json(body)
-            .send()
-            .map_err(|e| vault_connection_error(e, &self.base_url, self.debug))?;
-
-        handle_vault_response(resp, &hint)
-    }
-
     /// Read a certificate from a PKI mount (unauthenticated endpoint, but we send token anyway).
     fn read_pki_cert(&self, path: &str) -> Result<String> {
         let url = format!("{}/v1/{}", self.base_url, path);
@@ -402,14 +468,14 @@ impl VaultClient {
         let json = handle_vault_response(resp, &hint)?;
         json["data"]["certificate"]
             .as_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| anyhow::anyhow!("No certificate data returned from {}", path))
+            .map(ToString::to_string)
+            .ok_or_else(|| anyhow::anyhow!("No certificate data returned from {path}"))
     }
 }
 
 fn vault_connection_error(e: reqwest::Error, base_url: &str, debug: bool) -> anyhow::Error {
     let debug_detail = if debug {
-        format!("\n\n  Debug detail: {:#}", e)
+        format!("\n\n  Debug detail: {e:#}")
     } else {
         String::new()
     };
@@ -428,21 +494,16 @@ fn vault_connection_error(e: reqwest::Error, base_url: &str, debug: bool) -> any
         };
 
         anyhow::anyhow!(
-            "Failed to connect to Vault at {}.\n\
-             Check that VAULT_ADDR is correct and the Vault server is running.{}{}",
-            base_url,
-            tls_hint,
-            debug_detail
+            "Failed to connect to Vault at {base_url}.\n\
+             Check that VAULT_ADDR is correct and the Vault server is running.{tls_hint}{debug_detail}"
         )
     } else if e.is_timeout() {
         anyhow::anyhow!(
-            "Connection to Vault at {} timed out.\n\
-             Check network connectivity and Vault server health.{}",
-            base_url,
-            debug_detail
+            "Connection to Vault at {base_url} timed out.\n\
+             Check network connectivity and Vault server health.{debug_detail}"
         )
     } else {
-        anyhow::anyhow!("Vault HTTP request failed: {}{}", e, debug_detail)
+        anyhow::anyhow!("Vault HTTP request failed: {e}{debug_detail}")
     }
 }
 
@@ -577,7 +638,7 @@ pub fn discover_role_from_token(client: &VaultClient) -> Result<Option<String>> 
         Err(e) => {
             // Only swallow 403/404 (permission denied or endpoint not found).
             // Propagate connection errors so TLS issues are surfaced.
-            let err_str = format!("{}", e);
+            let err_str = format!("{e}");
             if err_str.contains("Permission denied") || err_str.contains("Not found") {
                 if client.debug {
                     eprintln!("  {} token lookup-self failed (non-fatal): {}", "DEBUG:".dimmed(), e);
@@ -633,10 +694,10 @@ pub fn discover_role_from_token(client: &VaultClient) -> Result<Option<String>> 
     let idx: usize = selection
         .trim()
         .parse::<usize>()
-        .map_err(|_| anyhow::anyhow!("Invalid selection: '{}'", selection))?;
+        .map_err(|_| anyhow::anyhow!("Invalid selection: '{selection}'"))?;
 
     if idx < 1 || idx > roles.len() {
-        return Err(anyhow::anyhow!("Selection out of range: {}", idx));
+        return Err(anyhow::anyhow!("Selection out of range: {idx}"));
     }
 
     Ok(Some(roles[idx - 1].clone()))
@@ -731,17 +792,28 @@ pub fn issue_certificate(
 // Sign CSR
 // ---------------------------------------------------------------------------
 
-#[allow(clippy::too_many_arguments)]
-pub fn sign_csr(
-    client: &VaultClient,
-    mount: &str,
-    role: &str,
-    csr_pem: &str,
-    common_name: Option<&str>,
-    alt_names: &[String],
-    ip_sans: &[String],
-    ttl: &str,
-) -> Result<VaultPkiIssueData> {
+/// Inputs for [`sign_csr`].
+#[derive(Debug, Clone)]
+pub struct SignRequest<'a> {
+    pub mount: &'a str,
+    pub role: &'a str,
+    pub csr_pem: &'a str,
+    pub common_name: Option<&'a str>,
+    pub alt_names: &'a [String],
+    pub ip_sans: &'a [String],
+    pub ttl: &'a str,
+}
+
+pub fn sign_csr(client: &VaultClient, req: &SignRequest<'_>) -> Result<VaultPkiIssueData> {
+    let SignRequest {
+        mount,
+        role,
+        csr_pem,
+        common_name,
+        alt_names,
+        ip_sans,
+        ttl,
+    } = *req;
     let mut body = serde_json::json!({
         "csr": csr_pem,
         "ttl": ttl,
@@ -786,14 +858,14 @@ pub fn revoke_certificate(
     let path = format!("{}/revoke", encode_path_segment(mount));
     let resp = client.post(&path, &body)?;
 
-    let revocation_time = resp["data"]["revocation_time"].as_f64();
+    let revocation_time = resp["data"]["revocation_time"].as_i64();
     if let Some(ts) = revocation_time {
-        let dt = time::OffsetDateTime::from_unix_timestamp(ts as i64).unwrap_or(time::OffsetDateTime::now_utc());
+        let dt = time::OffsetDateTime::from_unix_timestamp(ts).unwrap_or(time::OffsetDateTime::now_utc());
         let formatted = dt
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap_or_else(|_| dt.to_string());
         println!("{}", "Certificate revoked successfully".green().bold());
-        println!("  Revocation time: {}", formatted);
+        println!("  Revocation time: {formatted}");
     } else {
         println!("{}", "Certificate revoked successfully".green().bold());
     }
@@ -821,7 +893,7 @@ pub fn list_certificates(
         .unwrap_or_default();
 
     if serials.is_empty() {
-        println!("No certificates found in {}", mount);
+        println!("No certificates found in {mount}");
         return Ok(Vec::new());
     }
 
@@ -877,13 +949,14 @@ pub fn list_certificates(
                     }
                 }
             }
-            Err(_) => {
+            Err(e) => {
+                let first_line = e.to_string().lines().next().unwrap_or("unknown error").to_string();
                 entries.push(VaultCertListEntry {
                     serial_number: serial.clone(),
                     common_name: None,
                     not_before: String::new(),
                     not_after: String::new(),
-                    status: "error reading".to_string(),
+                    status: format!("error reading: {}", truncate_upstream_error(&first_line)),
                 });
             }
         }
@@ -928,14 +1001,14 @@ pub fn export_cert_list(entries: &[VaultCertListEntry], export_path: &str) -> Re
                 csv_escape(&entry.status),
             ));
         }
-        fs::write(export_path, &csv).with_context(|| format!("Failed to write CSV file: {}", export_path))?;
+        fs::write(export_path, &csv).with_context(|| format!("Failed to write CSV file: {export_path}"))?;
     } else {
         // Default to JSON
         let json = serde_json::to_string_pretty(entries).with_context(|| "Failed to serialize certificate list")?;
-        fs::write(export_path, &json).with_context(|| format!("Failed to write JSON file: {}", export_path))?;
+        fs::write(export_path, &json).with_context(|| format!("Failed to write JSON file: {export_path}"))?;
     }
 
-    println!("Certificate list exported to {}", export_path);
+    println!("Certificate list exported to {export_path}");
     Ok(())
 }
 
@@ -946,7 +1019,7 @@ fn export_cert_list_xlsx(entries: &[VaultCertListEntry], export_path: &str) -> R
     let worksheet = workbook.add_worksheet();
     worksheet
         .set_name("Certificates")
-        .map_err(|e| anyhow::anyhow!("Failed to set worksheet name: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to set worksheet name: {e}"))?;
 
     let header_format = Format::new().set_bold();
 
@@ -954,33 +1027,33 @@ fn export_cert_list_xlsx(entries: &[VaultCertListEntry], export_path: &str) -> R
     let headers = ["Serial Number", "Common Name", "Not Before", "Not After", "Status"];
     for (col, header) in headers.iter().enumerate() {
         worksheet
-            .write_string_with_format(0, col as u16, *header, &header_format)
-            .map_err(|e| anyhow::anyhow!("Failed to write header: {}", e))?;
+            .write_string_with_format(0, u16::try_from(col).unwrap_or(u16::MAX), *header, &header_format)
+            .map_err(|e| anyhow::anyhow!("Failed to write header: {e}"))?;
     }
 
     // Write data rows
     for (row, entry) in entries.iter().enumerate() {
-        let r = (row + 1) as u32;
+        let r = u32::try_from(row + 1).unwrap_or(u32::MAX);
         worksheet
             .write_string(r, 0, &entry.serial_number)
-            .map_err(|e| anyhow::anyhow!("Failed to write cell: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to write cell: {e}"))?;
         worksheet
             .write_string(r, 1, entry.common_name.as_deref().unwrap_or(""))
-            .map_err(|e| anyhow::anyhow!("Failed to write cell: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to write cell: {e}"))?;
         worksheet
             .write_string(r, 2, &entry.not_before)
-            .map_err(|e| anyhow::anyhow!("Failed to write cell: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to write cell: {e}"))?;
         worksheet
             .write_string(r, 3, &entry.not_after)
-            .map_err(|e| anyhow::anyhow!("Failed to write cell: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to write cell: {e}"))?;
         worksheet
             .write_string(r, 4, &entry.status)
-            .map_err(|e| anyhow::anyhow!("Failed to write cell: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to write cell: {e}"))?;
     }
 
     workbook
         .save(export_path)
-        .map_err(|e| anyhow::anyhow!("Failed to save Excel file: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to save Excel file: {e}"))?;
 
     Ok(())
 }
@@ -1035,14 +1108,13 @@ pub fn write_pem_files(
     private_key_pem: Option<&str>,
     base_name: &str,
 ) -> Result<(String, Option<String>)> {
-    let cert_path = format!("{}.crt", base_name);
-    fs::write(&cert_path, cert_chain_pem)
-        .with_context(|| format!("Failed to write certificate file: {}", cert_path))?;
+    let cert_path = format!("{base_name}.crt");
+    fs::write(&cert_path, cert_chain_pem).with_context(|| format!("Failed to write certificate file: {cert_path}"))?;
 
     let key_path = if let Some(key) = private_key_pem {
-        let kp = format!("{}.key", base_name);
-        fs::write(&kp, key).with_context(|| format!("Failed to write private key file: {}", kp))?;
-        convert::restrict_file_permissions(&kp);
+        let kp = format!("{base_name}.key");
+        convert::write_private_file(&kp, key.as_bytes())
+            .with_context(|| format!("Failed to write private key file: {kp}"))?;
         Some(kp)
     } else {
         None
@@ -1051,10 +1123,7 @@ pub fn write_pem_files(
     Ok((cert_path, key_path))
 }
 
-/// Sanitise a CN into a safe base filename.
-pub fn sanitise_cn(cn: &str) -> String {
-    cn.replace('*', "wildcard").replace(['.', '/', ':'], "-")
-}
+pub use crate::csr::sanitise_cn;
 
 // ---------------------------------------------------------------------------
 // Display Certificate (reuse dcert check output)
@@ -1095,7 +1164,7 @@ fn kv_api_path(user_path: &str, kv_version: u8) -> String {
         if let Some(idx) = user_path.find('/') {
             format!("{}/data/{}", &user_path[..idx], &user_path[idx + 1..])
         } else {
-            format!("{}/data", user_path)
+            format!("{user_path}/data")
         }
     } else {
         user_path.to_string()
@@ -1112,6 +1181,35 @@ fn kv_extract_data(resp: &serde_json::Value, kv_version: u8) -> serde_json::Valu
     }
 }
 
+/// Build the JSON body for a KV write. KV v2 wraps the fields in a `data`
+/// envelope; KV v1 stores them flat.
+pub fn kv_write_body(
+    kv_version: u8,
+    cert_key: &str,
+    cert_pem: &str,
+    key_key: &str,
+    key_pem: &str,
+) -> serde_json::Value {
+    let fields = serde_json::json!({ cert_key: cert_pem, key_key: key_pem });
+    if kv_version >= 2 {
+        serde_json::json!({ "data": fields })
+    } else {
+        fields
+    }
+}
+
+/// Split a comma separated prompt answer into trimmed, non empty items.
+pub fn parse_csv_list(input: Option<String>) -> Vec<String> {
+    input
+        .map(|s| {
+            s.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Store certificate and key in Vault KV.
 pub fn kv_store(
     client: &VaultClient,
@@ -1125,7 +1223,7 @@ pub fn kv_store(
     let api_path = kv_api_path(kv_path, kv_version);
 
     // Check if secret already exists
-    let exists = client.get(&api_path).is_ok();
+    let exists = client.get_optional(&api_path)?.is_some();
     if exists {
         eprintln!(
             "{} Secret already exists at path '{}'.",
@@ -1139,27 +1237,13 @@ pub fn kv_store(
         }
     }
 
-    let body = if kv_version >= 2 {
-        // KV v2 wraps data in a "data" envelope
-        serde_json::json!({
-            "data": {
-                cert_key_name: cert_pem,
-                key_key_name: key_pem,
-            }
-        })
-    } else {
-        // KV v1 uses flat structure
-        serde_json::json!({
-            cert_key_name: cert_pem,
-            key_key_name: key_pem,
-        })
-    };
+    let body = kv_write_body(kv_version, cert_key_name, cert_pem, key_key_name, key_pem);
 
     client.post(&api_path, &body)?;
 
     println!(
         "{}",
-        format!("Certificate and key stored at '{}' (KV v{})", kv_path, kv_version).green()
+        format!("Certificate and key stored at '{kv_path}' (KV v{kv_version})").green()
     );
     println!("  Format: base64 PEM certificate, unencrypted private key");
 
@@ -1179,12 +1263,12 @@ pub fn kv_read_cert_key(
 
     let data = kv_extract_data(&resp, kv_version);
     if data.is_null() {
-        return Err(anyhow::anyhow!("No data found at path '{}'", kv_path));
+        return Err(anyhow::anyhow!("No data found at path '{kv_path}'"));
     }
 
-    let cert = data[cert_key_name].as_str().map(|s| s.to_string());
+    let cert = data[cert_key_name].as_str().map(ToString::to_string);
 
-    let key = data[key_key_name].as_str().map(|s| s.to_string());
+    let key = data[key_key_name].as_str().map(ToString::to_string);
 
     match cert {
         Some(c) => Ok((c, key)),
@@ -1213,7 +1297,7 @@ pub fn validate_from_kv(
 ) -> Result<()> {
     let (cert_pem, key_pem) = kv_read_cert_key(client, kv_path, cert_key_name, key_key_name, kv_version)?;
 
-    println!("{}", format!("=== Certificate from Vault KV: {} ===", kv_path).bold());
+    println!("{}", format!("=== Certificate from Vault KV: {kv_path} ===").bold());
     println!();
 
     display_certificate(&cert_pem);
@@ -1268,23 +1352,36 @@ pub fn validate_from_kv(
 // Renew (read existing cert from KV, re-issue, overwrite)
 // ---------------------------------------------------------------------------
 
-#[allow(clippy::too_many_arguments)]
-pub fn renew_certificate(
-    client: &VaultClient,
-    kv_path: &str,
-    mount: &str,
-    role: &str,
-    ttl: &str,
-    cert_key_name: &str,
-    key_key_name: &str,
-    kv_version: u8,
-    san_overrides: &[String],
-    ip_san_overrides: &[String],
-) -> Result<()> {
+/// Inputs for [`renew_certificate`].
+#[derive(Debug, Clone)]
+pub struct RenewRequest<'a> {
+    pub kv_path: &'a str,
+    pub mount: &'a str,
+    pub role: &'a str,
+    pub ttl: &'a str,
+    pub cert_key_name: &'a str,
+    pub key_key_name: &'a str,
+    pub kv_version: u8,
+    pub san_overrides: &'a [String],
+    pub ip_san_overrides: &'a [String],
+}
+
+pub fn renew_certificate(client: &VaultClient, req: &RenewRequest<'_>) -> Result<()> {
+    let RenewRequest {
+        kv_path,
+        mount,
+        role,
+        ttl,
+        cert_key_name,
+        key_key_name,
+        kv_version,
+        san_overrides,
+        ip_san_overrides,
+    } = *req;
     // Step 1: Read existing cert from KV
     println!("{}", "=== Certificate Renewal ===".bold());
     println!();
-    println!("Reading existing certificate from '{}'...", kv_path);
+    println!("Reading existing certificate from '{kv_path}'...");
 
     let (cert_pem, _) = kv_read_cert_key(client, kv_path, cert_key_name, key_key_name, kv_version)?;
 
@@ -1311,7 +1408,7 @@ pub fn renew_certificate(
     } else {
         info.subject_alternative_names
             .iter()
-            .filter_map(|san| san.strip_prefix("DNS:").map(|s| s.to_string()))
+            .filter_map(|san| san.strip_prefix("DNS:").map(ToString::to_string))
             .collect()
     };
 
@@ -1320,14 +1417,14 @@ pub fn renew_certificate(
     } else {
         info.subject_alternative_names
             .iter()
-            .filter_map(|san| san.strip_prefix("IP:").map(|s| s.to_string()))
+            .filter_map(|san| san.strip_prefix("IP:").map(ToString::to_string))
             .collect()
     };
 
     // Step 3: Display current cert details
     println!();
     println!("{}", "Current certificate:".bold());
-    println!("  Common Name  : {}", cn);
+    println!("  Common Name  : {cn}");
     if !sans.is_empty() {
         println!("  SANs         : {}", sans.join(", "));
     }
@@ -1341,11 +1438,11 @@ pub fn renew_certificate(
     } else {
         "valid".green().to_string()
     };
-    println!("  Status       : {}", status);
+    println!("  Status       : {status}");
     println!();
 
     // Step 4: Issue new certificate with same CN + SANs
-    println!("Issuing new certificate from {}/issue/{} ...", mount, role);
+    println!("Issuing new certificate from {mount}/issue/{role} ...");
 
     let new_data = issue_certificate(client, mount, role, cn, &sans, &ip_sans, ttl)?;
 
@@ -1379,26 +1476,14 @@ pub fn renew_certificate(
         .ok_or_else(|| anyhow::anyhow!("Vault did not return a private key for the new certificate"))?;
 
     let api_path = kv_api_path(kv_path, kv_version);
-    let body = if kv_version >= 2 {
-        serde_json::json!({
-            "data": {
-                cert_key_name: full_chain,
-                key_key_name: key_pem,
-            }
-        })
-    } else {
-        serde_json::json!({
-            cert_key_name: full_chain,
-            key_key_name: key_pem,
-        })
-    };
+    let body = kv_write_body(kv_version, cert_key_name, &full_chain, key_key_name, key_pem);
 
     client.post(&api_path, &body)?;
 
     println!();
     println!(
         "{}",
-        format!("Certificate and key successfully renewed and stored at '{}'", kv_path)
+        format!("Certificate and key successfully renewed and stored at '{kv_path}'")
             .green()
             .bold()
     );
@@ -1413,7 +1498,7 @@ pub fn renew_certificate(
 /// Print Vault connectivity info and optionally check server health.
 pub fn print_vault_connectivity(client: &VaultClient, addr: &str, token: &str) {
     eprintln!("{}", "Vault connectivity:".bold());
-    eprintln!("  VAULT_ADDR : {}", addr);
+    eprintln!("  VAULT_ADDR : {addr}");
     let source = if std::env::var("VAULT_TOKEN").is_ok() {
         "VAULT_TOKEN env"
     } else {
@@ -1439,18 +1524,18 @@ pub fn print_vault_connectivity(client: &VaultClient, addr: &str, token: &str) {
                 } else {
                     "active".green().to_string()
                 };
-                eprintln!("  Status     : {}", status_str);
+                eprintln!("  Status     : {status_str}");
                 if let Some(ref cluster) = health.cluster_name {
-                    eprintln!("  Cluster    : {}", cluster);
+                    eprintln!("  Cluster    : {cluster}");
                 }
                 if let Some(ref cluster_id) = health.cluster_id {
-                    eprintln!("  Cluster ID : {}", cluster_id);
+                    eprintln!("  Cluster ID : {cluster_id}");
                 }
                 if let Some(ref dr_mode) = health.replication_dr_mode {
-                    eprintln!("  DR mode    : {}", dr_mode);
+                    eprintln!("  DR mode    : {dr_mode}");
                 }
                 if let Some(ref perf_mode) = health.replication_perf_mode {
-                    eprintln!("  Perf repl  : {}", perf_mode);
+                    eprintln!("  Perf repl  : {perf_mode}");
                 }
                 if let Some(ref expiry) = health.license_expiry {
                     // Parse the expiry to check for warnings
@@ -1472,11 +1557,11 @@ pub fn print_vault_connectivity(client: &VaultClient, addr: &str, token: &str) {
                                     expiry
                                 );
                             } else {
-                                eprintln!("  License    : expires {} ({} days)", expiry, days_left);
+                                eprintln!("  License    : expires {expiry} ({days_left} days)");
                             }
                         }
                         Err(_) => {
-                            eprintln!("  License    : expires {}", expiry);
+                            eprintln!("  License    : expires {expiry}");
                         }
                     }
                 }
@@ -1531,31 +1616,33 @@ fn vault_health_check(client: &VaultClient) -> Result<VaultHealth> {
     })
 }
 
-/// Return type for interactive_issue: (mount, role, cn, sans, ip_sans, ttl, pfx_password, output, store_path)
-type IssueWizardResult = (
-    String,
-    String,
-    String,
-    Vec<String>,
-    Vec<String>,
-    String,
-    Option<String>,
-    String,
-    Option<String>,
-);
+/// Answers collected by [`interactive_issue`].
+#[derive(Debug, Clone)]
+pub struct IssueWizardResult {
+    pub mount: String,
+    pub role: String,
+    pub cn: String,
+    pub sans: Vec<String>,
+    pub ip_sans: Vec<String>,
+    pub ttl: String,
+    pub pfx_password: Option<Secret>,
+    pub output: String,
+    pub store_path: Option<String>,
+}
 
-/// Return type for interactive_sign: (mount, role, csr_file, cn_override, sans, ttl, pfx_password, output, store_path)
-type SignWizardResult = (
-    String,
-    String,
-    String,
-    Option<String>,
-    Vec<String>,
-    String,
-    Option<String>,
-    String,
-    Option<String>,
-);
+/// Answers collected by [`interactive_sign`].
+#[derive(Debug, Clone)]
+pub struct SignWizardResult {
+    pub mount: String,
+    pub role: String,
+    pub csr_file: String,
+    pub cn_override: Option<String>,
+    pub sans: Vec<String>,
+    pub ttl: String,
+    pub pfx_password: Option<Secret>,
+    pub output: String,
+    pub store_path: Option<String>,
+}
 
 /// Interactive wizard for issuing a certificate.
 pub fn interactive_issue(client: &VaultClient) -> Result<IssueWizardResult> {
@@ -1576,24 +1663,10 @@ pub fn interactive_issue(client: &VaultClient) -> Result<IssueWizardResult> {
 
     eprintln!();
     let san_str = prompt_optional("Subject Alternative Names (comma-separated, press Enter to skip)")?;
-    let sans: Vec<String> = san_str
-        .map(|s| {
-            s.split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect()
-        })
-        .unwrap_or_default();
+    let sans: Vec<String> = parse_csv_list(san_str);
 
     let ip_san_str = prompt_optional("IP SANs (comma-separated, press Enter to skip)")?;
-    let ip_sans: Vec<String> = ip_san_str
-        .map(|s| {
-            s.split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect()
-        })
-        .unwrap_or_default();
+    let ip_sans: Vec<String> = parse_csv_list(ip_san_str);
 
     let ttl = prompt_with_default("TTL", "8760h")?;
 
@@ -1603,7 +1676,7 @@ pub fn interactive_issue(client: &VaultClient) -> Result<IssueWizardResult> {
     eprintln!("  2. PFX/PKCS12 — bundled with passphrase");
     let format_choice = prompt_with_default("Output format [1-2]", "1")?;
     let pfx_password = if format_choice == "2" {
-        Some(prompt_required("PFX passphrase")?)
+        Some(prompt_secret("PFX passphrase")?)
     } else {
         None
     };
@@ -1614,7 +1687,17 @@ pub fn interactive_issue(client: &VaultClient) -> Result<IssueWizardResult> {
     eprintln!();
     let store_str = prompt_optional("Store certificate and key in Vault KV? Enter path or press Enter to skip")?;
 
-    Ok((mount, role, cn, sans, ip_sans, ttl, pfx_password, output, store_str))
+    Ok(IssueWizardResult {
+        mount,
+        role,
+        cn,
+        sans,
+        ip_sans,
+        ttl,
+        pfx_password,
+        output,
+        store_path: store_str,
+    })
 }
 
 /// Interactive wizard for signing a CSR.
@@ -1637,14 +1720,7 @@ pub fn interactive_sign(client: &VaultClient) -> Result<SignWizardResult> {
     let cn = prompt_optional("Common Name override (press Enter to use CN from CSR)")?;
 
     let san_str = prompt_optional("Additional SANs (comma-separated, press Enter to skip)")?;
-    let sans: Vec<String> = san_str
-        .map(|s| {
-            s.split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect()
-        })
-        .unwrap_or_default();
+    let sans: Vec<String> = parse_csv_list(san_str);
 
     let ttl = prompt_with_default("TTL", "8760h")?;
 
@@ -1654,7 +1730,7 @@ pub fn interactive_sign(client: &VaultClient) -> Result<SignWizardResult> {
     eprintln!("  2. PFX/PKCS12 — bundled with passphrase (requires local private key)");
     let format_choice = prompt_with_default("Output format [1-2]", "1")?;
     let pfx_password = if format_choice == "2" {
-        Some(prompt_required("PFX passphrase")?)
+        Some(prompt_secret("PFX passphrase")?)
     } else {
         None
     };
@@ -1663,7 +1739,17 @@ pub fn interactive_sign(client: &VaultClient) -> Result<SignWizardResult> {
 
     let store_str = prompt_optional("Store certificate in Vault KV? Enter path or press Enter to skip")?;
 
-    Ok((mount, role, csr_file, cn, sans, ttl, pfx_password, output, store_str))
+    Ok(SignWizardResult {
+        mount,
+        role,
+        csr_file,
+        cn_override: cn,
+        sans,
+        ttl,
+        pfx_password,
+        output,
+        store_path: store_str,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1671,6 +1757,7 @@ pub fn interactive_sign(client: &VaultClient) -> Result<SignWizardResult> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(unsafe_code)]
 mod tests {
     use super::*;
 
@@ -1717,15 +1804,55 @@ mod tests {
         let result = discover_vault_token_from(None, Some(temp_dir.path().to_path_buf()));
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("No Vault token found"), "Error: {}", err);
-        assert!(err.contains("VAULT_TOKEN"), "Error should mention VAULT_TOKEN: {}", err);
+        assert!(err.contains("No Vault token found"), "Error: {err}");
+        assert!(err.contains("VAULT_TOKEN"), "Error should mention VAULT_TOKEN: {err}");
     }
 
     // -- VAULT_ADDR --
 
     #[test]
+    fn validate_vault_addr_accepts_https_and_loopback_http_only() {
+        assert!(validate_vault_addr("https://vault.example.com:8200").is_ok());
+        assert!(validate_vault_addr("http://127.0.0.1:8200").is_ok());
+        assert!(validate_vault_addr("http://localhost:8200").is_ok());
+        assert!(validate_vault_addr("http://[::1]:8200").is_ok());
+        let err = validate_vault_addr("http://vault.example.com:8200")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("cleartext"), "{err}");
+        assert!(validate_vault_addr("ftp://vault.example.com").is_err());
+        assert!(validate_vault_addr("not a url").is_err());
+    }
+
+    #[test]
+    fn vault_tls_settings_prefer_flags_over_env() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let settings = VaultTlsSettings::resolve(Some("/tmp/ca.pem"), true);
+        assert!(settings.skip_verify);
+        assert_eq!(settings.cacert.as_deref(), Some("/tmp/ca.pem"));
+        assert_eq!(settings.cacert_source, Some("--vault-cacert"));
+    }
+
+    #[test]
+    fn kv_write_body_wraps_v2_in_data_envelope() {
+        let v2 = kv_write_body(2, "cert", "C", "key", "K");
+        assert_eq!(v2["data"]["cert"], "C");
+        assert_eq!(v2["data"]["key"], "K");
+        let v1 = kv_write_body(1, "cert", "C", "key", "K");
+        assert_eq!(v1["cert"], "C");
+        assert!(v1.get("data").is_none());
+    }
+
+    #[test]
+    fn parse_csv_list_trims_and_drops_empties() {
+        assert_eq!(parse_csv_list(Some(" a, b ,,c ".to_string())), vec!["a", "b", "c"]);
+        assert!(parse_csv_list(None).is_empty());
+        assert!(parse_csv_list(Some("  ".to_string())).is_empty());
+    }
+
+    #[test]
     fn test_vault_addr_from_env() {
-        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let prev = std::env::var("VAULT_ADDR").ok();
         // Safe: ENV_LOCK guarantees no other test mutates the environment concurrently.
         unsafe { std::env::set_var("VAULT_ADDR", "https://vault.example.com:8200") };
@@ -1740,7 +1867,7 @@ mod tests {
 
     #[test]
     fn test_vault_addr_strips_trailing_slash() {
-        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let prev = std::env::var("VAULT_ADDR").ok();
         // Safe: ENV_LOCK guarantees no other test mutates the environment concurrently.
         unsafe { std::env::set_var("VAULT_ADDR", "https://vault.example.com:8200/") };
@@ -1755,7 +1882,7 @@ mod tests {
 
     #[test]
     fn test_vault_addr_missing_error() {
-        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let prev = std::env::var("VAULT_ADDR").ok();
         // Safe: ENV_LOCK guarantees no other test mutates the environment concurrently.
         unsafe { std::env::remove_var("VAULT_ADDR") };
@@ -1765,7 +1892,7 @@ mod tests {
         }
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("VAULT_ADDR"), "Error: {}", err);
+        assert!(err.contains("VAULT_ADDR"), "Error: {err}");
     }
 
     // -- Response Parsing --
@@ -1820,9 +1947,8 @@ mod tests {
                 "revocation_time": 1654105687
             }
         });
-        let revocation_time = json["data"]["revocation_time"].as_f64();
-        assert!(revocation_time.is_some());
-        assert_eq!(revocation_time.unwrap() as i64, 1654105687);
+        let revocation_time = json["data"]["revocation_time"].as_i64();
+        assert_eq!(revocation_time, Some(1654105687));
     }
 
     #[test]
@@ -1978,10 +2104,10 @@ mod tests {
         );
 
         let msg = err.to_string();
-        assert!(msg.contains("Permission denied"), "msg: {}", msg);
-        assert!(msg.contains("vault_intermediate/issue/my-role"), "msg: {}", msg);
-        assert!(msg.contains("create"), "msg: {}", msg);
-        assert!(msg.contains("capabilities"), "msg: {}", msg);
+        assert!(msg.contains("Permission denied"), "msg: {msg}");
+        assert!(msg.contains("vault_intermediate/issue/my-role"), "msg: {msg}");
+        assert!(msg.contains("create"), "msg: {msg}");
+        assert!(msg.contains("capabilities"), "msg: {msg}");
     }
 
     #[test]
@@ -2005,8 +2131,8 @@ mod tests {
         );
 
         let msg = err.to_string();
-        assert!(msg.contains("Not found"), "msg: {}", msg);
-        assert!(msg.contains("mount point or role may not exist"), "msg: {}", msg);
+        assert!(msg.contains("Not found"), "msg: {msg}");
+        assert!(msg.contains("mount point or role may not exist"), "msg: {msg}");
     }
 
     #[test]
@@ -2032,10 +2158,10 @@ mod tests {
 
     #[test]
     fn test_mask_token() {
-        assert_eq!(mask_token("abcdefghijklmnop"), "abcd****mnop");
-        assert_eq!(mask_token("short"), "****");
-        assert_eq!(mask_token("12345678"), "****");
-        assert_eq!(mask_token("123456789"), "1234****6789");
+        assert_eq!(mask_token("hvs.CAESIJabcdefghijklmnop"), "hvs.**** (26 chars)");
+        assert_eq!(mask_token("s.abcdefgh"), "s.**** (10 chars)");
+        assert_eq!(mask_token("short"), "**** (5 chars)");
+        assert!(!mask_token("abcdefghijklmnop").contains("mnop"));
     }
 
     // -- Export Cert List --
@@ -2274,16 +2400,16 @@ mod tests {
         // RFC 3986 unreserved characters: A-Z a-z 0-9 - . _ ~
         // NON_ALPHANUMERIC encodes everything except A-Z a-z 0-9 — this is
         // stricter than RFC 3986 but safer for Vault's path semantics.
-        assert_eq!(super::encode_path_segment("abcXYZ123"), "abcXYZ123");
+        assert_eq!(encode_path_segment("abcXYZ123"), "abcXYZ123");
     }
 
     #[test]
     fn test_encode_path_segment_escapes_path_delimiters() {
         // The whole reason this helper exists: prevent injection via /, ?, #.
-        let encoded = super::encode_path_segment("aa/bb?cc#dd");
-        assert!(!encoded.contains('/'), "/ must be encoded: got {}", encoded);
-        assert!(!encoded.contains('?'), "? must be encoded: got {}", encoded);
-        assert!(!encoded.contains('#'), "# must be encoded: got {}", encoded);
+        let encoded = encode_path_segment("aa/bb?cc#dd");
+        assert!(!encoded.contains('/'), "/ must be encoded: got {encoded}");
+        assert!(!encoded.contains('?'), "? must be encoded: got {encoded}");
+        assert!(!encoded.contains('#'), "# must be encoded: got {encoded}");
         assert_eq!(encoded, "aa%2Fbb%3Fcc%23dd");
     }
 
@@ -2292,8 +2418,8 @@ mod tests {
         // Vault PKI returns serials like "aa:bb:cc:dd". Colons need
         // encoding because some HTTP clients and proxies treat them
         // specially in paths.
-        let encoded = super::encode_path_segment("aa:bb:cc:dd:ee:ff");
-        assert!(!encoded.contains(':'), ": must be encoded: got {}", encoded);
+        let encoded = encode_path_segment("aa:bb:cc:dd:ee:ff");
+        assert!(!encoded.contains(':'), ": must be encoded: got {encoded}");
         assert_eq!(encoded, "aa%3Abb%3Acc%3Add%3Aee%3Aff");
     }
 }

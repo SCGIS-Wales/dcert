@@ -2,6 +2,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use openssl::ssl::SslVersion;
 
 use crate::connect::{ConnectOverride, parse_connect_to, parse_resolve};
+pub use crate::secret::Secret;
 
 /// Return the version string for `--version` output.
 ///
@@ -32,6 +33,9 @@ pub mod exit_code {
     pub const CLIENT_CERT_ERROR: i32 = 6;
     /// Private key does not match the certificate.
     pub const KEY_MISMATCH: i32 = 7;
+    /// `--check-revocation` could not determine the status (responder
+    /// unreachable, malformed or unverifiable response).
+    pub const REVOCATION_CHECK_FAILED: i32 = 8;
 }
 
 // -- Value enums --
@@ -229,6 +233,52 @@ pub enum Command {
     /// HashiCorp Vault PKI operations (issue, sign, revoke, list, store, validate, renew)
     #[command(name = "vault")]
     Vault(Box<VaultArgs>),
+
+    /// Diagnose CloudFront, mTLS and forward proxy failures for a target (same flags as check)
+    #[command(name = "diagnose", alias = "dx")]
+    Diagnose(Box<CheckArgs>),
+
+    /// Inspect or validate the diagnostics knowledge base
+    #[command(name = "kb")]
+    Kb(KbArgs),
+}
+
+/// `dcert kb` arguments.
+#[derive(Args, Debug)]
+pub struct KbArgs {
+    #[command(subcommand)]
+    pub mode: KbMode,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum KbMode {
+    /// List every entry (id, layer, category, title)
+    List {
+        /// Output format
+        #[arg(short, long, value_enum, default_value_t = OutputFormat::Pretty)]
+        format: OutputFormat,
+        /// Extra knowledge base file merged over the built in one
+        #[arg(long, value_name = "PATH", env = "DCERT_KB_FILE")]
+        kb_file: Option<String>,
+    },
+    /// Show one entry in full
+    Show {
+        /// Entry id, e.g. cloudfront.edge.waf-blocked
+        id: String,
+        /// Output format
+        #[arg(short, long, value_enum, default_value_t = OutputFormat::Pretty)]
+        format: OutputFormat,
+        /// Extra knowledge base file merged over the built in one
+        #[arg(long, value_name = "PATH", env = "DCERT_KB_FILE")]
+        kb_file: Option<String>,
+    },
+    /// Validate a knowledge base file (schema, unique ids, regexes)
+    Validate {
+        /// YAML file to validate
+        file: String,
+    },
+    /// Print the JSON schema for knowledge base files
+    Schema,
 }
 
 /// Known subcommand names for backward-compatible default routing.
@@ -245,6 +295,9 @@ pub const KNOWN_SUBCOMMANDS: &[&str] = &[
     "-h",
     "--version",
     "-V",
+    "diagnose",
+    "dx",
+    "kb",
 ];
 
 // -- Check subcommand (default) --
@@ -272,6 +325,26 @@ pub struct CheckArgs {
     /// Show only expired certificates
     #[arg(long)]
     pub expired_only: bool,
+
+    /// Maximum response body bytes captured for diagnostics (0 disables body capture)
+    #[arg(long, value_name = "BYTES", default_value_t = crate::tls::DEFAULT_BODY_LIMIT, value_parser = parse_body_limit)]
+    pub body_limit: usize,
+
+    /// Include the captured response body excerpt in the output
+    #[arg(long)]
+    pub show_body: bool,
+
+    /// Skip the CloudFront and proxy diagnostics pass
+    #[arg(long)]
+    pub no_diagnose: bool,
+
+    /// Set by `dcert diagnose`: print only the diagnosis.
+    #[arg(skip)]
+    pub diagnose_only: bool,
+
+    /// Extra diagnostics knowledge base file (YAML) merged over the built in one
+    #[arg(long, value_name = "PATH", env = "DCERT_KB_FILE")]
+    pub kb_file: Option<String>,
 
     /// Export the fetched PEM chain to a file (only for HTTPS targets)
     #[arg(long)]
@@ -385,15 +458,15 @@ pub struct CheckArgs {
     pub extensions: bool,
 
     /// Warn if any certificate expires within the given number of days (exit code 1)
-    #[arg(long, value_name = "DAYS")]
+    #[arg(long, value_name = "DAYS", value_parser = clap::value_parser!(u64).range(0..=36_500))]
     pub expiry_warn: Option<u64>,
 
     /// Compare certificates between exactly two targets
     #[arg(long)]
     pub diff: bool,
 
-    /// Periodically re-check targets at the given interval in seconds
-    #[arg(long, value_name = "SECONDS")]
+    /// Periodically re-check targets at the given interval in seconds (minimum 1)
+    #[arg(long, value_name = "SECONDS", value_parser = clap::value_parser!(u64).range(1..))]
     pub watch: Option<u64>,
 
     /// Check certificate revocation status via OCSP
@@ -428,7 +501,7 @@ pub struct CheckArgs {
 
     /// Password for the PKCS12/PFX file (or set DCERT_CERT_PASSWORD env var)
     #[arg(long, value_name = "PASS", env = "DCERT_CERT_PASSWORD")]
-    pub cert_password: Option<String>,
+    pub cert_password: Option<Secret>,
 
     /// Custom CA certificate bundle PEM file for server verification (overrides system CAs)
     #[arg(long, value_name = "PATH")]
@@ -500,7 +573,7 @@ pub enum ConvertMode {
         input: String,
         /// Password for PKCS12 file (or set DCERT_CERT_PASSWORD env var)
         #[arg(long, env = "DCERT_CERT_PASSWORD")]
-        password: String,
+        password: Secret,
         /// Output directory for PEM files (cert.pem, key.pem, ca.pem)
         #[arg(short, long, default_value = ".")]
         output_dir: String,
@@ -520,7 +593,7 @@ pub enum ConvertMode {
         output: String,
         /// Password for the output PKCS12 file
         #[arg(long, env = "DCERT_CERT_PASSWORD")]
-        password: String,
+        password: Secret,
         /// Additional CA certificate PEM file to include in the chain
         #[arg(long)]
         ca: Option<String>,
@@ -540,7 +613,7 @@ pub enum ConvertMode {
         output: String,
         /// KeyStore password
         #[arg(long, env = "DCERT_KEYSTORE_PASSWORD")]
-        password: String,
+        password: Secret,
         /// Alias for the key entry
         #[arg(long, default_value = "server")]
         alias: String,
@@ -560,8 +633,8 @@ pub enum ConvertMode {
         /// Output PKCS12 truststore file path
         #[arg(short, long)]
         output: String,
-        /// TrustStore password
-        #[arg(long, default_value = "changeit")]
+        /// TrustStore password (or set DCERT_TRUSTSTORE_PASSWORD env var)
+        #[arg(long, env = "DCERT_TRUSTSTORE_PASSWORD", default_value = "changeit")]
         password: String,
         /// Allow non-CA (leaf/server) certificates in the truststore. By
         /// default dcert rejects leaf certs and prints guidance, because a
@@ -684,7 +757,7 @@ pub struct CsrCreateArgs {
     /// Passphrase for private key encryption (or set DCERT_KEY_PASSWORD env var).
     /// Required when --encrypt-key is set.
     #[arg(long, env = "DCERT_KEY_PASSWORD", requires = "encrypt_key")]
-    pub key_password: Option<String>,
+    pub key_password: Option<Secret>,
 
     /// Output CSR file path [default: <cn>.csr]
     #[arg(long)]
@@ -750,7 +823,7 @@ pub struct VaultArgs {
 
     /// LDAP password (required when auth_method is "ldap"). Also: DCERT_LDAP_PASSWORD
     #[arg(long, global = true, value_name = "PASSWORD", env = "DCERT_LDAP_PASSWORD")]
-    pub ldap_password: Option<String>,
+    pub ldap_password: Option<Secret>,
 
     /// LDAP auth mount point (default: "ldap")
     #[arg(long, global = true, value_name = "PATH", default_value = "ldap")]
@@ -762,7 +835,7 @@ pub struct VaultArgs {
 
     /// AppRole secret_id (required when auth_method is "approle"). Also: DCERT_APPROLE_SECRET_ID
     #[arg(long, global = true, value_name = "ID", env = "DCERT_APPROLE_SECRET_ID")]
-    pub approle_secret_id: Option<String>,
+    pub approle_secret_id: Option<Secret>,
 
     /// AppRole auth mount point (default: "approle")
     #[arg(long, global = true, value_name = "PATH", default_value = "approle")]
@@ -840,7 +913,7 @@ pub struct VaultIssueArgs {
 
     /// PFX password — if provided, output will be PKCS12/PFX instead of PEM
     #[arg(long, env = "DCERT_CERT_PASSWORD")]
-    pub pfx_password: Option<String>,
+    pub pfx_password: Option<Secret>,
 
     /// Store certificate and key in Vault KV at this path after issuance
     #[arg(long)]
@@ -891,7 +964,7 @@ pub struct VaultSignArgs {
 
     /// PFX password — if provided, output will be PKCS12/PFX instead of PEM
     #[arg(long, env = "DCERT_CERT_PASSWORD")]
-    pub pfx_password: Option<String>,
+    pub pfx_password: Option<Secret>,
 
     /// Store certificate in Vault KV at this path after signing
     #[arg(long)]
@@ -1035,6 +1108,18 @@ pub struct VaultRenewArgs {
 }
 
 // -- Helper functions --
+
+/// Parse `--body-limit`, bounded so a typo cannot ask for gigabytes.
+fn parse_body_limit(s: &str) -> Result<usize, String> {
+    let n: usize = s.parse().map_err(|_| format!("'{s}' is not a number"))?;
+    if n > crate::tls::MAX_BODY_LIMIT {
+        return Err(format!(
+            "--body-limit must be at most {} bytes",
+            crate::tls::MAX_BODY_LIMIT
+        ));
+    }
+    Ok(n)
+}
 
 pub fn validate_target(s: &str) -> Result<String, String> {
     if s == "-" || s.starts_with("https://") || std::path::Path::new(s).exists() {

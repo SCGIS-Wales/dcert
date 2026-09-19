@@ -26,7 +26,7 @@ pub fn sanitize_header_value(name: &str, value: &str) -> String {
     if (lower_name == "authorization" || lower_name == "proxy-authorization")
         && let Some((scheme, _rest)) = value.trim().split_once(' ')
     {
-        return format!("{} ****", scheme);
+        return format!("{scheme} ****");
     }
     "****".to_string()
 }
@@ -47,11 +47,12 @@ pub fn sanitize_url(url_str: &str) -> String {
 /// Print a debug section header to stderr.
 pub fn dbg_section(enabled: bool, section: &str) {
     if enabled {
-        eprintln!("{}", format!("* --- {} ---", section).dimmed());
+        eprintln!("{}", format!("* --- {section} ---").dimmed());
     }
 }
 
 /// Short-circuit macro that avoids format! allocation when debug is off.
+#[macro_export]
 macro_rules! debug_log {
     ($enabled:expr_2021, $($arg:tt)*) => {
         if $enabled {
@@ -60,7 +61,7 @@ macro_rules! debug_log {
         }
     };
 }
-pub(crate) use debug_log;
+pub use crate::debug_log;
 
 #[cfg(test)]
 mod tests {

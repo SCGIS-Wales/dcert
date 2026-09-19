@@ -84,3 +84,4 @@ python/.ruff_cache/
 python/*.egg-info
 # Generated SBOM files
 *.cdx.json
+python/.coverage
