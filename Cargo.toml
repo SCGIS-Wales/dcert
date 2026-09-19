@@ -34,8 +34,21 @@ pem = "4.0"
 serde_yaml_ng = "0.10"
 ctrlc = "3.5"
 openssl-probe = "0.2"
-rmcp = { version = "3.4", features = ["server", "transport-io", "client"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-std", "sync", "time"] }
+rmcp = { version = "3.4", features = [
+    "server",
+    "transport-io",
+    "transport-streamable-http-server",
+    "client",
+] }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "process",
+    "io-std",
+    "sync",
+    "time",
+    "signal",
+] }
 schemars = "1.2"
 jsonwebtoken = { version = "11", features = ["rust_crypto"] }
 # reqwest 0.13 replaced 0.12's `rustls-tls-native-roots`: `rustls` now pulls in
@@ -49,7 +62,7 @@ reqwest = { version = "0.13", features = [
     "blocking",
 ], default-features = false }
 axum = "0.8"
-tower-http = { version = "0.7", features = ["cors"] }
+tower-http = { version = "0.7", features = ["cors", "limit", "timeout", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 regex-lite = "0.1"
@@ -60,6 +73,8 @@ rust_xlsxwriter = "0.99"
 zeroize = { version = "1.8", features = ["derive"] }
 webpki-root-certs = "1"
 rpassword = "7.5"
+tower = { version = "0.5.3", features = ["limit", "timeout", "util"] }
+tokio-util = "0.7.19"
 
 # Windows has no system OpenSSL. Build it from source via the `vendored`
 # feature (gated to Windows so Linux/macOS keep using system/Homebrew OpenSSL).

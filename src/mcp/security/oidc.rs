@@ -32,6 +32,36 @@ pub struct OidcConfig {
     pub allowed_client_ids: Vec<String>,
 }
 
+/// Signature algorithms accepted for bearer tokens. `none` and the HMAC
+/// family are absent by construction, so a token cannot be signed with the
+/// public key it ships with (algorithm confusion).
+const ALLOWED_ALGORITHMS: &[Algorithm] = &[
+    Algorithm::RS256,
+    Algorithm::RS384,
+    Algorithm::RS512,
+    Algorithm::ES256,
+    Algorithm::ES384,
+];
+
+/// Allowance for clock differences between this server and the issuer, in
+/// seconds. Applied to `exp`, `nbf` and `iat`.
+const CLOCK_SKEW_LEEWAY_SECS: u64 = 60;
+
+/// Minimum interval between JWKS refreshes triggered by an unknown key id.
+const MIN_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
+
+/// How long fetched JWKS keys stay cached, from `DCERT_MCP_JWKS_TTL`
+/// (seconds, default one hour).
+fn jwks_ttl() -> Duration {
+    Duration::from_secs(
+        std::env::var("DCERT_MCP_JWKS_TTL")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(3600),
+    )
+}
+
 impl OidcConfig {
     /// Validates that required configuration fields are set.
     pub fn validate(&self) -> Result<(), String> {
@@ -99,31 +129,41 @@ impl OidcValidator {
 
     /// Validates a JWT bearer token and returns the extracted claims.
     pub async fn validate_token(&self, token_string: &str) -> Result<TokenClaims, String> {
-        let jwks_url = match &self.config.jwks_url {
-            Some(url) if !url.is_empty() => url.clone(),
-            _ => self.discover_jwks().await?,
-        };
-
-        // Get header to find the kid.
+        // Parse the header before any network work, so a malformed token
+        // cannot make the server call the identity provider.
         let header = decode_header(token_string).map_err(|e| format!("failed to decode JWT header: {e}"))?;
-
         let kid = header.kid.ok_or_else(|| "token missing kid header".to_string())?;
 
-        // Try to get the key from cache.
-        let key = self.get_signing_key(&jwks_url, &kid).await?;
+        // Reject a token whose header names an algorithm outside the
+        // allow-list before fetching keys for it.
+        if !ALLOWED_ALGORITHMS.contains(&header.alg) {
+            return Err(format!("unsupported token algorithm {:?}", header.alg));
+        }
+
+        // Serve from the cached keys when possible; discovery and JWKS fetches
+        // only happen on a cache miss, so an unauthenticated caller cannot make
+        // the server hammer the identity provider with one request per token.
+        let key = match self.cached_signing_key(&kid).await {
+            Some(key) => key,
+            None => {
+                let jwks_url = match &self.config.jwks_url {
+                    Some(url) if !url.is_empty() => url.clone(),
+                    _ => self.discover_jwks().await?,
+                };
+                self.get_signing_key(&jwks_url, &kid).await?
+            }
+        };
 
         // Set up validation — supports both RSA and ECDSA algorithms.
         let mut validation = Validation::default();
         validation.set_issuer(&[&self.config.issuer_url]);
         validation.set_audience(&[&self.config.audience]);
         validation.set_required_spec_claims(&["exp", "iss", "aud"]);
-        validation.algorithms = vec![
-            Algorithm::RS256,
-            Algorithm::RS384,
-            Algorithm::RS512,
-            Algorithm::ES256,
-            Algorithm::ES384,
-        ];
+        // Reject a token that is not valid yet, and state the clock skew
+        // allowance explicitly rather than inheriting a default.
+        validation.validate_nbf = true;
+        validation.leeway = CLOCK_SKEW_LEEWAY_SECS;
+        validation.algorithms = ALLOWED_ALGORITHMS.to_vec();
 
         // Decode and validate the token.
         let token_data = decode::<HashMap<String, serde_json::Value>>(token_string, &key, &validation)
@@ -157,15 +197,29 @@ impl OidcValidator {
         Ok(claims)
     }
 
+    /// Look up a key in the cache without any network access.
+    async fn cached_signing_key(&self, kid: &str) -> Option<DecodingKey> {
+        let cache = self.jwks_cache.read().await;
+        if cache.is_expired() { None } else { cache.get_key(kid) }
+    }
+
     /// Gets a signing key from JWKS, refreshing if the kid is not found.
+    ///
+    /// An unknown key id triggers at most one refresh per
+    /// [`MIN_REFRESH_INTERVAL`], so a flood of tokens bearing invented key ids
+    /// cannot be amplified into a flood of JWKS requests.
     async fn get_signing_key(&self, jwks_url: &str, kid: &str) -> Result<DecodingKey, String> {
-        // Try cached keys first.
+        if let Some(key) = self.cached_signing_key(kid).await {
+            return Ok(key);
+        }
+
         {
             let cache = self.jwks_cache.read().await;
-            if !cache.is_expired()
-                && let Some(key) = cache.get_key(kid)
+            if let Some(last) = cache.last_attempt
+                && last.elapsed() < MIN_REFRESH_INTERVAL
+                && !cache.keys.is_empty()
             {
-                return Ok(key);
+                return Err(format!("signing key {kid:?} not found in JWKS"));
             }
         }
 
@@ -180,6 +234,10 @@ impl OidcValidator {
 
     /// Refreshes the JWKS cache.
     async fn refresh_jwks(&self, jwks_url: &str) -> Result<(), String> {
+        {
+            let mut cache = self.jwks_cache.write().await;
+            cache.last_attempt = Some(Instant::now());
+        }
         let keys = fetch_jwks(&self.http_client, jwks_url).await?;
         let mut cache = self.jwks_cache.write().await;
         cache.update(keys);
@@ -309,6 +367,9 @@ enum JwksCachedKey {
 struct JwksCache {
     keys: HashMap<String, JwksCachedKey>,
     fetched: Option<Instant>,
+    /// When a refresh was last attempted, successful or not. Used to rate
+    /// limit refreshes triggered by unknown key ids.
+    last_attempt: Option<Instant>,
     ttl: Duration,
 }
 
@@ -317,7 +378,8 @@ impl JwksCache {
         Self {
             keys: HashMap::new(),
             fetched: None,
-            ttl: Duration::from_secs(3600), // 1 hour
+            last_attempt: None,
+            ttl: jwks_ttl(),
         }
     }
 

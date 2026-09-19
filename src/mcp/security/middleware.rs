@@ -7,6 +7,7 @@
 
 use super::audit::AuditLogger;
 use super::oidc::{OidcValidator, TokenClaims};
+use super::scope::{ToolScopePolicy, tool_name_from_request};
 use super::session::SessionCache;
 use axum::body::Body;
 use axum::extract::Request;
@@ -27,6 +28,8 @@ pub struct AuthState {
     pub session_cache: Option<Arc<SessionCache>>,
     /// Audit logger for security events.
     pub audit_logger: Option<Arc<AuditLogger>>,
+    /// Per tool scope requirements, applied to every `tools/call`.
+    pub tool_scopes: ToolScopePolicy,
 }
 
 /// Axum middleware function for bearer token authentication.
@@ -61,7 +64,7 @@ pub async fn auth_middleware(
             if let Some(ref logger) = state.audit_logger {
                 logger.log_auth_failure("missing bearer token", &remote_addr);
             }
-            return (StatusCode::UNAUTHORIZED, "Unauthorized: missing bearer token").into_response();
+            return unauthorized();
         }
 
         // Check session cache first.
@@ -89,39 +92,69 @@ pub async fn auth_middleware(
                     if let Some(ref logger) = state.audit_logger {
                         logger.log_auth_failure(&e, &remote_addr);
                     }
+                    // The reason is logged, never returned: issuer, audience,
+                    // kid and JWKS details must not reach an unauthenticated
+                    // caller.
                     warn!(
                         error = e.as_str(),
                         remote_addr = remote_addr.as_str(),
                         "OIDC token validation failed"
                     );
-                    return (StatusCode::UNAUTHORIZED, format!("Unauthorized: {e}")).into_response();
+                    return unauthorized();
                 }
             }
         }
 
-        if let Some(ref claims) = claims
-            && let Some(ref logger) = state.audit_logger
+        // Every authenticated request carries a session id, so audit records
+        // can be correlated and a session revoked. It is derived from the
+        // token hash, which is stable for the life of the token and reveals
+        // nothing about it.
+        let session_id = cache_key.clone().unwrap_or_default();
+
+        let Some(claims) = claims else {
+            return unauthorized();
+        };
+
+        // Per tool authorization: a token that passes the global scope check
+        // is not automatically allowed to call a destructive tool.
+        let (request, tool) = read_tool_name(request).await;
+        if let Some(tool) = tool.as_deref()
+            && let Err(reason) = state.tool_scopes.authorize(tool, &claims)
         {
-            logger.log_auth_success(claims, "", &remote_addr);
+            if let Some(ref logger) = state.audit_logger {
+                logger.log_authz_denied(&claims, tool, &reason);
+            }
+            warn!(
+                tool = tool,
+                reason = reason.as_str(),
+                "tool call denied by scope policy"
+            );
+            return (StatusCode::FORBIDDEN, "Forbidden").into_response();
+        }
+
+        if let Some(ref logger) = state.audit_logger {
+            logger.log_auth_success(&claims, &session_id, &remote_addr);
         }
 
         // Inject claims into request extensions.
         let mut request = request;
-        if let Some(claims) = claims {
-            request.extensions_mut().insert(claims);
-        }
+        request.extensions_mut().insert(claims);
 
         return next.run(request).await;
     }
 
-    // Static token mode (legacy).
+    // Static token mode.
     if let Some(ref expected) = state.static_token {
-        let expected_header = format!("Bearer {expected}");
-        if !constant_time_eq(auth_header.as_bytes(), expected_header.as_bytes()) {
+        // Parse the header the same way as the OIDC path (any case of the
+        // `Bearer` prefix), then compare the token itself in constant time
+        // over a fixed-width digest so neither its length nor its content
+        // leaks through timing.
+        let presented = extract_bearer_token(auth_header);
+        if !constant_time_eq_hashed(presented, expected) {
             if let Some(ref logger) = state.audit_logger {
                 logger.log_auth_failure("invalid static token", &remote_addr);
             }
-            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+            return unauthorized();
         }
 
         return next.run(request).await;
@@ -142,6 +175,40 @@ fn extract_bearer_token(auth_header: &str) -> &str {
     parts[1].trim()
 }
 
+/// A uniform 401 for every authentication failure. The reason is written to
+/// the audit log, never to the response body.
+fn unauthorized() -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        [(axum::http::header::WWW_AUTHENTICATE, "Bearer")],
+        "Unauthorized",
+    )
+        .into_response()
+}
+
+/// Buffer the request body far enough to read the MCP method and tool name,
+/// returning a request that still carries the original body.
+///
+/// The body is already bounded by the transport's own limit, so this cannot
+/// buffer an unbounded amount.
+async fn read_tool_name(request: Request<Body>) -> (Request<Body>, Option<String>) {
+    let (parts, body) = request.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, MAX_BUFFERED_BODY).await else {
+        // Leave the body empty; the transport reports the real error.
+        return (Request::from_parts(parts, Body::empty()), None);
+    };
+    let tool = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .as_ref()
+        .and_then(tool_name_from_request)
+        .map(str::to_string);
+    (Request::from_parts(parts, Body::from(bytes)), tool)
+}
+
+/// Upper bound on the body the middleware will buffer to inspect the tool
+/// name. Matches the transport's own default request limit.
+const MAX_BUFFERED_BODY: usize = 1024 * 1024;
+
 /// Derives a cache key from a bearer token by hashing it with SHA-256.
 /// This avoids storing the raw token in the cache while ensuring consistent keys.
 ///
@@ -155,11 +222,26 @@ fn token_cache_key(token: &str) -> Option<String> {
         .map(|digest| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest))
 }
 
-/// Constant-time byte comparison to prevent timing attacks on token comparison.
-/// Uses the `subtle` crate to avoid leaking length or content via timing.
+/// Constant-time byte comparison. `subtle`'s slice implementation short
+/// circuits when the lengths differ, so callers that compare secrets of
+/// unknown length must use [`constant_time_eq_hashed`] instead.
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     use subtle::ConstantTimeEq;
-    a.ct_eq(b).into()
+    a.len() == b.len() && bool::from(a.ct_eq(b))
+}
+
+/// Compare two secrets in constant time regardless of their lengths, by
+/// comparing fixed-width SHA-256 digests. A hashing failure compares as false
+/// so the request is rejected rather than accepted.
+fn constant_time_eq_hashed(presented: &str, expected: &str) -> bool {
+    use openssl::hash::{MessageDigest, hash};
+    match (
+        hash(MessageDigest::sha256(), presented.as_bytes()),
+        hash(MessageDigest::sha256(), expected.as_bytes()),
+    ) {
+        (Ok(a), Ok(b)) => constant_time_eq(&a, &b),
+        _ => false,
+    }
 }
 
 /// Extracts token claims from axum request extensions.

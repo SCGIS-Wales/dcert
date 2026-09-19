@@ -34,9 +34,17 @@ pub struct DcertMcpServer {
 impl DcertMcpServer {
     /// Create a new dcert MCP server with the given configuration.
     pub(crate) fn new(config: McpConfig) -> Self {
+        Self::with_shared_config(Arc::new(config))
+    }
+
+    /// Build a handler that shares one configuration with other instances.
+    /// The HTTP transport constructs a handler per session, so the resolved
+    /// binary path and timeouts are read once at startup rather than per
+    /// connection.
+    pub(crate) fn with_shared_config(config: Arc<McpConfig>) -> Self {
         Self {
             tool_router: Self::cert_tool_router() + Self::vault_tool_router(),
-            config: Arc::new(config),
+            config,
         }
     }
 }

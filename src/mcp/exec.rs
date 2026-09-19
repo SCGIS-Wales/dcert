@@ -138,40 +138,97 @@ pub(crate) async fn run_dcert_raw(
     run_child_with_timeout(&mut child, config).await
 }
 
-/// Wait for a child process with timeout, explicitly killing it on timeout
-/// to prevent orphaned processes.
+/// Exit code reported when the child died from a signal rather than exiting.
+pub(crate) const EXIT_SIGNALLED: i32 = 128;
+
+/// Wait for a child process with a timeout, reading both pipes concurrently
+/// so a chatty child can never block on a full pipe, and killing it on
+/// timeout so no orphan is left behind. Output is capped while it streams,
+/// not after it has been buffered.
 pub(crate) async fn run_child_with_timeout(
     child: &mut tokio::process::Child,
     config: &McpConfig,
 ) -> Result<(String, String, i32), String> {
-    // Take the pipes so we can read them separately from waiting
-    let mut stdout_pipe = child.stdout.take();
-    let mut stderr_pipe = child.stderr.take();
+    use tokio::io::AsyncReadExt;
 
-    // Wait for the child with a timeout
-    match tokio::time::timeout(config.subprocess_timeout, child.wait()).await {
-        Ok(result) => {
-            let status = result.map_err(|e| format!("Failed waiting for dcert: {e}"))?;
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
 
-            // Read pipes after the process has exited
-            let mut stdout_buf = Vec::new();
-            let mut stderr_buf = Vec::new();
-            if let Some(ref mut pipe) = stdout_pipe {
-                let _ = tokio::io::AsyncReadExt::read_to_end(pipe, &mut stdout_buf).await;
-            }
-            if let Some(ref mut pipe) = stderr_pipe {
-                let _ = tokio::io::AsyncReadExt::read_to_end(pipe, &mut stderr_buf).await;
-            }
+    async fn drain(pipe: Option<tokio::process::ChildStdout>) -> (Vec<u8>, Option<String>) {
+        let Some(pipe) = pipe else { return (Vec::new(), None) };
+        let mut buf = Vec::new();
+        let err = pipe
+            .take(MAX_OUTPUT_SIZE as u64 + 1)
+            .read_to_end(&mut buf)
+            .await
+            .err()
+            .map(|e| e.to_string());
+        (buf, err)
+    }
+    async fn drain_err(pipe: Option<tokio::process::ChildStderr>) -> (Vec<u8>, Option<String>) {
+        let Some(pipe) = pipe else { return (Vec::new(), None) };
+        let mut buf = Vec::new();
+        let err = pipe
+            .take(MAX_OUTPUT_SIZE as u64 + 1)
+            .read_to_end(&mut buf)
+            .await
+            .err()
+            .map(|e| e.to_string());
+        (buf, err)
+    }
 
+    let work = async {
+        let (out, err, status) = tokio::join!(drain(stdout_pipe), drain_err(stderr_pipe), child.wait());
+        (out, err, status)
+    };
+
+    match tokio::time::timeout(config.subprocess_timeout, work).await {
+        Ok(((stdout_buf, stdout_err), (stderr_buf, stderr_err), status)) => {
+            let status = status.map_err(|e| format!("Failed waiting for dcert: {e}"))?;
             let stdout = truncate_output(String::from_utf8_lossy(&stdout_buf).to_string());
-            let stderr = truncate_output(String::from_utf8_lossy(&stderr_buf).to_string());
-            let code = status.code().unwrap_or(2);
+            let mut stderr = truncate_output(String::from_utf8_lossy(&stderr_buf).to_string());
+            for (name, e) in [("stdout", stdout_err), ("stderr", stderr_err)] {
+                if let Some(e) = e {
+                    stderr.push_str(&format!("\n--- note: reading {name} failed: {e} ---"));
+                }
+            }
+            let code = match status.code() {
+                Some(c) => c,
+                None => {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::process::ExitStatusExt;
+                        stderr.push_str(&format!(
+                            "\n--- note: dcert terminated by signal {} ---",
+                            status.signal().unwrap_or(0)
+                        ));
+                    }
+                    EXIT_SIGNALLED
+                }
+            };
             Ok((stdout, stderr, code))
         }
         Err(_) => {
-            // Explicitly kill the child process on timeout to prevent orphaned processes
-            let _ = child.kill().await;
+            if let Err(e) = child.kill().await {
+                tracing::warn!(error = %e, "failed to kill timed out dcert subprocess");
+            }
             Err(format_timeout_error(config))
         }
     }
+}
+
+/// Assemble a tool response from subprocess output: stdout, then stderr under
+/// a banner, then the exit code unless it is one the tool treats as normal.
+pub(crate) fn format_tool_output(stdout: String, stderr: &str, code: i32, banner: &str, ok_codes: &[i32]) -> String {
+    let mut output = stdout;
+    if !stderr.is_empty() {
+        output.push_str("\n--- ");
+        output.push_str(banner);
+        output.push_str(" ---\n");
+        output.push_str(stderr);
+    }
+    if !ok_codes.contains(&code) {
+        output.push_str(&format!("\n--- exit code: {code} ---"));
+    }
+    output
 }

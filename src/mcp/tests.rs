@@ -10,6 +10,8 @@ use crate::exec::*;
 use crate::http::*;
 use crate::params::*;
 use crate::params_vault::*;
+use crate::security;
+use crate::security::middleware::auth_middleware;
 use crate::tools::*;
 use crate::validate::*;
 use rmcp::{ServerHandler, ServiceExt};
@@ -29,25 +31,6 @@ fn test_parse_allowed_origins_empty_is_none() {
 }
 
 // ---------------------------------------------------------------
-// MCP HTTP protocol version negotiation
-// ---------------------------------------------------------------
-
-#[test]
-fn test_negotiate_protocol_version_echoes_supported() {
-    assert_eq!(negotiate_protocol_version(Some("2025-06-18")), "2025-06-18");
-    assert_eq!(negotiate_protocol_version(Some("2024-11-05")), "2024-11-05");
-    assert_eq!(negotiate_protocol_version(Some("2025-11-25")), "2025-11-25");
-}
-
-#[test]
-fn test_negotiate_protocol_version_falls_back_to_latest() {
-    // Unknown or absent requested version → advertise the latest we support.
-    assert_eq!(negotiate_protocol_version(None), "2025-11-25");
-    assert_eq!(negotiate_protocol_version(Some("1999-01-01")), "2025-11-25");
-    assert_eq!(negotiate_protocol_version(Some("")), "2025-11-25");
-}
-
-// ---------------------------------------------------------------
 // Insecure-bind guard helper
 // ---------------------------------------------------------------
 
@@ -59,30 +42,6 @@ fn test_addr_is_loopback() {
     assert!(!addr_is_loopback("192.168.1.10:3000"));
     // Unparseable → fail closed (treated as non-loopback).
     assert!(!addr_is_loopback("not-an-addr"));
-}
-
-// ---------------------------------------------------------------
-// HTTP dispatch input validation
-// ---------------------------------------------------------------
-
-#[tokio::test]
-async fn test_dispatch_tool_call_rejects_flag_target() {
-    let config = test_config(PathBuf::from("/nonexistent/dcert"));
-    let args = serde_json::json!({"target": "--no-verify"});
-    let (out, is_error) = dispatch_tool_call(&config, "analyze_certificate", &args).await;
-    assert!(is_error, "flag-like target must be rejected");
-    assert!(
-        out.contains("must not start with '-'") || out.contains("error:"),
-        "got: {out}"
-    );
-}
-
-#[tokio::test]
-async fn test_dispatch_tool_call_unknown_tool_is_error() {
-    let config = test_config(PathBuf::from("/nonexistent/dcert"));
-    let (out, is_error) = dispatch_tool_call(&config, "no_such_tool", &serde_json::json!({})).await;
-    assert!(is_error);
-    assert!(out.contains("unknown tool"));
 }
 
 #[test]
@@ -174,8 +133,86 @@ fn test_validate_target_rejects_null_bytes() {
 
 #[test]
 fn test_validate_path_accepts_valid() {
-    assert!(validate_path("/tmp/cert.pem", "cert").is_ok());
+    assert!(validate_path("cert.pem", "cert").is_ok());
     assert!(validate_path("relative/path.pem", "cert").is_ok());
+}
+
+#[test]
+fn test_validate_path_confines_to_root() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().canonicalize().expect("canonicalize");
+    let _guard = EnvGuard::set("DCERT_MCP_FILE_ROOT", root.to_str().expect("utf-8 root"));
+
+    // Relative paths resolve inside the root.
+    assert!(validate_path("certs/server.pem", "cert").is_ok());
+    // An absolute path inside the root is fine.
+    let inside = root.join("server.pem");
+    assert!(validate_path(inside.to_str().expect("utf-8"), "cert").is_ok());
+    // Anything outside it is refused, with the root named in the message.
+    let err = validate_path("/etc/shadow", "cert").expect_err("outside root must be refused");
+    assert!(err.contains("outside the allowed root"), "{err}");
+    assert!(validate_path("/root/.ssh/authorized_keys", "output_path").is_err());
+}
+
+#[test]
+fn test_validate_path_refuses_symlink_escaping_root() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().canonicalize().expect("canonicalize");
+    let outside = tempfile::tempdir().expect("tempdir");
+    let target = outside.path().canonicalize().expect("canonicalize").join("secret.pem");
+    std::fs::write(&target, b"x").expect("write target");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&target, root.join("link.pem")).expect("symlink");
+    #[cfg(not(unix))]
+    return;
+
+    let _guard = EnvGuard::set("DCERT_MCP_FILE_ROOT", root.to_str().expect("utf-8 root"));
+    let err = validate_path("link.pem", "cert").expect_err("symlink out of root must be refused");
+    assert!(err.contains("outside the allowed root"), "{err}");
+}
+
+/// Set an environment variable for the duration of a test and restore it after.
+/// Tests that touch the environment are serialised by `ENV_LOCK`.
+struct EnvGuard {
+    name: &'static str,
+    previous: Option<std::ffi::OsString>,
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+impl EnvGuard {
+    fn set(name: &'static str, value: &str) -> Self {
+        let lock = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let previous = std::env::var_os(name);
+        // Safe: ENV_LOCK serialises every environment mutation in these tests.
+        unsafe { std::env::set_var(name, value) };
+        Self {
+            name,
+            previous,
+            _lock: lock,
+        }
+    }
+
+    fn unset(name: &'static str) -> Self {
+        let lock = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let previous = std::env::var_os(name);
+        unsafe { std::env::remove_var(name) };
+        Self {
+            name,
+            previous,
+            _lock: lock,
+        }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(v) => unsafe { std::env::set_var(self.name, v) },
+            None => unsafe { std::env::remove_var(self.name) },
+        }
+    }
 }
 
 #[test]
@@ -202,7 +239,7 @@ fn test_validate_path_accepts_filename_with_dots() {
     // that happened to contain '..' as part of the name (e.g. backup
     // files or chained extensions). The component-based check accepts
     // these; only an actual `..` path segment is rejected.
-    assert!(validate_path("/tmp/my..config.pem", "cert").is_ok());
+    assert!(validate_path("my..config.pem", "cert").is_ok());
     assert!(validate_path("backup..2025.pem", "cert").is_ok());
     assert!(validate_path("foo./bar", "cert").is_ok());
     assert!(validate_path("foo/./bar", "cert").is_ok());
@@ -220,33 +257,26 @@ fn test_mtls_params_empty_valid() {
 
 #[test]
 fn test_mtls_params_cert_without_key() {
-    let params = MtlsParams {
-        client_cert: Some("/tmp/cert.pem".to_string()),
-        client_key: None,
-        ..Default::default()
-    };
+    let mut params = MtlsParams::default();
+    params.client_cert = Some("cert.pem".to_string());
     assert!(params.validate().is_err());
 }
 
 #[test]
 fn test_mtls_params_cert_and_pkcs12_conflict() {
-    let params = MtlsParams {
-        client_cert: Some("/tmp/cert.pem".to_string()),
-        client_key: Some("/tmp/key.pem".to_string()),
-        pkcs12: Some("/tmp/client.pfx".to_string()),
-        ..Default::default()
-    };
+    let mut params = MtlsParams::default();
+    params.client_cert = Some("cert.pem".to_string());
+    params.client_key = Some("key.pem".to_string());
+    params.pkcs12 = Some("client.pfx".to_string());
     assert!(params.validate().is_err());
 }
 
 #[test]
 fn test_mtls_params_to_args() {
-    let params = MtlsParams {
-        client_cert: Some("/tmp/cert.pem".to_string()),
-        client_key: Some("/tmp/key.pem".to_string()),
-        ca_cert: Some("/tmp/ca.pem".to_string()),
-        ..Default::default()
-    };
+    let mut params = MtlsParams::default();
+    params.client_cert = Some("cert.pem".to_string());
+    params.client_key = Some("key.pem".to_string());
+    params.ca_cert = Some("ca.pem".to_string());
     let args = params.to_args();
     assert!(args.contains(&"--client-cert".to_string()));
     assert!(args.contains(&"--client-key".to_string()));
@@ -1288,4 +1318,343 @@ fn test_vault_params_resolve_addr_no_trailing_slash() {
         params.resolve_addr(),
         Some("https://vault.example.com:8200".to_string())
     );
+}
+
+// ---------------------------------------------------------------
+// HTTP transport: Host and Origin validation, authentication,
+// health endpoint and the full tool surface
+// ---------------------------------------------------------------
+
+/// Start the HTTP transport on loopback and return its base URL plus a
+/// shutdown handle. Mirrors `run_http_mode` without the process-wide tracing
+/// setup so several servers can run inside one test binary.
+async fn spawn_http_server(
+    auth: security::middleware::AuthState,
+    transport: rmcp::transport::streamable_http_server::tower::StreamableHttpServerConfig,
+) -> (String, tokio_util::sync::CancellationToken) {
+    use axum::routing::get;
+    use rmcp::transport::streamable_http_server::{StreamableHttpService, session::local::LocalSessionManager};
+
+    let config = Arc::new(test_config(PathBuf::from("dcert")));
+    let service = StreamableHttpService::new(
+        {
+            let config = config.clone();
+            move || Ok(DcertMcpServer::with_shared_config(config.clone()))
+        },
+        Arc::new(LocalSessionManager::default()),
+        transport,
+    );
+
+    let app = axum::Router::new()
+        .route("/health", get(health_handler))
+        .nest_service(
+            "/mcp",
+            axum::routing::any_service(
+                tower::ServiceBuilder::new()
+                    .layer(axum::middleware::from_fn_with_state(Arc::new(auth), auth_middleware))
+                    .service(service),
+            ),
+        )
+        .layer(build_cors_layer());
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("local addr");
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let serve_shutdown = shutdown.clone();
+    tokio::spawn(async move {
+        let _ = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .with_graceful_shutdown(async move { serve_shutdown.cancelled().await })
+        .await;
+    });
+    (format!("http://127.0.0.1:{}", addr.port()), shutdown)
+}
+
+fn open_auth_state() -> security::middleware::AuthState {
+    security::middleware::AuthState {
+        oidc_validator: None,
+        static_token: None,
+        session_cache: None,
+        audit_logger: None,
+        tool_scopes: security::scope::ToolScopePolicy::default(),
+    }
+}
+
+fn loopback_transport_config() -> rmcp::transport::streamable_http_server::tower::StreamableHttpServerConfig {
+    rmcp::transport::streamable_http_server::tower::StreamableHttpServerConfig::default().with_json_response(true)
+}
+
+/// Initialize an MCP session over HTTP and return the raw response body of a
+/// follow-up `tools/list` call.
+async fn http_tools_list(base: &str) -> serde_json::Value {
+    let client = reqwest::Client::new();
+    let init = client
+        .post(format!("{base}/mcp"))
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "test", "version": "0"}
+            }
+        }))
+        .send()
+        .await
+        .expect("initialize");
+    assert!(init.status().is_success(), "initialize failed: {}", init.status());
+    let session = init
+        .headers()
+        .get("mcp-session-id")
+        .map(|v| v.to_str().expect("utf-8 session id").to_string());
+
+    let mut req = client
+        .post(format!("{base}/mcp"))
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream");
+    if let Some(ref id) = session {
+        req = req.header("mcp-session-id", id.as_str());
+    }
+    // The initialized notification completes the handshake.
+    let _ = req
+        .try_clone()
+        .expect("clone")
+        .json(&serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+        .send()
+        .await;
+
+    let resp = req
+        .json(&serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}))
+        .send()
+        .await
+        .expect("tools/list");
+    assert!(resp.status().is_success(), "tools/list failed: {}", resp.status());
+    let text = resp.text().await.expect("body");
+    parse_json_or_sse(&text)
+}
+
+/// The transport answers with JSON or with a single SSE event depending on
+/// negotiation; accept either.
+fn parse_json_or_sse(text: &str) -> serde_json::Value {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(text) {
+        return v;
+    }
+    for line in text.lines() {
+        if let Some(data) = line.strip_prefix("data:")
+            && let Ok(v) = serde_json::from_str::<serde_json::Value>(data.trim())
+        {
+            return v;
+        }
+    }
+    panic!("response was neither JSON nor SSE: {text}");
+}
+
+#[tokio::test]
+async fn http_transport_exposes_every_tool() {
+    let (base, shutdown) = spawn_http_server(open_auth_state(), loopback_transport_config()).await;
+    let body = http_tools_list(&base).await;
+    let tools = body["result"]["tools"].as_array().expect("tools array");
+    let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+
+    // The hand-rolled handler this replaced served only two tools.
+    assert!(names.len() >= 20, "expected the full tool surface, got {names:?}");
+    for expected in [
+        "analyze_certificate",
+        "validate_certificate",
+        "diagnose_endpoint",
+        "vault_issue",
+        "vault_revoke",
+        "create_truststore",
+    ] {
+        assert!(names.contains(&expected), "{expected} missing from {names:?}");
+    }
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn http_health_endpoint_needs_no_token() {
+    let auth = security::middleware::AuthState {
+        static_token: Some("secret-token".to_string()),
+        ..open_auth_state()
+    };
+    let (base, shutdown) = spawn_http_server(auth, loopback_transport_config()).await;
+
+    let resp = reqwest::get(format!("{base}/health")).await.expect("health");
+    assert!(resp.status().is_success());
+    assert_eq!(resp.text().await.expect("body"), "ok");
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn http_rejects_missing_and_wrong_static_token() {
+    let auth = security::middleware::AuthState {
+        static_token: Some("secret-token".to_string()),
+        ..open_auth_state()
+    };
+    let (base, shutdown) = spawn_http_server(auth, loopback_transport_config()).await;
+    let client = reqwest::Client::new();
+    let body = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
+
+    for header in [
+        None,
+        Some("Bearer wrong"),
+        Some("Bearer secret-token-extra"),
+        Some("Basic x"),
+    ] {
+        let mut req = client
+            .post(format!("{base}/mcp"))
+            .header("content-type", "application/json")
+            .json(&body);
+        if let Some(h) = header {
+            req = req.header("authorization", h);
+        }
+        let resp = req.send().await.expect("request");
+        assert_eq!(
+            resp.status(),
+            reqwest::StatusCode::UNAUTHORIZED,
+            "header {header:?} should be rejected"
+        );
+        let text = resp.text().await.expect("body");
+        assert_eq!(text, "Unauthorized", "the body must not explain why");
+    }
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn http_accepts_the_static_token_in_any_bearer_casing() {
+    let auth = security::middleware::AuthState {
+        static_token: Some("secret-token".to_string()),
+        ..open_auth_state()
+    };
+    let (base, shutdown) = spawn_http_server(auth, loopback_transport_config()).await;
+    let client = reqwest::Client::new();
+
+    for prefix in ["Bearer", "bearer", "BEARER"] {
+        let resp = client
+            .post(format!("{base}/mcp"))
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .header("authorization", format!("{prefix} secret-token"))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "0"}
+                }
+            }))
+            .send()
+            .await
+            .expect("request");
+        assert!(
+            resp.status().is_success(),
+            "{prefix} should authenticate: {}",
+            resp.status()
+        );
+    }
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn http_rejects_a_foreign_host_header() {
+    let transport = loopback_transport_config().with_allowed_hosts(["127.0.0.1", "localhost"]);
+    let (base, shutdown) = spawn_http_server(open_auth_state(), transport).await;
+    let port = base.rsplit(':').next().expect("port").to_string();
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{base}/mcp"))
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .header("host", format!("evil.example.com:{port}"))
+        .json(&serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}))
+        .send()
+        .await
+        .expect("request");
+    assert!(
+        resp.status().is_client_error(),
+        "a Host header outside the allowlist must be refused, got {}",
+        resp.status()
+    );
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn http_rejects_a_cross_origin_request() {
+    // No allowlist plus enforcement: any request carrying an Origin is refused,
+    // which is what stops a browser page from driving the tool API.
+    let transport = loopback_transport_config().enforce_origin_validation();
+    let (base, shutdown) = spawn_http_server(open_auth_state(), transport).await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{base}/mcp"))
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .header("origin", "https://evil.example.com")
+        .json(&serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}))
+        .send()
+        .await
+        .expect("request");
+    assert!(
+        resp.status().is_client_error(),
+        "a cross-origin request must be refused, got {}",
+        resp.status()
+    );
+    shutdown.cancel();
+}
+
+#[tokio::test]
+async fn http_allows_an_allowlisted_origin() {
+    let transport = loopback_transport_config().with_allowed_origins(["https://app.example.com"]);
+    let (base, shutdown) = spawn_http_server(open_auth_state(), transport).await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{base}/mcp"))
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .header("origin", "https://app.example.com")
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "test", "version": "0"}
+            }
+        }))
+        .send()
+        .await
+        .expect("request");
+    assert!(
+        resp.status().is_success(),
+        "allowlisted origin was refused: {}",
+        resp.status()
+    );
+    shutdown.cancel();
+}
+
+#[test]
+fn allowed_hosts_defaults_to_loopback_and_the_bind_address() {
+    let _guard = EnvGuard::unset("DCERT_MCP_ALLOWED_HOSTS");
+    let hosts = allowed_hosts("0.0.0.0:3000");
+    assert!(hosts.contains(&"localhost:3000".to_string()), "{hosts:?}");
+    assert!(hosts.contains(&"127.0.0.1:3000".to_string()), "{hosts:?}");
+    assert!(!hosts.contains(&"evil.example.com".to_string()), "{hosts:?}");
+}
+
+#[test]
+fn allowed_hosts_honours_the_operator_override() {
+    let _guard = EnvGuard::set("DCERT_MCP_ALLOWED_HOSTS", "mcp.example.com, MCP.EXAMPLE.COM:8443");
+    let hosts = allowed_hosts("0.0.0.0:3000");
+    assert_eq!(hosts, vec!["mcp.example.com", "mcp.example.com:8443"]);
 }

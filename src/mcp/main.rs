@@ -72,13 +72,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-/// Run in stdio mode (default, unchanged behavior).
+/// Run in stdio mode (the default).
+///
+/// Diagnostics and tracing both go to stderr: stdout carries the MCP protocol.
+/// A SIGINT or SIGTERM cancels the service so in-flight subprocesses are not
+/// orphaned.
 async fn run_stdio_mode(config: McpConfig) -> Result<(), Box<dyn std::error::Error>> {
-    // Log startup diagnostics to stderr (MCP protocol uses stdio)
+    // Structured logs go to stderr so `tracing` output from the security and
+    // Vault paths is visible in stdio mode too, instead of being discarded.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .with_writer(std::io::stderr)
+        .with_target(false)
+        .try_init();
+
     log_startup_diagnostics(&config);
 
     let server = DcertMcpServer::new(config);
     let service = server.serve(rmcp::transport::io::stdio()).await?;
+    let quit = service.cancellation_token();
+    tokio::spawn(async move {
+        http::wait_for_shutdown_signal().await;
+        quit.cancel();
+    });
     service.waiting().await?;
     Ok(())
 }

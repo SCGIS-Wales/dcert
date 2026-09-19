@@ -633,8 +633,8 @@ pub enum ConvertMode {
         /// Output PKCS12 truststore file path
         #[arg(short, long)]
         output: String,
-        /// TrustStore password
-        #[arg(long, default_value = "changeit")]
+        /// TrustStore password (or set DCERT_TRUSTSTORE_PASSWORD env var)
+        #[arg(long, env = "DCERT_TRUSTSTORE_PASSWORD", default_value = "changeit")]
         password: String,
         /// Allow non-CA (leaf/server) certificates in the truststore. By
         /// default dcert rejects leaf certs and prints guidance, because a

@@ -5,7 +5,7 @@ use rmcp::model::CallToolResult;
 use rmcp::{tool, tool_router};
 
 use super::{DcertMcpServer, ok_error, ok_text};
-use crate::exec::{run_dcert, run_dcert_raw, run_dcert_with_env};
+use crate::exec::{format_tool_output, run_dcert, run_dcert_raw, run_dcert_with_env};
 use crate::params::*;
 use crate::validate::*;
 
@@ -60,17 +60,7 @@ impl DcertMcpServer {
 
         let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         match run_dcert_with_env(&args_refs, &self.config, Some(&env_refs)).await {
-            Ok((stdout, stderr, code)) => {
-                let mut output = stdout;
-                if !stderr.is_empty() {
-                    output.push_str("\n--- debug/stderr ---\n");
-                    output.push_str(&stderr);
-                }
-                if code != 0 {
-                    output.push_str(&format!("\n--- exit code: {code} ---"));
-                }
-                ok_text(output)
-            }
+            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "debug/stderr", &[0])),
             Err(e) => ok_error(e),
         }
     }
@@ -120,13 +110,8 @@ impl DcertMcpServer {
                     4 => "ALREADY_EXPIRED",
                     _ => "ERROR",
                 };
-                let mut output = format!("expiry_status: {status}\n\n");
-                output.push_str(&stdout);
-                if !stderr.is_empty() {
-                    output.push_str("\n--- warnings ---\n");
-                    output.push_str(&stderr);
-                }
-                ok_text(output)
+                let prefixed = format!("expiry_status: {status}\n\n{stdout}");
+                ok_text(format_tool_output(prefixed, &stderr, code, "warnings", &[0, 1, 4]))
             }
             Err(e) => ok_error(e),
         }
@@ -166,15 +151,12 @@ impl DcertMcpServer {
         let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         match run_dcert_with_env(&args_refs, &self.config, Some(&env_refs)).await {
             Ok((stdout, stderr, code)) => {
-                let mut output = stdout;
-                if code == 5 {
-                    output.insert_str(0, "revocation_status: REVOKED\n\n");
-                }
-                if !stderr.is_empty() {
-                    output.push_str("\n--- stderr ---\n");
-                    output.push_str(&stderr);
-                }
-                ok_text(output)
+                let prefixed = match code {
+                    5 => format!("revocation_status: REVOKED\n\n{stdout}"),
+                    8 => format!("revocation_status: CHECK_FAILED\n\n{stdout}"),
+                    _ => stdout,
+                };
+                ok_text(format_tool_output(prefixed, &stderr, code, "stderr", &[0, 5, 8]))
             }
             Err(e) => ok_error(e),
         }
@@ -288,17 +270,7 @@ impl DcertMcpServer {
 
         let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         match run_dcert_with_env(&args_refs, &self.config, Some(&env_refs)).await {
-            Ok((stdout, stderr, code)) => {
-                let mut output = stdout;
-                if !stderr.is_empty() {
-                    output.push_str("\n--- debug/stderr ---\n");
-                    output.push_str(&stderr);
-                }
-                if code != 0 {
-                    output.push_str(&format!("\n--- exit code: {code} ---"));
-                }
-                ok_text(output)
-            }
+            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "debug/stderr", &[0])),
             Err(e) => ok_error(e),
         }
     }
@@ -343,23 +315,11 @@ impl DcertMcpServer {
         let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         match run_dcert_with_env(&args_refs, &self.config, Some(&env_refs)).await {
             Ok((stdout, stderr, code)) => {
-                let mut output = String::new();
-
-                // If no output_path, extract PEM data from stderr debug output
-                // or just return JSON with cert info. The user can also specify
-                // an output_path to write to file.
-                if let Some(path) = &params.output_path {
-                    output.push_str(&format!("PEM chain exported to: {path}\n\n"));
-                }
-                output.push_str(&stdout);
-                if !stderr.is_empty() {
-                    output.push_str("\n--- debug/stderr ---\n");
-                    output.push_str(&stderr);
-                }
-                if code != 0 {
-                    output.push_str(&format!("\n--- exit code: {code} ---"));
-                }
-                ok_text(output)
+                let prefixed = match &params.output_path {
+                    Some(path) => format!("PEM chain exported to: {path}\n\n{stdout}"),
+                    None => stdout,
+                };
+                ok_text(format_tool_output(prefixed, &stderr, code, "debug/stderr", &[0]))
             }
             Err(e) => ok_error(e),
         }
@@ -391,17 +351,7 @@ impl DcertMcpServer {
         ];
 
         match run_dcert_raw(&args, &self.config, None).await {
-            Ok((stdout, stderr, code)) => {
-                let mut output = stdout;
-                if !stderr.is_empty() {
-                    output.push_str("\n--- stderr ---\n");
-                    output.push_str(&stderr);
-                }
-                if code != 0 && code != 7 {
-                    output.push_str(&format!("\n--- exit code: {code} ---"));
-                }
-                ok_text(output)
-            }
+            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "stderr", &[0, 7])),
             Err(e) => ok_error(e),
         }
     }
@@ -422,17 +372,7 @@ impl DcertMcpServer {
         let args = vec!["verify-key", "--dir", params.dir.as_str(), "--format", "json"];
 
         match run_dcert_raw(&args, &self.config, None).await {
-            Ok((stdout, stderr, code)) => {
-                let mut output = stdout;
-                if !stderr.is_empty() {
-                    output.push_str("\n--- stderr ---\n");
-                    output.push_str(&stderr);
-                }
-                if code != 0 && code != 7 {
-                    output.push_str(&format!("\n--- exit code: {code} ---"));
-                }
-                ok_text(output)
-            }
+            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "stderr", &[0, 7])),
             Err(e) => ok_error(e),
         }
     }
@@ -469,17 +409,7 @@ impl DcertMcpServer {
         let env_vars = [("DCERT_CERT_PASSWORD", params.password.as_str())];
 
         match run_dcert_raw(&args, &self.config, Some(&env_vars)).await {
-            Ok((stdout, stderr, code)) => {
-                let mut output = stdout;
-                if !stderr.is_empty() {
-                    output.push_str("\n--- stderr ---\n");
-                    output.push_str(&stderr);
-                }
-                if code != 0 {
-                    output.push_str(&format!("\n--- exit code: {code} ---"));
-                }
-                ok_text(output)
-            }
+            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "stderr", &[0])),
             Err(e) => ok_error(e),
         }
     }
@@ -517,32 +447,22 @@ impl DcertMcpServer {
             "json".to_string(),
             "pem-to-pfx".to_string(),
             "--cert".to_string(),
-            params.cert_path,
+            params.cert_path.clone(),
             "--key".to_string(),
-            params.key_path,
+            params.key_path.clone(),
             "--output".to_string(),
-            params.output_path,
+            params.output_path.clone(),
         ];
-        if let Some(ca) = params.ca_path {
+        if let Some(ref ca) = params.ca_path {
             args.push("--ca".to_string());
-            args.push(ca);
+            args.push(ca.clone());
         }
         // Pass password via env var to avoid exposure in process listings
         let env_vars = [("DCERT_CERT_PASSWORD", params.password.as_str())];
 
         let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         match run_dcert_raw(&args_refs, &self.config, Some(&env_vars)).await {
-            Ok((stdout, stderr, code)) => {
-                let mut output = stdout;
-                if !stderr.is_empty() {
-                    output.push_str("\n--- stderr ---\n");
-                    output.push_str(&stderr);
-                }
-                if code != 0 {
-                    output.push_str(&format!("\n--- exit code: {code} ---"));
-                }
-                ok_text(output)
-            }
+            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "stderr", &[0])),
             Err(e) => ok_error(e),
         }
     }
@@ -590,17 +510,7 @@ impl DcertMcpServer {
         let env_vars = [("DCERT_KEYSTORE_PASSWORD", params.password.as_str())];
 
         match run_dcert_raw(&args, &self.config, Some(&env_vars)).await {
-            Ok((stdout, stderr, code)) => {
-                let mut output = stdout;
-                if !stderr.is_empty() {
-                    output.push_str("\n--- stderr ---\n");
-                    output.push_str(&stderr);
-                }
-                if code != 0 {
-                    output.push_str(&format!("\n--- exit code: {code} ---"));
-                }
-                ok_text(output)
-            }
+            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "stderr", &[0])),
             Err(e) => ok_error(e),
         }
     }
@@ -655,63 +565,54 @@ impl DcertMcpServer {
             "--cn".to_string(),
             params.common_name.clone(),
             "--key-algo".to_string(),
-            params.key_algorithm,
+            params.key_algorithm.clone(),
             "--csr-out".to_string(),
-            params.csr_output_path,
+            params.csr_output_path.clone(),
             "--key-out".to_string(),
-            params.key_output_path,
+            params.key_output_path.clone(),
             "--format".to_string(),
             "json".to_string(),
         ];
-        if let Some(org) = params.organization {
+        if let Some(ref org) = params.organization {
             args.push("--org".to_string());
-            args.push(org);
+            args.push(org.clone());
         }
-        for ou in params.organizational_units {
+        for ou in &params.organizational_units {
             args.push("--ou".to_string());
-            args.push(ou);
+            args.push(ou.clone());
         }
-        if let Some(country) = params.country {
+        if let Some(ref country) = params.country {
             args.push("--country".to_string());
-            args.push(country);
+            args.push(country.clone());
         }
-        if let Some(state) = params.state {
+        if let Some(ref state) = params.state {
             args.push("--state".to_string());
-            args.push(state);
+            args.push(state.clone());
         }
-        if let Some(locality) = params.locality {
+        if let Some(ref locality) = params.locality {
             args.push("--locality".to_string());
-            args.push(locality);
+            args.push(locality.clone());
         }
-        if let Some(email) = params.email {
+        if let Some(ref email) = params.email {
             args.push("--email".to_string());
-            args.push(email);
+            args.push(email.clone());
         }
-        for san in params.subject_alternative_names {
+        for san in &params.subject_alternative_names {
             args.push("--san".to_string());
-            args.push(san);
+            args.push(san.clone());
         }
+        // The passphrase travels in the environment, never in argv.
+        let mut env_refs: Vec<(&str, &str)> = Vec::new();
         if params.encrypt_key {
             args.push("--encrypt-key".to_string());
-            if let Some(pw) = params.key_password {
-                args.push("--key-password".to_string());
-                args.push(pw);
+            if let Some(ref pw) = params.key_password {
+                env_refs.push(("DCERT_KEY_PASSWORD", pw.as_str()));
             }
         }
 
         let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        match run_dcert_raw(&args_refs, &self.config, None).await {
-            Ok((stdout, stderr, code)) => {
-                let mut output = stdout;
-                if !stderr.is_empty() {
-                    output.push_str("\n--- notes ---\n");
-                    output.push_str(&stderr);
-                }
-                if code != 0 {
-                    output.push_str(&format!("\n--- exit code: {code} ---"));
-                }
-                ok_text(output)
-            }
+        match run_dcert_raw(&args_refs, &self.config, Some(&env_refs)).await {
+            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "notes", &[0])),
             Err(e) => ok_error(e),
         }
     }
@@ -742,17 +643,52 @@ impl DcertMcpServer {
 
         let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         match run_dcert_raw(&args_refs, &self.config, None).await {
-            Ok((stdout, stderr, code)) => {
-                let mut output = stdout;
-                if !stderr.is_empty() {
-                    output.push_str("\n--- notes ---\n");
-                    output.push_str(&stderr);
-                }
-                if code != 0 {
-                    output.push_str(&format!("\n--- exit code: {code} ---"));
-                }
-                ok_text(output)
-            }
+            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "notes", &[0])),
+            Err(e) => ok_error(e),
+        }
+    }
+
+    /// Diagnose CloudFront, mTLS and forward proxy failures for an endpoint.
+    #[tool(
+        description = "Diagnose why an HTTPS endpoint fails or misbehaves, with a focus on Amazon CloudFront (edge generated 4xx/5xx pages, origin errors forwarded by the edge, viewer mTLS in verify, optional and passthrough modes, origin mTLS gaps), forward web proxies (CONNECT 407/403/5xx, wrong proxy scheme, HTTP_PROXY only environments) and TLS inspection (chains re signed by Zscaler, Netskope and similar gateways). Probes the target, captures the TLS handshake, certificate chain, HTTP status, headers and a bounded body excerpt, and scores them against the diagnostics knowledge base. Returns JSON findings ordered earliest layer first, each with a confidence figure, the evidence that matched, a root cause and remediation steps. Supports mTLS, connection overrides and per request proxy settings like analyze_certificate.",
+        annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true)
+    )]
+    pub async fn diagnose_endpoint(
+        &self,
+        Parameters(params): Parameters<DiagnoseEndpointParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if let Err(e) = validate_target(&params.target) {
+            return ok_error(e);
+        }
+        if let Err(e) = params.mtls.validate() {
+            return ok_error(e);
+        }
+        if let Err(e) = params.http_tls.validate() {
+            return ok_error(e);
+        }
+
+        let mut args = vec![
+            "diagnose".to_string(),
+            params.target.clone(),
+            "--format".to_string(),
+            "json".to_string(),
+        ];
+        if params.show_body {
+            args.push("--show-body".to_string());
+        }
+        if params.no_verify {
+            args.push("--no-verify".to_string());
+        }
+        args.extend(params.mtls.to_args());
+        args.extend(params.http_tls.to_args());
+        let mut env_refs = params.mtls.env_vars();
+        env_refs.extend(params.http_tls.env_vars());
+
+        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        match run_dcert_with_env(&args_refs, &self.config, Some(&env_refs)).await {
+            // A failed probe is the expected input for a diagnosis, so exit
+            // codes are reported inline rather than treated as tool errors.
+            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "stderr", &[0])),
             Err(e) => ok_error(e),
         }
     }
@@ -785,17 +721,7 @@ impl DcertMcpServer {
 
         let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         match run_dcert_with_env(&args_refs, &self.config, Some(&env_refs)).await {
-            Ok((stdout, stderr, code)) => {
-                let mut output = stdout;
-                if !stderr.is_empty() {
-                    output.push_str("\n--- debug/stderr ---\n");
-                    output.push_str(&stderr);
-                }
-                if code != 0 {
-                    output.push_str(&format!("\n--- exit code: {code} ---"));
-                }
-                ok_text(output)
-            }
+            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "debug/stderr", &[0])),
             Err(e) => ok_error(e),
         }
     }
@@ -843,26 +769,16 @@ impl DcertMcpServer {
             args.push(path.clone());
         }
         args.push("--output".to_string());
-        args.push(params.output_path);
-        args.push("--password".to_string());
-        args.push(params.password);
+        args.push(params.output_path.clone());
         if params.allow_non_ca {
             args.push("--allow-non-ca".to_string());
         }
+        // The password travels in the environment, never in argv.
+        let env_refs: Vec<(&str, &str)> = vec![("DCERT_TRUSTSTORE_PASSWORD", params.password.as_str())];
 
         let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        match run_dcert_raw(&args_refs, &self.config, None).await {
-            Ok((stdout, stderr, code)) => {
-                let mut output = stdout;
-                if !stderr.is_empty() {
-                    output.push_str("\n--- stderr ---\n");
-                    output.push_str(&stderr);
-                }
-                if code != 0 {
-                    output.push_str(&format!("\n--- exit code: {code} ---"));
-                }
-                ok_text(output)
-            }
+        match run_dcert_raw(&args_refs, &self.config, Some(&env_refs)).await {
+            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "stderr", &[0])),
             Err(e) => ok_error(e),
         }
     }

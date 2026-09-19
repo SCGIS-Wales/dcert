@@ -2,7 +2,6 @@
 
 use schemars::JsonSchema;
 use serde::Deserialize;
-use std::time::Duration;
 use tokio::process::Command;
 
 use crate::config::McpConfig;
@@ -163,6 +162,7 @@ impl VaultParams {
 /// Cap untrusted upstream text before echoing it into an error message, so a
 /// large or sensitive Vault response body isn't returned verbatim to the MCP
 /// client or written to logs.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn truncate_upstream_error(s: &str) -> String {
     const MAX_CHARS: usize = 512;
     let trimmed = s.trim();
@@ -174,103 +174,107 @@ pub(crate) fn truncate_upstream_error(s: &str) -> String {
     }
 }
 
+/// Operator policy for which Vault servers tool calls may contact.
+///
+/// `DCERT_MCP_VAULT_ADDR_ALLOWLIST` is a comma separated list of origins
+/// (`https://vault.example.com:8200`). When set, a per request `vault_addr`
+/// must match one of them. When unset and the server has `VAULT_ADDR`, the
+/// request must use that same address. Only when neither is set may a
+/// request name an arbitrary address, and then only over https (or plain
+/// http to loopback). This closes the request forgery path where an MCP
+/// client points the server, with the caller's credentials, at an internal
+/// host of its choosing.
+pub(crate) fn check_vault_addr_policy(addr: &str) -> Result<(), String> {
+    dcert::vault::validate_vault_addr(addr).map_err(|e| e.to_string())?;
+    let normalise = |s: &str| s.trim().trim_end_matches('/').to_ascii_lowercase();
+    let wanted = normalise(addr);
+    if let Ok(list) = std::env::var("DCERT_MCP_VAULT_ADDR_ALLOWLIST")
+        && !list.trim().is_empty()
+    {
+        let allowed = list
+            .split(',')
+            .map(normalise)
+            .filter(|s| !s.is_empty())
+            .any(|s| s == wanted);
+        return if allowed {
+            Ok(())
+        } else {
+            Err(format!("vault_addr '{addr}' is not in DCERT_MCP_VAULT_ADDR_ALLOWLIST"))
+        };
+    }
+    if let Ok(server_addr) = std::env::var("VAULT_ADDR")
+        && !server_addr.trim().is_empty()
+        && normalise(&server_addr) != wanted
+    {
+        return Err(format!(
+            "vault_addr '{addr}' differs from the server's VAULT_ADDR; set DCERT_MCP_VAULT_ADDR_ALLOWLIST to permit other servers"
+        ));
+    }
+    Ok(())
+}
+
+/// `skip_verify: true` in a tool call is honoured only when the operator has
+/// set `DCERT_MCP_VAULT_ALLOW_SKIP_VERIFY=1`; otherwise the request is
+/// refused rather than silently downgraded, because the MCP client is not
+/// the party who should decide whether Vault's certificate is checked.
+pub(crate) fn effective_skip_verify(requested: Option<bool>) -> Result<bool, String> {
+    let allow = std::env::var("DCERT_MCP_VAULT_ALLOW_SKIP_VERIFY")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    match requested {
+        Some(true) if !allow => Err(
+            "skip_verify is not permitted by the server policy (set DCERT_MCP_VAULT_ALLOW_SKIP_VERIFY=1 on the server to allow it)"
+                .to_string(),
+        ),
+        Some(v) => Ok(v),
+        None => Ok(false),
+    }
+}
+
 /// Authenticate with Vault using LDAP or AppRole and return a client token.
-/// The MCP server performs the auth handshake so the dcert subprocess only needs a token.
-pub(crate) async fn vault_authenticate(vault_params: &VaultParams) -> Result<String, String> {
-    let method = vault_params.auth_method.as_deref().unwrap_or("token");
+///
+/// Delegates to the shared library implementation (the same code the CLI
+/// uses) on a blocking thread, so the MCP server honours `vault_cacert`,
+/// `VAULT_CACERT`, `VAULT_CAPATH` and the address policy exactly like the CLI.
+pub(crate) async fn vault_authenticate(vault_params: &VaultParams) -> Result<zeroize::Zeroizing<String>, String> {
+    use dcert::vault::{VaultAuthMethod, VaultLogin, VaultTlsSettings};
+
+    let method: VaultAuthMethod = vault_params
+        .auth_method
+        .as_deref()
+        .unwrap_or("token")
+        .parse()
+        .map_err(|e: anyhow::Error| e.to_string())?;
     let vault_addr = vault_params
         .resolve_addr()
         .ok_or_else(|| "vault_addr is required for authentication".to_string())?;
+    check_vault_addr_policy(&vault_addr)?;
+    let skip_verify = effective_skip_verify(vault_params.skip_verify)?;
+    let tls = VaultTlsSettings::resolve(vault_params.vault_cacert.as_deref(), skip_verify);
 
-    let skip_verify = vault_params.skip_verify.unwrap_or(false)
-        || std::env::var("VAULT_SKIP_VERIFY")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
+    let ldap_username = vault_params.ldap_username.clone();
+    let ldap_password = vault_params.ldap_password.clone().map(zeroize::Zeroizing::new);
+    let ldap_mount = vault_params.ldap_mount.clone().unwrap_or_else(|| "ldap".to_string());
+    let approle_role_id = vault_params.approle_role_id.clone();
+    let approle_secret_id = vault_params.approle_secret_id.clone().map(zeroize::Zeroizing::new);
+    let approle_mount = vault_params
+        .approle_mount
+        .clone()
+        .unwrap_or_else(|| "approle".to_string());
 
-    let client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(skip_verify)
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
-
-    match method {
-        "ldap" => {
-            use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
-            let username = vault_params
-                .ldap_username
-                .as_deref()
-                .ok_or_else(|| "ldap_username is required for LDAP auth".to_string())?;
-            let password = vault_params
-                .ldap_password
-                .as_deref()
-                .ok_or_else(|| "ldap_password is required for LDAP auth".to_string())?;
-            let mount = vault_params.ldap_mount.as_deref().unwrap_or("ldap");
-            let encoded_mount = utf8_percent_encode(mount, NON_ALPHANUMERIC).to_string();
-            let encoded_username = utf8_percent_encode(username, NON_ALPHANUMERIC).to_string();
-            let url = format!("{vault_addr}/v1/auth/{encoded_mount}/login/{encoded_username}");
-
-            let resp = client
-                .post(&url)
-                .json(&serde_json::json!({"password": password}))
-                .send()
-                .await
-                .map_err(|e| format!("LDAP auth request failed: {e}"))?;
-
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let body = truncate_upstream_error(&resp.text().await.unwrap_or_default());
-                return Err(format!("LDAP auth failed (HTTP {status}): {body}"));
-            }
-
-            let json: serde_json::Value = resp
-                .json()
-                .await
-                .map_err(|e| format!("Failed to parse LDAP auth response: {e}"))?;
-
-            json["auth"]["client_token"]
-                .as_str()
-                .map(String::from)
-                .ok_or_else(|| "LDAP auth response did not contain a client_token".to_string())
-        }
-        "approle" => {
-            use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
-            let role_id = vault_params
-                .approle_role_id
-                .as_deref()
-                .ok_or_else(|| "approle_role_id is required for AppRole auth".to_string())?;
-            let secret_id = vault_params
-                .approle_secret_id
-                .as_deref()
-                .ok_or_else(|| "approle_secret_id is required for AppRole auth".to_string())?;
-            let mount = vault_params.approle_mount.as_deref().unwrap_or("approle");
-            let encoded_mount = utf8_percent_encode(mount, NON_ALPHANUMERIC).to_string();
-            let url = format!("{vault_addr}/v1/auth/{encoded_mount}/login");
-
-            let resp = client
-                .post(&url)
-                .json(&serde_json::json!({"role_id": role_id, "secret_id": secret_id}))
-                .send()
-                .await
-                .map_err(|e| format!("AppRole auth request failed: {e}"))?;
-
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let body = truncate_upstream_error(&resp.text().await.unwrap_or_default());
-                return Err(format!("AppRole auth failed (HTTP {status}): {body}"));
-            }
-
-            let json: serde_json::Value = resp
-                .json()
-                .await
-                .map_err(|e| format!("Failed to parse AppRole auth response: {e}"))?;
-
-            json["auth"]["client_token"]
-                .as_str()
-                .map(String::from)
-                .ok_or_else(|| "AppRole auth response did not contain a client_token".to_string())
-        }
-        _ => Err(format!("Unsupported auth method for authentication: {method}")),
-    }
+    tokio::task::spawn_blocking(move || {
+        let login = VaultLogin {
+            ldap_username: ldap_username.as_deref(),
+            ldap_password: ldap_password.as_deref().map(String::as_str),
+            ldap_mount: &ldap_mount,
+            approle_role_id: approle_role_id.as_deref(),
+            approle_secret_id: approle_secret_id.as_deref().map(String::as_str),
+            approle_mount: &approle_mount,
+        };
+        dcert::vault::vault_authenticate(&vault_addr, method, &login, &tls).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Vault authentication task failed: {e}"))?
 }
 
 /// Run dcert vault with vault-specific environment variables.
@@ -280,6 +284,7 @@ pub(crate) async fn run_dcert_vault(
     vault_args: &[&str],
     vault_params: &VaultParams,
     config: &McpConfig,
+    extra_env: &[(&str, &str)],
 ) -> Result<(String, String, i32), String> {
     let _permit = SUBPROCESS_SEMAPHORE
         .acquire()
@@ -291,14 +296,18 @@ pub(crate) async fn run_dcert_vault(
     // Wrapped in `Zeroizing` so the token buffer is wiped once it has been
     // handed to the subprocess environment below.
     let resolved_token: Option<zeroize::Zeroizing<String>> = match method {
-        "ldap" | "approle" => Some(zeroize::Zeroizing::new(vault_authenticate(vault_params).await?)),
+        "ldap" | "approle" => Some(vault_authenticate(vault_params).await?),
         _ => vault_params.vault_token.clone().map(zeroize::Zeroizing::new),
     };
+    if let Some(addr) = vault_params.resolve_addr() {
+        check_vault_addr_policy(&addr)?;
+    }
+    let skip_verify = effective_skip_verify(vault_params.skip_verify)?;
 
     // Build CLI args: "vault" <subcommand> [flags] --format json
     let mut full_args: Vec<String> = vec!["vault".to_string()];
     // Add vault global flags before subcommand
-    if vault_params.skip_verify == Some(true) {
+    if skip_verify {
         full_args.push("--skip-verify".to_string());
     }
     if let Some(ref cacert) = vault_params.vault_cacert {
@@ -323,6 +332,9 @@ pub(crate) async fn run_dcert_vault(
     }
     if let Some(ref token) = resolved_token {
         cmd.env("VAULT_TOKEN", token.as_str());
+    }
+    for (k, v) in extra_env {
+        cmd.env(k, v);
     }
 
     let mut child = cmd
@@ -524,4 +536,13 @@ pub(crate) struct VaultRenewParams {
     /// Vault connection and authentication parameters
     #[serde(flatten, default)]
     pub(crate) vault: VaultParams,
+}
+
+impl Drop for VaultIssueParams {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        if let Some(v) = self.pfx_password.as_mut() {
+            v.zeroize();
+        }
+    }
 }

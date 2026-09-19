@@ -5,6 +5,7 @@ use rmcp::model::CallToolResult;
 use rmcp::{tool, tool_router};
 
 use super::{DcertMcpServer, ok_error, ok_text};
+use crate::exec::format_tool_output;
 use crate::params_vault::*;
 use crate::validate::*;
 
@@ -26,6 +27,22 @@ impl DcertMcpServer {
         if let Err(e) = params.vault.validate() {
             return ok_error(e);
         }
+        if let Err(e) = validate_args(&[
+            ("common_name", Some(params.common_name.as_str())),
+            ("mount", Some(params.mount.as_str())),
+            ("ttl", Some(params.ttl.as_str())),
+            ("role", params.role.as_deref()),
+            ("output", params.output.as_deref()),
+            ("store_path", params.store_path.as_deref()),
+        ])
+        .and_then(|()| validate_list(&params.sans, "sans", 100))
+        .and_then(|()| validate_list(&params.ip_sans, "ip_sans", 100))
+        {
+            return ok_error(e);
+        }
+        if !(1..=2).contains(&params.kv_version) {
+            return ok_error("kv_version must be 1 or 2".to_string());
+        }
         if params.common_name.trim().is_empty() {
             return ok_error("common_name must not be empty".to_string());
         }
@@ -35,9 +52,9 @@ impl DcertMcpServer {
             "--cn".to_string(),
             params.common_name.clone(),
             "--mount".to_string(),
-            params.mount,
+            params.mount.clone(),
             "--ttl".to_string(),
-            params.ttl,
+            params.ttl.clone(),
             "--format".to_string(),
             "json".to_string(),
         ];
@@ -57,9 +74,10 @@ impl DcertMcpServer {
             args.push("--output".to_string());
             args.push(output.clone());
         }
+        // The PFX passphrase travels in the environment, never in argv.
+        let mut extra_env: Vec<(&str, &str)> = Vec::new();
         if let Some(ref pfx_pw) = params.pfx_password {
-            args.push("--pfx-password".to_string());
-            args.push(pfx_pw.clone());
+            extra_env.push(("DCERT_CERT_PASSWORD", pfx_pw.as_str()));
         }
         if let Some(ref store_path) = params.store_path {
             args.push("--store-path".to_string());
@@ -69,18 +87,8 @@ impl DcertMcpServer {
         }
 
         let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        match run_dcert_vault(&args_refs, &params.vault, &self.config).await {
-            Ok((stdout, stderr, code)) => {
-                let mut output = stdout;
-                if !stderr.is_empty() {
-                    output.push_str("\n--- debug/stderr ---\n");
-                    output.push_str(&stderr);
-                }
-                if code != 0 {
-                    output.push_str(&format!("\n--- exit code: {code} ---"));
-                }
-                ok_text(output)
-            }
+        match run_dcert_vault(&args_refs, &params.vault, &self.config, &extra_env).await {
+            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "debug/stderr", &[0])),
             Err(e) => ok_error(e),
         }
     }
@@ -97,6 +105,23 @@ impl DcertMcpServer {
         if let Err(e) = params.vault.validate() {
             return ok_error(e);
         }
+        if let Err(e) = validate_args(&[
+            ("mount", Some(params.mount.as_str())),
+            ("ttl", Some(params.ttl.as_str())),
+            ("role", params.role.as_deref()),
+            ("common_name", params.common_name.as_deref()),
+            ("output", params.output.as_deref()),
+            ("store_path", params.store_path.as_deref()),
+        ])
+        .and_then(|()| validate_list(&params.sans, "sans", 100))
+        .and_then(|()| validate_list(&params.ip_sans, "ip_sans", 100))
+        {
+            return ok_error(e);
+        }
+        if !(1..=2).contains(&params.kv_version) {
+            return ok_error("kv_version must be 1 or 2".to_string());
+        }
+        let extra_env: Vec<(&str, &str)> = Vec::new();
         if let Err(e) = validate_path(&params.csr_file, "csr_file") {
             return ok_error(e);
         }
@@ -140,18 +165,8 @@ impl DcertMcpServer {
         }
 
         let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        match run_dcert_vault(&args_refs, &params.vault, &self.config).await {
-            Ok((stdout, stderr, code)) => {
-                let mut output = stdout;
-                if !stderr.is_empty() {
-                    output.push_str("\n--- debug/stderr ---\n");
-                    output.push_str(&stderr);
-                }
-                if code != 0 {
-                    output.push_str(&format!("\n--- exit code: {code} ---"));
-                }
-                ok_text(output)
-            }
+        match run_dcert_vault(&args_refs, &params.vault, &self.config, &extra_env).await {
+            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "debug/stderr", &[0])),
             Err(e) => ok_error(e),
         }
     }
@@ -168,6 +183,13 @@ impl DcertMcpServer {
         if let Err(e) = params.vault.validate() {
             return ok_error(e);
         }
+        if let Err(e) = validate_args(&[
+            ("mount", Some(params.mount.as_str())),
+            ("serial", params.serial.as_deref()),
+        ]) {
+            return ok_error(e);
+        }
+        let extra_env: Vec<(&str, &str)> = Vec::new();
         if params.serial.is_none() && params.cert_file.is_none() {
             return ok_error("Either serial or cert_file must be provided".to_string());
         }
@@ -186,18 +208,8 @@ impl DcertMcpServer {
         }
 
         let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        match run_dcert_vault(&args_refs, &params.vault, &self.config).await {
-            Ok((stdout, stderr, code)) => {
-                let mut output = stdout;
-                if !stderr.is_empty() {
-                    output.push_str("\n--- debug/stderr ---\n");
-                    output.push_str(&stderr);
-                }
-                if code != 0 {
-                    output.push_str(&format!("\n--- exit code: {code} ---"));
-                }
-                ok_text(output)
-            }
+        match run_dcert_vault(&args_refs, &params.vault, &self.config, &extra_env).await {
+            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "debug/stderr", &[0])),
             Err(e) => ok_error(e),
         }
     }
@@ -214,6 +226,10 @@ impl DcertMcpServer {
         if let Err(e) = params.vault.validate() {
             return ok_error(e);
         }
+        if let Err(e) = validate_args(&[("mount", Some(params.mount.as_str()))]) {
+            return ok_error(e);
+        }
+        let extra_env: Vec<(&str, &str)> = Vec::new();
 
         let mut args: Vec<String> = vec![
             "list".to_string(),
@@ -240,18 +256,8 @@ impl DcertMcpServer {
         }
 
         let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        match run_dcert_vault(&args_refs, &params.vault, &self.config).await {
-            Ok((stdout, stderr, code)) => {
-                let mut output = stdout;
-                if !stderr.is_empty() {
-                    output.push_str("\n--- debug/stderr ---\n");
-                    output.push_str(&stderr);
-                }
-                if code != 0 {
-                    output.push_str(&format!("\n--- exit code: {code} ---"));
-                }
-                ok_text(output)
-            }
+        match run_dcert_vault(&args_refs, &params.vault, &self.config, &extra_env).await {
+            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "debug/stderr", &[0])),
             Err(e) => ok_error(e),
         }
     }
@@ -268,6 +274,17 @@ impl DcertMcpServer {
         if let Err(e) = params.vault.validate() {
             return ok_error(e);
         }
+        if let Err(e) = validate_args(&[
+            ("path", Some(params.path.as_str())),
+            ("cert_key", Some(params.cert_key.as_str())),
+            ("key_key", Some(params.key_key.as_str())),
+        ]) {
+            return ok_error(e);
+        }
+        if !(1..=2).contains(&params.kv_version) {
+            return ok_error("kv_version must be 1 or 2".to_string());
+        }
+        let extra_env: Vec<(&str, &str)> = Vec::new();
         if let Err(e) = validate_path(&params.cert_file, "cert_file") {
             return ok_error(e);
         }
@@ -291,18 +308,8 @@ impl DcertMcpServer {
             &kv_version_str,
         ];
 
-        match run_dcert_vault(&args, &params.vault, &self.config).await {
-            Ok((stdout, stderr, code)) => {
-                let mut output = stdout;
-                if !stderr.is_empty() {
-                    output.push_str("\n--- debug/stderr ---\n");
-                    output.push_str(&stderr);
-                }
-                if code != 0 {
-                    output.push_str(&format!("\n--- exit code: {code} ---"));
-                }
-                ok_text(output)
-            }
+        match run_dcert_vault(&args, &params.vault, &self.config, &extra_env).await {
+            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "debug/stderr", &[0])),
             Err(e) => ok_error(e),
         }
     }
@@ -319,6 +326,17 @@ impl DcertMcpServer {
         if let Err(e) = params.vault.validate() {
             return ok_error(e);
         }
+        if let Err(e) = validate_args(&[
+            ("path", Some(params.path.as_str())),
+            ("cert_key", Some(params.cert_key.as_str())),
+            ("key_key", Some(params.key_key.as_str())),
+        ]) {
+            return ok_error(e);
+        }
+        if !(1..=2).contains(&params.kv_version) {
+            return ok_error("kv_version must be 1 or 2".to_string());
+        }
+        let extra_env: Vec<(&str, &str)> = Vec::new();
 
         let kv_version_str = params.kv_version.to_string();
         let args: Vec<&str> = vec![
@@ -332,18 +350,8 @@ impl DcertMcpServer {
             &kv_version_str,
         ];
 
-        match run_dcert_vault(&args, &params.vault, &self.config).await {
-            Ok((stdout, stderr, code)) => {
-                let mut output = stdout;
-                if !stderr.is_empty() {
-                    output.push_str("\n--- debug/stderr ---\n");
-                    output.push_str(&stderr);
-                }
-                if code != 0 {
-                    output.push_str(&format!("\n--- exit code: {code} ---"));
-                }
-                ok_text(output)
-            }
+        match run_dcert_vault(&args, &params.vault, &self.config, &extra_env).await {
+            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "debug/stderr", &[0])),
             Err(e) => ok_error(e),
         }
     }
@@ -360,6 +368,23 @@ impl DcertMcpServer {
         if let Err(e) = params.vault.validate() {
             return ok_error(e);
         }
+        if let Err(e) = validate_args(&[
+            ("path", Some(params.path.as_str())),
+            ("mount", Some(params.mount.as_str())),
+            ("ttl", Some(params.ttl.as_str())),
+            ("role", params.role.as_deref()),
+            ("cert_key", Some(params.cert_key.as_str())),
+            ("key_key", Some(params.key_key.as_str())),
+        ])
+        .and_then(|()| validate_list(&params.sans, "sans", 100))
+        .and_then(|()| validate_list(&params.ip_sans, "ip_sans", 100))
+        {
+            return ok_error(e);
+        }
+        if !(1..=2).contains(&params.kv_version) {
+            return ok_error("kv_version must be 1 or 2".to_string());
+        }
+        let extra_env: Vec<(&str, &str)> = Vec::new();
 
         let kv_version_str = params.kv_version.to_string();
         let mut args: Vec<String> = vec![
@@ -390,18 +415,8 @@ impl DcertMcpServer {
         }
 
         let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        match run_dcert_vault(&args_refs, &params.vault, &self.config).await {
-            Ok((stdout, stderr, code)) => {
-                let mut output = stdout;
-                if !stderr.is_empty() {
-                    output.push_str("\n--- debug/stderr ---\n");
-                    output.push_str(&stderr);
-                }
-                if code != 0 {
-                    output.push_str(&format!("\n--- exit code: {code} ---"));
-                }
-                ok_text(output)
-            }
+        match run_dcert_vault(&args_refs, &params.vault, &self.config, &extra_env).await {
+            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "debug/stderr", &[0])),
             Err(e) => ok_error(e),
         }
     }

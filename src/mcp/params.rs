@@ -3,7 +3,7 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::validate::validate_path;
+use crate::validate::{validate_arg, validate_path};
 
 // -- Parameter types --
 
@@ -278,17 +278,70 @@ impl HttpTlsParams {
             }
         }
         if let Some(ref proxy) = self.proxy
-            && (proxy.starts_with('-') || proxy.contains('\0'))
+            && !proxy.is_empty()
         {
-            return Err("proxy must not start with '-' or contain null bytes".to_string());
+            validate_arg(proxy, "proxy")?;
         }
         if let Some(ref noproxy) = self.noproxy
-            && (noproxy.starts_with('-') || noproxy.contains('\0'))
+            && !noproxy.is_empty()
         {
-            return Err("noproxy must not start with '-' or contain null bytes".to_string());
+            validate_arg(noproxy, "noproxy")?;
+        }
+        for h in self.headers.iter().flatten() {
+            validate_arg(h, "headers")?;
+            if !h.contains(':') {
+                return Err(format!("headers entry '{h}' must be in Key:Value form"));
+            }
+        }
+        for (name, value) in [
+            ("cipher_list", &self.cipher_list),
+            ("cipher_suites", &self.cipher_suites),
+            ("sni", &self.sni),
+            ("method", &self.method),
+            ("http_protocol", &self.http_protocol),
+            ("ciphers_notation", &self.ciphers_notation),
+            ("starttls", &self.starttls),
+        ] {
+            if let Some(v) = value {
+                validate_arg(v, name)?;
+            }
+        }
+        if let Some(ref data) = self.data
+            && (data.starts_with('-') || data.contains('\0'))
+        {
+            return Err("data must not start with '-' or contain null bytes".to_string());
+        }
+        if let Some(t) = self.timeout
+            && !(1..=300).contains(&t)
+        {
+            return Err("timeout must be between 1 and 300 seconds".to_string());
+        }
+        if let Some(t) = self.read_timeout
+            && !(1..=300).contains(&t)
+        {
+            return Err("read_timeout must be between 1 and 300 seconds".to_string());
         }
         Ok(())
     }
+}
+
+/// Parameters for the diagnose_endpoint tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct DiagnoseEndpointParams {
+    /// HTTPS URL or hostname to probe (the CloudFront distribution, the origin, or any TLS endpoint)
+    pub(crate) target: String,
+    /// Include the captured response body excerpt in the output even when no finding cites it (default: false)
+    #[serde(default)]
+    pub(crate) show_body: bool,
+    /// Accept the server certificate without verification so the HTTP layer can still be probed (default: false)
+    #[serde(default)]
+    pub(crate) no_verify: bool,
+    /// mTLS client identity and custom CA
+    #[serde(flatten, default)]
+    pub(crate) mtls: MtlsParams,
+    /// Connection, proxy and HTTP request options
+    #[serde(flatten, default)]
+    pub(crate) http_tls: HttpTlsParams,
 }
 
 /// Parameters for the analyze_certificate tool.
@@ -586,3 +639,22 @@ pub(crate) fn default_cert_key_name() -> String {
 pub(crate) fn default_key_key_name() -> String {
     "key".to_string()
 }
+
+/// Wipe secrets received as tool arguments once the request is done.
+macro_rules! zeroize_on_drop {
+    ($ty:ident, [$($field:ident),*], [$($opt:ident),*]) => {
+        impl Drop for $ty {
+            fn drop(&mut self) {
+                use zeroize::Zeroize;
+                $( self.$field.zeroize(); )*
+                $( if let Some(v) = self.$opt.as_mut() { v.zeroize(); } )*
+            }
+        }
+    };
+}
+zeroize_on_drop!(ConvertPfxToPemParams, [password], []);
+zeroize_on_drop!(ConvertPemToPfxParams, [password], []);
+zeroize_on_drop!(CreateKeystoreParams, [password], []);
+zeroize_on_drop!(CreateTruststoreParams, [password], []);
+zeroize_on_drop!(CreateCsrParams, [], [key_password]);
+zeroize_on_drop!(MtlsParams, [], [cert_password]);

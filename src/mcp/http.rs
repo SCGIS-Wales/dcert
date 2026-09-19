@@ -1,29 +1,37 @@
-//! HTTP transport: rmcp streamable HTTP behind authentication, rate limiting,
-//! timeouts and body limits.
+//! HTTP transport.
+//!
+//! The MCP protocol itself is served by rmcp's streamable HTTP transport, so
+//! every tool the stdio transport exposes is reachable over HTTP with the same
+//! schema, session handling and protocol negotiation. This module owns only
+//! what sits around it: Host and Origin validation, authentication, rate
+//! limiting, request timeouts, body limits and graceful shutdown.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::config::{McpConfig, dcert_mcp_version, log_startup_diagnostics};
-use crate::exec::run_dcert_with_env;
-use crate::params::HttpTlsParams;
+use crate::config::{McpConfig, log_startup_diagnostics};
 use crate::security;
 use crate::tools::DcertMcpServer;
-use crate::validate::validate_target;
 
-/// Shared state for HTTP mode handlers.
-pub(crate) struct HttpAppState {
-    mcp_server: DcertMcpServer,
+/// Default limit on concurrent in-flight HTTP requests.
+const DEFAULT_MAX_CONCURRENT_REQUESTS: usize = 64;
+
+/// Default wall-clock limit for a single HTTP request.
+const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 120;
+
+/// Default maximum request body size (1 MiB). MCP requests are small; a large
+/// body is either a mistake or an attempt to exhaust memory.
+const DEFAULT_MAX_BODY_BYTES: usize = 1024 * 1024;
+
+/// Read a positive integer from the environment, falling back to `default`.
+fn env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(default)
 }
 
-/// Build the CORS layer for the HTTP MCP server.
-///
-/// Allowed origins are read from `DCERT_MCP_ALLOWED_ORIGINS` (comma-separated).
-/// When unset/empty, cross-origin browser requests are denied (no
-/// `Access-Control-Allow-Origin` header is emitted) — the server is meant to be
-/// reached same-origin or via a trusted reverse proxy. A literal `*` enables
-/// any-origin access (logged as a warning); we never pair it with credentials,
-/// and only `authorization`/`content-type` request headers are allowed.
 /// Parsed CORS origin policy derived from `DCERT_MCP_ALLOWED_ORIGINS`.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum CorsOriginPolicy {
@@ -54,16 +62,29 @@ pub(crate) fn parse_allowed_origins(raw: &str) -> CorsOriginPolicy {
     }
 }
 
+/// Build the CORS layer for the HTTP MCP server.
+///
+/// Allowed origins are read from `DCERT_MCP_ALLOWED_ORIGINS` (comma separated).
+/// When unset or empty, cross-origin browser requests are denied: no
+/// `Access-Control-Allow-Origin` header is emitted, and the transport's own
+/// Origin check rejects any request that carries an `Origin` header. A literal
+/// `*` enables any-origin access and is logged as a warning; it is never
+/// paired with credentials, and only `authorization`, `content-type` and the
+/// MCP session and protocol headers are allowed.
 pub(crate) fn build_cors_layer() -> tower_http::cors::CorsLayer {
     use axum::http::{HeaderName, HeaderValue, Method};
     use tower_http::cors::{AllowOrigin, CorsLayer};
 
     let layer = CorsLayer::new()
-        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
         .allow_headers([
             HeaderName::from_static("authorization"),
             HeaderName::from_static("content-type"),
-        ]);
+            HeaderName::from_static("mcp-session-id"),
+            HeaderName::from_static("mcp-protocol-version"),
+            HeaderName::from_static("last-event-id"),
+        ])
+        .expose_headers([HeaderName::from_static("mcp-session-id")]);
 
     match parse_allowed_origins(&std::env::var("DCERT_MCP_ALLOWED_ORIGINS").unwrap_or_default()) {
         CorsOriginPolicy::Any => {
@@ -93,104 +114,40 @@ pub(crate) fn build_cors_layer() -> tower_http::cors::CorsLayer {
     }
 }
 
-/// Run in HTTP mode with OIDC/OAuth2 authentication.
-pub(crate) async fn run_http_mode(config: McpConfig, addr: &str) -> Result<(), Box<dyn std::error::Error>> {
-    use axum::routing::{get, post};
-    use security::audit::AuditLogger;
-    use security::middleware::{AuthState, auth_middleware};
-    use security::session::{SessionCache, SessionConfig};
-
-    // Initialize structured logging for HTTP mode.
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .with_target(false)
-        .json()
-        .init();
-
-    log_startup_diagnostics(&config);
-
-    // Build auth state from environment variables.
-    let oidc_validator = build_oidc_validator();
-    let static_token = std::env::var("DCERT_MCP_AUTH_TOKEN").ok().filter(|s| !s.is_empty());
-
-    // Log auth status.
-    let auth_configured = oidc_validator.is_some() || static_token.is_some();
-    if oidc_validator.is_some() {
-        tracing::info!("authentication: OIDC/OAuth2 enabled");
-    } else if static_token.is_some() {
-        tracing::info!("authentication: static bearer token enabled");
-    } else {
-        tracing::warn!("authentication: DISABLED — no OIDC issuer or static token configured");
-    }
-
-    // Refuse to expose an unauthenticated endpoint on a non-loopback interface.
-    // Binding to a public/LAN address with no OIDC issuer or static token lets
-    // any host on the network drive the cert-tooling/subprocess-spawning API.
-    // The operator can opt in explicitly with DCERT_MCP_ALLOW_INSECURE=1.
-    if !auth_configured && !addr_is_loopback(addr) {
-        let allow_insecure = std::env::var("DCERT_MCP_ALLOW_INSECURE")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        if !allow_insecure {
-            return Err(format!(
-                "refusing to start: HTTP mode has no authentication configured and would \
-                 bind to a non-loopback address ({addr}). Configure DCERT_MCP_OIDC_ISSUER or \
-                 DCERT_MCP_AUTH_TOKEN, bind to 127.0.0.1, or set DCERT_MCP_ALLOW_INSECURE=1 to \
-                 override."
-            )
-            .into());
+/// Hostnames the transport accepts in the `Host` header, guarding against DNS
+/// rebinding. Defaults to loopback names plus the bind address; operators
+/// widen it with `DCERT_MCP_ALLOWED_HOSTS` when the server sits behind a
+/// reverse proxy or a public name.
+pub(crate) fn allowed_hosts(addr: &str) -> Vec<String> {
+    if let Ok(raw) = std::env::var("DCERT_MCP_ALLOWED_HOSTS") {
+        let entries: Vec<String> = raw
+            .split(',')
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if !entries.is_empty() {
+            return entries;
         }
-        tracing::warn!(
-            addr = addr,
-            "starting UNAUTHENTICATED HTTP server on a non-loopback address (DCERT_MCP_ALLOW_INSECURE=1)"
-        );
     }
-
-    // Session cache.
-    let session_ttl = std::env::var("DCERT_MCP_SESSION_TTL")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(300);
-    let session_cache = Arc::new(SessionCache::new(SessionConfig {
-        inactivity_ttl: Duration::from_secs(session_ttl),
-        ..SessionConfig::default()
-    }));
-
-    let audit_logger = Arc::new(AuditLogger::new());
-
-    let auth_state = Arc::new(AuthState {
-        oidc_validator: oidc_validator.map(Arc::new),
-        static_token,
-        session_cache: Some(session_cache),
-        audit_logger: Some(audit_logger),
-    });
-
-    let mcp_server = DcertMcpServer::new(config);
-
-    let app_state = Arc::new(HttpAppState { mcp_server });
-
-    // Create axum router with auth middleware.
-    let app = axum::Router::new()
-        .route("/health", get(health_handler))
-        .route("/mcp", post(mcp_handler))
-        .layer(build_cors_layer())
-        .layer(axum::middleware::from_fn_with_state(auth_state, auth_middleware))
-        .with_state(app_state);
-
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!(addr = addr, "dcert-mcp HTTP server listening");
-
-    // Wire ConnectInfo so the auth middleware can record the real client IP in
-    // audit logs (otherwise `remote_addr` is always "unknown").
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .await?;
-    Ok(())
+    let mut hosts = vec![
+        "localhost".to_string(),
+        "127.0.0.1".to_string(),
+        "::1".to_string(),
+        "[::1]".to_string(),
+    ];
+    hosts.push(addr.to_ascii_lowercase());
+    if let Some((host, port)) = addr.rsplit_once(':') {
+        hosts.push(format!("localhost:{port}"));
+        hosts.push(format!("127.0.0.1:{port}"));
+        hosts.push(format!("[::1]:{port}"));
+        let host = host.trim_matches(['[', ']']);
+        if !host.is_empty() && host != "0.0.0.0" && host != "::" {
+            hosts.push(host.to_ascii_lowercase());
+        }
+    }
+    hosts.sort();
+    hosts.dedup();
+    hosts
 }
 
 /// Return true when `addr` binds to a loopback interface (safe to run without
@@ -216,222 +173,253 @@ pub(crate) fn build_oidc_validator() -> Option<security::oidc::OidcValidator> {
         .unwrap_or_default();
 
     if audience.is_empty() {
-        eprintln!("[dcert-mcp] WARNING: DCERT_MCP_OIDC_ISSUER set but DCERT_MCP_OIDC_AUDIENCE missing");
+        tracing::error!("DCERT_MCP_OIDC_ISSUER is set but DCERT_MCP_OIDC_AUDIENCE is missing; OIDC is disabled");
         return None;
     }
+
+    let csv = |name: &str| -> Vec<String> {
+        std::env::var(name)
+            .ok()
+            .map(|s| {
+                s.split(',')
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
 
     let config = security::oidc::OidcConfig {
         issuer_url: issuer,
         audience,
         jwks_url: std::env::var("DCERT_MCP_OIDC_JWKS_URL").ok().filter(|s| !s.is_empty()),
-        required_scopes: std::env::var("DCERT_MCP_REQUIRED_SCOPES")
-            .ok()
-            .map(|s| {
-                s.split(',')
-                    .map(|v| v.trim().to_string())
-                    .filter(|v| !v.is_empty())
-                    .collect()
-            })
-            .unwrap_or_default(),
-        required_roles: std::env::var("DCERT_MCP_REQUIRED_ROLES")
-            .ok()
-            .map(|s| {
-                s.split(',')
-                    .map(|v| v.trim().to_string())
-                    .filter(|v| !v.is_empty())
-                    .collect()
-            })
-            .unwrap_or_default(),
-        allowed_client_ids: std::env::var("DCERT_MCP_ALLOWED_CLIENTS")
-            .ok()
-            .map(|s| {
-                s.split(',')
-                    .map(|v| v.trim().to_string())
-                    .filter(|v| !v.is_empty())
-                    .collect()
-            })
-            .unwrap_or_default(),
+        required_scopes: csv("DCERT_MCP_REQUIRED_SCOPES"),
+        required_roles: csv("DCERT_MCP_REQUIRED_ROLES"),
+        allowed_client_ids: csv("DCERT_MCP_ALLOWED_CLIENTS"),
     };
 
     match security::oidc::OidcValidator::new(config) {
         Ok(v) => Some(v),
         Err(e) => {
-            eprintln!("[dcert-mcp] ERROR: failed to create OIDC validator: {e}");
+            tracing::error!(error = %e, "failed to create OIDC validator; OIDC is disabled");
             None
         }
     }
 }
 
-/// Health check endpoint.
-async fn health_handler() -> &'static str {
+/// Health check endpoint. Deliberately outside the authentication layer so
+/// liveness and readiness probes do not need a bearer token.
+pub(crate) async fn health_handler() -> &'static str {
     "ok"
 }
 
-/// MCP JSON-RPC handler for HTTP mode.
-async fn mcp_handler(
-    axum::extract::State(state): axum::extract::State<Arc<HttpAppState>>,
-    axum::extract::Json(body): axum::extract::Json<serde_json::Value>,
-) -> axum::response::Json<serde_json::Value> {
-    let method = body.get("method").and_then(|v| v.as_str()).unwrap_or("");
-    let params = body.get("params").cloned().unwrap_or(serde_json::Value::Null);
-    let id = body.get("id").cloned().unwrap_or(serde_json::Value::Null);
+/// Run in HTTP mode: rmcp's streamable HTTP transport behind Host and Origin
+/// validation, authentication, rate limiting, a request timeout and a body
+/// size limit, with graceful shutdown on SIGINT and SIGTERM.
+pub(crate) async fn run_http_mode(config: McpConfig, addr: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use axum::routing::get;
+    use rmcp::transport::streamable_http_server::{
+        StreamableHttpService, session::local::LocalSessionManager, tower::StreamableHttpServerConfig,
+    };
+    use security::audit::AuditLogger;
+    use security::middleware::{AuthState, auth_middleware};
+    use security::scope::ToolScopePolicy;
+    use security::session::{SessionCache, SessionConfig};
 
-    match method {
-        "tools/list" => {
-            let tools = state.mcp_server.tool_router.list_all();
-            let tool_list: Vec<serde_json::Value> = tools
-                .into_iter()
-                .map(|t| {
-                    serde_json::json!({
-                        "name": t.name,
-                        "description": t.description,
-                        "inputSchema": t.input_schema
-                    })
-                })
-                .collect();
-            axum::response::Json(serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": { "tools": tool_list }
-            }))
-        }
-        "tools/call" => {
-            let tool_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let arguments = params
-                .get("arguments")
-                .cloned()
-                .unwrap_or(serde_json::Value::Object(Default::default()));
+    // Initialize structured logging for HTTP mode.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .with_target(false)
+        .json()
+        .init();
 
-            // Run the dcert binary directly for tool calls.
-            let (result, is_error) = dispatch_tool_call(&state.mcp_server.config, &tool_name, &arguments).await;
+    log_startup_diagnostics(&config);
 
-            axum::response::Json(serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": {
-                    "content": [{"type": "text", "text": result}],
-                    "isError": is_error
-                }
-            }))
-        }
-        "initialize" => {
-            // Negotiate the protocol version instead of pinning the oldest
-            // revision: echo the client's requested version when we support it,
-            // otherwise advertise the latest version the rmcp SDK implements.
-            let requested = params.get("protocolVersion").and_then(|v| v.as_str());
-            axum::response::Json(serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": {
-                    "protocolVersion": negotiate_protocol_version(requested),
-                    "capabilities": { "tools": {} },
-                    "serverInfo": {
-                        "name": "dcert-mcp",
-                        "version": dcert_mcp_version()
-                    }
-                }
-            }))
-        }
-        _ => axum::response::Json(serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "error": {
-                "code": -32601,
-                "message": format!("method not found: {method}")
-            }
-        })),
+    // Build auth state from environment variables.
+    let oidc_validator = build_oidc_validator();
+    let static_token = std::env::var("DCERT_MCP_AUTH_TOKEN").ok().filter(|s| !s.is_empty());
+
+    let auth_configured = oidc_validator.is_some() || static_token.is_some();
+    if oidc_validator.is_some() {
+        tracing::info!("authentication: OIDC/OAuth2 enabled");
+    } else if static_token.is_some() {
+        tracing::info!("authentication: static bearer token enabled");
+    } else {
+        tracing::warn!("authentication: DISABLED — no OIDC issuer or static token configured");
     }
+
+    // Refuse to expose an unauthenticated endpoint on a non-loopback interface.
+    // Binding to a public or LAN address with no OIDC issuer and no static
+    // token lets any host on the network drive an API that spawns subprocesses.
+    if !auth_configured && !addr_is_loopback(addr) {
+        let allow_insecure = std::env::var("DCERT_MCP_ALLOW_INSECURE")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if !allow_insecure {
+            return Err(format!(
+                "refusing to start: HTTP mode has no authentication configured and would \
+                 bind to a non-loopback address ({addr}). Configure DCERT_MCP_OIDC_ISSUER or \
+                 DCERT_MCP_AUTH_TOKEN, bind to 127.0.0.1, or set DCERT_MCP_ALLOW_INSECURE=1 to \
+                 override."
+            )
+            .into());
+        }
+        tracing::warn!(
+            addr = addr,
+            "starting UNAUTHENTICATED HTTP server on a non-loopback address (DCERT_MCP_ALLOW_INSECURE=1)"
+        );
+    }
+
+    // Session cache for validated tokens.
+    let session_ttl = std::env::var("DCERT_MCP_SESSION_TTL")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(300);
+    let session_cache = Arc::new(SessionCache::new(SessionConfig {
+        inactivity_ttl: Duration::from_secs(session_ttl),
+        ..SessionConfig::default()
+    }));
+
+    let tool_scopes = ToolScopePolicy::from_env();
+    if tool_scopes.is_empty() {
+        tracing::info!(
+            "per tool authorization: not configured (set DCERT_MCP_SCOPE_WRITE, DCERT_MCP_SCOPE_READ \
+             or DCERT_MCP_SCOPE_<TOOL> to require scopes per tool)"
+        );
+    } else {
+        tracing::info!("per tool authorization: enabled");
+    }
+
+    let auth_state = Arc::new(AuthState {
+        oidc_validator: oidc_validator.map(Arc::new),
+        static_token,
+        session_cache: Some(session_cache),
+        audit_logger: Some(Arc::new(AuditLogger::new())),
+        tool_scopes,
+    });
+
+    // One cancellation token drives both the transport's session teardown and
+    // axum's graceful shutdown, so a signal closes in-flight work in order.
+    let shutdown = tokio_util::sync::CancellationToken::new();
+
+    let hosts = allowed_hosts(addr);
+    tracing::info!(hosts = ?hosts, "Host header allowlist (set DCERT_MCP_ALLOWED_HOSTS to change)");
+    let mut transport_config = StreamableHttpServerConfig::default()
+        .with_cancellation_token(shutdown.clone())
+        .with_allowed_hosts(hosts)
+        .with_max_request_body_bytes(env_usize("DCERT_MCP_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES));
+
+    // Origin validation: an allowlist is enforced as given; with no allowlist
+    // every request carrying an Origin header is rejected, which is what stops
+    // a browser page on another origin from driving the tool API.
+    transport_config = match parse_allowed_origins(&std::env::var("DCERT_MCP_ALLOWED_ORIGINS").unwrap_or_default()) {
+        CorsOriginPolicy::List(entries) => transport_config.with_allowed_origins(entries),
+        CorsOriginPolicy::Any => transport_config,
+        CorsOriginPolicy::None => transport_config.enforce_origin_validation(),
+    };
+
+    let server_config = Arc::new(config);
+    let mcp_service = StreamableHttpService::new(
+        {
+            let server_config = server_config.clone();
+            move || Ok(DcertMcpServer::with_shared_config(server_config.clone()))
+        },
+        Arc::new(LocalSessionManager::default()),
+        transport_config,
+    );
+
+    let max_concurrent = env_usize("DCERT_MCP_MAX_CONCURRENT_REQUESTS", DEFAULT_MAX_CONCURRENT_REQUESTS);
+    let request_timeout = Duration::from_secs(
+        std::env::var("DCERT_MCP_REQUEST_TIMEOUT")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(DEFAULT_REQUEST_TIMEOUT_SECS),
+    );
+
+    // Layer order matters. `axum::Router::layer` wraps outermost-last, so the
+    // listed order runs bottom-up: the concurrency limit and timeout bound
+    // every request, CORS answers preflights before authentication can reject
+    // them, and authentication guards only the MCP route (never /health).
+    let app = axum::Router::new()
+        .route("/health", get(health_handler))
+        .nest_service(
+            "/mcp",
+            axum::routing::any_service(
+                tower::ServiceBuilder::new()
+                    .layer(axum::middleware::from_fn_with_state(auth_state, auth_middleware))
+                    .service(mcp_service),
+            ),
+        )
+        .layer(build_cors_layer())
+        .layer(tower_http::timeout::TimeoutLayer::with_status_code(
+            axum::http::StatusCode::GATEWAY_TIMEOUT,
+            request_timeout,
+        ))
+        .layer(tower::limit::GlobalConcurrencyLimitLayer::new(max_concurrent))
+        .layer(tower_http::trace::TraceLayer::new_for_http());
+
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    tracing::info!(
+        addr = addr,
+        max_concurrent_requests = max_concurrent,
+        request_timeout_secs = request_timeout.as_secs(),
+        "dcert-mcp HTTP server listening"
+    );
+
+    // Wire ConnectInfo so the auth middleware records the real client IP.
+    let shutdown_signal = {
+        let shutdown = shutdown.clone();
+        async move {
+            wait_for_shutdown_signal().await;
+            tracing::info!("shutdown signal received; draining in-flight requests");
+            shutdown.cancel();
+        }
+    };
+
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal)
+    .await?;
+
+    tracing::info!("dcert-mcp HTTP server stopped");
+    Ok(())
 }
 
-/// Negotiate the MCP protocol version for the HTTP transport.
-///
-/// Echoes the client's requested version when the rmcp SDK supports it,
-/// otherwise falls back to the latest version rmcp implements. This keeps the
-/// hand-rolled HTTP handler in lockstep with the stdio transport (which
-/// negotiates through rmcp directly) instead of pinning the oldest revision.
-pub(crate) fn negotiate_protocol_version(requested: Option<&str>) -> String {
-    use rmcp::model::ProtocolVersion;
-    match requested {
-        Some(v) if ProtocolVersion::KNOWN_VERSIONS.iter().any(|k| k.as_str() == v) => v.to_string(),
-        _ => ProtocolVersion::LATEST.as_str().to_string(),
-    }
-}
-
-/// Dispatch a tool call by running the dcert binary with appropriate arguments.
-///
-/// Returns `(output, is_error)` so the HTTP transport can set the JSON-RPC
-/// `isError` flag correctly instead of always reporting success.
-pub(crate) async fn dispatch_tool_call(
-    config: &McpConfig,
-    tool_name: &str,
-    arguments: &serde_json::Value,
-) -> (String, bool) {
-    // Map tool names to dcert CLI arguments.
-    let mut args: Vec<String> = Vec::new();
-    // Kept alive past the match so `env_vars()` can borrow from it below.
-    let mut http_tls = HttpTlsParams::default();
-
-    // The HTTP dispatch path reaches the subprocess argv directly, so it must
-    // apply the same target hardening as the stdio `#[tool]` handlers: reject
-    // empty, flag-like (`-`-prefixed), and null-byte-bearing targets before
-    // they can be interpreted as CLI flags.
-    if let Some(target) = arguments.get("target").and_then(|v| v.as_str())
-        && let Err(e) = validate_target(target)
-    {
-        return (format!("error: {e}"), true);
-    }
-
-    match tool_name {
-        "analyze_certificate" => {
-            if let Some(target) = arguments.get("target").and_then(|v| v.as_str()) {
-                args.push(target.to_string());
-            }
-            args.extend(["--format".to_string(), "json".to_string()]);
-            if arguments.get("fingerprint").and_then(serde_json::Value::as_bool) == Some(true) {
-                args.push("--fingerprint".to_string());
-            }
-            if arguments.get("extensions").and_then(serde_json::Value::as_bool) == Some(true) {
-                args.push("--extensions".to_string());
-            }
-            if arguments.get("check_revocation").and_then(serde_json::Value::as_bool) == Some(true) {
-                args.push("--check-revocation".to_string());
-            }
-            // HTTP/TLS params, including the connection and proxy overrides.
-            // Deserializing the shared struct rather than re-reading each key by
-            // hand keeps this path from drifting away from the stdio handlers —
-            // `tools/list` advertises one schema for both transports.
-            http_tls = serde_json::from_value(arguments.clone()).unwrap_or_default();
-            if let Err(e) = http_tls.validate() {
-                return (format!("error: {e}"), true);
-            }
-            args.extend(http_tls.to_args());
+/// Resolve when the process is asked to stop: Ctrl+C on any platform, or
+/// SIGTERM on Unix (how a container runtime asks a process to exit).
+pub(crate) async fn wait_for_shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            tracing::error!(error = %e, "failed to listen for Ctrl+C");
+            // Never resolve: without a working handler, let the other branch win.
+            std::future::pending::<()>().await;
         }
-        "validate_certificate" => {
-            if let Some(target) = arguments.get("target").and_then(|v| v.as_str()) {
-                args.push(target.to_string());
-            }
-            args.push("--compliance".to_string());
-            args.extend(["--format".to_string(), "json".to_string()]);
-        }
-        _ => {
-            return (format!("unknown tool: {tool_name}"), true);
-        }
-    }
+    };
 
-    let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let env_refs = http_tls.env_vars();
-    match run_dcert_with_env(&args_refs, config, Some(&env_refs)).await {
-        Ok((stdout, stderr, code)) => {
-            let mut output = stdout;
-            if !stderr.is_empty() {
-                output.push_str("\n--- stderr ---\n");
-                output.push_str(&stderr);
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
             }
-            if code != 0 {
-                output.push_str(&format!("\n--- exit code: {code} ---"));
+            Err(e) => {
+                tracing::error!(error = %e, "failed to listen for SIGTERM");
+                std::future::pending::<()>().await;
             }
-            (output, code != 0)
         }
-        Err(e) => (format!("error: {e}"), true),
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => {},
+        () = terminate => {},
     }
 }
