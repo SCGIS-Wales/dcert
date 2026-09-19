@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from types import SimpleNamespace
@@ -338,7 +339,8 @@ async def test_input_validation(open_session):
 
 def test_all_tool_functions_present():
     assert len(TOOL_FUNCTIONS) == 11
-    assert all(asyncio.iscoroutinefunction(f) for f in TOOL_FUNCTIONS)
+    # inspect, not asyncio: asyncio.iscoroutinefunction is deprecated from 3.14.
+    assert all(inspect.iscoroutinefunction(f) for f in TOOL_FUNCTIONS)
 
 
 # ---------------------------------------------------------------------------
