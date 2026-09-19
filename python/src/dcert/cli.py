@@ -1,278 +1,197 @@
-"""CLI entry points for dcert.
+"""Command line entry points.
 
-Provides three commands:
-  - ``dcert``:        Thin wrapper that execs the bundled Rust ``dcert`` binary.
-  - ``dcert-mcp``:    Thin wrapper that execs the bundled Rust ``dcert-mcp`` binary.
-  - ``dcert-python``: Python MCP proxy server wrapping the Rust binary via FastMCP.
+- ``dcert`` and ``dcert-mcp`` replace the current process with the Rust
+  binary of the same name, forwarding every argument.
+- ``dcert-python`` runs the FastMCP proxy server.
 """
 
 from __future__ import annotations
 
-import argparse
 import os
-import shutil
-import stat
 import sys
-from pathlib import Path
+from typing import Literal
+
+import click
+
+from dcert.binary import find_binary
+from dcert.config import load_config
+
+_CONFIG = load_config()
+Transport = Literal["stdio", "http", "sse"]
+TRANSPORTS: tuple[Transport, ...] = ("stdio", "http", "sse")
+OTEL_EXPORTERS = ("console", "otlp")
 
 
-def _is_python_script(path: str) -> bool:
-    """Check if *path* is a Python console-script wrapper (not a compiled binary).
+def exec_binary(name: str) -> None:
+    """Replace the current process with the Rust binary *name*.
 
-    Reads the first 128 bytes; if the file starts with ``#!`` and the first
-    line contains ``python``, it is a pip-generated console_script wrapper
-    and must be skipped to avoid an infinite exec loop (see helm-mcp PR #33).
+    Exits with status 1 and a message on stderr when the binary cannot be
+    resolved or a downloaded archive fails verification.
     """
     try:
-        with open(path, "rb") as fh:
-            head = fh.read(128)
-        first_line = head.split(b"\n", 1)[0].lower()
-        return head[:2] == b"#!" and b"python" in first_line
-    except OSError:
-        return False
-
-
-def _find_bundled_binary(name: str) -> str | None:
-    """Locate a binary bundled inside the package ``bin/`` directory.
-
-    If the binary exists but is not executable, it is chmod'd on first use.
-
-    Returns:
-        Absolute path to the binary, or ``None`` if not found.
-    """
-    pkg_dir = Path(__file__).parent
-    bundled = pkg_dir / "bin" / name
-    # On Windows the bundled binary carries a .exe suffix (dcert.exe).
-    if not bundled.is_file() and sys.platform == "win32" and not name.endswith(".exe"):
-        win_bundled = pkg_dir / "bin" / f"{name}.exe"
-        if win_bundled.is_file():
-            bundled = win_bundled
-    if not bundled.is_file():
-        return None
-    # Ensure the binary is executable (pip may not preserve permissions
-    # for package-data files extracted from wheels).
-    if not os.access(str(bundled), os.X_OK):
-        try:
-            bundled.chmod(bundled.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-        except OSError:
-            return None
-    return str(bundled)
-
-
-def _find_binary(name: str) -> str:
-    """Find a binary by name: bundled in package, then PATH, then auto-download.
-
-    Skips Python console-script wrappers on PATH to avoid infinite exec
-    loops when pip installs the universal wheel.
-
-    Raises:
-        FileNotFoundError: If the binary cannot be located.
-    """
-    # 1. Bundled binary inside the Python package
-    bundled = _find_bundled_binary(name)
-    if bundled:
-        return bundled
-
-    # 2. Binary on PATH — skip Python console-script wrappers
-    found = shutil.which(name)
-    if found and not _is_python_script(found):
-        return found
-
-    # 3. Auto-download from GitHub Releases (fallback for universal wheel).
-    # ensure_binary downloads/verifies the archive and extracts BOTH binaries
-    # (dcert and dcert-mcp) into the install dir, returning the dcert-mcp path.
-    # Resolve the actually-requested binary from that dir instead of returning
-    # ensure_binary's dcert-mcp path unconditionally (which would exec the MCP
-    # server when the user asked for the dcert CLI).
-    from dcert import __version__
-    from dcert.download import _bin_filename, _get_install_dir, ensure_binary
-
-    try:
-        mcp_path = ensure_binary(__version__)
-    except RuntimeError as e:
-        # Checksum mismatch is a tamper indicator — surface it rather than
-        # masking it behind a generic "binary not found" message.
-        raise FileNotFoundError(f"{name} download failed integrity verification: {e}") from e
-    except Exception:
-        # Network/URL errors fall through to the install-hint message below.
-        mcp_path = None
-
-    if mcp_path:
-        candidate = _get_install_dir() / _bin_filename(name)
-        if candidate.exists() and os.access(str(candidate), os.X_OK):
-            return str(candidate)
-
-    raise FileNotFoundError(
-        f"{name} binary not found. Install dcert via:\n"
-        "  brew tap SCGIS-Wales/tap && brew install dcert\n"
-        "  or: pip install dcert  (platform wheel bundles the binary)"
-    )
+        binary = find_binary(name)
+    except (FileNotFoundError, RuntimeError) as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+    # The path comes from the trusted resolver, not from user input.
+    os.execvp(binary, [binary, *sys.argv[1:]])  # noqa: S606
 
 
 def dcert_main() -> None:
-    """Entry point for the ``dcert`` command.
-
-    Locates the bundled Rust ``dcert`` binary and replaces the current
-    process with it, forwarding all command-line arguments.
-    """
-    try:
-        binary = _find_binary("dcert")
-    except FileNotFoundError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
-    os.execvp(binary, [binary] + sys.argv[1:])
+    """Entry point for the ``dcert`` command."""
+    exec_binary("dcert")
 
 
 def dcert_mcp_main() -> None:
-    """Entry point for the ``dcert-mcp`` command.
+    """Entry point for the ``dcert-mcp`` command."""
+    exec_binary("dcert-mcp")
 
-    Locates the bundled Rust ``dcert-mcp`` binary and replaces the current
-    process with it, forwarding all command-line arguments.
-    """
+
+def environment_overrides(
+    *,
+    no_retry: bool,
+    no_circuit_breaker: bool,
+    rate_limit: float | None,
+    cache: bool,
+    bulkhead_max: int | None,
+    otel: bool,
+    otel_exporter: str | None,
+) -> dict[str, str]:
+    """Translate CLI flags into the ``DCERT_MCP_*`` variables they stand for."""
+    overrides: dict[str, str] = {}
+    if no_retry:
+        overrides["DCERT_MCP_NO_RETRY"] = "1"
+    if no_circuit_breaker:
+        overrides["DCERT_MCP_NO_CIRCUIT_BREAKER"] = "1"
+    if rate_limit is not None:
+        overrides["DCERT_MCP_RATE_LIMIT_ENABLED"] = "1"
+        overrides["DCERT_MCP_RATE_LIMIT_RPS"] = str(rate_limit)
+    if cache:
+        overrides["DCERT_MCP_CACHE_ENABLED"] = "1"
+    if bulkhead_max is not None:
+        overrides["DCERT_MCP_BULKHEAD_MAX"] = str(bulkhead_max)
+    if otel:
+        overrides["DCERT_MCP_OTEL_ENABLED"] = "1"
+    if otel_exporter is not None:
+        overrides["DCERT_MCP_OTEL_EXPORTER"] = otel_exporter
+    return overrides
+
+
+def run_setup() -> None:
+    """Download the ``dcert-mcp`` binary and report where it was installed."""
+    from dcert import __version__
+    from dcert.download import ensure_binary
+
     try:
-        binary = _find_binary("dcert-mcp")
-    except FileNotFoundError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
-    os.execvp(binary, [binary] + sys.argv[1:])
+        path = ensure_binary(__version__)
+    except (OSError, RuntimeError) as exc:
+        raise click.ClickException(f"downloading binary failed: {exc}") from exc
+    if path is None:
+        raise click.ClickException(
+            "No checksums available for this platform. Install the binary manually."
+        )
+    click.echo(f"dcert-mcp binary ready at: {path}")
 
 
-def main() -> None:
-    """Run the dcert MCP proxy server (``dcert-python`` command)."""
-    parser = argparse.ArgumentParser(
-        description="dcert: MCP server for TLS certificate analysis",
-    )
-    parser.add_argument(
-        "--transport",
-        choices=["stdio", "http", "sse"],
-        default="stdio",
-        help="Transport mode (default: stdio)",
-    )
-    parser.add_argument(
-        "--host",
-        default="127.0.0.1",
-        help=(
-            "Host for HTTP/SSE mode (default: 127.0.0.1). The proxy has no "
-            "authentication; bind to 0.0.0.0 only behind a trusted gateway."
-        ),
-    )
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=8080,
-        help="Port for HTTP/SSE mode (default: 8080)",
-    )
-    parser.add_argument(
-        "--binary",
-        default=None,
-        help="Path to dcert-mcp binary (auto-detected if not set)",
-    )
-    parser.add_argument(
-        "--setup",
-        action="store_true",
-        help="Download the dcert-mcp binary and exit",
-    )
-
-    # -- Resiliency flags --
-    parser.add_argument(
-        "--no-retry",
-        action="store_true",
-        help="Disable automatic retry on connection errors",
-    )
-    parser.add_argument(
-        "--no-circuit-breaker",
-        action="store_true",
-        help="Disable circuit breaker",
-    )
-    parser.add_argument(
-        "--rate-limit",
-        type=float,
-        default=None,
-        metavar="RPS",
-        help="Enable rate limiting at RPS requests per second",
-    )
-    parser.add_argument(
-        "--cache",
-        action="store_true",
-        help="Enable response caching",
-    )
-    parser.add_argument(
-        "--bulkhead-max",
-        type=int,
-        default=None,
-        metavar="N",
-        help="Maximum concurrent tool calls (default: 10)",
-    )
-
-    # -- OpenTelemetry --
-    parser.add_argument(
-        "--otel",
-        action="store_true",
-        help="Enable OpenTelemetry tracing",
-    )
-    parser.add_argument(
-        "--otel-exporter",
-        choices=["console", "otlp"],
-        default=None,
-        help="OpenTelemetry exporter (default: console)",
-    )
-
-    args = parser.parse_args()
-
-    if args.setup:
-        from dcert import __version__
-        from dcert.download import ensure_binary
-
-        try:
-            path = ensure_binary(__version__)
-            if path:
-                print(f"dcert-mcp binary ready at: {path}")
-            else:
-                print(
-                    "No checksums available for this platform. Install the binary manually.",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
-        except Exception as e:
-            print(f"Error downloading binary: {e}", file=sys.stderr)
-            sys.exit(1)
+@click.command(name="dcert-python", context_settings={"help_option_names": ["-h", "--help"]})
+@click.option(
+    "--transport",
+    type=click.Choice(TRANSPORTS),
+    default="stdio",
+    show_default=True,
+    help="Transport mode.",
+)
+@click.option(
+    "--host",
+    default=_CONFIG.server.host,
+    show_default=True,
+    help=(
+        "Bind address for HTTP/SSE mode. The proxy has no authentication; "
+        "bind to 0.0.0.0 only behind a trusted gateway."
+    ),
+)
+@click.option(
+    "--port",
+    type=click.IntRange(1, 65535),
+    default=_CONFIG.server.port,
+    show_default=True,
+    help="Port for HTTP/SSE mode.",
+)
+@click.option(
+    "--binary",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="Path to the dcert-mcp binary (auto detected if not set).",
+)
+@click.option("--setup", is_flag=True, help="Download the dcert-mcp binary and exit.")
+@click.option("--no-retry", is_flag=True, help="Disable automatic retry on connection errors.")
+@click.option("--no-circuit-breaker", is_flag=True, help="Disable the circuit breaker.")
+@click.option(
+    "--rate-limit",
+    type=click.FloatRange(min=0, min_open=True),
+    default=None,
+    metavar="RPS",
+    help="Enable rate limiting at RPS requests per second (must be positive).",
+)
+@click.option("--cache", is_flag=True, help="Enable response caching.")
+@click.option(
+    "--bulkhead-max",
+    type=click.IntRange(min=1),
+    default=None,
+    metavar="N",
+    help=f"Maximum concurrent tool calls (default: {_CONFIG.resilience.bulkhead_max}).",
+)
+@click.option("--otel", is_flag=True, help="Enable OpenTelemetry tracing.")
+@click.option(
+    "--otel-exporter",
+    type=click.Choice(OTEL_EXPORTERS),
+    default=None,
+    help=f"OpenTelemetry exporter (default: {_CONFIG.otel.exporter}).",
+)
+def main(
+    transport: Transport,
+    host: str,
+    port: int,
+    binary: str | None,
+    setup: bool,
+    no_retry: bool,
+    no_circuit_breaker: bool,
+    rate_limit: float | None,
+    cache: bool,
+    bulkhead_max: int | None,
+    otel: bool,
+    otel_exporter: str | None,
+) -> None:
+    """Run the dcert MCP proxy server for TLS certificate analysis."""
+    if setup:
+        run_setup()
         return
 
-    # Apply CLI overrides to environment so ResilienceConfig picks them up
-    if args.no_retry:
-        os.environ["DCERT_MCP_NO_RETRY"] = "1"
-    if args.no_circuit_breaker:
-        os.environ["DCERT_MCP_NO_CIRCUIT_BREAKER"] = "1"
-    if args.rate_limit is not None:
-        os.environ["DCERT_MCP_RATE_LIMIT_ENABLED"] = "1"
-        os.environ["DCERT_MCP_RATE_LIMIT_RPS"] = str(args.rate_limit)
-    if args.cache:
-        os.environ["DCERT_MCP_CACHE_ENABLED"] = "1"
-    if args.bulkhead_max is not None:
-        os.environ["DCERT_MCP_BULKHEAD_MAX"] = str(args.bulkhead_max)
+    os.environ.update(
+        environment_overrides(
+            no_retry=no_retry,
+            no_circuit_breaker=no_circuit_breaker,
+            rate_limit=rate_limit,
+            cache=cache,
+            bulkhead_max=bulkhead_max,
+            otel=otel,
+            otel_exporter=otel_exporter,
+        )
+    )
 
-    # OpenTelemetry
-    if args.otel:
-        os.environ["DCERT_MCP_OTEL_ENABLED"] = "1"
-    if args.otel_exporter is not None:
-        os.environ["DCERT_MCP_OTEL_EXPORTER"] = args.otel_exporter
-
-    from dcert.resilience import OTelConfig, setup_otel
-
-    setup_otel(OTelConfig())
-
+    from dcert.resilience import otel_config_from_env, setup_otel
     from dcert.server import create_server
 
+    setup_otel(otel_config_from_env())
     try:
-        server = create_server(binary_path=args.binary)
-    except FileNotFoundError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
+        server = create_server(binary_path=binary)
+    except (FileNotFoundError, RuntimeError) as exc:
+        raise click.ClickException(str(exc)) from exc
 
-    if args.transport == "stdio":
+    if transport == "stdio":
         server.run()
     else:
-        server.run(transport=args.transport, host=args.host, port=args.port)
+        server.run(transport=transport, host=host, port=port)
 
 
 if __name__ == "__main__":

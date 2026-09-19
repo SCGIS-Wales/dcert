@@ -71,6 +71,7 @@ impl ConnectOverride {
 }
 
 /// The effective override for one connection attempt.
+#[derive(Debug, Clone)]
 pub struct ResolvedOverride<'a> {
     /// Candidate hosts/IPs to dial, in order.
     pub targets: &'a [String],

@@ -1,21 +1,8 @@
-mod cert;
-mod cli;
-mod compliance;
-mod connect;
-mod convert;
-mod csr;
-mod debug;
-mod ocsp;
-mod output;
-mod proxy;
-mod tls;
-mod trust;
-mod vault;
-
 use anyhow::{Context, Result};
 use clap::CommandFactory;
 use clap::Parser;
 use colored::*;
+use dcert::{cert, cli, connect, convert, csr, diagnose, output, proxy, trust, vault};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -25,7 +12,8 @@ use time::format_description::well_known::Rfc3339;
 use cli::{CheckArgs, Cli, Command, HttpMethod, KNOWN_SUBCOMMANDS, OutputFormat, exit_code};
 use connect::ConnectOverrides;
 use output::{
-    StructuredOutput, TargetResult, check_expiry_warnings, export_pem_chain, output_results, print_diff, process_target,
+    StructuredOutput, TargetResult, check_expiry_warnings, export_pem_chain, output_results, print_diff,
+    print_structured, process_target,
 };
 use proxy::ProxyConfig;
 
@@ -36,6 +24,18 @@ const MAX_STDIN_SIZE: usize = 10 * 1024 * 1024;
 
 /// Conventional Unix exit code for SIGINT-terminated processes (128 + SIGINT(2)).
 const EXIT_INTERRUPTED: i32 = 130;
+
+/// Warn when a secret was supplied on the command line rather than through
+/// its environment variable, since argv is visible to every local user.
+fn warn_secret_on_argv(flag: &str, env_var: &str, provided: bool) {
+    if provided && std::env::var_os(env_var).is_none() {
+        eprintln!(
+            "{} {}",
+            "WARNING:".yellow().bold(),
+            format!("Secret passed via {flag} is visible in process listings. Set {env_var} instead.").yellow()
+        );
+    }
+}
 
 /// Register a single, process-wide Ctrl+C handler that prints a friendly
 /// message and exits with code 130. Returns an `AtomicBool` that long-running
@@ -90,28 +90,18 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
         };
         if min_ord > max_ord {
             return Err(anyhow::anyhow!(
-                "--min-tls ({}) must not be greater than --max-tls ({})",
-                min,
-                max
+                "--min-tls ({min}) must not be greater than --max-tls ({max})"
             ));
         }
     }
 
-    // Warn when passwords are passed via CLI args (visible in process listing)
-    if args.cert_password.is_some() && std::env::var("DCERT_CERT_PASSWORD").is_err() {
-        eprintln!(
-            "{} {}",
-            "WARNING:".yellow().bold(),
-            "Password passed via --cert-password is visible in process listings. Consider using DCERT_CERT_PASSWORD env var instead."
-                .yellow()
-        );
-    }
+    warn_secret_on_argv("--cert-password", "DCERT_CERT_PASSWORD", args.cert_password.is_some());
 
     // Resolve request body from --data or --data-file
     let body_data: Option<Vec<u8>> = if let Some(ref data) = args.data {
         Some(data.as_bytes().to_vec())
     } else if let Some(ref path) = args.data_file {
-        Some(std::fs::read(path).with_context(|| format!("Failed to read data file: {}", path))?)
+        Some(std::fs::read(path).with_context(|| format!("Failed to read data file: {path}"))?)
     } else {
         None
     };
@@ -204,7 +194,7 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
             args.fingerprint = true;
         }
 
-        // The global SIGINT handler (registered in `run()`) flips this bool to
+        // The global SIGINT handler (registered in `main()`) flips this bool to
         // false before exiting, but we re-register here for the rare case where
         // run() wasn't entered (e.g. tests calling run_check_with_stdin directly).
         // ctrlc::set_handler() returns an error on second registration, which is
@@ -221,12 +211,12 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
 
         while running.load(Ordering::SeqCst) {
             iteration += 1;
-            let now = OffsetDateTime::now_utc().format(&Rfc3339).unwrap_or_default();
+            let now = OffsetDateTime::now_utc()
+                .format(&Rfc3339)
+                .unwrap_or_else(|_| "unknown time".to_string());
             println!(
                 "{}",
-                format!("=== Watch iteration {} at {} ===", iteration, now)
-                    .bold()
-                    .cyan()
+                format!("=== Watch iteration {iteration} at {now} ===").bold().cyan()
             );
 
             for target in &targets {
@@ -247,7 +237,7 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
                         if let Some(prev) = prev_fingerprints.get(target)
                             && prev != &current_fps
                         {
-                            println!("{}", format!("CHANGE DETECTED for {}", target).red().bold());
+                            println!("{}", format!("CHANGE DETECTED for {target}").red().bold());
                         }
                         prev_fingerprints.insert(target.clone(), current_fps);
 
@@ -274,6 +264,22 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
     let mut exit_code = exit_code::SUCCESS;
     let mut all_results: Vec<TargetResult> = Vec::new();
 
+    // Diagnostics: load the knowledge base once, and describe the probe so
+    // signals about the proxy and client identity can be evaluated.
+    let kb = if args.no_diagnose {
+        None
+    } else {
+        Some(diagnose::KnowledgeBase::load(
+            args.kb_file.as_deref().map(std::path::Path::new),
+        )?)
+    };
+    let probe = diagnose::ProbeContext {
+        proxy: Some(&proxy_config),
+        client_cert_supplied: args.client_cert.is_some() || args.pkcs12.is_some(),
+        sni_overridden: args.sni.is_some(),
+    };
+    let mut diagnose_outputs: Vec<DiagnoseOutput> = Vec::new();
+
     for target in &targets {
         match process_target(
             target,
@@ -284,7 +290,40 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
             body_data.as_deref(),
             stdin_pem.as_deref(),
         ) {
-            Ok(result) => {
+            Ok(mut result) => {
+                let mut keep_body = args.show_body;
+                if let Some(kb) = &kb {
+                    let evidence = diagnose::Evidence::from_result(
+                        target,
+                        &probe,
+                        result.conn_info.as_ref(),
+                        &result.infos,
+                        result.root_trust.as_ref(),
+                    );
+                    let report = diagnose::diagnose(kb, &evidence);
+                    keep_body |= report.body_matched;
+                    result.diagnosis = report.findings;
+                }
+                // The body excerpt is evidence, not output: keep it only when
+                // asked for or when a finding cites it.
+                if !keep_body && let Some(conn) = result.conn_info.as_mut() {
+                    conn.http_body_excerpt = None;
+                    conn.http_body_truncated = false;
+                }
+                if args.diagnose_only {
+                    diagnose_outputs.push(DiagnoseOutput {
+                        target: target.clone(),
+                        error: None,
+                        http_status: result
+                            .conn_info
+                            .as_ref()
+                            .map(|c| c.http_response_code)
+                            .filter(|c| *c > 0),
+                        diagnosis: result.diagnosis.clone(),
+                        body_excerpt: result.conn_info.as_ref().and_then(|c| c.http_body_excerpt.clone()),
+                        body_truncated: result.conn_info.as_ref().is_some_and(|c| c.http_body_truncated),
+                    });
+                }
                 // Promote to CLIENT_CERT_ERROR when the server demanded an mTLS
                 // client cert we didn't supply. This is more specific than the
                 // generic VERIFY_FAILED and tells callers what to fix.
@@ -306,8 +345,34 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
                 if exit_code < exit_code::ERROR {
                     exit_code = exit_code::ERROR;
                 }
+                if let Some(kb) = &kb {
+                    let evidence = diagnose::Evidence::from_error(target, &probe, &e);
+                    let report = diagnose::diagnose(kb, &evidence);
+                    if args.diagnose_only {
+                        diagnose_outputs.push(DiagnoseOutput {
+                            target: target.clone(),
+                            error: Some(format!("{e:#}")),
+                            http_status: None,
+                            diagnosis: report.findings,
+                            // A probe that failed outright never read a body.
+                            body_excerpt: None,
+                            body_truncated: false,
+                        });
+                    } else if !report.findings.is_empty() && matches!(args.format, OutputFormat::Pretty) {
+                        // Failed probes have no stdout record; keep the
+                        // diagnosis next to the error on stderr.
+                        let _ = output::write_diagnosis(&mut std::io::stderr().lock(), &report.findings);
+                    }
+                }
             }
         }
+    }
+
+    if args.diagnose_only {
+        print_structured(args.format, &diagnose_outputs, || {
+            print_diagnose_output_pretty(&diagnose_outputs);
+        })?;
+        return Ok(exit_code);
     }
 
     // Diff mode
@@ -330,26 +395,17 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
     if multi_target && matches!(args.format, OutputFormat::Json) {
         let mut map = serde_json::Map::new();
         for result in &all_results {
-            let output = StructuredOutput {
-                certificates: result.infos.clone(),
-                connection: result.conn_info.clone(),
-                compliance: result.compliance_report.clone(),
-                root_trust: result.root_trust.clone(),
-            };
-            map.insert(result.target.clone(), serde_json::to_value(&output)?);
+            map.insert(
+                result.target.clone(),
+                serde_json::to_value(StructuredOutput::from(result))?,
+            );
         }
         println!("{}", serde_json::to_string_pretty(&map)?);
     } else if multi_target && matches!(args.format, OutputFormat::Yaml) {
-        let mut map = std::collections::BTreeMap::new();
-        for result in &all_results {
-            let output = StructuredOutput {
-                certificates: result.infos.clone(),
-                connection: result.conn_info.clone(),
-                compliance: result.compliance_report.clone(),
-                root_trust: result.root_trust.clone(),
-            };
-            map.insert(result.target.clone(), output);
-        }
+        let map: std::collections::BTreeMap<&str, StructuredOutput> = all_results
+            .iter()
+            .map(|r| (r.target.as_str(), StructuredOutput::from(r)))
+            .collect();
         println!("{}", serde_yaml_ng::to_string(&map)?);
     } else {
         for result in &all_results {
@@ -370,6 +426,15 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
             && exit_code < exit_code::CERT_REVOKED
         {
             exit_code = exit_code::CERT_REVOKED;
+        }
+        // A revocation check that could not complete is not a clean result.
+        if result
+            .infos
+            .iter()
+            .any(|c| c.revocation_status.as_deref().is_some_and(|s| s.starts_with("error")))
+            && exit_code < exit_code::REVOCATION_CHECK_FAILED
+        {
+            exit_code = exit_code::REVOCATION_CHECK_FAILED;
         }
     }
 
@@ -426,19 +491,14 @@ const KEYSTORE_EXPLAIN: &str = "About keystores\n  \
 
 fn run_convert(args: cli::ConvertArgs) -> Result<i32> {
     // Warn when passwords are passed via CLI args (visible in process listing)
-    let password_via_cli = match &args.mode {
-        cli::ConvertMode::PfxToPem { .. } => std::env::var("DCERT_CERT_PASSWORD").is_err(),
-        cli::ConvertMode::PemToPfx { .. } => std::env::var("DCERT_CERT_PASSWORD").is_err(),
-        cli::ConvertMode::CreateKeystore { .. } => std::env::var("DCERT_KEYSTORE_PASSWORD").is_err(),
-        cli::ConvertMode::CreateTruststore { .. } => false, // truststore password is low-sensitivity
-    };
-    if password_via_cli {
-        eprintln!(
-            "{} {}",
-            "WARNING:".yellow().bold(),
-            "Password passed via CLI argument is visible in process listings. Consider using the corresponding env var instead."
-                .yellow()
-        );
+    match &args.mode {
+        cli::ConvertMode::PfxToPem { .. } | cli::ConvertMode::PemToPfx { .. } => {
+            warn_secret_on_argv("--password", "DCERT_CERT_PASSWORD", true);
+        }
+        cli::ConvertMode::CreateKeystore { .. } => {
+            warn_secret_on_argv("--password", "DCERT_KEYSTORE_PASSWORD", true);
+        }
+        cli::ConvertMode::CreateTruststore { .. } => {} // truststore password is low-sensitivity
     }
 
     let format = args.format;
@@ -472,7 +532,7 @@ fn run_convert(args: cli::ConvertArgs) -> Result<i32> {
             explain,
         } => {
             if explain && matches!(format, OutputFormat::Pretty) {
-                eprintln!("{}", KEYSTORE_EXPLAIN);
+                eprintln!("{KEYSTORE_EXPLAIN}");
             }
             let result = convert::create_keystore(&cert, &key, &password, &output, &alias)?;
             output::render_convert_result(&result, format)?;
@@ -486,7 +546,7 @@ fn run_convert(args: cli::ConvertArgs) -> Result<i32> {
             explain,
         } => {
             if explain && matches!(format, OutputFormat::Pretty) {
-                eprintln!("{}", TRUSTSTORE_EXPLAIN);
+                eprintln!("{TRUSTSTORE_EXPLAIN}");
             }
             let result = convert::create_truststore(&certs, &password, &output, allow_non_ca)?;
             output::render_convert_result(&result, format)?;
@@ -502,10 +562,10 @@ fn run_convert(args: cli::ConvertArgs) -> Result<i32> {
 fn discover_cert_key_pairs(dir: &str) -> Result<Vec<(String, String)>> {
     let dir_path = std::path::Path::new(dir);
     if !dir_path.is_dir() {
-        return Err(anyhow::anyhow!("'{}' is not a directory", dir));
+        return Err(anyhow::anyhow!("'{dir}' is not a directory"));
     }
 
-    let entries = std::fs::read_dir(dir_path).with_context(|| format!("Failed to read directory '{}'", dir))?;
+    let entries = std::fs::read_dir(dir_path).with_context(|| format!("Failed to read directory '{dir}'"))?;
 
     let mut pairs: Vec<(String, String)> = Vec::new();
 
@@ -553,8 +613,8 @@ fn discover_cert_key_pairs(dir: &str) -> Result<Vec<(String, String)>> {
 
 fn print_single_result(result: &cert::KeyMatchResult, cert_path: Option<&str>, key_path: Option<&str>) {
     if let (Some(cert), Some(key)) = (cert_path, key_path) {
-        println!("  Cert file      : {}", cert);
-        println!("  Key file       : {}", key);
+        println!("  Cert file      : {cert}");
+        println!("  Key file       : {key}");
     }
     if result.matches {
         println!("{}", "  Key matches certificate".green().bold());
@@ -576,17 +636,7 @@ fn run_verify_key(args: cli::VerifyKeyArgs) -> Result<i32> {
     if let (Some(target), Some(key)) = (&args.target, &args.key) {
         let result = cert::verify_key_matches_cert(key, target, args.debug)?;
 
-        match args.format {
-            OutputFormat::Json => {
-                println!("{}", serde_json::to_string_pretty(&result)?);
-            }
-            OutputFormat::Yaml => {
-                println!("{}", serde_yaml_ng::to_string(&result)?);
-            }
-            OutputFormat::Pretty => {
-                print_single_result(&result, None, None);
-            }
-        }
+        print_structured(args.format, &result, || print_single_result(&result, None, None))?;
 
         return if result.matches {
             Ok(exit_code::SUCCESS)
@@ -650,15 +700,8 @@ fn run_verify_key(args: cli::VerifyKeyArgs) -> Result<i32> {
     }
 
     // Output collected JSON/YAML results
-    match args.format {
-        OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&all_results)?);
-        }
-        OutputFormat::Yaml => {
-            println!("{}", serde_yaml_ng::to_string(&all_results)?);
-        }
-        OutputFormat::Pretty => {} // already printed
-    }
+    // Pretty output was printed per pair above.
+    print_structured(args.format, &all_results, || {})?;
 
     Ok(exit_code)
 }
@@ -686,7 +729,7 @@ fn run_csr_create(args: cli::CsrCreateArgs) -> Result<i32> {
         // Build SANs — auto-add CN as DNS SAN if no SANs provided
         let mut sans = args.san;
         if sans.is_empty() {
-            sans.push(format!("DNS:{}", cn));
+            sans.push(format!("DNS:{cn}"));
         }
 
         // Validate key password requirement
@@ -695,9 +738,9 @@ fn run_csr_create(args: cli::CsrCreateArgs) -> Result<i32> {
         }
 
         // Determine output paths
-        let base = cn.replace('*', "wildcard").replace('.', "-");
-        let csr_path = args.csr_out.unwrap_or_else(|| format!("{}.csr", base));
-        let key_path = args.key_out.unwrap_or_else(|| format!("{}.key", base));
+        let base = csr::sanitise_cn(&cn);
+        let csr_path = args.csr_out.unwrap_or_else(|| format!("{base}.csr"));
+        let key_path = args.key_out.unwrap_or_else(|| format!("{base}.key"));
 
         let subject = CsrSubject {
             common_name: cn,
@@ -733,42 +776,30 @@ fn run_csr_create(args: cli::CsrCreateArgs) -> Result<i32> {
         );
     }
 
-    // Warn about key password on CLI
-    if opts.encrypt_key && opts.key_password.is_some() && std::env::var("DCERT_KEY_PASSWORD").is_err() {
-        eprintln!(
-            "{} {}",
-            "WARNING:".yellow().bold(),
-            "Password passed via --key-password is visible in process listings. Consider using DCERT_KEY_PASSWORD env var."
-                .yellow()
-        );
-    }
+    warn_secret_on_argv(
+        "--key-password",
+        "DCERT_KEY_PASSWORD",
+        opts.encrypt_key && opts.key_password.is_some(),
+    );
 
     let result = csr::create_csr(&opts, &csr_path, &key_path)?;
 
-    match args.format {
-        OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&result)?);
+    print_structured(args.format, &result, || {
+        println!("{}", "CSR created successfully".green().bold());
+        println!("  CSR file          : {}", result.csr_file);
+        println!("  Key file          : {}", result.key_file);
+        println!("  Key algorithm     : {}", result.key_algorithm);
+        println!("  Key size          : {} bits", result.key_size_bits);
+        println!("  Signature algo    : {}", result.signature_algorithm);
+        println!("  Subject           : {}", result.subject);
+        if !result.sans.is_empty() {
+            println!("  SANs              : {}", result.sans.join(", "));
         }
-        OutputFormat::Yaml => {
-            println!("{}", serde_yaml_ng::to_string(&result)?);
-        }
-        OutputFormat::Pretty => {
-            println!("{}", "CSR created successfully".green().bold());
-            println!("  CSR file          : {}", result.csr_file);
-            println!("  Key file          : {}", result.key_file);
-            println!("  Key algorithm     : {}", result.key_algorithm);
-            println!("  Key size          : {} bits", result.key_size_bits);
-            println!("  Signature algo    : {}", result.signature_algorithm);
-            println!("  Subject           : {}", result.subject);
-            if !result.sans.is_empty() {
-                println!("  SANs              : {}", result.sans.join(", "));
-            }
-            println!(
-                "  Key encrypted     : {}",
-                if result.key_encrypted { "yes" } else { "no" }
-            );
-        }
-    }
+        println!(
+            "  Key encrypted     : {}",
+            if result.key_encrypted { "yes" } else { "no" }
+        );
+    })?;
 
     Ok(exit_code::SUCCESS)
 }
@@ -779,78 +810,7 @@ fn run_csr_validate(args: cli::CsrValidateArgs) -> Result<i32> {
 
     let result = csr::validate_csr(&pem_data)?;
 
-    match args.format {
-        OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&result)?);
-        }
-        OutputFormat::Yaml => {
-            println!("{}", serde_yaml_ng::to_string(&result)?);
-        }
-        OutputFormat::Pretty => {
-            println!("{}", "=== CSR Validation Report ===".bold());
-            println!();
-
-            // Subject
-            println!("{}", "Subject:".bold());
-            if let Some(ref cn) = result.subject.common_name {
-                println!("  Common Name    : {}", cn);
-            }
-            if let Some(ref org) = result.subject.organization {
-                println!("  Organization   : {}", org);
-            }
-            for ou in &result.subject.organizational_units {
-                println!("  Org Unit       : {}", ou);
-            }
-            if let Some(ref c) = result.subject.country {
-                println!("  Country        : {}", c);
-            }
-            if let Some(ref st) = result.subject.state {
-                println!("  State          : {}", st);
-            }
-            if let Some(ref l) = result.subject.locality {
-                println!("  Locality       : {}", l);
-            }
-            if let Some(ref email) = result.subject.email {
-                println!("  Email          : {}", email);
-            }
-            println!();
-
-            // Key info
-            println!("{}", "Public Key:".bold());
-            println!("  Algorithm      : {}", result.public_key_algorithm);
-            println!("  Size           : {} bits", result.public_key_size_bits);
-            println!("  Signature algo : {}", result.signature_algorithm);
-            println!();
-
-            // SANs
-            if !result.subject_alternative_names.is_empty() {
-                println!("{}", "Subject Alternative Names:".bold());
-                for san in &result.subject_alternative_names {
-                    println!("  {}", san);
-                }
-                println!();
-            }
-
-            // Findings
-            println!("{}", "Compliance Findings:".bold());
-            for finding in &result.findings {
-                let (icon, color_fn): (&str, fn(&str) -> colored::ColoredString) = match finding.severity {
-                    csr::Severity::Error => ("ERROR", |s: &str| s.red().bold()),
-                    csr::Severity::Warning => ("WARN ", |s: &str| s.yellow()),
-                    csr::Severity::Info => ("INFO ", |s: &str| s.cyan()),
-                };
-                println!("  {} [{}] {}", color_fn(icon), finding.category, finding.message);
-            }
-            println!();
-
-            // Overall result
-            if result.compliant {
-                println!("{}", "Result: COMPLIANT".green().bold());
-            } else {
-                println!("{}", "Result: NON-COMPLIANT".red().bold());
-            }
-        }
-    }
+    print_structured(args.format, &result, || print_csr_validation_pretty(&result))?;
 
     if !result.compliant {
         return Ok(exit_code::ERROR);
@@ -868,23 +828,88 @@ fn run_csr_validate(args: cli::CsrValidateArgs) -> Result<i32> {
     Ok(exit_code::SUCCESS)
 }
 
+fn print_csr_validation_pretty(result: &csr::CsrValidationResult) {
+    println!("{}", "=== CSR Validation Report ===".bold());
+    println!();
+
+    println!("{}", "Subject:".bold());
+    let subject = &result.subject;
+    let rows: [(&str, Option<&str>); 6] = [
+        ("Common Name   ", subject.common_name.as_deref()),
+        ("Organization  ", subject.organization.as_deref()),
+        ("Country       ", subject.country.as_deref()),
+        ("State         ", subject.state.as_deref()),
+        ("Locality      ", subject.locality.as_deref()),
+        ("Email         ", subject.email.as_deref()),
+    ];
+    for (label, value) in rows {
+        if let Some(v) = value {
+            println!("  {label} : {v}");
+        }
+    }
+    for ou in &subject.organizational_units {
+        println!("  Org Unit       : {ou}");
+    }
+    println!();
+
+    println!("{}", "Public Key:".bold());
+    println!("  Algorithm      : {}", result.public_key_algorithm);
+    println!("  Size           : {} bits", result.public_key_size_bits);
+    println!("  Signature algo : {}", result.signature_algorithm);
+    println!();
+
+    if !result.subject_alternative_names.is_empty() {
+        println!("{}", "Subject Alternative Names:".bold());
+        for san in &result.subject_alternative_names {
+            println!("  {san}");
+        }
+        println!();
+    }
+
+    println!("{}", "Compliance Findings:".bold());
+    output::print_findings(&result.findings, "  ");
+    println!();
+
+    if result.compliant {
+        println!("{}", "Result: COMPLIANT".green().bold());
+    } else {
+        println!("{}", "Result: NON-COMPLIANT".red().bold());
+    }
+}
+
 fn run_vault(args: cli::VaultArgs) -> Result<i32> {
+    warn_secret_on_argv("--ldap-password", "DCERT_LDAP_PASSWORD", args.ldap_password.is_some());
+    warn_secret_on_argv(
+        "--approle-secret-id",
+        "DCERT_APPROLE_SECRET_ID",
+        args.approle_secret_id.is_some(),
+    );
+    let pfx_on_argv = match &args.mode {
+        cli::VaultMode::Issue(a) => a.pfx_password.is_some(),
+        cli::VaultMode::Sign(a) => a.pfx_password.is_some(),
+        _ => false,
+    };
+    warn_secret_on_argv("--pfx-password", "DCERT_CERT_PASSWORD", pfx_on_argv);
+
     // Discover Vault token and address
     let addr = vault::vault_addr()?;
-    let token = match args.auth_method.as_str() {
-        "ldap" | "approle" => vault::vault_authenticate(
+    let auth_method: vault::VaultAuthMethod = args.auth_method.parse()?;
+    let tls = vault::VaultTlsSettings::resolve(args.vault_cacert.as_deref(), args.skip_verify);
+    let token = match auth_method {
+        vault::VaultAuthMethod::Ldap | vault::VaultAuthMethod::AppRole => vault::vault_authenticate(
             &addr,
-            &args.auth_method,
-            args.ldap_username.as_deref(),
-            args.ldap_password.as_deref(),
-            &args.ldap_mount,
-            args.approle_role_id.as_deref(),
-            args.approle_secret_id.as_deref(),
-            &args.approle_mount,
-            args.skip_verify,
-            args.vault_cacert.as_deref(),
+            auth_method,
+            &vault::VaultLogin {
+                ldap_username: args.ldap_username.as_deref(),
+                ldap_password: args.ldap_password.as_deref(),
+                ldap_mount: &args.ldap_mount,
+                approle_role_id: args.approle_role_id.as_deref(),
+                approle_secret_id: args.approle_secret_id.as_deref(),
+                approle_mount: &args.approle_mount,
+            },
+            &tls,
         )?,
-        _ => vault::discover_vault_token()?,
+        vault::VaultAuthMethod::Token => zeroize::Zeroizing::new(vault::discover_vault_token()?),
     };
 
     let config = vault::VaultClientConfig {
@@ -910,24 +935,34 @@ fn run_vault(args: cli::VaultArgs) -> Result<i32> {
 
 fn run_vault_issue(client: &vault::VaultClient, args: cli::VaultIssueArgs) -> Result<i32> {
     let kv_version = args.kv_version;
-    let (mount, role, cn, sans, ip_sans, ttl, pfx_password, output_base, store_path) = if let Some(cn) = args.cn {
+    let wizard = if let Some(cn) = args.cn {
         let role = vault::resolve_role(client, args.role)?;
-        let output_base = args.output.unwrap_or_else(|| vault::sanitise_cn(&cn));
-        (
-            args.mount,
+        let output = args.output.unwrap_or_else(|| vault::sanitise_cn(&cn));
+        vault::IssueWizardResult {
+            mount: args.mount,
             role,
             cn,
-            args.san,
-            args.ip_san,
-            args.ttl,
-            args.pfx_password,
-            output_base,
-            args.store_path,
-        )
+            sans: args.san,
+            ip_sans: args.ip_san,
+            ttl: args.ttl,
+            pfx_password: args.pfx_password,
+            output,
+            store_path: args.store_path,
+        }
     } else {
-        // Interactive wizard
         vault::interactive_issue(client)?
     };
+    let vault::IssueWizardResult {
+        mount,
+        role,
+        cn,
+        sans,
+        ip_sans,
+        ttl,
+        pfx_password,
+        output: output_base,
+        store_path,
+    } = wizard;
 
     let data = vault::issue_certificate(client, &mount, &role, &cn, &sans, &ip_sans, &ttl)?;
 
@@ -943,7 +978,7 @@ fn run_vault_issue(client: &vault::VaultClient, args: cli::VaultIssueArgs) -> Re
             .private_key
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("Vault did not return a private key"))?;
-        let pfx_path = format!("{}.pfx", output_base);
+        let pfx_path = format!("{output_base}.pfx");
         // Write temp files for PFX conversion
         let temp_dir = tempfile::TempDir::new()?;
         let cert_path = temp_dir.path().join("cert.pem");
@@ -963,7 +998,7 @@ fn run_vault_issue(client: &vault::VaultClient, args: cli::VaultIssueArgs) -> Re
             &pfx_path,
             None,
         )?;
-        println!("{}", format!("PFX written to {}", pfx_path).green());
+        println!("{}", format!("PFX written to {pfx_path}").green());
     } else {
         let key_pem = data.private_key.as_deref();
         vault::write_pem_files(&full_chain, key_pem, &output_base)?;
@@ -980,52 +1015,51 @@ fn run_vault_issue(client: &vault::VaultClient, args: cli::VaultIssueArgs) -> Re
 
 fn run_vault_sign(client: &vault::VaultClient, args: cli::VaultSignArgs) -> Result<i32> {
     let kv_version = args.kv_version;
-    let (mount, role, csr_file, cn_override, sans, ip_sans, ttl, pfx_password, output_base, store_path) =
-        if let Some(csr_file) = args.csr_file {
-            let role = vault::resolve_role(client, args.role)?;
-            let output_base = args.output.unwrap_or_else(|| "signed-cert".to_string());
-            (
-                args.mount,
+    let (wizard, ip_sans) = if let Some(csr_file) = args.csr_file {
+        let role = vault::resolve_role(client, args.role)?;
+        let output = args.output.unwrap_or_else(|| "signed-cert".to_string());
+        (
+            vault::SignWizardResult {
+                mount: args.mount,
                 role,
                 csr_file,
-                args.cn,
-                args.san,
-                args.ip_san,
-                args.ttl,
-                args.pfx_password,
-                output_base,
-                args.store_path,
-            )
-        } else {
-            // Interactive wizard
-            let (mount, role, csr_file, cn_override, sans, ttl, pfx_password, output_base, store_path) =
-                vault::interactive_sign(client)?;
-            (
-                mount,
-                role,
-                csr_file,
-                cn_override,
-                sans,
-                vec![],
-                ttl,
-                pfx_password,
-                output_base,
-                store_path,
-            )
-        };
+                cn_override: args.cn,
+                sans: args.san,
+                ttl: args.ttl,
+                pfx_password: args.pfx_password,
+                output,
+                store_path: args.store_path,
+            },
+            args.ip_san,
+        )
+    } else {
+        (vault::interactive_sign(client)?, Vec::new())
+    };
+    let vault::SignWizardResult {
+        mount,
+        role,
+        csr_file,
+        cn_override,
+        sans,
+        ttl,
+        pfx_password,
+        output: output_base,
+        store_path,
+    } = wizard;
 
-    let csr_pem =
-        std::fs::read_to_string(&csr_file).with_context(|| format!("Failed to read CSR file: {}", csr_file))?;
+    let csr_pem = std::fs::read_to_string(&csr_file).with_context(|| format!("Failed to read CSR file: {csr_file}"))?;
 
     let data = vault::sign_csr(
         client,
-        &mount,
-        &role,
-        &csr_pem,
-        cn_override.as_deref(),
-        &sans,
-        &ip_sans,
-        &ttl,
+        &vault::SignRequest {
+            mount: &mount,
+            role: &role,
+            csr_pem: &csr_pem,
+            common_name: cn_override.as_deref(),
+            alt_names: &sans,
+            ip_sans: &ip_sans,
+            ttl: &ttl,
+        },
     )?;
 
     // Build full chain
@@ -1055,7 +1089,7 @@ fn run_vault_sign(client: &vault::VaultClient, args: cli::VaultSignArgs) -> Resu
 
 fn run_vault_revoke(client: &vault::VaultClient, args: cli::VaultRevokeArgs) -> Result<i32> {
     let cert_pem = if let Some(ref path) = args.cert_file {
-        Some(std::fs::read_to_string(path).with_context(|| format!("Failed to read certificate file: {}", path))?)
+        Some(std::fs::read_to_string(path).with_context(|| format!("Failed to read certificate file: {path}"))?)
     } else {
         None
     };
@@ -1080,29 +1114,21 @@ fn run_vault_list(client: &vault::VaultClient, args: cli::VaultListArgs) -> Resu
         return Ok(exit_code::SUCCESS);
     }
 
-    match args.format {
-        OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&entries)?);
-        }
-        OutputFormat::Yaml => {
-            println!("{}", serde_yaml_ng::to_string(&entries)?);
-        }
-        OutputFormat::Pretty => {
-            println!("{} {} certificates", "Vault PKI:".bold(), entries.len());
-            for entry in &entries {
-                let status = if entry.status == "expired" {
-                    "EXPIRED".red().to_string()
-                } else {
-                    entry.status.green().to_string()
-                };
-                let cn = entry.common_name.as_deref().unwrap_or("(unknown)");
-                println!("  {} [{}] {}", entry.serial_number, status, cn);
-                if !entry.not_after.is_empty() {
-                    println!("    Not After: {}", entry.not_after);
-                }
+    print_structured(args.format, &entries, || {
+        println!("{} {} certificates", "Vault PKI:".bold(), entries.len());
+        for entry in &entries {
+            let status = if entry.status == "expired" {
+                "EXPIRED".red().to_string()
+            } else {
+                entry.status.green().to_string()
+            };
+            let cn = entry.common_name.as_deref().unwrap_or("(unknown)");
+            println!("  {} [{}] {}", entry.serial_number, status, cn);
+            if !entry.not_after.is_empty() {
+                println!("    Not After: {}", entry.not_after);
             }
         }
-    }
+    })?;
 
     Ok(exit_code::SUCCESS)
 }
@@ -1136,15 +1162,17 @@ fn run_vault_renew(client: &vault::VaultClient, args: cli::VaultRenewArgs) -> Re
 
     vault::renew_certificate(
         client,
-        &args.path,
-        &args.mount,
-        &role,
-        &args.ttl,
-        &args.cert_key,
-        &args.key_key,
-        args.kv_version,
-        &args.san,
-        &args.ip_san,
+        &vault::RenewRequest {
+            kv_path: &args.path,
+            mount: &args.mount,
+            role: &role,
+            ttl: &args.ttl,
+            cert_key_name: &args.cert_key,
+            key_key_name: &args.key_key,
+            kv_version: args.kv_version,
+            san_overrides: &args.san,
+            ip_san_overrides: &args.ip_san,
+        },
     )?;
 
     Ok(exit_code::SUCCESS)
@@ -1174,6 +1202,124 @@ fn run() -> Result<i32> {
         Command::VerifyKey(args) => run_verify_key(args),
         Command::Csr(args) => run_csr(args),
         Command::Vault(args) => run_vault(*args),
+        Command::Diagnose(mut args) => {
+            args.diagnose_only = true;
+            run_check(*args)
+        }
+        Command::Kb(args) => run_kb(args),
+    }
+}
+
+/// One target's diagnosis, the shape printed by `dcert diagnose`.
+#[derive(Debug, serde::Serialize)]
+struct DiagnoseOutput {
+    target: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    http_status: Option<u16>,
+    diagnosis: Vec<diagnose::Diagnosis>,
+    /// The response body the findings were matched against. Carried here
+    /// because several entries tell the reader to look at it, so `--show-body`
+    /// has to mean something on this subcommand and not only on `check`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    body_excerpt: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    body_truncated: bool,
+}
+
+fn print_diagnose_output_pretty(items: &[DiagnoseOutput]) {
+    for item in items {
+        println!("{}", format!("--- {} ---", item.target).bold().cyan());
+        if let Some(e) = &item.error {
+            println!("{} {e}", "Probe failed:".red().bold());
+        } else if let Some(s) = item.http_status {
+            println!("Probe completed: HTTP {s}");
+        } else {
+            println!("Probe completed");
+        }
+        if item.diagnosis.is_empty() {
+            println!("No knowledge base entry matched. Re-run with --debug for the raw exchange.");
+            println!();
+        } else {
+            output::print_diagnosis_pretty(&item.diagnosis);
+        }
+        if let Some(body) = &item.body_excerpt {
+            println!("{}", "Response body:".bold());
+            for line in body.lines() {
+                println!("  {line}");
+            }
+            if item.body_truncated {
+                println!("  {}", "[truncated at --body-limit]".dimmed());
+            }
+            println!();
+        }
+    }
+}
+
+fn run_kb(args: cli::KbArgs) -> Result<i32> {
+    use cli::KbMode;
+    match args.mode {
+        KbMode::List { format, kb_file } => {
+            let kb = diagnose::KnowledgeBase::load(kb_file.as_deref().map(std::path::Path::new))?;
+            #[derive(serde::Serialize)]
+            struct Row<'a> {
+                id: &'a str,
+                layer: diagnose::Layer,
+                category: diagnose::Category,
+                title: &'a str,
+            }
+            let rows: Vec<Row<'_>> = kb
+                .entries
+                .iter()
+                .map(|e| Row {
+                    id: &e.id,
+                    layer: e.layer,
+                    category: e.category,
+                    title: &e.title,
+                })
+                .collect();
+            print_structured(format, &rows, || {
+                println!("{} entries (knowledge base version {})", kb.entries.len(), kb.version);
+                for e in &kb.entries {
+                    println!("  {:<46} {:<24} {}", e.id, e.layer.label(), e.title);
+                }
+            })?;
+            Ok(exit_code::SUCCESS)
+        }
+        KbMode::Show { id, format, kb_file } => {
+            let kb = diagnose::KnowledgeBase::load(kb_file.as_deref().map(std::path::Path::new))?;
+            let entry = kb
+                .get(&id)
+                .ok_or_else(|| anyhow::anyhow!("no knowledge base entry with id '{id}'"))?;
+            print_structured(format, entry, || {
+                println!("{}", serde_yaml_ng::to_string(entry).unwrap_or_default());
+            })?;
+            Ok(exit_code::SUCCESS)
+        }
+        KbMode::Validate { file } => {
+            let text = std::fs::read_to_string(&file).with_context(|| format!("Failed to read {file}"))?;
+            let kb = diagnose::KnowledgeBase::parse(&text)
+                .with_context(|| format!("{file} is not a valid knowledge base"))?;
+            let mut merged = diagnose::KnowledgeBase::builtin()?;
+            let builtin_count = merged.entries.len();
+            let file_count = kb.entries.len();
+            merged.merge(kb);
+            let replaced = builtin_count + file_count - merged.entries.len();
+            println!(
+                "{} {file}: {file_count} entries ({replaced} override built in entries, {} new)",
+                "OK".green().bold(),
+                file_count - replaced
+            );
+            Ok(exit_code::SUCCESS)
+        }
+        KbMode::Schema => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&diagnose::KnowledgeBase::json_schema())?
+            );
+            Ok(exit_code::SUCCESS)
+        }
     }
 }
 

@@ -32,6 +32,36 @@ pub struct OidcConfig {
     pub allowed_client_ids: Vec<String>,
 }
 
+/// Signature algorithms accepted for bearer tokens. `none` and the HMAC
+/// family are absent by construction, so a token cannot be signed with the
+/// public key it ships with (algorithm confusion).
+const ALLOWED_ALGORITHMS: &[Algorithm] = &[
+    Algorithm::RS256,
+    Algorithm::RS384,
+    Algorithm::RS512,
+    Algorithm::ES256,
+    Algorithm::ES384,
+];
+
+/// Allowance for clock differences between this server and the issuer, in
+/// seconds. Applied to `exp`, `nbf` and `iat`.
+const CLOCK_SKEW_LEEWAY_SECS: u64 = 60;
+
+/// Minimum interval between JWKS refreshes triggered by an unknown key id.
+const MIN_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
+
+/// How long fetched JWKS keys stay cached, from `DCERT_MCP_JWKS_TTL`
+/// (seconds, default one hour).
+fn jwks_ttl() -> Duration {
+    Duration::from_secs(
+        std::env::var("DCERT_MCP_JWKS_TTL")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(3600),
+    )
+}
+
 impl OidcConfig {
     /// Validates that required configuration fields are set.
     pub fn validate(&self) -> Result<(), String> {
@@ -99,31 +129,36 @@ impl OidcValidator {
 
     /// Validates a JWT bearer token and returns the extracted claims.
     pub async fn validate_token(&self, token_string: &str) -> Result<TokenClaims, String> {
-        let jwks_url = match &self.config.jwks_url {
-            Some(url) if !url.is_empty() => url.clone(),
-            _ => self.discover_jwks().await?,
-        };
-
-        // Get header to find the kid.
+        // Parse the header before any network work, so a malformed token
+        // cannot make the server call the identity provider.
         let header = decode_header(token_string).map_err(|e| format!("failed to decode JWT header: {e}"))?;
-
         let kid = header.kid.ok_or_else(|| "token missing kid header".to_string())?;
 
-        // Try to get the key from cache.
-        let key = self.get_signing_key(&jwks_url, &kid).await?;
+        // Reject a token whose header names an algorithm outside the
+        // allow-list before fetching keys for it.
+        if !ALLOWED_ALGORITHMS.contains(&header.alg) {
+            return Err(format!("unsupported token algorithm {:?}", header.alg));
+        }
+
+        // Serve from the cached keys when possible; discovery and JWKS fetches
+        // only happen on a cache miss, and are throttled, so an unauthenticated
+        // caller cannot make the server hammer the identity provider with one
+        // request per token.
+        let key = match self.cached_signing_key(&kid).await {
+            Some(key) => key,
+            None => self.fetch_signing_key(&kid).await?,
+        };
 
         // Set up validation — supports both RSA and ECDSA algorithms.
         let mut validation = Validation::default();
         validation.set_issuer(&[&self.config.issuer_url]);
         validation.set_audience(&[&self.config.audience]);
         validation.set_required_spec_claims(&["exp", "iss", "aud"]);
-        validation.algorithms = vec![
-            Algorithm::RS256,
-            Algorithm::RS384,
-            Algorithm::RS512,
-            Algorithm::ES256,
-            Algorithm::ES384,
-        ];
+        // Reject a token that is not valid yet, and state the clock skew
+        // allowance explicitly rather than inheriting a default.
+        validation.validate_nbf = true;
+        validation.leeway = CLOCK_SKEW_LEEWAY_SECS;
+        validation.algorithms = ALLOWED_ALGORITHMS.to_vec();
 
         // Decode and validate the token.
         let token_data = decode::<HashMap<String, serde_json::Value>>(token_string, &key, &validation)
@@ -157,20 +192,38 @@ impl OidcValidator {
         Ok(claims)
     }
 
-    /// Gets a signing key from JWKS, refreshing if the kid is not found.
-    async fn get_signing_key(&self, jwks_url: &str, kid: &str) -> Result<DecodingKey, String> {
-        // Try cached keys first.
-        {
-            let cache = self.jwks_cache.read().await;
-            if !cache.is_expired()
-                && let Some(key) = cache.get_key(kid)
-            {
-                return Ok(key);
-            }
+    /// Look up a key in the cache without any network access.
+    async fn cached_signing_key(&self, kid: &str) -> Option<DecodingKey> {
+        let cache = self.jwks_cache.read().await;
+        if cache.is_expired() { None } else { cache.get_key(kid) }
+    }
+
+    /// Fetch a signing key the cache does not hold, discovering the JWKS URL
+    /// first when one is not configured.
+    ///
+    /// Every network path out of this function is behind one throttle, claimed
+    /// before the first request is sent. Discovery and the JWKS fetch are
+    /// therefore rate limited together: a flood of tokens bearing invented key
+    /// ids cannot be amplified into a flood of requests to the identity
+    /// provider, whether or not any keys have ever been loaded. The cost is
+    /// that a failed fetch is not retried for [`MIN_REFRESH_INTERVAL`], which
+    /// is the correct trade when the provider is already failing.
+    async fn fetch_signing_key(&self, kid: &str) -> Result<DecodingKey, String> {
+        if !self.claim_refresh_slot().await {
+            return Err(format!("signing key {kid:?} not found in JWKS (refresh throttled)"));
         }
 
-        // Fetch fresh keys.
-        self.refresh_jwks(jwks_url).await?;
+        // Re-check under the claim: a concurrent caller may have just filled
+        // the cache between the miss and the claim.
+        if let Some(key) = self.cached_signing_key(kid).await {
+            return Ok(key);
+        }
+
+        let jwks_url = match &self.config.jwks_url {
+            Some(url) if !url.is_empty() => url.clone(),
+            _ => self.discover_jwks().await?,
+        };
+        self.refresh_jwks(&jwks_url).await?;
 
         let cache = self.jwks_cache.read().await;
         cache
@@ -178,7 +231,26 @@ impl OidcValidator {
             .ok_or_else(|| format!("signing key {kid:?} not found in JWKS"))
     }
 
-    /// Refreshes the JWKS cache.
+    /// Take the single refresh slot for this interval, returning `false` when
+    /// another attempt was made too recently. The attempt is recorded before
+    /// any request is sent, so concurrent callers are throttled too rather
+    /// than all passing a check that only the first would have failed.
+    async fn claim_refresh_slot(&self) -> bool {
+        let mut cache = self.jwks_cache.write().await;
+        // A cache TTL shorter than the throttle is a deliberate request for
+        // frequent refreshes, so the shorter of the two wins and the throttle
+        // can never starve a cache that has already expired.
+        let interval = MIN_REFRESH_INTERVAL.min(cache.ttl);
+        if let Some(last) = cache.last_attempt
+            && last.elapsed() < interval
+        {
+            return false;
+        }
+        cache.last_attempt = Some(Instant::now());
+        true
+    }
+
+    /// Refreshes the JWKS cache. The caller holds the refresh slot.
     async fn refresh_jwks(&self, jwks_url: &str) -> Result<(), String> {
         let keys = fetch_jwks(&self.http_client, jwks_url).await?;
         let mut cache = self.jwks_cache.write().await;
@@ -227,7 +299,7 @@ impl OidcValidator {
 fn extract_claims(m: &HashMap<String, serde_json::Value>) -> TokenClaims {
     let get_str = |key: &str| -> String { m.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string() };
 
-    let get_i64 = |key: &str| -> i64 { m.get(key).and_then(|v| v.as_i64()).unwrap_or(0) };
+    let get_i64 = |key: &str| -> i64 { m.get(key).and_then(serde_json::Value::as_i64).unwrap_or(0) };
 
     // aud can be string or array.
     let audience = match m.get("aud") {
@@ -309,6 +381,9 @@ enum JwksCachedKey {
 struct JwksCache {
     keys: HashMap<String, JwksCachedKey>,
     fetched: Option<Instant>,
+    /// When a refresh was last attempted, successful or not. Used to rate
+    /// limit refreshes triggered by unknown key ids.
+    last_attempt: Option<Instant>,
     ttl: Duration,
 }
 
@@ -317,7 +392,8 @@ impl JwksCache {
         Self {
             keys: HashMap::new(),
             fetched: None,
-            ttl: Duration::from_secs(3600), // 1 hour
+            last_attempt: None,
+            ttl: jwks_ttl(),
         }
     }
 
@@ -401,9 +477,8 @@ async fn fetch_jwks(client: &Client, jwks_url: &str) -> Result<HashMap<String, J
 
         let cached_key = match k.kty.as_str() {
             "RSA" => {
-                let (n_str, e_str) = match (&k.n, &k.e) {
-                    (Some(n), Some(e)) => (n, e),
-                    _ => continue,
+                let (Some(n_str), Some(e_str)) = (&k.n, &k.e) else {
+                    continue;
                 };
                 match (decode_b64(n_str), decode_b64(e_str)) {
                     (Ok(n), Ok(e)) => JwksCachedKey::Rsa { n, e },
@@ -448,6 +523,62 @@ async fn fetch_jwks(client: &Client, jwks_url: &str) -> Result<HashMap<String, J
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_validator() -> OidcValidator {
+        OidcValidator::new(OidcConfig {
+            issuer_url: "https://issuer.example.com".to_string(),
+            audience: "api://test".to_string(),
+            jwks_url: None,
+            required_scopes: vec![],
+            required_roles: vec![],
+            allowed_client_ids: vec![],
+        })
+        .expect("validator")
+    }
+
+    #[tokio::test]
+    async fn refresh_slot_is_claimed_before_any_network_work() {
+        let v = test_validator();
+
+        // The first caller takes the slot. Taking it up front, rather than
+        // after a successful fetch, is what stops a burst of concurrent
+        // callers from all passing the check and each issuing a request.
+        assert!(v.claim_refresh_slot().await);
+        assert!(
+            !v.claim_refresh_slot().await,
+            "a second claim in the same interval must be refused"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_slot_is_throttled_even_with_an_empty_cache() {
+        let v = test_validator();
+        assert!(v.jwks_cache.read().await.keys.is_empty());
+
+        // The throttle must not depend on keys having been loaded: an identity
+        // provider that is down is exactly when unbounded retries hurt most,
+        // and discovery runs behind this slot too, so a flood of tokens with
+        // invented key ids cannot be amplified into a flood of requests.
+        assert!(v.claim_refresh_slot().await);
+        assert!(!v.claim_refresh_slot().await);
+        assert!(v.jwks_cache.read().await.keys.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_cache_ttl_shorter_than_the_throttle_wins() {
+        let v = test_validator();
+        {
+            let mut cache = v.jwks_cache.write().await;
+            cache.ttl = Duration::from_millis(10);
+        }
+        assert!(v.claim_refresh_slot().await);
+        assert!(!v.claim_refresh_slot().await);
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        assert!(
+            v.claim_refresh_slot().await,
+            "a short TTL asks for frequent refreshes and must not be starved by the throttle"
+        );
+    }
 
     #[test]
     fn test_oidc_config_validate_requires_issuer() {

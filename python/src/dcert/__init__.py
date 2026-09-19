@@ -1,55 +1,62 @@
-"""dcert: A Python MCP wrapper for the dcert TLS certificate MCP server.
+"""dcert: a Python MCP wrapper for the dcert TLS certificate server.
 
-This package provides a FastMCP proxy that wraps the dcert-mcp Rust binary,
-automatically exposing all TLS certificate tools via the Model Context Protocol.
+The package runs a FastMCP proxy around the ``dcert-mcp`` Rust binary and
+exposes every TLS certificate tool over the Model Context Protocol. Tools
+added to the Rust binary are discovered at runtime, so no Python changes
+are needed when the server grows.
 
-The proxy pattern means this package requires zero code changes when new
-tools are added to the Rust binary — they are discovered and forwarded
-automatically at runtime via the MCP protocol.
+Usage as a server::
 
-Usage as a server:
     from dcert import create_server
-    server = create_server()
-    server.run()
+    create_server().run()
 
-Usage as a client:
+Usage as a client::
+
     from dcert import create_client
     async with create_client() as client:
-        tools = await client.list_tools()
         result = await client.call_tool("analyze_certificate", {"target": "example.com"})
 
-Usage with typed async wrappers:
-    from dcert.tools import DcertClient
-    async with DcertClient() as dcert:
-        result = await dcert.analyze_certificate(target="example.com")
+Usage with the typed async wrappers::
+
+    from dcert import analyze_certificate, create_session
+    async with create_session() as session:
+        result = await analyze_certificate(target="example.com", session=session)
 """
 
 __version__ = "3.0.45"
 
 from dcert.client import create_client
+from dcert.config import Config, load_config
 from dcert.resilience import (
     CircuitBreaker,
     CircuitBreakerOpen,
     OTelConfig,
     RateLimiter,
     ResilienceConfig,
+    backoff_delays,
+    create_circuit_breaker,
+    create_rate_limiter,
+    otel_config_from_env,
+    resilience_config_from_env,
     setup_otel,
     truncate_response,
 )
 from dcert.server import create_server
 from dcert.tools import (
-    DcertClient,
     DcertConnectionError,
     DcertError,
     DcertTimeoutError,
     DcertToolError,
+    Session,
     analyze_certificate,
     check_expiry,
     check_revocation,
+    close_default_session,
     compare_certificates,
     convert_pem_to_pfx,
     convert_pfx_to_pem,
     create_keystore,
+    create_session,
     create_truststore,
     export_pem,
     tls_connection_info,
@@ -61,8 +68,13 @@ __all__ = [
     "create_server",
     "create_client",
     "__version__",
-    # Client
-    "DcertClient",
+    # Configuration
+    "Config",
+    "load_config",
+    # Sessions
+    "Session",
+    "create_session",
+    "close_default_session",
     # Exceptions
     "DcertError",
     "DcertTimeoutError",
@@ -70,10 +82,15 @@ __all__ = [
     "DcertToolError",
     # Resilience
     "ResilienceConfig",
+    "resilience_config_from_env",
     "OTelConfig",
+    "otel_config_from_env",
     "CircuitBreaker",
     "CircuitBreakerOpen",
+    "create_circuit_breaker",
     "RateLimiter",
+    "create_rate_limiter",
+    "backoff_delays",
     "setup_otel",
     "truncate_response",
     # Tool wrappers

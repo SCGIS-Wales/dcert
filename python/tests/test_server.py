@@ -1,11 +1,22 @@
-"""Tests for dcert server and client modules."""
+"""Tests for the package surface, dcert.server and dcert.client."""
 
-import os
-import platform
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from fastmcp.server.middleware.caching import ResponseCachingMiddleware
+
+import dcert
+from dcert.client import create_client
+from dcert.middleware import ResilienceMiddleware
+from dcert.resilience import resilience_config_from_env
+from dcert.server import (
+    PASSTHROUGH_ENV_VARS,
+    build_subprocess_env,
+    create_server,
+    create_transport,
+)
 
 # ---------------------------------------------------------------------------
 # Package metadata
@@ -13,50 +24,39 @@ import pytest
 
 
 def test_version():
-    """Test package version is set."""
-    from dcert import __version__
-
-    assert __version__  # version is set (value managed by auto-tag)
+    assert dcert.__version__
 
 
-def test_exports():
-    """Test that public API is properly exported."""
-    import dcert
-
-    assert hasattr(dcert, "create_server")
-    assert hasattr(dcert, "create_client")
-    assert hasattr(dcert, "__version__")
-    assert callable(dcert.create_server)
-    assert callable(dcert.create_client)
+def test_all_exports_resolve():
+    for name in dcert.__all__:
+        assert hasattr(dcert, name), name
 
 
-def test_all_exports():
-    """Test __all__ includes core exports and tool wrappers."""
-    import dcert
-
-    all_exports = set(dcert.__all__)
-    # Core API
-    assert "create_server" in all_exports
-    assert "create_client" in all_exports
-    assert "__version__" in all_exports
-    # Client & exceptions
-    assert "DcertClient" in all_exports
-    assert "DcertError" in all_exports
-    assert "DcertTimeoutError" in all_exports
-    assert "DcertConnectionError" in all_exports
-    assert "DcertToolError" in all_exports
-    # Resilience exports
+def test_all_exports_content():
+    exports = set(dcert.__all__)
     for name in [
+        "create_server",
+        "create_client",
+        "__version__",
+        "Session",
+        "create_session",
+        "DcertError",
+        "DcertTimeoutError",
+        "DcertConnectionError",
+        "DcertToolError",
         "ResilienceConfig",
+        "resilience_config_from_env",
         "OTelConfig",
         "CircuitBreaker",
         "CircuitBreakerOpen",
+        "create_circuit_breaker",
         "RateLimiter",
+        "create_rate_limiter",
+        "backoff_delays",
         "setup_otel",
         "truncate_response",
     ]:
-        assert name in all_exports, f"{name} missing from __all__"
-    # Tool wrappers (all 11)
+        assert name in exports, name
     for tool in [
         "analyze_certificate",
         "check_expiry",
@@ -70,184 +70,14 @@ def test_all_exports():
         "create_keystore",
         "create_truststore",
     ]:
-        assert tool in all_exports, f"{tool} missing from __all__"
-    # Total count: 3 core + 1 client + 4 exceptions + 7 resilience + 11 tools = 26
-    assert len(all_exports) == 26
+        assert tool in exports, tool
+    assert "DcertClient" not in exports
 
 
-def test_py_typed_marker():
-    """Test PEP 561 py.typed marker exists."""
-    import dcert
-
+def test_py_typed_and_config_shipped():
     pkg_dir = Path(dcert.__file__).parent
     assert (pkg_dir / "py.typed").exists()
-
-
-# ---------------------------------------------------------------------------
-# Binary discovery
-# ---------------------------------------------------------------------------
-
-
-def test_find_binary_env_var(tmp_path):
-    """Test binary discovery via DCERT_MCP_BINARY env var."""
-    from dcert.server import _find_binary
-
-    fake_binary = tmp_path / "dcert-mcp"
-    fake_binary.write_text("#!/bin/sh\necho hello")
-    fake_binary.chmod(0o755)
-
-    with patch.dict(os.environ, {"DCERT_MCP_BINARY": str(fake_binary)}):
-        result = _find_binary()
-        assert result == str(fake_binary)
-
-
-def test_find_binary_env_var_not_found():
-    """Test error when DCERT_MCP_BINARY points to nonexistent file."""
-    from dcert.server import _find_binary
-
-    with (
-        patch.dict(os.environ, {"DCERT_MCP_BINARY": "/nonexistent/dcert-mcp"}),
-        pytest.raises(FileNotFoundError, match="DCERT_MCP_BINARY"),
-    ):
-        _find_binary()
-
-
-def test_find_binary_env_var_not_executable(tmp_path):
-    """Test error when DCERT_MCP_BINARY exists but is not executable."""
-    from dcert.server import _find_binary
-
-    fake_binary = tmp_path / "dcert-mcp"
-    fake_binary.write_text("not executable")
-    fake_binary.chmod(0o644)
-
-    with (
-        patch.dict(os.environ, {"DCERT_MCP_BINARY": str(fake_binary)}),
-        pytest.raises(FileNotFoundError, match="DCERT_MCP_BINARY"),
-    ):
-        _find_binary()
-
-
-def test_find_binary_path_lookup(tmp_path):
-    """Test binary discovery via PATH."""
-    from dcert.server import _find_binary
-
-    fake_binary = tmp_path / "dcert-mcp"
-    fake_binary.write_text("#!/bin/sh\necho hello")
-    fake_binary.chmod(0o755)
-
-    env = {k: v for k, v in os.environ.items() if k != "DCERT_MCP_BINARY"}
-    env["PATH"] = f"{tmp_path}:{env.get('PATH', '')}"
-
-    with patch.dict(os.environ, env, clear=True):
-        result = _find_binary()
-        assert result == str(fake_binary)
-
-
-def test_find_binary_path_before_download(tmp_path):
-    """Test that PATH lookup happens BEFORE auto-download attempt."""
-    from dcert.server import _find_binary
-
-    fake_binary = tmp_path / "dcert-mcp"
-    fake_binary.write_text("#!/bin/sh\necho hello")
-    fake_binary.chmod(0o755)
-
-    env = {k: v for k, v in os.environ.items() if k != "DCERT_MCP_BINARY"}
-    env["PATH"] = f"{tmp_path}:{env.get('PATH', '')}"
-
-    with (
-        patch.dict(os.environ, env, clear=True),
-        patch("dcert.download.ensure_binary") as mock_download,
-    ):
-        result = _find_binary()
-        assert result == str(fake_binary)
-        # Auto-download should NOT have been called since PATH found the binary
-        mock_download.assert_not_called()
-
-
-def test_find_binary_not_found():
-    """Test error when binary cannot be found."""
-    from dcert.server import _find_binary
-
-    env = {k: v for k, v in os.environ.items() if k != "DCERT_MCP_BINARY"}
-    env["PATH"] = "/nonexistent"
-
-    with (
-        patch.dict(os.environ, env, clear=True),
-        patch("dcert.download.ensure_binary", return_value=None),
-        pytest.raises(FileNotFoundError, match="dcert-mcp binary not found"),
-    ):
-        _find_binary()
-
-
-def test_find_binary_bundled(tmp_path):
-    """Test binary discovery from bundled bin/ directory."""
-    import dcert.server as server_mod
-    from dcert.server import _find_binary
-
-    pkg_dir = Path(server_mod.__file__).parent
-    bin_dir = pkg_dir / "bin"
-    bin_dir.mkdir(exist_ok=True)
-    bundled = bin_dir / "dcert-mcp"
-    bundled.write_text("#!/bin/sh\necho hello")
-    bundled.chmod(0o755)
-
-    try:
-        env = {k: v for k, v in os.environ.items() if k != "DCERT_MCP_BINARY"}
-        env["PATH"] = "/nonexistent"
-        with patch.dict(os.environ, env, clear=True):
-            result = _find_binary()
-            assert result == str(bundled)
-    finally:
-        bundled.unlink(missing_ok=True)
-        if bin_dir.exists():
-            bin_dir.rmdir()
-
-
-def test_find_binary_bundled_platform_specific(tmp_path):
-    """Test platform-specific bundled binary discovery."""
-    import dcert.server as server_mod
-    from dcert.server import _find_binary
-
-    pkg_dir = Path(server_mod.__file__).parent
-    bin_dir = pkg_dir / "bin"
-    bin_dir.mkdir(exist_ok=True)
-
-    system = platform.system().lower()
-    machine = platform.machine().lower()
-    arch_map = {"x86_64": "amd64", "aarch64": "arm64", "arm64": "arm64", "amd64": "amd64"}
-    arch = arch_map.get(machine, machine)
-    binary_name = f"dcert-mcp-{system}-{arch}"
-
-    bundled = bin_dir / binary_name
-    bundled.write_text("#!/bin/sh\necho hello")
-    bundled.chmod(0o755)
-
-    try:
-        env = {k: v for k, v in os.environ.items() if k != "DCERT_MCP_BINARY"}
-        env["PATH"] = "/nonexistent"
-        with patch.dict(os.environ, env, clear=True):
-            result = _find_binary()
-            assert result == str(bundled)
-    finally:
-        bundled.unlink(missing_ok=True)
-        if bin_dir.exists():
-            bin_dir.rmdir()
-
-
-def test_find_binary_download_fallback():
-    """Test auto-download is used as fallback when PATH fails."""
-    from dcert.server import _find_binary
-
-    env = {k: v for k, v in os.environ.items() if k != "DCERT_MCP_BINARY"}
-    env["PATH"] = "/nonexistent"
-
-    with (
-        patch.dict(os.environ, env, clear=True),
-        patch("dcert.download.ensure_binary", return_value="/downloaded/dcert-mcp") as mock_dl,
-    ):
-        result = _find_binary()
-        assert result == "/downloaded/dcert-mcp"
-        mock_dl.assert_called_once()
+    assert (pkg_dir / "config.yaml").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -256,530 +86,126 @@ def test_find_binary_download_fallback():
 
 
 def test_build_subprocess_env_passthrough():
-    """Test that _build_subprocess_env forwards expected variables."""
-    from dcert.server import _build_subprocess_env
-
-    test_vars = {
+    env = {
         "HTTP_PROXY": "http://proxy:8080",
         "HTTPS_PROXY": "http://proxy:8443",
         "NO_PROXY": "localhost,.internal",
         "HOME": "/home/user",
+        "SECRET_TOKEN": "nope",
     }
-
-    with patch.dict(os.environ, test_vars, clear=True):
-        result = _build_subprocess_env()
-        assert result["HTTP_PROXY"] == "http://proxy:8080"
-        assert result["HTTPS_PROXY"] == "http://proxy:8443"
-        assert result["NO_PROXY"] == "localhost,.internal"
-        assert result["HOME"] == "/home/user"
+    with patch.dict("os.environ", env, clear=True):
+        result = build_subprocess_env()
+    assert result == {k: v for k, v in env.items() if k != "SECRET_TOKEN"}
 
 
 def test_build_subprocess_env_extra_overrides():
-    """Test that extra_env overrides passthrough values."""
-    from dcert.server import _build_subprocess_env
-
-    with patch.dict(os.environ, {"HOME": "/home/user"}, clear=True):
-        result = _build_subprocess_env(extra_env={"HOME": "/override", "CUSTOM": "value"})
-        assert result["HOME"] == "/override"
-        assert result["CUSTOM"] == "value"
+    with patch.dict("os.environ", {"HOME": "/home/user"}, clear=True):
+        result = build_subprocess_env(extra_env={"HOME": "/override", "CUSTOM": "value"})
+    assert result == {"HOME": "/override", "CUSTOM": "value"}
 
 
 def test_build_subprocess_env_custom_passthrough():
-    """Test _build_subprocess_env with a custom passthrough list."""
-    from dcert.server import _build_subprocess_env
-
-    with patch.dict(os.environ, {"FOO": "bar", "HOME": "/home/user"}, clear=True):
-        result = _build_subprocess_env(passthrough=["FOO"])
-        assert result == {"FOO": "bar"}
-        assert "HOME" not in result
+    with patch.dict("os.environ", {"FOO": "bar", "HOME": "/home/user"}, clear=True):
+        assert build_subprocess_env(passthrough=["FOO"]) == {"FOO": "bar"}
+        assert build_subprocess_env(passthrough=[]) == {}
 
 
 def test_build_subprocess_env_skips_unset():
-    """Test that unset variables are not included."""
-    from dcert.server import _build_subprocess_env
-
-    with patch.dict(os.environ, {}, clear=True):
-        result = _build_subprocess_env()
-        assert result == {}
+    with patch.dict("os.environ", {}, clear=True):
+        assert build_subprocess_env() == {}
+        assert build_subprocess_env(extra_env={}) == {}
 
 
-def test_build_subprocess_env_empty_extra():
-    """Test passing empty extra_env dict."""
-    from dcert.server import _build_subprocess_env
-
-    with patch.dict(os.environ, {"HOME": "/home/user"}, clear=True):
-        result = _build_subprocess_env(extra_env={})
-        assert result["HOME"] == "/home/user"
-
-
-# ---------------------------------------------------------------------------
-# PASSTHROUGH_ENV_VARS completeness
-# ---------------------------------------------------------------------------
-
-
-def test_passthrough_env_vars_includes_proxy():
-    """Test that PASSTHROUGH_ENV_VARS includes all proxy variants."""
-    from dcert.server import PASSTHROUGH_ENV_VARS
-
-    for var in ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy"]:
-        assert var in PASSTHROUGH_ENV_VARS, f"{var} missing from PASSTHROUGH_ENV_VARS"
-
-
-def test_passthrough_env_vars_includes_tls():
-    """Test that PASSTHROUGH_ENV_VARS includes TLS CA variables."""
-    from dcert.server import PASSTHROUGH_ENV_VARS
-
-    for var in ["SSL_CERT_FILE", "SSL_CERT_DIR"]:
-        assert var in PASSTHROUGH_ENV_VARS, f"{var} missing from PASSTHROUGH_ENV_VARS"
-
-
-def test_passthrough_env_vars_includes_dcert():
-    """Test that PASSTHROUGH_ENV_VARS includes dcert-specific variables."""
-    from dcert.server import PASSTHROUGH_ENV_VARS
-
-    for var in ["DCERT_PATH", "DCERT_MCP_TIMEOUT", "DCERT_MCP_CONNECTION_TIMEOUT"]:
-        assert var in PASSTHROUGH_ENV_VARS, f"{var} missing from PASSTHROUGH_ENV_VARS"
+@pytest.mark.parametrize(
+    "var",
+    [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "DCERT_PATH",
+        "DCERT_MCP_TIMEOUT",
+        "DCERT_MCP_CONNECTION_TIMEOUT",
+    ],
+)
+def test_passthrough_env_vars(var):
+    assert var in PASSTHROUGH_ENV_VARS
 
 
 # ---------------------------------------------------------------------------
-# Server / Client creation
+# Server and client creation
 # ---------------------------------------------------------------------------
 
 
-def test_create_server_with_binary(tmp_path):
-    """Test create_server with explicit binary path."""
-    from dcert.server import create_server
-
-    fake_binary = tmp_path / "dcert-mcp"
-    fake_binary.write_text("#!/bin/sh\necho hello")
-    fake_binary.chmod(0o755)
-
-    server = create_server(binary_path=str(fake_binary))
-    assert server is not None
+@pytest.fixture
+def fake_binary(tmp_path):
+    binary = tmp_path / "dcert-mcp"
+    binary.write_text("#!/bin/sh\necho hello")
+    binary.chmod(0o755)
+    return binary
 
 
-def test_create_server_custom_name(tmp_path):
-    """Test create_server with a custom server name."""
-    from dcert.server import create_server
-
-    fake_binary = tmp_path / "dcert-mcp"
-    fake_binary.write_text("#!/bin/sh\necho hello")
-    fake_binary.chmod(0o755)
-
-    server = create_server(binary_path=str(fake_binary), name="my-dcert")
-    assert server is not None
-
-
-def test_create_server_with_extra_env(tmp_path):
-    """Test create_server with extra environment variables."""
-    from dcert.server import create_server
-
-    fake_binary = tmp_path / "dcert-mcp"
-    fake_binary.write_text("#!/bin/sh\necho hello")
-    fake_binary.chmod(0o755)
-
-    server = create_server(
-        binary_path=str(fake_binary),
-        env={"CUSTOM_VAR": "custom_value"},
-    )
-    assert server is not None
-
-
-def test_create_server_binary_not_found():
-    """Test create_server raises when binary not found."""
-    from dcert.server import create_server
-
-    env = {k: v for k, v in os.environ.items() if k != "DCERT_MCP_BINARY"}
-    env["PATH"] = "/nonexistent"
-
+@pytest.fixture
+def no_binary(monkeypatch):
+    monkeypatch.delenv("DCERT_MCP_BINARY", raising=False)
+    monkeypatch.setenv("PATH", "/nonexistent")
     with (
-        patch.dict(os.environ, env, clear=True),
+        patch("dcert.binary.find_bundled_binary", return_value=None),
         patch("dcert.download.ensure_binary", return_value=None),
-        pytest.raises(FileNotFoundError),
     ):
+        yield
+
+
+def test_create_transport_explicit(fake_binary):
+    transport = create_transport(str(fake_binary), {"EXTRA": "1"})
+    assert transport.command == str(fake_binary)
+    assert transport.env is not None
+    assert transport.env["EXTRA"] == "1"
+
+
+def test_create_transport_auto_detect(fake_binary, monkeypatch):
+    monkeypatch.setenv("DCERT_MCP_BINARY", str(fake_binary))
+    assert create_transport(None, None).command == str(fake_binary)
+
+
+def _dcert_middleware(server):
+    """Our middleware in registration order (fastmcp adds its own as well)."""
+    ours = (ResponseCachingMiddleware, ResilienceMiddleware)
+    return [type(m) for m in server.middleware if isinstance(m, ours)]
+
+
+def test_create_server_with_binary(fake_binary):
+    server = create_server(binary_path=str(fake_binary))
+    assert server.name == "dcert-mcp"
+    assert _dcert_middleware(server) == [ResilienceMiddleware]
+
+
+def test_create_server_custom_name_and_env(fake_binary):
+    server = create_server(binary_path=str(fake_binary), name="my-dcert", env={"X": "1"})
+    assert server.name == "my-dcert"
+
+
+def test_create_server_with_cache(fake_binary, monkeypatch):
+    monkeypatch.delenv("DCERT_MCP_CACHE_ENABLED", raising=False)
+    cfg = replace(resilience_config_from_env(), cache_enabled=True)
+    server = create_server(binary_path=str(fake_binary), resilience=cfg)
+    assert _dcert_middleware(server) == [ResponseCachingMiddleware, ResilienceMiddleware]
+
+
+def test_create_server_binary_not_found(no_binary):
+    with pytest.raises(FileNotFoundError, match="dcert-mcp binary not found"):
         create_server()
 
 
-def test_create_client_with_binary(tmp_path):
-    """Test create_client with explicit binary path."""
-    from dcert.client import create_client
-
-    fake_binary = tmp_path / "dcert-mcp"
-    fake_binary.write_text("#!/bin/sh\necho hello")
-    fake_binary.chmod(0o755)
-
-    client = create_client(binary_path=str(fake_binary))
-    assert client is not None
+def test_create_client_with_binary(fake_binary):
+    client = create_client(binary_path=str(fake_binary), env={"EXTRA_VAR": "extra"})
+    assert client.transport.command == str(fake_binary)
 
 
-def test_create_client_with_extra_env(tmp_path):
-    """Test create_client with extra environment variables."""
-    from dcert.client import create_client
-
-    fake_binary = tmp_path / "dcert-mcp"
-    fake_binary.write_text("#!/bin/sh\necho hello")
-    fake_binary.chmod(0o755)
-
-    client = create_client(
-        binary_path=str(fake_binary),
-        env={"EXTRA_VAR": "extra"},
-    )
-    assert client is not None
-
-
-def test_create_client_binary_not_found():
-    """Test create_client raises when binary not found."""
-    from dcert.client import create_client
-
-    env = {k: v for k, v in os.environ.items() if k != "DCERT_MCP_BINARY"}
-    env["PATH"] = "/nonexistent"
-
-    with (
-        patch.dict(os.environ, env, clear=True),
-        patch("dcert.download.ensure_binary", return_value=None),
-        pytest.raises(FileNotFoundError),
-    ):
+def test_create_client_binary_not_found(no_binary):
+    with pytest.raises(FileNotFoundError, match="dcert-mcp binary not found"):
         create_client()
-
-
-# ---------------------------------------------------------------------------
-# CLI module
-# ---------------------------------------------------------------------------
-
-
-def test_find_binary_bundled_chmod(tmp_path):
-    """Test bundled binary gets chmod'd if it exists but is not executable."""
-    import dcert.server as server_mod
-    from dcert.server import _find_binary
-
-    pkg_dir = Path(server_mod.__file__).parent
-    bin_dir = pkg_dir / "bin"
-    bin_dir.mkdir(exist_ok=True)
-    bundled = bin_dir / "dcert-mcp"
-    bundled.write_bytes(b"\x7fELF...")  # fake ELF header
-    bundled.chmod(0o644)  # NOT executable
-
-    try:
-        env = {k: v for k, v in os.environ.items() if k != "DCERT_MCP_BINARY"}
-        env["PATH"] = "/nonexistent"
-        with patch.dict(os.environ, env, clear=True):
-            result = _find_binary()
-            assert result == str(bundled)
-            # Verify it was made executable
-            assert os.access(str(bundled), os.X_OK)
-    finally:
-        bundled.unlink(missing_ok=True)
-        if bin_dir.exists():
-            bin_dir.rmdir()
-
-
-def test_cli_module_exists():
-    """Test that CLI entry point module exists."""
-    from dcert import cli
-
-    assert hasattr(cli, "main")
-    assert callable(cli.main)
-    assert hasattr(cli, "dcert_main")
-    assert callable(cli.dcert_main)
-    assert hasattr(cli, "dcert_mcp_main")
-    assert callable(cli.dcert_mcp_main)
-
-
-def test_cli_help(capsys):
-    """Test CLI --help exits cleanly."""
-    from dcert.cli import main
-
-    with (
-        pytest.raises(SystemExit) as exc_info,
-        patch("sys.argv", ["dcert-python", "--help"]),
-    ):
-        main()
-    assert exc_info.value.code == 0
-
-
-def test_cli_invalid_transport(capsys):
-    """Test CLI rejects invalid transport."""
-    from dcert.cli import main
-
-    with (
-        pytest.raises(SystemExit) as exc_info,
-        patch("sys.argv", ["dcert-python", "--transport", "invalid"]),
-    ):
-        main()
-    assert exc_info.value.code != 0
-
-
-def test_cli_binary_not_found(capsys):
-    """Test CLI exits with error when binary not found."""
-    from dcert.cli import main
-
-    env = {k: v for k, v in os.environ.items() if k != "DCERT_MCP_BINARY"}
-    env["PATH"] = "/nonexistent"
-
-    with (
-        patch.dict(os.environ, env, clear=True),
-        patch("dcert.download.ensure_binary", return_value=None),
-        patch("sys.argv", ["dcert-python"]),
-        pytest.raises(SystemExit) as exc_info,
-    ):
-        main()
-    assert exc_info.value.code == 1
-
-
-def test_cli_stdio_transport(tmp_path):
-    """Test CLI with stdio transport calls server.run()."""
-    from unittest.mock import MagicMock
-
-    from dcert.cli import main
-
-    mock_server = MagicMock()
-
-    fake_binary = tmp_path / "dcert-mcp"
-    fake_binary.write_text("#!/bin/sh\necho hello")
-    fake_binary.chmod(0o755)
-
-    with (
-        patch("sys.argv", ["dcert-python", "--binary", str(fake_binary)]),
-        patch("dcert.server.create_server", return_value=mock_server) as mock_create,
-    ):
-        main()
-
-    mock_create.assert_called_once_with(binary_path=str(fake_binary))
-    mock_server.run.assert_called_once_with()
-
-
-def test_cli_http_transport(tmp_path):
-    """Test CLI with http transport passes host and port."""
-    from unittest.mock import MagicMock
-
-    from dcert.cli import main
-
-    mock_server = MagicMock()
-
-    fake_binary = tmp_path / "dcert-mcp"
-    fake_binary.write_text("#!/bin/sh\necho hello")
-    fake_binary.chmod(0o755)
-
-    with (
-        patch(
-            "sys.argv",
-            [
-                "dcert-python",
-                "--binary",
-                str(fake_binary),
-                "--transport",
-                "http",
-                "--host",
-                "127.0.0.1",
-                "--port",
-                "9090",
-            ],
-        ),
-        patch("dcert.server.create_server", return_value=mock_server),
-    ):
-        main()
-
-    mock_server.run.assert_called_once_with(transport="http", host="127.0.0.1", port=9090)
-
-
-# ---------------------------------------------------------------------------
-# CLI entry points: dcert_main / dcert_mcp_main
-# ---------------------------------------------------------------------------
-
-
-def test_dcert_main_execs_binary(tmp_path):
-    """Test dcert_main finds bundled binary and calls os.execvp."""
-    from dcert.cli import dcert_main
-
-    fake_binary = tmp_path / "dcert"
-    fake_binary.write_text("#!/bin/sh\necho dcert")
-    fake_binary.chmod(0o755)
-
-    with (
-        patch("dcert.cli._find_binary", return_value=str(fake_binary)),
-        patch("os.execvp") as mock_exec,
-        patch("sys.argv", ["dcert", "--version"]),
-    ):
-        dcert_main()
-        mock_exec.assert_called_once_with(str(fake_binary), [str(fake_binary), "--version"])
-
-
-def test_dcert_mcp_main_execs_binary(tmp_path):
-    """Test dcert_mcp_main finds bundled binary and calls os.execvp."""
-    from dcert.cli import dcert_mcp_main
-
-    fake_binary = tmp_path / "dcert-mcp"
-    fake_binary.write_text("#!/bin/sh\necho dcert-mcp")
-    fake_binary.chmod(0o755)
-
-    with (
-        patch("dcert.cli._find_binary", return_value=str(fake_binary)),
-        patch("os.execvp") as mock_exec,
-        patch("sys.argv", ["dcert-mcp"]),
-    ):
-        dcert_mcp_main()
-        mock_exec.assert_called_once_with(str(fake_binary), [str(fake_binary)])
-
-
-def test_dcert_main_not_found(capsys):
-    """Test dcert_main exits 1 when binary not found."""
-    from dcert.cli import dcert_main
-
-    with (
-        patch("dcert.cli._find_binary", side_effect=FileNotFoundError("not found")),
-        pytest.raises(SystemExit) as exc_info,
-    ):
-        dcert_main()
-    assert exc_info.value.code == 1
-
-
-def test_dcert_mcp_main_not_found(capsys):
-    """Test dcert_mcp_main exits 1 when binary not found."""
-    from dcert.cli import dcert_mcp_main
-
-    with (
-        patch("dcert.cli._find_binary", side_effect=FileNotFoundError("not found")),
-        pytest.raises(SystemExit) as exc_info,
-    ):
-        dcert_mcp_main()
-    assert exc_info.value.code == 1
-
-
-def test_find_bundled_binary_found():
-    """Test _find_bundled_binary finds and chmod's bundled binary."""
-    import dcert.cli as cli_mod
-    from dcert.cli import _find_bundled_binary
-
-    pkg_dir = Path(cli_mod.__file__).parent
-    bin_dir = pkg_dir / "bin"
-    bin_dir.mkdir(exist_ok=True)
-    bundled = bin_dir / "dcert"
-    bundled.write_bytes(b"\x7fELF...")
-    bundled.chmod(0o644)  # NOT executable
-
-    try:
-        result = _find_bundled_binary("dcert")
-        assert result == str(bundled)
-        assert os.access(str(bundled), os.X_OK)
-    finally:
-        bundled.unlink(missing_ok=True)
-        if bin_dir.exists():
-            bin_dir.rmdir()
-
-
-def test_find_bundled_binary_not_found():
-    """Test _find_bundled_binary returns None when binary doesn't exist."""
-    from dcert.cli import _find_bundled_binary
-
-    result = _find_bundled_binary("nonexistent-binary-xyz")
-    assert result is None
-
-
-# ---------------------------------------------------------------------------
-# _is_python_script guard (infinite exec loop prevention — helm-mcp PR #33)
-# ---------------------------------------------------------------------------
-
-
-class TestIsPythonScriptCli:
-    """Tests for cli._is_python_script."""
-
-    def test_detects_python_shebang(self, tmp_path):
-        """Pip console-script wrappers with #!/…/python are detected."""
-        from dcert.cli import _is_python_script
-
-        wrapper = tmp_path / "dcert-mcp"
-        wrapper.write_bytes(b"#!/usr/bin/env python3\nimport sys\n")
-        assert _is_python_script(str(wrapper)) is True
-
-    def test_rejects_elf_binary(self, tmp_path):
-        """Real ELF binaries are not flagged."""
-        from dcert.cli import _is_python_script
-
-        binary = tmp_path / "dcert-mcp"
-        binary.write_bytes(b"\x7fELF\x02\x01\x01\x00" + b"\x00" * 120)
-        assert _is_python_script(str(binary)) is False
-
-    def test_rejects_mach_o_binary(self, tmp_path):
-        """Mach-O binaries (macOS) are not flagged."""
-        from dcert.cli import _is_python_script
-
-        binary = tmp_path / "dcert-mcp"
-        binary.write_bytes(b"\xcf\xfa\xed\xfe" + b"\x00" * 124)
-        assert _is_python_script(str(binary)) is False
-
-    def test_nonexistent_path(self):
-        """Missing file returns False (no crash)."""
-        from dcert.cli import _is_python_script
-
-        assert _is_python_script("/nonexistent/path/xyz") is False
-
-    def test_shebang_without_python(self, tmp_path):
-        """Shell shebang (not python) is not flagged."""
-        from dcert.cli import _is_python_script
-
-        script = tmp_path / "dcert-mcp"
-        script.write_bytes(b"#!/bin/bash\necho hello\n")
-        assert _is_python_script(str(script)) is False
-
-
-class TestIsPythonScriptServer:
-    """Tests for server._is_python_script."""
-
-    def test_detects_python_shebang(self, tmp_path):
-        """Pip console-script wrappers with #!/…/python are detected."""
-        from dcert.server import _is_python_script
-
-        wrapper = tmp_path / "dcert-mcp"
-        wrapper.write_bytes(b"#!/usr/bin/env python3\nimport sys\n")
-        assert _is_python_script(str(wrapper)) is True
-
-    def test_rejects_elf_binary(self, tmp_path):
-        """Real ELF binaries are not flagged."""
-        from dcert.server import _is_python_script
-
-        binary = tmp_path / "dcert-mcp"
-        binary.write_bytes(b"\x7fELF\x02\x01\x01\x00" + b"\x00" * 120)
-        assert _is_python_script(str(binary)) is False
-
-    def test_nonexistent_path(self):
-        """Missing file returns False."""
-        from dcert.server import _is_python_script
-
-        assert _is_python_script("/nonexistent/path/xyz") is False
-
-
-class TestFindBinarySkipsPythonWrapper:
-    """Verify _find_binary skips console-script wrappers on PATH."""
-
-    def test_cli_find_binary_skips_wrapper(self, tmp_path):
-        """cli._find_binary falls through when PATH binary is a Python wrapper."""
-        from dcert.cli import _find_binary
-
-        wrapper = tmp_path / "dcert"
-        wrapper.write_bytes(b"#!/usr/bin/env python3\nimport sys\n")
-        wrapper.chmod(0o755)
-
-        with (
-            patch("dcert.cli._find_bundled_binary", return_value=None),
-            patch("dcert.cli.shutil.which", return_value=str(wrapper)),
-            patch("dcert.download.ensure_binary", side_effect=Exception("no download")),
-            pytest.raises(FileNotFoundError),
-        ):
-            _find_binary("dcert")
-
-    def test_server_find_binary_skips_wrapper(self, tmp_path):
-        """server._find_binary falls through when PATH binary is a Python wrapper."""
-        from dcert.server import _find_binary
-
-        wrapper = tmp_path / "dcert-mcp"
-        wrapper.write_bytes(b"#!/usr/bin/env python3\nimport sys\n")
-        wrapper.chmod(0o755)
-
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("DCERT_MCP_BINARY", None)
-            with (
-                patch("dcert.server.shutil.which", return_value=str(wrapper)),
-                patch("dcert.download.ensure_binary", side_effect=Exception("no download")),
-                pytest.raises(FileNotFoundError),
-            ):
-                _find_binary()

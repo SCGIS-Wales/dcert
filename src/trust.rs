@@ -29,13 +29,13 @@ use openssl::hash::MessageDigest;
 use openssl::stack::Stack;
 use openssl::x509::store::{X509Store, X509StoreBuilder};
 use openssl::x509::verify::X509VerifyFlags;
-use openssl::x509::{X509, X509NameRef, X509Ref, X509StoreContext};
+use openssl::x509::{X509, X509Ref, X509StoreContext};
 use std::collections::HashSet;
 use std::time::Duration;
 use x509_parser::certificate::X509Certificate;
-use x509_parser::extensions::{GeneralName, ParsedExtension};
 use x509_parser::prelude::FromDer;
 
+use crate::cert::{fingerprint_hex, format_x509_name_with_keys as format_name};
 use crate::debug::debug_log;
 use crate::proxy::ProxyConfig;
 
@@ -102,6 +102,7 @@ pub struct RootTrustInfo {
 }
 
 /// Options controlling the (opt-in) network behaviour of trust assessment.
+#[derive(Debug, Clone, Copy)]
 pub struct TrustOpts {
     pub resolve_issuers: bool,
     pub issuer_timeout: Duration,
@@ -114,6 +115,15 @@ pub struct PublicRoots {
     store: X509Store,
     fingerprints: HashSet<Vec<u8>>,
     source: &'static str,
+}
+
+impl std::fmt::Debug for PublicRoots {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PublicRoots")
+            .field("roots", &self.fingerprints.len())
+            .field("source", &self.source)
+            .finish_non_exhaustive()
+    }
 }
 
 impl PublicRoots {
@@ -136,11 +146,22 @@ impl PublicRoots {
                     source = "embedded+refreshed";
                 }
                 Err(e) => {
-                    eprintln!(
-                        "{} failed to refresh public roots ({}); using embedded set",
-                        "WARNING:".yellow().bold(),
-                        e
-                    );
+                    if let Some((cached, age)) = read_cached_roots() {
+                        eprintln!(
+                            "{} failed to refresh public roots ({}); using cached bundle from {} hours ago",
+                            "Warning:".yellow().bold(),
+                            e,
+                            age.as_secs() / 3600
+                        );
+                        certs.extend(cached);
+                        source = "embedded+cached";
+                    } else {
+                        eprintln!(
+                            "{} failed to refresh public roots ({}); using embedded set",
+                            "Warning:".yellow().bold(),
+                            e
+                        );
+                    }
                 }
             }
         }
@@ -253,9 +274,8 @@ struct AnchorInfo {
 fn classify(roots: &PublicRoots, certs: &[X509], info: &mut RootTrustInfo) {
     let leaf = &certs[0];
 
-    let mut stack = match Stack::new() {
-        Ok(s) => s,
-        Err(_) => return,
+    let Ok(mut stack) = Stack::new() else {
+        return;
     };
     for c in &certs[1..] {
         let _ = stack.push(c.clone());
@@ -263,9 +283,8 @@ fn classify(roots: &PublicRoots, certs: &[X509], info: &mut RootTrustInfo) {
 
     // verify_cert against the public store; capture the anchoring root details.
     let verdict: std::result::Result<(bool, Option<AnchorInfo>), openssl::error::ErrorStack> = {
-        let mut ctx = match X509StoreContext::new() {
-            Ok(c) => c,
-            Err(_) => return,
+        let Ok(mut ctx) = X509StoreContext::new() else {
+            return;
         };
         ctx.init(&roots.store, leaf, &stack, |c| {
             let ok = c.verify_cert()?;
@@ -302,7 +321,9 @@ fn classify(roots: &PublicRoots, certs: &[X509], info: &mut RootTrustInfo) {
         }
         _ => {
             info.publicly_trusted = false;
-            let top = certs.last().expect("chain is non-empty");
+            let Some(top) = certs.last() else {
+                return;
+            };
             if is_self_signed(top) {
                 info.trust_anchor_subject = Some(format_name(top.subject_name()));
                 info.trust_anchor_sha256 = Some(fingerprint_hex(top));
@@ -337,13 +358,14 @@ fn resolve_issuers(certs: &mut Vec<X509>, opts: &TrustOpts, proxy: &ProxyConfig)
     let mut reachable: Option<bool> = None;
 
     for _ in 0..MAX_AIA_HOPS {
-        let top = certs.last().expect("chain is non-empty");
+        let Some(top) = certs.last() else {
+            break;
+        };
         if is_self_signed(top) {
             break; // already at a root
         }
-        let der = match top.to_der() {
-            Ok(d) => d,
-            Err(_) => break,
+        let Ok(der) = top.to_der() else {
+            break;
         };
         let urls = match X509Certificate::from_der(&der) {
             Ok((_, parsed)) => extract_ca_issuer_urls(&parsed),
@@ -390,21 +412,8 @@ fn resolve_issuers(certs: &mut Vec<X509>, opts: &TrustOpts, proxy: &ProxyConfig)
 }
 
 /// Extract AIA "CA Issuers" URLs (OID 1.3.6.1.5.5.7.48.2) from a certificate.
-/// Sibling of [`crate::cert::extract_ocsp_url`].
 pub fn extract_ca_issuer_urls(cert: &X509Certificate<'_>) -> Vec<String> {
-    let mut urls = Vec::new();
-    for ext in cert.extensions() {
-        if let ParsedExtension::AuthorityInfoAccess(aia) = ext.parsed_extension() {
-            for desc in aia.iter() {
-                if desc.access_method.to_id_string() == "1.3.6.1.5.5.7.48.2"
-                    && let GeneralName::URI(uri) = &desc.access_location
-                {
-                    urls.push(uri.to_string());
-                }
-            }
-        }
-    }
-    urls
+    crate::cert::aia_uris(cert, crate::cert::AiaMethod::CaIssuers)
 }
 
 /// Parse a fetched AIA payload into a certificate. Handles DER and PEM
@@ -420,32 +429,14 @@ fn parse_issuer_cert(bytes: &[u8]) -> Option<X509> {
 }
 
 /// Build a blocking HTTP client whose proxy behaviour mirrors dcert's
-/// [`ProxyConfig`] (the same `http_proxy`/`https_proxy`/`no_proxy` env vars the
-/// TLS path uses) and whose connect/read timeout is the short issuer timeout.
+/// [`ProxyConfig`] and whose connect and read timeout is the short issuer
+/// timeout.
 fn http_client(proxy: &ProxyConfig, timeout: Duration) -> Result<reqwest::blocking::Client> {
-    let mut builder = reqwest::blocking::Client::builder()
-        .timeout(timeout)
-        .connect_timeout(timeout)
-        .user_agent(concat!("dcert/", env!("CARGO_PKG_VERSION")));
-
-    let no_proxy = reqwest::NoProxy::from_string(&proxy.no_proxy);
-    if let Some(p) = &proxy.https_proxy {
-        builder = builder.proxy(
-            reqwest::Proxy::https(p)
-                .map_err(|e| anyhow::anyhow!("invalid https proxy '{p}': {e}"))?
-                .no_proxy(no_proxy.clone()),
-        );
-    }
-    if let Some(p) = &proxy.http_proxy {
-        builder = builder.proxy(
-            reqwest::Proxy::http(p)
-                .map_err(|e| anyhow::anyhow!("invalid http proxy '{p}': {e}"))?
-                .no_proxy(no_proxy),
-        );
-    }
-    builder
-        .build()
-        .map_err(|e| anyhow::anyhow!("failed to build HTTP client: {e}"))
+    crate::http::blocking_client(&crate::http::HttpClientOptions {
+        timeout: Some(timeout),
+        proxy: Some(proxy),
+        ..Default::default()
+    })
 }
 
 /// Fetch an issuer certificate from an AIA "CA Issuers" URL.
@@ -463,28 +454,40 @@ fn fetch_issuer(url: &str, opts: &TrustOpts, proxy: &ProxyConfig) -> Result<Vec<
     if !resp.status().is_success() {
         anyhow::bail!("HTTP {}", resp.status());
     }
-    let bytes = resp.bytes().map_err(|e| anyhow::anyhow!("read failed: {e}"))?;
-    if bytes.len() > MAX_ISSUER_BYTES {
-        anyhow::bail!("issuer response too large ({} bytes)", bytes.len());
+    read_capped(resp, MAX_ISSUER_BYTES, "issuer response")
+}
+
+/// Read a response body without ever buffering more than `cap` bytes. The
+/// declared `Content-Length` is checked first, then the stream is cut off
+/// one byte past the cap so an oversized body is rejected before it lands
+/// in memory.
+fn read_capped(resp: reqwest::blocking::Response, cap: usize, what: &str) -> Result<Vec<u8>> {
+    use std::io::Read;
+    if let Some(len) = resp.content_length()
+        && len > cap as u64
+    {
+        anyhow::bail!("{what} too large ({len} bytes, limit {cap})");
     }
-    Ok(bytes.to_vec())
+    let mut buf = Vec::with_capacity(cap.min(64 * 1024));
+    resp.take(cap as u64 + 1)
+        .read_to_end(&mut buf)
+        .map_err(|e| anyhow::anyhow!("read failed: {e}"))?;
+    if buf.len() > cap {
+        anyhow::bail!("{what} too large (more than {cap} bytes)");
+    }
+    Ok(buf)
 }
 
 /// Fetch and parse the upstream Mozilla/CCADB PEM bundle, caching it best-effort.
 fn refresh_public_roots(proxy: &ProxyConfig, timeout: Duration, debug: bool) -> Result<Vec<X509>> {
     let client = http_client(proxy, timeout)?;
-    let pem = client
+    let resp = client
         .get(CCADB_BUNDLE_URL)
         .send()
         .map_err(|e| anyhow::anyhow!("request failed: {e}"))?
         .error_for_status()
-        .map_err(|e| anyhow::anyhow!("{e}"))?
-        .bytes()
-        .map_err(|e| anyhow::anyhow!("read failed: {e}"))?;
-
-    if pem.len() > MAX_BUNDLE_BYTES {
-        anyhow::bail!("CCADB bundle too large ({} bytes)", pem.len());
-    }
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let pem = read_capped(resp, MAX_BUNDLE_BYTES, "CCADB bundle")?;
 
     let certs = X509::stack_from_pem(&pem).map_err(|e| anyhow::anyhow!("failed to parse CCADB bundle: {e}"))?;
 
@@ -509,6 +512,24 @@ fn cache_path() -> Option<std::path::PathBuf> {
     Some(base.join("dcert").join("public-roots.pem"))
 }
 
+/// Load a previously cached bundle, returning the certificates and the age of
+/// the cache file. Used when a refresh fails so an outage does not silently
+/// downgrade trust classification to the embedded set.
+fn read_cached_roots() -> Option<(Vec<X509>, Duration)> {
+    let path = cache_path()?;
+    let meta = std::fs::metadata(&path).ok()?;
+    if meta.len() > MAX_BUNDLE_BYTES as u64 {
+        return None;
+    }
+    let age = meta.modified().ok().and_then(|m| m.elapsed().ok()).unwrap_or_default();
+    let pem = std::fs::read(&path).ok()?;
+    let certs = X509::stack_from_pem(&pem).ok()?;
+    if certs.is_empty() {
+        return None;
+    }
+    Some((certs, age))
+}
+
 // --- small helpers ---------------------------------------------------------
 
 /// A certificate is self-signed if it verifies under its own public key.
@@ -528,25 +549,6 @@ fn cert_in_chain(cert: &X509Ref, chain: &[X509]) -> bool {
         .iter()
         .filter_map(|c| c.digest(MessageDigest::sha256()).ok())
         .any(|fp| fp.as_ref() == target.as_ref())
-}
-
-/// Render an X.509 name as `CN=..., O=..., C=...`.
-fn format_name(name: &X509NameRef) -> String {
-    let mut parts = Vec::new();
-    for entry in name.entries() {
-        let key = entry.object().nid().short_name().unwrap_or("?");
-        if let Ok(value) = entry.data().to_string() {
-            parts.push(format!("{}={}", key, value));
-        }
-    }
-    parts.join(", ")
-}
-
-/// Colon-separated uppercase SHA-256 fingerprint (matches dcert's cert output).
-fn fingerprint_hex(cert: &X509Ref) -> String {
-    cert.digest(MessageDigest::sha256())
-        .map(|d| d.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(":"))
-        .unwrap_or_default()
 }
 
 #[cfg(test)]

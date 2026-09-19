@@ -1,0 +1,1019 @@
+# dcert diagnostics knowledge base.
+#
+# Each entry describes one failure signature seen when probing an endpoint
+# that sits behind Amazon CloudFront, behind a forward web proxy, or behind a
+# TLS inspecting proxy. The matching engine (src/diagnose.rs) scores every
+# entry against the evidence captured by a `dcert check` run: TLS handshake
+# errors, the negotiated session, the certificate chain, the HTTP status,
+# headers and body excerpt, the proxy CONNECT response and the proxy
+# environment.
+#
+# Signals: every signal has an optional `required: true` (the entry cannot
+# match without it) and an optional `weight` (default 1). Confidence is
+# entry weight multiplied by the share of signal weight that matched.
+#
+# Layers, in the order the engine attributes a failure:
+#   local_proxy_env  proxy_connect  tls_handshake  viewer_mtls  interception
+#   edge_http  origin_http
+#
+# Operators can add or override entries with `--kb-file` or DCERT_KB_FILE;
+# an entry with the same id replaces the built in one. Validate a file with
+# `dcert kb validate <file>`.
+version: 1
+entries:
+  # ---------------------------------------------------------------------
+  # Local proxy environment
+  # ---------------------------------------------------------------------
+  - id: proxy.env.https-without-https-proxy
+    title: HTTPS target but only HTTP_PROXY is set
+    layer: local_proxy_env
+    category: proxy
+    weight: 0.9
+    signals:
+      - type: https_proxy_missing_http_set
+        required: true
+      - type: error
+        pattern: '(?i)connect|timed out|handshake|refused|unreachable'
+    root_cause: >
+      HTTP_PROXY (or http_proxy) is set but HTTPS_PROXY and ALL_PROXY are not.
+      dcert, like curl, does not route HTTPS traffic through HTTP_PROXY alone,
+      so the connection went direct and was blocked by egress rules, while
+      other tools on the same host may be tunnelling through the proxy.
+    remediation:
+      - Export HTTPS_PROXY (or ALL_PROXY) with the same value as HTTP_PROXY.
+      - Or pass --proxy <url> for this run.
+      - Check NO_PROXY does not accidentally match the target.
+    references:
+      - https://everything.curl.dev/usingcurl/proxies/env
+
+  - id: proxy.env.proxy-unreachable
+    title: Configured forward proxy is unreachable
+    layer: local_proxy_env
+    category: proxy
+    weight: 0.9
+    signals:
+      - type: proxy_configured
+        value: true
+        required: true
+      - type: error
+        pattern: '(?i)failed to (connect to|resolve) proxy'
+        required: true
+    root_cause: >
+      A forward proxy is configured for this target but the TCP connection
+      to the proxy itself failed or its hostname did not resolve. The
+      destination was never contacted.
+    remediation:
+      - Verify the proxy host and port in HTTPS_PROXY, ALL_PROXY or --proxy.
+      - Confirm the proxy is reachable from this network segment.
+      - If the target should bypass the proxy, add it to NO_PROXY or use --noproxy.
+    references:
+      - https://everything.curl.dev/usingcurl/proxies/env
+
+  - id: proxy.env.tls-to-plain-proxy
+    title: TLS spoken to a plain HTTP proxy port
+    layer: local_proxy_env
+    category: proxy
+    weight: 0.85
+    signals:
+      - type: proxy_configured
+        value: true
+        required: true
+      - type: error
+        pattern: '(?i)wrong version number|unknown protocol|packet length too long'
+        required: true
+    root_cause: >
+      The proxy URL uses https:// but the proxy listens for plain HTTP
+      CONNECT, or the reverse. OpenSSL reports "wrong version number" when a
+      TLS record is answered with an HTTP status line.
+    remediation:
+      - Use http:// in the proxy URL for a conventional CONNECT proxy.
+      - Only use https:// when the proxy itself terminates TLS on that port.
+    references:
+      - https://everything.curl.dev/usingcurl/proxies/https
+
+  # ---------------------------------------------------------------------
+  # Proxy CONNECT responses
+  # ---------------------------------------------------------------------
+  - id: proxy.connect.407-auth-required
+    title: Proxy requires authentication
+    layer: proxy_connect
+    category: proxy
+    weight: 0.98
+    signals:
+      - type: proxy_status
+        codes: [407]
+        required: true
+      - type: proxy_header
+        name: proxy-authenticate
+        pattern: '.+'
+    root_cause: >
+      The forward proxy answered the CONNECT request with 407 Proxy
+      Authentication Required. The tunnel was never opened, so no TLS
+      handshake with the destination took place. The Proxy-Authenticate
+      header names the scheme the proxy accepts.
+    remediation:
+      - Add credentials to the proxy URL, e.g. http://user:pass@proxy:3128.
+      - For NTLM or Kerberos only proxies, use a local authenticating helper such as cntlm or px.
+      - Confirm the credentials belong to an account allowed to reach the destination.
+    references:
+      - https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/407
+
+  - id: proxy.connect.403-policy
+    title: Proxy policy denies the destination
+    layer: proxy_connect
+    category: proxy
+    weight: 0.95
+    signals:
+      - type: proxy_status
+        codes: [403]
+        required: true
+    root_cause: >
+      The proxy accepted the credentials (or needed none) but refused to open
+      a tunnel to this host and port. This is an access policy decision on
+      the proxy, typically a category block, an unlisted destination or a
+      blocked port.
+    remediation:
+      - Ask the proxy team to allow list the destination host and port 443.
+      - Check whether the proxy only permits CONNECT to port 443 and the target uses another port.
+    references:
+      - https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/403
+
+  - id: proxy.connect.5xx-upstream
+    title: Proxy could not reach the destination
+    layer: proxy_connect
+    category: proxy
+    weight: 0.9
+    signals:
+      - type: proxy_status
+        codes: [502, 503, 504]
+        required: true
+      - type: proxy_header
+        name: x-squid-error
+        pattern: '.+'
+        weight: 2
+      - type: proxy_header
+        name: via
+        pattern: '.+'
+    root_cause: >
+      The proxy accepted the CONNECT but failed to connect to or resolve the
+      destination on your behalf. An X-Squid-Error header such as
+      ERR_DNS_FAIL or ERR_CONNECT_FAIL names the exact cause on Squid based
+      proxies; other vendors put it in the body.
+    remediation:
+      - Resolve the destination name from the proxy's network, not from your workstation.
+      - Check the proxy's own egress rules and upstream proxy chain.
+      - Retry after confirming the destination is up from another vantage point.
+    references:
+      - https://wiki.squid-cache.org/SquidFaq/SquidLogs
+
+  - id: proxy.connect.method-not-allowed
+    title: Proxy does not accept CONNECT
+    layer: proxy_connect
+    category: proxy
+    weight: 0.9
+    signals:
+      - type: proxy_status
+        codes: [400, 405, 501]
+        required: true
+    root_cause: >
+      The endpoint configured as a proxy answered the CONNECT request with a
+      client error. It is either not a forward proxy at all, a reverse proxy
+      or web server, or a proxy that only supports plain HTTP forwarding and
+      not tunnelling.
+    remediation:
+      - Confirm the proxy address and port belong to a forward (CONNECT capable) proxy.
+      - Some vendors expose CONNECT on a different port than plain HTTP proxying.
+    references:
+      - https://developer.mozilla.org/en-US/docs/Web/HTTP/Methods/CONNECT
+
+  - id: proxy.connect.captive-portal
+    title: Captive portal or login page in place of the tunnel
+    layer: proxy_connect
+    category: proxy
+    weight: 0.8
+    signals:
+      - type: proxy_status
+        codes: [200, 302, 303, 307]
+      - type: error
+        pattern: '(?i)wrong version number|http request'
+        required: true
+      - type: proxy_configured
+        value: false
+    root_cause: >
+      The TLS handshake was answered with an HTTP response. A transparent
+      proxy or captive portal on this network intercepts port 443 and returns
+      a login or block page instead of forwarding the connection.
+    remediation:
+      - Open a browser to complete the network login, then retry.
+      - On a corporate network, confirm the device is enrolled with the web gateway.
+    references:
+      - https://www.rfc-editor.org/rfc/rfc8910
+
+  # ---------------------------------------------------------------------
+  # TLS handshake with the edge
+  # ---------------------------------------------------------------------
+  - id: tls.handshake.protocol-version
+    title: Server rejected the offered TLS versions
+    layer: tls_handshake
+    category: tls
+    weight: 0.9
+    signals:
+      - type: error
+        pattern: '(?i)protocol version|no protocols available|unsupported protocol'
+        required: true
+    root_cause: >
+      The server and client share no TLS protocol version. CloudFront viewer
+      security policies TLSv1.2_2018 and later refuse TLS 1.0 and 1.1; a
+      client pinned to an old version, or a server still limited to TLS 1.0,
+      cannot negotiate.
+    remediation:
+      - Retry with --min-tls 1.2 (the default) and no --max-tls override.
+      - If the server only offers TLS 1.0 or 1.1, that is the finding; it must be upgraded.
+      - On CloudFront, check the distribution security policy.
+    references:
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/secure-connections-supported-viewer-protocols-ciphers.html
+
+  - id: tls.handshake.no-shared-cipher
+    title: No cipher suite in common
+    layer: tls_handshake
+    category: tls
+    weight: 0.85
+    signals:
+      - type: error
+        pattern: '(?i)handshake failure|no shared cipher|no cipher match'
+        required: true
+      - type: client_auth_required
+        negate: true
+    root_cause: >
+      The handshake was aborted with a generic handshake failure and no
+      client certificate was requested, which usually means no cipher suite
+      or signature algorithm was acceptable to both sides. Restrictive
+      --ciphers values, a legacy origin, or a CloudFront security policy
+      that dropped CBC suites are common causes.
+    remediation:
+      - Retry without --ciphers or --cipher-list to use the defaults.
+      - Compare the server's cipher list against the CloudFront security policy table.
+      - For an origin behind CloudFront, ensure it offers at least one CloudFront supported ECDHE cipher.
+    references:
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/secure-connections-supported-viewer-protocols-ciphers.html
+
+  - id: tls.handshake.sni-required
+    title: Hostname not served on this connection
+    layer: tls_handshake
+    category: tls
+    weight: 0.85
+    signals:
+      - type: error
+        pattern: '(?i)unrecognized name|tlsv1 alert internal error|handshake failure'
+        required: true
+      - type: sni_overridden
+    root_cause: >
+      The server could not select a certificate for the requested name.
+      CloudFront distributions on shared addresses require SNI, and a
+      hostname that is not an alternate domain name of any distribution is
+      refused at the handshake.
+    remediation:
+      - Check the SNI value (see --sni) matches an alternate domain configured on the distribution.
+      - Add the hostname as a CNAME on the distribution and attach a certificate that covers it.
+    references:
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/cnames-and-https-requirements.html
+
+  - id: tls.handshake.default-cloudfront-cert
+    title: CloudFront served its default certificate
+    layer: tls_handshake
+    category: cloudfront
+    weight: 0.9
+    signals:
+      - type: chain_name
+        pattern: '(?i)\*\.cloudfront\.net'
+        required: true
+      - type: target_host
+        pattern: '(?i)\.cloudfront\.net$'
+        negate: true
+        required: true
+      - type: verify_result
+        pattern: '(?i)hostname|mismatch|name'
+    root_cause: >
+      The distribution answered with the default *.cloudfront.net certificate
+      although a custom hostname was requested. Either the hostname is not
+      listed as an alternate domain name on the distribution, or no ACM
+      certificate covering it is attached, so hostname verification fails.
+    remediation:
+      - Add the hostname under Alternate domain names (CNAMEs) on the distribution.
+      - Attach an ACM certificate in us-east-1 that covers the hostname.
+      - Confirm DNS points at this distribution and not another one.
+    references:
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/cnames-and-https-requirements.html
+
+  - id: tls.handshake.chain-incomplete
+    title: Server sent an incomplete chain
+    layer: tls_handshake
+    category: tls
+    weight: 0.85
+    signals:
+      - type: error
+        pattern: '(?i)unable to get local issuer|unable to get issuer'
+        required: true
+      - type: chain_name
+        pattern: '(?i)cloudfront|amazon'
+        negate: true
+    root_cause: >
+      The leaf certificate's issuer was not in the presented chain and is not
+      a root in the local trust store, so verification stops. Origins that
+      install only the leaf certificate cause the same 502 from CloudFront.
+    remediation:
+      - Install the intermediate CA certificate(s) on the server alongside the leaf.
+      - Re-run with --resolve-issuers to fetch the missing issuer via AIA and confirm the chain.
+    references:
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/http-502-bad-gateway.html
+
+  # ---------------------------------------------------------------------
+  # Viewer mTLS
+  # ---------------------------------------------------------------------
+  - id: mtls.viewer.certificate-required
+    title: Server requires a client certificate
+    layer: viewer_mtls
+    category: mtls
+    weight: 0.95
+    signals:
+      - type: client_auth_required
+        required: true
+      - type: client_cert_supplied
+        negate: true
+        required: true
+      - type: chain_name
+        pattern: '(?i)cloudfront|amazon'
+        weight: 2
+    root_cause: >
+      The handshake was aborted because the server demanded a client
+      certificate and none was offered. A CloudFront distribution with viewer
+      mutual TLS in verify (required) mode rejects every connection without
+      a certificate at the TLS layer; no HTTP status is returned.
+    remediation:
+      - Retry with --client-cert and --client-key (or --pkcs12) holding a certificate issued by a CA in the distribution's trust store.
+      - For CloudFront, confirm the trust store attached to the distribution contains the issuing CA chain.
+      - If anonymous access must keep working, switch the distribution to optional mode.
+    references:
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/mtls-authentication.html
+
+  - id: mtls.viewer.unknown-ca
+    title: Client certificate not trusted by the server
+    layer: viewer_mtls
+    category: mtls
+    weight: 0.95
+    signals:
+      - type: client_cert_supplied
+        required: true
+      - type: error
+        pattern: '(?i)unknown ca|unknown_ca|certificate unknown'
+        required: true
+    root_cause: >
+      A client certificate was presented and the server rejected it with an
+      unknown CA alert. On CloudFront viewer mTLS this means the certificate
+      does not chain to any CA in the distribution's trust store, or the
+      trust store bundle is missing an intermediate.
+    remediation:
+      - Upload the full issuing chain (root and intermediates) to the CloudFront trust store in S3 and refresh it.
+      - Confirm the client certificate was issued by that CA and not a sibling CA.
+      - Send the intermediate along with the leaf (--client-cert file may contain both).
+    references:
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/trust-stores-certificate-management.html
+
+  - id: mtls.viewer.certificate-expired
+    title: Client certificate expired
+    layer: viewer_mtls
+    category: mtls
+    weight: 0.95
+    signals:
+      - type: client_cert_supplied
+        required: true
+      - type: error
+        pattern: '(?i)certificate expired|certificate_expired'
+        required: true
+    root_cause: >
+      The server rejected the client certificate because its validity period
+      has ended. CloudFront viewer mTLS rejects expired client certificates
+      unless the distribution has Ignore certificate expiration enabled.
+    remediation:
+      - Renew the client certificate from the issuing CA.
+      - As a temporary measure for devices that cannot be updated, enable Ignore certificate expiration on the distribution.
+    references:
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/mtls-validation-modes.html
+
+  - id: mtls.viewer.bad-certificate
+    title: Client certificate rejected
+    layer: viewer_mtls
+    category: mtls
+    weight: 0.85
+    signals:
+      - type: client_cert_supplied
+        required: true
+      - type: error
+        pattern: '(?i)bad certificate|certificate revoked|unsupported certificate|access denied|decrypt error'
+        required: true
+    root_cause: >
+      The client certificate was received but refused after validation. On
+      CloudFront this covers revocation via the uploaded CRL, a key usage
+      that does not include client authentication, an unsupported signature
+      algorithm or a mismatch between the certificate and the private key.
+    remediation:
+      - Check the certificate has the TLS client authentication extended key usage.
+      - Check the certificate is not on the CRL attached to the trust store.
+      - Verify the key matches the certificate with dcert verify-key.
+    references:
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/mtls-validation-modes.html
+
+  - id: mtls.viewer.optional-mode-origin-rejects
+    title: Handshake succeeded but the origin rejected the identity
+    layer: edge_http
+    category: mtls
+    weight: 0.75
+    signals:
+      - type: header
+        name: server
+        pattern: '(?i)cloudfront'
+        required: true
+      - type: header
+        name: x-cache
+        pattern: '(?i)miss from cloudfront'
+        required: true
+      - type: status
+        codes: [401, 403]
+        required: true
+      - type: client_cert_supplied
+    root_cause: >
+      CloudFront accepted the connection (optional or passthrough viewer mTLS)
+      and forwarded the request, and the origin answered 401 or 403. The
+      origin expects the CloudFront-Viewer-Cert-* or Client-Cert headers and
+      either did not receive them or rejected their content.
+    remediation:
+      - Allow list CloudFront-Viewer-Cert-Present, Subject, Issuer, Serial-Number, Sha256, Validity and Pem in the origin request policy.
+      - In passthrough mode allow list Client-Cert and Client-Cert-Chain instead, and decode the URL encoded PEM at the origin.
+      - Compare the origin's expected header names with what the cache policy forwards.
+    references:
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/viewer-mtls-headers.html
+
+  # ---------------------------------------------------------------------
+  # TLS interception
+  # ---------------------------------------------------------------------
+  - id: interception.vendor-ca
+    title: TLS inspection proxy re signed the connection
+    layer: interception
+    category: interception
+    weight: 0.95
+    signals:
+      - type: chain_name
+        pattern: '(?i)zscaler|netskope|umbrella|fortinet|fortigate|palo alto|blue ?coat|proxysg|forcepoint|websense|mcafee web gateway|skyhigh|sophos|check ?point|menlo|iboss|cloudflare gateway|global secure access|mitmproxy|charles|fiddler|burp|cisco secure|symantec .*proxy|websecurity'
+        required: true
+      - type: root_class
+        is: private_pki
+    root_cause: >
+      The certificate chain was issued by a known TLS inspection product,
+      not by the destination's CA. A forward proxy or endpoint agent is
+      terminating TLS, inspecting the traffic and re signing it. Everything
+      dcert reports about the chain describes the proxy, not the real
+      endpoint; CloudFront or origin certificate details are invisible.
+    remediation:
+      - Trust the inspection CA for tooling (SSL_CERT_FILE or --ca-cert) or ask for the destination to be exempted from inspection.
+      - Compare with a direct probe using --connect-to to the real edge address to see the genuine chain.
+      - Client certificate (mTLS) flows cannot pass through an inspecting proxy; request a bypass for mTLS endpoints.
+    references:
+      - https://help.zscaler.com/zia/about-ssl-inspection
+
+  - id: interception.private-root-public-host
+    title: Public hostname chains to a private root
+    layer: interception
+    category: interception
+    weight: 0.7
+    signals:
+      - type: public_hostname
+        required: true
+      - type: root_class
+        is: private_pki
+        required: true
+      - type: chain_name
+        pattern: '(?i)zscaler|netskope|umbrella|fortinet|fortigate|palo alto|blue ?coat|proxysg|forcepoint|mcafee|skyhigh|sophos|check ?point|menlo|iboss|cloudflare gateway|global secure access|mitmproxy|charles|fiddler|burp'
+        negate: true
+    root_cause: >
+      A public internet hostname presented a certificate that anchors to a
+      private CA. Unless the organisation deliberately runs this host on a
+      private PKI, an inspecting proxy or a transparent gateway is re signing
+      the traffic with an enterprise CA.
+    remediation:
+      - Inspect the root subject reported under root_trust; an enterprise or vendor name confirms interception.
+      - Probe from a network without the gateway, or bypass it with --connect-to, and compare chains.
+    references:
+      - https://www.ndss-symposium.org/wp-content/uploads/2017/09/killed-proxy-analyzing-client-end-tls-interception-software.pdf
+
+  # ---------------------------------------------------------------------
+  # CloudFront edge generated HTTP errors
+  # ---------------------------------------------------------------------
+  - id: cloudfront.edge.cname-not-configured
+    title: CloudFront alternate domain not configured
+    layer: edge_http
+    category: cloudfront
+    weight: 0.95
+    signals:
+      - type: status
+        codes: [403, 400]
+        required: true
+      - type: header
+        name: server
+        pattern: '(?i)cloudfront'
+        required: true
+      - type: body
+        pattern: "(?i)bad request\\. we can't connect to the server for this app or website"
+        required: true
+        weight: 3
+      - type: header
+        name: x-cache
+        pattern: '(?i)error from cloudfront'
+    root_cause: >
+      The request reached CloudFront but no distribution claims the Host
+      header. DNS points at CloudFront, yet the hostname is not listed as an
+      alternate domain name on any distribution, so the edge answers with
+      its generic bad request page.
+    remediation:
+      - Add the hostname under Alternate domain names (CNAMEs) on the intended distribution.
+      - Attach an ACM certificate that covers the hostname.
+      - Check the DNS record targets the right distribution domain.
+    references:
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/http-403-permission-denied.html
+
+  - id: cloudfront.edge.waf-blocked
+    title: Request blocked by AWS WAF
+    layer: edge_http
+    category: cloudfront
+    weight: 0.95
+    signals:
+      - type: status
+        codes: [403]
+        required: true
+      - type: header
+        name: server
+        pattern: '(?i)cloudfront'
+        required: true
+      - type: body
+        pattern: '(?i)request blocked'
+        required: true
+        weight: 3
+      - type: header
+        name: x-cache
+        pattern: '(?i)error from cloudfront'
+    root_cause: >
+      An AWS WAF web ACL associated with the distribution blocked the request
+      at the edge. The origin never saw it. Managed rule groups commonly
+      trigger on missing or unusual User-Agent values, request size, or IP
+      reputation.
+    remediation:
+      - Search the WAF sampled requests or logs for the X-Amz-Cf-Id value shown in the evidence.
+      - Add a scoped rule exception or adjust the managed rule group action.
+      - Retry with a browser like User-Agent header to confirm a bot control rule.
+    references:
+      - https://docs.aws.amazon.com/waf/latest/developerguide/web-acl-testing.html
+
+  - id: cloudfront.edge.geo-restricted
+    title: Geographic restriction
+    layer: edge_http
+    category: cloudfront
+    weight: 0.98
+    signals:
+      - type: status
+        codes: [403]
+        required: true
+      - type: body
+        pattern: '(?i)configured to block access from your country'
+        required: true
+        weight: 3
+      - type: header
+        name: server
+        pattern: '(?i)cloudfront'
+    root_cause: >
+      The distribution's geographic restriction denies the country the
+      request came from. When probing through a proxy the country is that of
+      the proxy egress, not of the workstation.
+    remediation:
+      - Adjust the allow or block list under Geographic restrictions on the distribution.
+      - When probing through a proxy, check the proxy's egress country.
+    references:
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/georestrictions.html
+
+  - id: cloudfront.edge.signed-url-missing
+    title: Signed URL or cookie missing
+    layer: edge_http
+    category: cloudfront
+    weight: 0.98
+    signals:
+      - type: status
+        codes: [403]
+        required: true
+      - type: body
+        pattern: '(?i)missing key-pair-id|missing key pair id'
+        required: true
+        weight: 3
+    root_cause: >
+      The cache behaviour restricts viewer access with signed URLs or signed
+      cookies and the request carried neither.
+    remediation:
+      - Generate a signed URL or cookie with a key in the distribution's trusted key group.
+      - Confirm the path matches a cache behaviour that expects signing.
+    references:
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/PrivateContent.html
+
+  - id: cloudfront.edge.signed-url-invalid
+    title: Signed URL rejected
+    layer: edge_http
+    category: cloudfront
+    weight: 0.9
+    signals:
+      - type: status
+        codes: [403]
+        required: true
+      - type: body
+        pattern: '(?i)access denied|signature|expired|key-pair-id'
+        required: true
+      - type: header
+        name: server
+        pattern: '(?i)cloudfront'
+        required: true
+      - type: header
+        name: x-cache
+        pattern: '(?i)error from cloudfront'
+        weight: 2
+    root_cause: >
+      CloudFront rejected the signed URL or cookie: the signature does not
+      verify, the policy has expired, or the key pair is not in a trusted key
+      group of the distribution.
+    remediation:
+      - Regenerate the signature with an unexpired policy and the correct private key.
+      - Confirm the key id belongs to a key group attached to the distribution.
+    references:
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/private-content-signed-urls.html
+
+  - id: cloudfront.edge.origin-dns
+    title: CloudFront cannot resolve the origin
+    layer: edge_http
+    category: cloudfront
+    weight: 0.98
+    signals:
+      - type: status
+        codes: [502]
+        required: true
+      - type: body
+        pattern: "(?i)wasn't able to resolve the origin domain name"
+        required: true
+        weight: 3
+    root_cause: >
+      The origin domain name configured on the distribution does not resolve
+      in public DNS. Private hosted zone names and internal hostnames are
+      not reachable from CloudFront.
+    remediation:
+      - Fix or publish the origin DNS record in a public zone.
+      - Use the origin's public DNS name, not an internal or split horizon name.
+    references:
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/http-502-bad-gateway.html
+
+  - id: cloudfront.edge.origin-tls-failure
+    title: CloudFront could not complete TLS with the origin
+    layer: edge_http
+    category: cloudfront
+    weight: 0.95
+    signals:
+      - type: status
+        codes: [502]
+        required: true
+      - type: body
+        pattern: '(?i)attempted to establish a connection with the origin, but either the attempt failed or the origin closed the connection'
+        required: true
+        weight: 3
+      - type: header
+        name: x-cache
+        pattern: '(?i)error from cloudfront'
+    root_cause: >
+      CloudFront reached the origin but the TLS negotiation failed or the
+      origin closed the connection. The usual causes are an origin
+      certificate whose names do not match the origin domain or Host header,
+      an expired or self signed origin certificate, a missing intermediate,
+      no cipher or protocol in common with CloudFront, an origin that demands
+      a client certificate while origin mTLS is not enabled on the
+      distribution, or a response header block over the CloudFront limit.
+    remediation:
+      - Probe the origin directly with dcert, using --connect-to if its DNS name differs, and read the diagnosis for that hop.
+      - Ensure the origin certificate covers the Origin Domain and is issued by a publicly trusted CA with the full chain installed.
+      - Ensure the origin offers TLS 1.2 or 1.3 with an ECDHE cipher CloudFront supports.
+      - If the origin requires a client certificate, enable origin mTLS on the distribution with a certificate from ACM in us-east-1.
+    references:
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/http-502-bad-gateway.html
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/origin-mtls-authentication.html
+
+  - id: cloudfront.edge.origin-timeout
+    title: CloudFront timed out connecting to the origin
+    layer: edge_http
+    category: cloudfront
+    weight: 0.95
+    signals:
+      - type: status
+        codes: [504]
+        required: true
+      - type: body
+        pattern: "(?i)wasn't able to connect to the origin|origin.*timed out|gateway time-?out"
+        required: true
+        weight: 3
+      - type: header
+        name: server
+        pattern: '(?i)cloudfront'
+    root_cause: >
+      CloudFront could not open a connection to the origin or the origin did
+      not answer within the origin response timeout. Security groups,
+      firewalls, an origin on a private address, or a slow origin are the
+      usual reasons.
+    remediation:
+      - Allow inbound traffic from the CloudFront managed prefix list on the origin security group.
+      - Confirm the origin is reachable from the public internet on the configured port.
+      - Raise the origin response timeout for slow endpoints.
+    references:
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/http-504-gateway-timeout.html
+
+  - id: cloudfront.edge.lambda-edge-invalid
+    title: Lambda@Edge returned an invalid response
+    layer: edge_http
+    category: cloudfront
+    weight: 0.98
+    signals:
+      - type: status
+        codes: [502, 503]
+        required: true
+      - type: body
+        pattern: '(?i)lambda function associated with the cloudfront distribution is invalid'
+        required: true
+        weight: 3
+    root_cause: >
+      A Lambda@Edge function attached to the cache behaviour returned a
+      malformed response, exceeded a limit, or lacks the trust policy that
+      lets CloudFront invoke it.
+    remediation:
+      - Validate the function response shape for the event type it handles.
+      - Check the function's execution role trusts both lambda.amazonaws.com and edgelambda.amazonaws.com.
+      - Review CloudWatch Logs in the region where the edge executed the function.
+    references:
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/lambda-edge-testing-debugging.html
+
+  - id: cloudfront.edge.function-invalid
+    title: CloudFront Function failed
+    layer: edge_http
+    category: cloudfront
+    weight: 0.98
+    signals:
+      - type: status
+        codes: [503, 502]
+        required: true
+      - type: body
+        pattern: '(?i)cloudfront function associated with the cloudfront distribution is invalid'
+        required: true
+        weight: 3
+    root_cause: >
+      A CloudFront Function on the cache behaviour threw an error or
+      exceeded its compute limit.
+    remediation:
+      - Test the function in the console with the failing request and inspect the error output.
+      - Reduce work in the function or move it to Lambda@Edge.
+    references:
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/functions-test.html
+
+  - id: cloudfront.edge.capacity
+    title: CloudFront capacity exceeded
+    layer: edge_http
+    category: cloudfront
+    weight: 0.9
+    signals:
+      - type: status
+        codes: [503]
+        required: true
+      - type: body
+        pattern: '(?i)capacity exceeded'
+        required: true
+        weight: 3
+    root_cause: >
+      The edge location could not serve the request because of capacity
+      limits at that point of presence.
+    remediation:
+      - Retry; the condition is transient.
+      - Open a support case with the request id if it persists.
+    references:
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/http-503-service-unavailable.html
+
+  - id: cloudfront.edge.generic-error-page
+    title: CloudFront edge error page
+    layer: edge_http
+    category: cloudfront
+    weight: 0.6
+    fallback: true
+    signals:
+      - type: header
+        name: x-cache
+        pattern: '(?i)error from cloudfront'
+        required: true
+      - type: body
+        pattern: '(?i)the request could not be satisfied'
+        required: true
+      - type: status
+        codes: [400, 403, 404, 421, 500, 502, 503, 504]
+    root_cause: >
+      CloudFront generated this error at the edge (X-Cache says Error from
+      cloudfront) but the body sentence did not match a more specific entry.
+      The Request ID in the body and the X-Amz-Cf-Id header identify the
+      request for AWS Support.
+    remediation:
+      - Read the sentence under "The request could not be satisfied" in the body excerpt (--show-body).
+      - Quote the X-Amz-Cf-Id when contacting AWS Support.
+    references:
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/troubleshooting-response-errors.html
+
+  - id: cloudfront.edge.misdirected
+    title: Connection reused for a hostname the certificate does not cover
+    layer: edge_http
+    category: cloudfront
+    weight: 0.9
+    signals:
+      - type: status
+        codes: [421]
+        required: true
+      - type: header
+        name: server
+        pattern: '(?i)cloudfront'
+    root_cause: >
+      The HTTP/2 connection was coalesced for a hostname that the
+      certificate served on that connection does not cover, so the edge asks
+      for a new connection.
+    remediation:
+      - Open a fresh connection per hostname, or use --http1.1.
+      - Ensure every hostname sharing a connection is covered by the same certificate and distribution.
+    references:
+      - https://www.rfc-editor.org/rfc/rfc9113#section-9.1.2
+
+  # ---------------------------------------------------------------------
+  # Origin generated errors passed through the edge
+  # ---------------------------------------------------------------------
+  - id: cloudfront.origin.s3-access-denied
+    title: S3 origin denied access
+    layer: origin_http
+    category: cloudfront
+    weight: 0.95
+    signals:
+      - type: status
+        codes: [403]
+        required: true
+      - type: body
+        pattern: '(?i)<code>accessdenied</code>'
+        required: true
+        weight: 3
+      - type: header
+        name: x-cache
+        pattern: '(?i)miss from cloudfront|error from cloudfront'
+    root_cause: >
+      The request passed the edge and Amazon S3 refused it. The bucket policy
+      does not grant the distribution's origin access control (or legacy
+      origin access identity), the object does not exist and listing is
+      denied, or the object is encrypted with a KMS key the OAC cannot use.
+    remediation:
+      - Grant s3:GetObject to the CloudFront service principal with the distribution ARN condition in the bucket policy.
+      - If the object may be missing, expect 403 in place of 404 unless s3:ListBucket is granted.
+      - For SSE-KMS objects, allow the CloudFront service principal in the key policy.
+    references:
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/private-content-restricting-access-to-s3.html
+
+  - id: cloudfront.origin.s3-not-found
+    title: S3 object or bucket not found
+    layer: origin_http
+    category: cloudfront
+    weight: 0.95
+    signals:
+      - type: status
+        codes: [404]
+        required: true
+      - type: body
+        pattern: '(?i)<code>nosuchkey</code>|<code>nosuchbucket</code>'
+        required: true
+        weight: 3
+    root_cause: >
+      S3 answered that the key or bucket does not exist. The origin path or
+      the default root object on the distribution does not match the bucket
+      layout.
+    remediation:
+      - Check the origin path prefix and the default root object.
+      - Confirm the bucket name and region in the origin domain.
+    references:
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/DefaultRootObject.html
+
+  - id: cloudfront.origin.api-gateway-error
+    title: API Gateway origin returned an error
+    layer: origin_http
+    category: cloudfront
+    weight: 0.85
+    signals:
+      - type: header
+        name: x-amzn-errortype
+        pattern: '.+'
+        required: true
+        weight: 2
+      - type: status
+        codes: [401, 403, 404, 429, 500, 502, 503, 504]
+    root_cause: >
+      The response carries an x-amzn-ErrorType header, so it was generated
+      by Amazon API Gateway behind the distribution. Common values are
+      MissingAuthenticationTokenException (no route matches, often because
+      the stage name is missing from the origin path), ForbiddenException
+      (API key or resource policy) and UnauthorizedException (authorizer).
+    remediation:
+      - Set the origin path on the distribution to the API stage name.
+      - Forward the Authorization and x-api-key headers in the origin request policy.
+      - Check the API resource policy allows the CloudFront distribution or the public internet.
+    references:
+      - https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-cloudfront-distribution.html
+
+  - id: cloudfront.origin.error-forwarded
+    title: Origin error forwarded by CloudFront
+    layer: origin_http
+    category: cloudfront
+    weight: 0.6
+    fallback: true
+    signals:
+      - type: header
+        name: via
+        pattern: '(?i)cloudfront'
+        required: true
+      - type: header
+        name: x-cache
+        pattern: '(?i)miss from cloudfront|refreshhit from cloudfront'
+        required: true
+      - type: status
+        codes: [400, 401, 403, 404, 405, 429, 500, 501, 502, 503, 504]
+        required: true
+    root_cause: >
+      The request went through CloudFront (Via header) and the status was
+      produced by the origin, not the edge (X-Cache is a miss, not an edge
+      error). Investigate the origin directly; the edge is healthy.
+    remediation:
+      - Probe the origin directly with dcert, bypassing CloudFront with --connect-to if the origin has a separate name.
+      - Check origin logs for the X-Amz-Cf-Id value.
+    references:
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/troubleshooting-response-errors.html
+
+  - id: cloudfront.origin.mtls-not-enabled
+    title: Origin demands a client certificate that CloudFront does not present
+    layer: origin_http
+    category: mtls
+    weight: 0.8
+    signals:
+      - type: status
+        codes: [502]
+        required: true
+      - type: body
+        pattern: '(?i)attempted to establish a connection with the origin'
+        required: true
+      - type: target_host
+        pattern: '(?i)origin|backend|api'
+    root_cause: >
+      The 502 sentence indicates a failed TLS negotiation with the origin.
+      When a direct probe of the origin reports client certificate required
+      (exit code 6), the origin enforces mTLS and origin mutual TLS is not
+      enabled on the distribution, or the certificate CloudFront presents is
+      not trusted by the origin.
+    remediation:
+      - Probe the origin directly; if dcert reports client certificate required, enable origin mTLS on the distribution.
+      - Import a client certificate with the TLS client authentication EKU into ACM in us-east-1 and attach it to the origin.
+      - Add the certificate's issuing CA chain to the origin's trust store (ALB trust store, nginx ssl_client_certificate, or API Gateway truststore).
+      - Track expiry; imported ACM certificates are not renewed automatically.
+    references:
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/origin-mtls-authentication.html
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/origin-certificate-management-certificate-manager.html
+
+  # ---------------------------------------------------------------------
+  # Informational findings on a healthy CloudFront response
+  # ---------------------------------------------------------------------
+  - id: cloudfront.info.served-by-cloudfront
+    title: Endpoint is served through CloudFront
+    layer: edge_http
+    category: cloudfront
+    weight: 0.5
+    signals:
+      - type: header
+        name: via
+        pattern: '(?i)cloudfront'
+        required: true
+      - type: header
+        name: x-amz-cf-pop
+        pattern: '.+'
+      - type: status
+        codes: [200, 201, 204, 301, 302, 304, 307, 308]
+        required: true
+    root_cause: >
+      The response passed through a CloudFront edge and completed
+      successfully. The certificate chain shown belongs to the distribution,
+      not to the origin; the origin's own certificate and any origin mTLS
+      configuration are not visible from this vantage point.
+    remediation:
+      - To inspect the origin certificate, probe the origin hostname directly.
+      - Use the X-Amz-Cf-Pop and X-Amz-Cf-Id values when correlating with CloudFront logs.
+    references:
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/troubleshooting-response-errors.html

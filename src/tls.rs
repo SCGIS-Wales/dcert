@@ -11,25 +11,8 @@ use crate::connect::{ConnectOverrides, ResolvedOverride};
 use crate::debug::{dbg_section, debug_log, sanitize_header_value, sanitize_url};
 use crate::proxy::{ProxyConfig, connect_through_proxy};
 
-pub const MAX_CONNECTIONS: usize = 10;
 pub const CONNECTION_TIMEOUT_SECS: u64 = 10;
 pub const READ_TIMEOUT_SECS: u64 = 5;
-
-/// Semaphore-based connection limiter. Eliminates the TOCTOU race that existed
-/// with the previous `fetch_add` + check + `fetch_sub` pattern by using a
-/// counting semaphore that atomically acquires a permit.
-static CONNECTION_SEMAPHORE: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
-    std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS)));
-
-/// Try to acquire a connection permit (non-blocking, for sync code).
-/// Returns a guard that releases the permit on drop, or an error if
-/// the maximum number of concurrent connections has been reached.
-pub fn try_acquire_connection() -> Result<tokio::sync::OwnedSemaphorePermit> {
-    CONNECTION_SEMAPHORE
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| anyhow::anyhow!("Too many concurrent connections"))
-}
 
 /// Load CA certificates into the SSL connector builder.
 ///
@@ -48,7 +31,7 @@ pub fn load_ca_certs(builder: &mut openssl::ssl::SslConnectorBuilder) -> Result<
     if openssl_probe::has_ssl_cert_env_vars() {
         builder
             .set_default_verify_paths()
-            .map_err(|e| anyhow::anyhow!("Failed to load CA certificates: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to load CA certificates: {e}"))?;
         return Ok(());
     }
 
@@ -72,7 +55,7 @@ pub fn load_ca_certs(builder: &mut openssl::ssl::SslConnectorBuilder) -> Result<
     if !loaded {
         builder
             .set_default_verify_paths()
-            .map_err(|e| anyhow::anyhow!("Failed to load CA certificates: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to load CA certificates: {e}"))?;
     }
 
     Ok(())
@@ -81,11 +64,11 @@ pub fn load_ca_certs(builder: &mut openssl::ssl::SslConnectorBuilder) -> Result<
 /// Resolve a hostname to a socket address, returning the address and DNS resolution time.
 pub fn resolve_host(host: &str, port: u16) -> Result<(SocketAddr, u128)> {
     let dns_start = std::time::Instant::now();
-    let addr = format!("{}:{}", host, port)
+    let addr = format!("{host}:{port}")
         .to_socket_addrs()
-        .map_err(|e| anyhow::anyhow!("DNS resolution failed for '{}': {}", host, e))?
+        .map_err(|e| anyhow::anyhow!("DNS resolution failed for '{host}': {e}"))?
         .next()
-        .ok_or_else(|| anyhow::anyhow!("DNS resolution failed for '{}': no addresses returned", host))?;
+        .ok_or_else(|| anyhow::anyhow!("DNS resolution failed for '{host}': no addresses returned"))?;
     let dns_ms = dns_start.elapsed().as_millis();
     Ok((addr, dns_ms))
 }
@@ -107,10 +90,10 @@ pub fn direct_tcp_connect(host: &str, port: u16, timeout: Duration) -> Result<(T
                 )
             }
             std::io::ErrorKind::ConnectionRefused => {
-                anyhow::anyhow!("TCP connection refused by {}:{} (port may not be open)", host, port)
+                anyhow::anyhow!("TCP connection refused by {host}:{port} (port may not be open)")
             }
             _ => {
-                anyhow::anyhow!("TCP connection to {}:{} failed: {}", host, port, e)
+                anyhow::anyhow!("TCP connection to {host}:{port} failed: {e}")
             }
         }
     })?;
@@ -136,7 +119,7 @@ pub fn connect_via_override(ov: &ResolvedOverride<'_>, timeout: Duration) -> Res
                 let addr = SocketAddr::new(ip, ov.port);
                 TcpStream::connect_timeout(&addr, timeout)
                     .map(|s| (s, addr, 0))
-                    .map_err(|e| anyhow::anyhow!("{}", e))
+                    .map_err(|e| anyhow::anyhow!("{e}"))
             }
             Err(_) => direct_tcp_connect(target, ov.port, timeout).map(|(s, dns, addr)| (s, addr, dns)),
         };
@@ -152,6 +135,90 @@ pub fn connect_via_override(ov: &ResolvedOverride<'_>, timeout: Duration) -> Res
         ov.source,
         errors.join("; ")
     ))
+}
+
+/// One response header as sent by the server.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HttpHeader {
+    pub name: String,
+    pub value: String,
+}
+
+/// Default number of body bytes captured for diagnostics.
+pub const DEFAULT_BODY_LIMIT: usize = 16 * 1024;
+/// Upper bound accepted for `--body-limit`.
+pub const MAX_BODY_LIMIT: usize = 1024 * 1024;
+
+/// Parsed HTTP/1.x response head plus a bounded body excerpt.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HttpResponseCapture {
+    pub status: u16,
+    pub reason: Option<String>,
+    pub headers: Vec<HttpHeader>,
+    pub body: Vec<u8>,
+    pub body_truncated: bool,
+}
+
+impl HttpResponseCapture {
+    /// First value of a header, case insensitive.
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|h| h.name.eq_ignore_ascii_case(name))
+            .map(|h| h.value.as_str())
+    }
+
+    /// Parse raw response bytes. Tolerates a missing header terminator (the
+    /// status line alone is enough to report a code) and never panics on
+    /// malformed input.
+    pub fn parse(raw: &[u8], body_limit: usize) -> Self {
+        let head_end = raw.windows(4).position(|w| w == b"\r\n\r\n");
+        let (head, body) = match head_end {
+            Some(i) => (&raw[..i], &raw[i + 4..]),
+            None => (raw, &raw[raw.len()..]),
+        };
+        let head = String::from_utf8_lossy(head);
+        let mut lines = head.split("\r\n");
+        let status_line = lines.next().unwrap_or("");
+        let mut parts = status_line.splitn(3, ' ');
+        let _version = parts.next();
+        let status = parts.next().and_then(|c| c.parse::<u16>().ok()).unwrap_or(0);
+        let reason = parts
+            .next()
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+            .map(ToString::to_string);
+        let headers = lines
+            .filter_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                let name = name.trim();
+                if name.is_empty() {
+                    return None;
+                }
+                Some(HttpHeader {
+                    name: name.to_ascii_lowercase(),
+                    value: value.trim().to_string(),
+                })
+            })
+            .collect();
+        let body_truncated = body.len() > body_limit;
+        Self {
+            status,
+            reason,
+            headers,
+            body: body[..body.len().min(body_limit)].to_vec(),
+            body_truncated,
+        }
+    }
+
+    /// Body as text, lossily decoded.
+    pub fn body_text(&self) -> Option<String> {
+        if self.body.is_empty() {
+            None
+        } else {
+            Some(String::from_utf8_lossy(&self.body).into_owned())
+        }
+    }
 }
 
 /// Result of a TLS connection, containing the certificate chain and connection metadata.
@@ -170,6 +237,21 @@ pub struct TlsConnectionInfo {
     /// ALPN negotiated protocol (e.g. "h2", "http/1.1")
     pub negotiated_protocol: Option<String>,
     pub http_response_code: u16,
+    /// Reason phrase from the status line, e.g. `Forbidden`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_reason: Option<String>,
+    /// Response headers in wire order. Names are lower cased; values are
+    /// trimmed. Empty when no response was read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub http_headers: Vec<HttpHeader>,
+    /// Leading bytes of the response body (bounded by `--body-limit`),
+    /// decoded lossily as UTF-8. Cleared before output unless `--show-body`
+    /// is set or a diagnosis matched on it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_body_excerpt: Option<String>,
+    /// `true` when the body was cut at the limit.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub http_body_truncated: bool,
     pub verify_result: Option<String>,
     /// Per-certificate chain validation errors (depth, error, subject).
     pub chain_validation_errors: Vec<String>,
@@ -179,6 +261,10 @@ pub struct TlsConnectionInfo {
     /// handshake aborted, so the user can still inspect the server identity.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub client_auth_required: bool,
+    /// `true` when `--no-verify` was set: the chain was accepted without
+    /// validation and `verify_result` must not be read as a pass.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub verification_disabled: bool,
     /// Address actually dialled, e.g. "10.0.0.5:443". `None` when a forward
     /// proxy performed the connection on our behalf.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -261,7 +347,7 @@ fn handshake_verify_error(err_str: &str, verify_details: &[String], custom_ca: b
     }
 
     if missing_issuer && !unknown_root {
-        let who = missing_subject.map(|s| format!(" for '{}'", s)).unwrap_or_default();
+        let who = missing_subject.map(|s| format!(" for '{s}'")).unwrap_or_default();
         anyhow::anyhow!(
             "TLS chain incomplete: could not build a trusted path to a root CA. \
              The server did not send the intermediate CA certificate{who}, and dcert does \
@@ -312,8 +398,331 @@ fn chain_to_pem(certs: &[openssl::x509::X509]) -> Result<String> {
     Ok(pem)
 }
 
+/// Everything needed to build an [`SslConnector`] for a probe. Shared by the
+/// HTTPS and STARTTLS paths so CA loading, client identity, protocol bounds,
+/// cipher configuration and the verify callback are configured once.
+struct ConnectorOptions<'a> {
+    no_verify: bool,
+    min_tls: Option<TlsVersionArg>,
+    max_tls: Option<TlsVersionArg>,
+    cipher_list: Option<&'a str>,
+    cipher_suites: Option<&'a str>,
+    ca_cert_path: Option<&'a str>,
+    client_cert_path: Option<&'a str>,
+    client_key_path: Option<&'a str>,
+    pkcs12_path: Option<&'a str>,
+    cert_password: Option<&'a str>,
+    /// ALPN to advertise. `None` sends no ALPN extension (STARTTLS).
+    alpn: Option<HttpProtocol>,
+    debug: bool,
+}
+
+/// Server chain and per-depth verification errors captured inside the
+/// OpenSSL verify callback. Mutex access is poison tolerant so a panic in an
+/// earlier callback never turns into a second panic inside OpenSSL.
+#[derive(Clone, Default)]
+struct VerifyCapture {
+    errors: Arc<std::sync::Mutex<Vec<String>>>,
+    chain: Arc<std::sync::Mutex<Vec<openssl::x509::X509>>>,
+}
+
+impl VerifyCapture {
+    fn errors(&self) -> Vec<String> {
+        self.errors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn chain(&self) -> Vec<openssl::x509::X509> {
+        self.chain
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Turn a failed `connect()` into the user facing error, enriching
+    /// verification failures with the captured per-depth detail.
+    fn handshake_error(&self, e: &dyn std::fmt::Display, custom_ca: bool) -> anyhow::Error {
+        let err_str = e.to_string();
+        if err_str.contains("certificate verify failed") || err_str.contains("unable to get local issuer") {
+            handshake_verify_error(&err_str, &self.errors(), custom_ca)
+        } else {
+            anyhow::anyhow!("TLS handshake failed: {e}")
+        }
+    }
+}
+
+/// Build the connector and install the capturing verify callback.
+fn build_connector(opts: &ConnectorOptions<'_>) -> Result<(SslConnector, VerifyCapture)> {
+    let debug = opts.debug;
+    let mut builder =
+        SslConnector::builder(SslMethod::tls()).map_err(|e| anyhow::anyhow!("OpenSSL builder failed: {e}"))?;
+
+    // CA material: custom bundle or the system store.
+    if let Some(ca_path) = opts.ca_cert_path {
+        debug_log!(debug, "Using custom CA bundle: {}", ca_path);
+        builder
+            .set_ca_file(ca_path)
+            .map_err(|e| anyhow::anyhow!("Failed to load custom CA certificate '{ca_path}': {e}"))?;
+    } else {
+        load_ca_certs(&mut builder)?;
+    }
+
+    // Client identity for mTLS.
+    if let Some(cert_path) = opts.client_cert_path {
+        debug_log!(debug, "Loading client certificate: {}", cert_path);
+        builder
+            .set_certificate_file(cert_path, openssl::ssl::SslFiletype::PEM)
+            .map_err(|e| anyhow::anyhow!("Failed to load client certificate '{cert_path}': {e}"))?;
+        if let Some(key_path) = opts.client_key_path {
+            debug_log!(debug, "Loading client private key: {}", key_path);
+            builder
+                .set_private_key_file(key_path, openssl::ssl::SslFiletype::PEM)
+                .map_err(|e| anyhow::anyhow!("Failed to load client private key '{key_path}': {e}"))?;
+        }
+        builder
+            .check_private_key()
+            .map_err(|e| anyhow::anyhow!("Client certificate and private key do not match: {e}"))?;
+        debug_log!(debug, "Client certificate and key verified");
+    } else if let Some(p12_path) = opts.pkcs12_path {
+        debug_log!(debug, "Loading PKCS12 client identity: {}", p12_path);
+        let p12_data =
+            std::fs::read(p12_path).map_err(|e| anyhow::anyhow!("Failed to read PKCS12 file '{p12_path}': {e}"))?;
+        let pkcs12 = openssl::pkcs12::Pkcs12::from_der(&p12_data)
+            .map_err(|e| anyhow::anyhow!("Failed to parse PKCS12 file '{p12_path}': {e}"))?;
+        let parsed = pkcs12
+            .parse2(opts.cert_password.unwrap_or(""))
+            .map_err(|e| anyhow::anyhow!("Failed to decrypt PKCS12 '{p12_path}' (wrong password?): {e}"))?;
+        if let Some(ref cert) = parsed.cert {
+            builder
+                .set_certificate(cert)
+                .map_err(|e| anyhow::anyhow!("Failed to set PKCS12 certificate: {e}"))?;
+        }
+        if let Some(ref pkey) = parsed.pkey {
+            builder
+                .set_private_key(pkey)
+                .map_err(|e| anyhow::anyhow!("Failed to set PKCS12 private key: {e}"))?;
+        }
+        if let Some(ref ca_chain) = parsed.ca {
+            for ca_cert in ca_chain {
+                builder
+                    .add_extra_chain_cert(ca_cert.to_owned())
+                    .map_err(|e| anyhow::anyhow!("Failed to add PKCS12 CA cert to chain: {e}"))?;
+            }
+        }
+        builder
+            .check_private_key()
+            .map_err(|e| anyhow::anyhow!("PKCS12 certificate and private key do not match: {e}"))?;
+        debug_log!(debug, "PKCS12 client identity loaded and verified");
+    }
+
+    // Protocol bounds. The floor defaults to TLS 1.2 so it is independent of
+    // the linked OpenSSL version.
+    let effective_min = opts.min_tls.unwrap_or(TlsVersionArg::Tls1_2);
+    builder
+        .set_min_proto_version(Some(effective_min.to_ssl_version()))
+        .map_err(|e| anyhow::anyhow!("Failed to set minimum TLS version to {effective_min}: {e}"))?;
+    if let Some(max) = opts.max_tls {
+        builder
+            .set_max_proto_version(Some(max.to_ssl_version()))
+            .map_err(|e| anyhow::anyhow!("Failed to set maximum TLS version to {max}: {e}"))?;
+    }
+
+    if let Some(ciphers) = opts.cipher_list {
+        builder
+            .set_cipher_list(ciphers)
+            .map_err(|e| anyhow::anyhow!("Invalid cipher list '{ciphers}': {e}"))?;
+    }
+    if let Some(suites) = opts.cipher_suites {
+        builder
+            .set_ciphersuites(suites)
+            .map_err(|e| anyhow::anyhow!("Invalid TLS 1.3 cipher suites '{suites}': {e}"))?;
+    }
+
+    // ALPN. Only HTTP/1.1 framing is implemented on the wire; advertising h2
+    // lets the server state its preference, and the caller warns if h2 wins.
+    match opts.alpn {
+        Some(HttpProtocol::Http2) => builder
+            .set_alpn_protos(b"\x02h2\x08http/1.1")
+            .map_err(|e| anyhow::anyhow!("Failed to set ALPN protocols: {e}"))?,
+        Some(HttpProtocol::Http1_1) => builder
+            .set_alpn_protos(b"\x08http/1.1")
+            .map_err(|e| anyhow::anyhow!("Failed to set ALPN protocols: {e}"))?,
+        None => {}
+    }
+
+    // Capture the chain and per-depth errors. The callback fires once per
+    // certificate as the server's Certificate flight is processed, before any
+    // CertificateRequest, so the chain is available even when the handshake
+    // later aborts because the server requires mTLS.
+    let capture = VerifyCapture::default();
+    let cb = capture.clone();
+    let force_accept = opts.no_verify;
+    builder.set_verify_callback(SslVerifyMode::PEER, move |preverify, ctx| {
+        if let Some(cert) = ctx.current_cert() {
+            let mut chain = cb.chain.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let owned: openssl::x509::X509 = cert.to_owned();
+            if !chain.iter().any(|c| c == &owned) {
+                chain.push(owned);
+            }
+        }
+        if !preverify {
+            let depth = ctx.error_depth();
+            let err = ctx.error();
+            let subject = ctx
+                .current_cert()
+                .map(|c| crate::cert::format_x509_name(c.subject_name()))
+                .unwrap_or_else(|| "unknown".to_string());
+            let mut errs = cb.errors.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            errs.push(format!("depth {depth}: {err} ({subject})"));
+        }
+        if force_accept { true } else { preverify }
+    });
+
+    Ok((builder.build(), capture))
+}
+
+/// Debug dump of the negotiated session (layers 5 and 6).
+fn log_tls_session_debug(ssl: &openssl::ssl::SslRef, sni_host: &str, no_verify: bool, debug: bool) {
+    if !debug {
+        return;
+    }
+    dbg_section(true, "Layer 5/6 (Session/Presentation - TLS)");
+    debug_log!(true, "TLS version: {}", ssl.version_str());
+    if let Some(cipher) = ssl.current_cipher() {
+        debug_log!(true, "Cipher (OpenSSL): {}", cipher.name());
+        if let Some(std_name) = cipher.standard_name() {
+            debug_log!(true, "Cipher (IANA): {}", std_name);
+        }
+    }
+    if let Some(proto) = ssl.selected_alpn_protocol()
+        && let Ok(proto_str) = std::str::from_utf8(proto)
+    {
+        debug_log!(true, "ALPN negotiated: {}", proto_str);
+    }
+    debug_log!(true, "SNI sent: {}", sni_host);
+    if no_verify {
+        debug_log!(true, "Certificate verification: DISABLED (--no-verify)");
+    }
+    if let Some(chain) = ssl.peer_cert_chain() {
+        debug_log!(true, "Certificate chain depth: {}", chain.len());
+    }
+}
+
+/// Negotiated session parameters, read once after the handshake.
+struct TlsSessionSummary {
+    tls_version: String,
+    tls_cipher: String,
+    tls_cipher_iana: Option<String>,
+    negotiated_protocol: Option<String>,
+    verify_result: Option<String>,
+    chain_validation_errors: Vec<String>,
+}
+
+fn session_summary(ssl: &openssl::ssl::SslRef, capture: &VerifyCapture, debug: bool) -> TlsSessionSummary {
+    let current_cipher = ssl.current_cipher();
+    let verify_result = {
+        let result = ssl.verify_result();
+        if result == openssl::x509::X509VerifyResult::OK {
+            None
+        } else {
+            Some(format!("{result}"))
+        }
+    };
+    let chain_validation_errors = capture.errors();
+    if debug {
+        if let Some(ref result) = verify_result {
+            debug_log!(true, "Verification: {}", result);
+            for err in &chain_validation_errors {
+                debug_log!(true, "  Chain error: {}", err);
+            }
+        } else {
+            debug_log!(true, "Verification: OK");
+        }
+    }
+    TlsSessionSummary {
+        tls_version: ssl.version_str().to_string(),
+        tls_cipher: current_cipher
+            .map(|c| c.name().to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        tls_cipher_iana: current_cipher.and_then(|c| c.standard_name().map(ToString::to_string)),
+        negotiated_protocol: ssl
+            .selected_alpn_protocol()
+            .and_then(|p| std::str::from_utf8(p).ok())
+            .map(ToString::to_string),
+        verify_result,
+        chain_validation_errors,
+    }
+}
+
+/// The peer's presented chain as concatenated PEM.
+fn peer_chain_pem(ssl: &openssl::ssl::SslRef) -> Result<String> {
+    let certs = ssl
+        .peer_cert_chain()
+        .ok_or_else(|| anyhow::anyhow!("No peer certificates presented"))?;
+    if certs.is_empty() {
+        return Err(anyhow::anyhow!("Empty certificate chain"));
+    }
+    let owned: Vec<openssl::x509::X509> = certs.iter().map(ToOwned::to_owned).collect();
+    chain_to_pem(&owned)
+}
+
+/// Read an HTTP/1.x response head and a bounded body prefix from `stream`.
+///
+/// Stops at EOF, at the read deadline, when `Content-Length` bytes of body
+/// have arrived, or when `body_limit + 1` body bytes are buffered. The
+/// result is raw bytes for [`HttpResponseCapture::parse`].
+fn read_http_response<R: Read>(stream: &mut R, read_timeout_secs: u64, body_limit: usize) -> Vec<u8> {
+    const MAX_HEAD_SIZE: usize = 64 * 1024;
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 4096];
+    let deadline = std::time::Instant::now() + Duration::from_secs(read_timeout_secs.max(1));
+    let mut head_len: Option<usize> = None;
+    let mut content_length: Option<usize> = None;
+
+    while std::time::Instant::now() < deadline {
+        if let Some(hl) = head_len {
+            let body_have = buf.len().saturating_sub(hl);
+            if body_have > body_limit || content_length.is_some_and(|cl| body_have >= cl) {
+                break;
+            }
+        } else if buf.len() > MAX_HEAD_SIZE {
+            break;
+        }
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                buf.extend_from_slice(&chunk[..n]);
+                if head_len.is_none()
+                    && let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n")
+                {
+                    head_len = Some(i + 4);
+                    let head = String::from_utf8_lossy(&buf[..i]);
+                    content_length = head
+                        .split("\r\n")
+                        .filter_map(|l| l.split_once(':'))
+                        .find(|(k, _)| k.trim().eq_ignore_ascii_case("content-length"))
+                        .and_then(|(_, v)| v.trim().parse::<usize>().ok());
+                }
+            }
+            Err(ref e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
+                break;
+            }
+            Err(e) => {
+                if buf.is_empty() {
+                    eprintln!("Warning: Error reading HTTP response: {e}");
+                }
+                break;
+            }
+        }
+    }
+    buf
+}
+
 /// Options for `fetch_tls_chain_openssl`, grouped to avoid an unwieldy
 /// 20-parameter function signature.
+#[derive(Debug)]
 pub struct TlsFetchOptions<'a> {
     pub endpoint: &'a str,
     pub method: &'a str,
@@ -338,6 +747,8 @@ pub struct TlsFetchOptions<'a> {
     pub pkcs12_path: Option<&'a str>,
     pub cert_password: Option<&'a str>,
     pub ca_cert_path: Option<&'a str>,
+    /// Maximum number of response body bytes to keep for diagnostics.
+    pub body_limit: usize,
 }
 
 /// Fetch TLS certificate chain using OpenSSL, with proxy support, custom CA certificates, and mTLS.
@@ -364,10 +775,9 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
         pkcs12_path,
         cert_password,
         ca_cert_path,
+        body_limit,
     } = *opts;
     // Acquire a connection permit (released automatically when _permit is dropped)
-    let _permit = try_acquire_connection()?;
-
     // Validate URL more thoroughly
     let url = url::Url::parse(endpoint).map_err(|e| anyhow::anyhow!("Invalid URL: {e}"))?;
     if url.scheme() != "https" {
@@ -381,7 +791,7 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
     // Validate port range
     let port = url.port().unwrap_or(443);
     if port == 0 {
-        return Err(anyhow::anyhow!("Invalid port number: {}", port));
+        return Err(anyhow::anyhow!("Invalid port number: {port}"));
     }
 
     debug_log!(debug, "Target URL: {}", endpoint);
@@ -440,164 +850,20 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
 
     // Layer 7: TLS handshake + HTTP request
     let l7_start = std::time::Instant::now();
-    let mut builder =
-        SslConnector::builder(SslMethod::tls()).map_err(|e| anyhow::anyhow!("OpenSSL builder failed: {e}"))?;
-
-    // Load CA certificates: custom CA bundle or system defaults
-    if let Some(ca_path) = ca_cert_path {
-        debug_log!(debug, "Using custom CA bundle: {}", ca_path);
-        builder
-            .set_ca_file(ca_path)
-            .map_err(|e| anyhow::anyhow!("Failed to load custom CA certificate '{}': {}", ca_path, e))?;
-    } else {
-        load_ca_certs(&mut builder)?;
-    }
-
-    // Load client certificate for mTLS
-    if let Some(cert_path) = client_cert_path {
-        debug_log!(debug, "Loading client certificate: {}", cert_path);
-        builder
-            .set_certificate_file(cert_path, openssl::ssl::SslFiletype::PEM)
-            .map_err(|e| anyhow::anyhow!("Failed to load client certificate '{}': {}", cert_path, e))?;
-
-        if let Some(key_path) = client_key_path {
-            debug_log!(debug, "Loading client private key: {}", key_path);
-            builder
-                .set_private_key_file(key_path, openssl::ssl::SslFiletype::PEM)
-                .map_err(|e| anyhow::anyhow!("Failed to load client private key '{}': {}", key_path, e))?;
-        }
-
-        builder
-            .check_private_key()
-            .map_err(|e| anyhow::anyhow!("Client certificate and private key do not match: {}", e))?;
-        debug_log!(debug, "Client certificate and key verified");
-    } else if let Some(p12_path) = pkcs12_path {
-        debug_log!(debug, "Loading PKCS12 client identity: {}", p12_path);
-        let p12_data =
-            std::fs::read(p12_path).map_err(|e| anyhow::anyhow!("Failed to read PKCS12 file '{}': {}", p12_path, e))?;
-        let password = cert_password.unwrap_or("");
-        let pkcs12 = openssl::pkcs12::Pkcs12::from_der(&p12_data)
-            .map_err(|e| anyhow::anyhow!("Failed to parse PKCS12 file '{}': {}", p12_path, e))?;
-        let parsed = pkcs12
-            .parse2(password)
-            .map_err(|e| anyhow::anyhow!("Failed to decrypt PKCS12 '{}' (wrong password?): {}", p12_path, e))?;
-
-        if let Some(ref cert) = parsed.cert {
-            builder
-                .set_certificate(cert)
-                .map_err(|e| anyhow::anyhow!("Failed to set PKCS12 certificate: {}", e))?;
-        }
-        if let Some(ref pkey) = parsed.pkey {
-            builder
-                .set_private_key(pkey)
-                .map_err(|e| anyhow::anyhow!("Failed to set PKCS12 private key: {}", e))?;
-        }
-        if let Some(ref ca_chain) = parsed.ca {
-            for ca_cert in ca_chain {
-                builder
-                    .add_extra_chain_cert(ca_cert.to_owned())
-                    .map_err(|e| anyhow::anyhow!("Failed to add PKCS12 CA cert to chain: {}", e))?;
-            }
-        }
-        builder
-            .check_private_key()
-            .map_err(|e| anyhow::anyhow!("PKCS12 certificate and private key do not match: {}", e))?;
-        debug_log!(debug, "PKCS12 client identity loaded and verified");
-    }
-
-    // Apply TLS version constraints. Default the minimum to TLS 1.2 when
-    // the user hasn't passed --min-tls, so the floor is independent of the
-    // linked OpenSSL version (older OpenSSL still accepts TLS 1.0/1.1 by
-    // default; modern 3.x uses 1.2). Users who explicitly need TLS 1.0 or
-    // 1.1 can pass `--min-tls 1.2` (current minimum supported flag value)
-    // — to lower further, additional CLI surface would be needed.
-    let effective_min = min_tls.unwrap_or(TlsVersionArg::Tls1_2);
-    builder
-        .set_min_proto_version(Some(effective_min.to_ssl_version()))
-        .map_err(|e| anyhow::anyhow!("Failed to set minimum TLS version to {}: {}", effective_min, e))?;
-    if let Some(max) = max_tls {
-        builder
-            .set_max_proto_version(Some(max.to_ssl_version()))
-            .map_err(|e| anyhow::anyhow!("Failed to set maximum TLS version to {}: {}", max, e))?;
-    }
-
-    // Apply cipher suite configuration
-    if let Some(ciphers) = cipher_list {
-        builder
-            .set_cipher_list(ciphers)
-            .map_err(|e| anyhow::anyhow!("Invalid cipher list '{}': {}", ciphers, e))?;
-    }
-    if let Some(suites) = cipher_suites {
-        builder
-            .set_ciphersuites(suites)
-            .map_err(|e| anyhow::anyhow!("Invalid TLS 1.3 cipher suites '{}': {}", suites, e))?;
-    }
-
-    // Set ALPN protocols.
-    // Note: We only implement HTTP/1.1 framing on the wire. When the user
-    // requests HTTP/2, we advertise both h2 and http/1.1 in ALPN so the
-    // server *knows* we prefer h2, but we warn if the server actually
-    // selects h2 because our framing will be HTTP/1.1 regardless.
-    match http_protocol {
-        HttpProtocol::Http2 => {
-            builder
-                .set_alpn_protos(b"\x02h2\x08http/1.1")
-                .map_err(|e| anyhow::anyhow!("Failed to set ALPN protocols: {}", e))?;
-        }
-        HttpProtocol::Http1_1 => {
-            builder
-                .set_alpn_protos(b"\x08http/1.1")
-                .map_err(|e| anyhow::anyhow!("Failed to set ALPN protocols: {}", e))?;
-        }
-    }
-
-    // Collect per-certificate verification errors for chain validation detail.
-    // Uses unwrap_or_else(|e| e.into_inner()) for panic safety — if a prior
-    // callback panicked and poisoned the Mutex, we recover the inner data
-    // rather than panicking again inside the OpenSSL callback.
-    let verify_errors: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let errors_clone = verify_errors.clone();
-    // Capture the server's certificate chain from inside the verify callback.
-    // The callback fires once per cert as the server's Certificate flight is
-    // processed — well before any CertificateRequest the server may send. So
-    // even if the handshake later aborts because the server requires mTLS, we
-    // already have the chain and can show it to the user.
-    let captured_chain: Arc<std::sync::Mutex<Vec<openssl::x509::X509>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let chain_clone = captured_chain.clone();
-    let force_accept = no_verify;
-
-    builder.set_verify_callback(SslVerifyMode::PEER, move |preverify, ctx| {
-        if let Some(cert) = ctx.current_cert() {
-            let mut chain = chain_clone.lock().unwrap_or_else(|e| e.into_inner());
-            let owned: openssl::x509::X509 = cert.to_owned();
-            // Avoid duplicates if the callback fires multiple times for the same depth.
-            if !chain.iter().any(|c| c == &owned) {
-                chain.push(owned);
-            }
-        }
-        if !preverify {
-            let depth = ctx.error_depth();
-            let err = ctx.error();
-            let subject = ctx
-                .current_cert()
-                .map(|c| {
-                    c.subject_name().entries().fold(String::new(), |mut acc, e| {
-                        if !acc.is_empty() {
-                            acc.push_str(", ");
-                        }
-                        if let Ok(data) = e.data().to_string() {
-                            acc.push_str(&data);
-                        }
-                        acc
-                    })
-                })
-                .unwrap_or_else(|| "unknown".to_string());
-            let mut errs = errors_clone.lock().unwrap_or_else(|e| e.into_inner());
-            errs.push(format!("depth {}: {} ({})", depth, err, subject));
-        }
-        if force_accept { true } else { preverify }
-    });
-    let connector = builder.build();
+    let (connector, verify) = build_connector(&ConnectorOptions {
+        no_verify,
+        min_tls,
+        max_tls,
+        cipher_list,
+        cipher_suites,
+        ca_cert_path,
+        client_cert_path,
+        client_key_path,
+        pkcs12_path,
+        cert_password,
+        alpn: Some(http_protocol),
+        debug,
+    })?;
 
     let sni_host = sni_override.unwrap_or(host);
     let mut ssl_stream = match connector.connect(sni_host, stream) {
@@ -608,7 +874,7 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
             // captured during verification, so the user gets the server
             // identity even though the handshake aborted.
             if is_client_auth_required(&err_str) {
-                let chain = captured_chain.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                let chain = verify.chain();
                 if !chain.is_empty() {
                     let pem = chain_to_pem(&chain)?;
                     let l7_latency = l7_start.elapsed().as_millis();
@@ -622,50 +888,25 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
                         tls_cipher_iana: None,
                         negotiated_protocol: None,
                         http_response_code: 0,
+                        http_reason: None,
+                        http_headers: Vec::new(),
+                        http_body_excerpt: None,
+                        http_body_truncated: false,
                         verify_result: Some("client certificate required (mTLS)".to_string()),
-                        chain_validation_errors: verify_errors.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+                        chain_validation_errors: verify.errors(),
                         client_auth_required: true,
+                        verification_disabled: no_verify,
                         peer_address: peer_address.map(|a| a.to_string()),
                         connect_override,
                     });
                 }
                 // Fall through to the regular error path if no chain was captured.
             }
-            return Err(
-                if err_str.contains("certificate verify failed") || err_str.contains("unable to get local issuer") {
-                    let details = verify_errors.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                    handshake_verify_error(&err_str, &details, ca_cert_path.is_some())
-                } else {
-                    anyhow::anyhow!("TLS handshake failed: {e}")
-                },
-            );
+            return Err(verify.handshake_error(&e, ca_cert_path.is_some()));
         }
     };
 
-    // Debug: Layer 5/6 - TLS session details
-    if debug {
-        dbg_section(true, "Layer 5/6 (Session/Presentation - TLS)");
-        let ssl_ref = ssl_stream.ssl();
-        debug_log!(true, "TLS version: {}", ssl_ref.version_str());
-        if let Some(cipher) = ssl_ref.current_cipher() {
-            debug_log!(true, "Cipher (OpenSSL): {}", cipher.name());
-            if let Some(std_name) = cipher.standard_name() {
-                debug_log!(true, "Cipher (IANA): {}", std_name);
-            }
-        }
-        if let Some(proto) = ssl_ref.selected_alpn_protocol()
-            && let Ok(proto_str) = std::str::from_utf8(proto)
-        {
-            debug_log!(true, "ALPN negotiated: {}", proto_str);
-        }
-        debug_log!(true, "SNI sent: {}", sni_host);
-        if no_verify {
-            debug_log!(true, "Certificate verification: DISABLED (--no-verify)");
-        }
-        if let Some(chain) = ssl_ref.peer_cert_chain() {
-            debug_log!(true, "Certificate chain depth: {}", chain.len());
-        }
-    }
+    log_tls_session_debug(ssl_stream.ssl(), sni_host, no_verify, debug);
 
     // Warn if the server negotiated h2 — we only send HTTP/1.1 framing,
     // so the HTTP response parsing below may fail or produce incorrect results.
@@ -680,19 +921,17 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
 
     // Build HTTP request
     let path = if url.path().is_empty() { "/" } else { url.path() };
-    let req = format!("{} {} HTTP/1.1\r\nHost: {}\r\n", method, path, host);
+    let req = format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\n");
 
     let mut req = req;
     for (key, value) in headers {
         // Reject headers containing CR/LF to prevent header injection
         if key.contains('\r') || key.contains('\n') || value.contains('\r') || value.contains('\n') {
             return Err(anyhow::anyhow!(
-                "HTTP header contains invalid characters (CR/LF): {}:{}",
-                key,
-                value
+                "HTTP header contains invalid characters (CR/LF): {key}:{value}"
             ));
         }
-        req.push_str(&format!("{}: {}\r\n", key, value));
+        req.push_str(&format!("{key}: {value}\r\n"));
     }
 
     // When a body is present, add Content-Length and default Content-Type
@@ -742,157 +981,55 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
         .flush()
         .map_err(|e| anyhow::anyhow!("Failed to flush stream: {e}"))?;
 
-    // Read HTTP response to get status code
-    // We need to read the response in a loop to handle partial reads.
-    // Hard cap prevents memory exhaustion from a malicious server sending endless data.
-    const MAX_RESPONSE_SIZE: usize = 64 * 1024; // 64 KB — we only need the status line
-    let mut response_buffer = Vec::new();
-    let mut temp_buffer = [0u8; 1024];
-    let mut attempts = 0;
-    const MAX_ATTEMPTS: usize = 10;
-
-    // Keep reading until we have at least the status line
-    while attempts < MAX_ATTEMPTS && response_buffer.len() < MAX_RESPONSE_SIZE {
-        match ssl_stream.read(&mut temp_buffer) {
-            Ok(0) => break, // EOF
-            Ok(n) => {
-                response_buffer.extend_from_slice(&temp_buffer[..n]);
-
-                // Check if we have a complete status line (HTTP/1.1 200 OK\r\n)
-                if let Some(end_pos) = response_buffer.windows(2).position(|w| w == b"\r\n") {
-                    // We found the end of the first line
-                    if end_pos >= 12 {
-                        // Minimum valid status line length
-                        break;
-                    }
-                }
-            }
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                // Timeout, but we might have partial data
-                if !response_buffer.is_empty() {
-                    break;
-                }
-            }
-            Err(e) => {
-                // Log the error but continue if we have some data
-                eprintln!("Warning: Error reading HTTP response: {}", e);
-                break;
-            }
-        }
-        attempts += 1;
-    }
-
-    // Parse HTTP status code
-    let http_response_code = if !response_buffer.is_empty() {
-        // Find the first line ending
-        let line_end = response_buffer
-            .windows(2)
-            .position(|w| w == b"\r\n")
-            .unwrap_or(response_buffer.len().min(100));
-
-        let status_line = &response_buffer[..line_end];
-
-        if let Ok(status_str) = std::str::from_utf8(status_line) {
-            // Parse "HTTP/1.1 200 OK" format
-            // Split by spaces and get the second element (status code)
-            let parts: Vec<&str> = status_str.split_whitespace().collect();
-            if parts.len() >= 2 {
-                // The second part should be the status code
-                if let Ok(code) = parts[1].parse::<u16>() {
-                    code
-                } else {
-                    eprintln!("Warning: Could not parse status code from: {}", status_str);
-                    0
-                }
-            } else {
-                eprintln!("Warning: Invalid status line format: {}", status_str);
-                0
-            }
-        } else {
-            eprintln!("Warning: Status line is not valid UTF-8");
-            0
-        }
-    } else {
+    // Read the HTTP response: the whole header block, then up to
+    // `body_limit` bytes of body (plus one so truncation is detectable). Each
+    // socket read is bounded by `--read-timeout` and the loop as a whole never
+    // exceeds that deadline either, so a silent server costs one timeout.
+    let response_buffer = read_http_response(&mut ssl_stream, read_timeout_secs, body_limit);
+    let capture = HttpResponseCapture::parse(&response_buffer, body_limit);
+    let http_response_code = capture.status;
+    if response_buffer.is_empty() {
         eprintln!("Warning: No response data received");
-        0
-    };
+    } else if http_response_code == 0 {
+        eprintln!(
+            "Warning: Could not parse HTTP status line: {}",
+            String::from_utf8_lossy(&response_buffer[..response_buffer.len().min(100)])
+        );
+    }
 
     let l7_latency = l7_start.elapsed().as_millis();
 
     debug_log!(debug, "< HTTP response: {}", http_response_code);
     debug_log!(debug, "Layer 7 complete ({} ms)", l7_latency);
 
-    // Get cert chain
-    let certs = ssl_stream
-        .ssl()
-        .peer_cert_chain()
-        .ok_or_else(|| anyhow::anyhow!("No peer certificates presented"))?;
-    if certs.is_empty() {
-        return Err(anyhow::anyhow!("Empty certificate chain"));
-    }
-
-    // Convert DER to concatenated PEM (reusing the helper used by the
-    // mTLS-required failure path so encoding stays consistent).
-    let owned_chain: Vec<openssl::x509::X509> = certs.iter().map(|c| c.to_owned()).collect();
-    let pem = chain_to_pem(&owned_chain)?;
-
-    let ssl = ssl_stream.ssl();
-    let tls_version = ssl.version_str().to_string();
-    let current_cipher = ssl.current_cipher();
-    let tls_cipher = current_cipher
-        .map(|c| c.name().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
-    let tls_cipher_iana = current_cipher.and_then(|c| c.standard_name().map(|s| s.to_string()));
-
-    // Get ALPN negotiated protocol
-    let negotiated_protocol = ssl
-        .selected_alpn_protocol()
-        .and_then(|p| std::str::from_utf8(p).ok())
-        .map(|s| s.to_string());
-
-    // Get verification result
-    let verify_result = {
-        let result = ssl_stream.ssl().verify_result();
-        if result == openssl::x509::X509VerifyResult::OK {
-            None
-        } else {
-            Some(format!("{}", result))
-        }
-    };
-
-    // Collect chain validation errors (panic-safe Mutex access)
-    let chain_validation_errors = verify_errors.lock().unwrap_or_else(|e| e.into_inner()).clone();
-
-    if debug {
-        if let Some(ref result) = verify_result {
-            debug_log!(true, "Verification: {}", result);
-            for err in &chain_validation_errors {
-                debug_log!(true, "  Chain error: {}", err);
-            }
-        } else {
-            debug_log!(true, "Verification: OK");
-        }
-    }
+    let pem = peer_chain_pem(ssl_stream.ssl())?;
+    let session = session_summary(ssl_stream.ssl(), &verify, debug);
 
     Ok(TlsConnectionInfo {
         pem_data: pem,
         dns_latency,
         l4_latency,
         l7_latency,
-        tls_version,
-        tls_cipher,
-        tls_cipher_iana,
-        negotiated_protocol,
+        tls_version: session.tls_version,
+        tls_cipher: session.tls_cipher,
+        tls_cipher_iana: session.tls_cipher_iana,
+        negotiated_protocol: session.negotiated_protocol,
         http_response_code,
-        verify_result,
-        chain_validation_errors,
+        http_reason: capture.reason.clone(),
+        http_headers: capture.headers.clone(),
+        http_body_excerpt: capture.body_text(),
+        http_body_truncated: capture.body_truncated,
+        verify_result: session.verify_result,
+        chain_validation_errors: session.chain_validation_errors,
         client_auth_required: false,
+        verification_disabled: no_verify,
         peer_address: peer_address.map(|a| a.to_string()),
         connect_override,
     })
 }
 
 /// Options for STARTTLS connections.
+#[derive(Debug, Clone)]
 pub struct StarttlsFetchOptions<'a> {
     pub host: &'a str,
     pub port: u16,
@@ -929,10 +1066,10 @@ fn read_line_from_stream(stream: &mut TcpStream) -> Result<String> {
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-            Err(e) => return Err(anyhow::anyhow!("STARTTLS: read error: {}", e)),
+            Err(e) => return Err(anyhow::anyhow!("STARTTLS: read error: {e}")),
         }
     }
-    String::from_utf8(buf).map_err(|e| anyhow::anyhow!("STARTTLS: invalid UTF-8 response: {}", e))
+    String::from_utf8(buf).map_err(|e| anyhow::anyhow!("STARTTLS: invalid UTF-8 response: {e}"))
 }
 
 /// Read a full multi-line response (for SMTP which uses continuation lines like "250-...").
@@ -1047,8 +1184,6 @@ pub fn fetch_tls_chain_starttls(opts: &StarttlsFetchOptions<'_>) -> Result<TlsCo
         ca_cert_path,
     } = *opts;
 
-    let _permit = try_acquire_connection()?;
-
     debug_log!(debug, "STARTTLS target: {}:{} (protocol: {})", host, port, protocol);
 
     // Layer 4: TCP connect
@@ -1092,168 +1227,50 @@ pub fn fetch_tls_chain_starttls(opts: &StarttlsFetchOptions<'_>) -> Result<TlsCo
 
     // TLS handshake on the upgraded stream
     let l7_start = std::time::Instant::now();
-    let mut builder =
-        SslConnector::builder(SslMethod::tls()).map_err(|e| anyhow::anyhow!("OpenSSL builder failed: {e}"))?;
-
-    if let Some(ca_path) = ca_cert_path {
-        debug_log!(debug, "Using custom CA bundle: {}", ca_path);
-        builder
-            .set_ca_file(ca_path)
-            .map_err(|e| anyhow::anyhow!("Failed to load custom CA certificate '{}': {}", ca_path, e))?;
-    } else {
-        load_ca_certs(&mut builder)?;
-    }
-
-    // Default minimum to TLS 1.2 when not specified — matches the HTTPS path
-    // and protects against legacy OpenSSL builds that still allow TLS 1.0/1.1.
-    let effective_min = min_tls.unwrap_or(TlsVersionArg::Tls1_2);
-    builder
-        .set_min_proto_version(Some(effective_min.to_ssl_version()))
-        .map_err(|e| anyhow::anyhow!("Failed to set minimum TLS version: {}", e))?;
-    if let Some(max) = max_tls {
-        builder
-            .set_max_proto_version(Some(max.to_ssl_version()))
-            .map_err(|e| anyhow::anyhow!("Failed to set maximum TLS version: {}", e))?;
-    }
-
-    if let Some(ciphers) = cipher_list {
-        builder
-            .set_cipher_list(ciphers)
-            .map_err(|e| anyhow::anyhow!("Invalid cipher list '{}': {}", ciphers, e))?;
-    }
-    if let Some(suites) = cipher_suites {
-        builder
-            .set_ciphersuites(suites)
-            .map_err(|e| anyhow::anyhow!("Invalid TLS 1.3 cipher suites '{}': {}", suites, e))?;
-    }
-
-    // Verification callback
-    let verify_errors: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let errors_clone = verify_errors.clone();
-    let force_accept = no_verify;
-
-    builder.set_verify_callback(SslVerifyMode::PEER, move |preverify, ctx| {
-        if !preverify {
-            let depth = ctx.error_depth();
-            let err = ctx.error();
-            let subject = ctx
-                .current_cert()
-                .map(|c| {
-                    c.subject_name().entries().fold(String::new(), |mut acc, e| {
-                        if !acc.is_empty() {
-                            acc.push_str(", ");
-                        }
-                        if let Ok(data) = e.data().to_string() {
-                            acc.push_str(&data);
-                        }
-                        acc
-                    })
-                })
-                .unwrap_or_else(|| "unknown".to_string());
-            let mut errs = errors_clone.lock().unwrap_or_else(|e| e.into_inner());
-            errs.push(format!("depth {}: {} ({})", depth, err, subject));
-        }
-        if force_accept { true } else { preverify }
-    });
-    let connector = builder.build();
-
-    let sni_host = sni_override.unwrap_or(host);
-    let ssl_stream = connector.connect(sni_host, stream).map_err(|e| {
-        let err_str = e.to_string();
-        if err_str.contains("certificate verify failed") || err_str.contains("unable to get local issuer") {
-            let details = verify_errors.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            handshake_verify_error(&err_str, &details, ca_cert_path.is_some())
-        } else {
-            anyhow::anyhow!("TLS handshake failed: {e}")
-        }
+    let (connector, capture) = build_connector(&ConnectorOptions {
+        no_verify,
+        min_tls,
+        max_tls,
+        cipher_list,
+        cipher_suites,
+        ca_cert_path,
+        client_cert_path: None,
+        client_key_path: None,
+        pkcs12_path: None,
+        cert_password: None,
+        alpn: None,
+        debug,
     })?;
 
-    if debug {
-        dbg_section(true, "Layer 5/6 (Session/Presentation - TLS)");
-        let ssl_ref = ssl_stream.ssl();
-        debug_log!(true, "TLS version: {}", ssl_ref.version_str());
-        if let Some(cipher) = ssl_ref.current_cipher() {
-            debug_log!(true, "Cipher (OpenSSL): {}", cipher.name());
-            if let Some(std_name) = cipher.standard_name() {
-                debug_log!(true, "Cipher (IANA): {}", std_name);
-            }
-        }
-        debug_log!(true, "SNI sent: {}", sni_host);
-        if no_verify {
-            debug_log!(true, "Certificate verification: DISABLED (--no-verify)");
-        }
-    }
+    let sni_host = sni_override.unwrap_or(host);
+    let ssl_stream = connector
+        .connect(sni_host, stream)
+        .map_err(|e| capture.handshake_error(&e, ca_cert_path.is_some()))?;
+
+    log_tls_session_debug(ssl_stream.ssl(), sni_host, no_verify, debug);
 
     let l7_latency = l7_start.elapsed().as_millis();
-
-    // Get cert chain
-    let certs = ssl_stream
-        .ssl()
-        .peer_cert_chain()
-        .ok_or_else(|| anyhow::anyhow!("No peer certificates presented"))?;
-    if certs.is_empty() {
-        return Err(anyhow::anyhow!("Empty certificate chain"));
-    }
-
-    let mut pem = String::new();
-    for cert in certs {
-        let pem_str = pem_rfc7468::encode_string(
-            "CERTIFICATE",
-            LineEnding::LF,
-            &cert
-                .to_der()
-                .map_err(|e| anyhow::anyhow!("DER conversion failed: {e}"))?,
-        )
-        .map_err(|e| anyhow::anyhow!("PEM encoding failed: {e}"))?;
-        pem.push_str(&pem_str);
-        if !pem.ends_with('\n') {
-            pem.push('\n');
-        }
-    }
-
-    let ssl = ssl_stream.ssl();
-    let tls_version = ssl.version_str().to_string();
-    let current_cipher = ssl.current_cipher();
-    let tls_cipher = current_cipher
-        .map(|c| c.name().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
-    let tls_cipher_iana = current_cipher.and_then(|c| c.standard_name().map(|s| s.to_string()));
-
-    let verify_result = {
-        let result = ssl_stream.ssl().verify_result();
-        if result == openssl::x509::X509VerifyResult::OK {
-            None
-        } else {
-            Some(format!("{}", result))
-        }
-    };
-
-    let chain_validation_errors = verify_errors.lock().unwrap_or_else(|e| e.into_inner()).clone();
-
-    if debug {
-        if let Some(ref result) = verify_result {
-            debug_log!(true, "Verification: {}", result);
-            for err in &chain_validation_errors {
-                debug_log!(true, "  Chain error: {}", err);
-            }
-        } else {
-            debug_log!(true, "Verification: OK");
-        }
-    }
+    let pem = peer_chain_pem(ssl_stream.ssl())?;
+    let session = session_summary(ssl_stream.ssl(), &capture, debug);
 
     Ok(TlsConnectionInfo {
         pem_data: pem,
         dns_latency,
         l4_latency,
         l7_latency,
-        tls_version,
-        tls_cipher,
-        tls_cipher_iana,
-        negotiated_protocol: None,
+        tls_version: session.tls_version,
+        tls_cipher: session.tls_cipher,
+        tls_cipher_iana: session.tls_cipher_iana,
+        negotiated_protocol: session.negotiated_protocol,
         http_response_code: 0,
-        verify_result,
-        chain_validation_errors,
+        http_reason: None,
+        http_headers: Vec::new(),
+        http_body_excerpt: None,
+        http_body_truncated: false,
+        verify_result: session.verify_result,
+        chain_validation_errors: session.chain_validation_errors,
         client_auth_required: false,
+        verification_disabled: no_verify,
         peer_address: peer_address.map(|a| a.to_string()),
         connect_override,
     })
@@ -1297,14 +1314,13 @@ mod tests {
             vec!["depth 1: unable to get local issuer certificate (CN=DigiCert TLS RSA SHA256 2020 CA1)".to_string()];
         let err = handshake_verify_error("certificate verify failed", &details, false);
         let msg = err.to_string();
-        assert!(msg.contains("TLS chain incomplete"), "got: {}", msg);
-        assert!(msg.contains("AIA"), "should mention AIA: {}", msg);
+        assert!(msg.contains("TLS chain incomplete"), "got: {msg}");
+        assert!(msg.contains("AIA"), "should mention AIA: {msg}");
         assert!(
             msg.contains("DigiCert TLS RSA SHA256 2020 CA1"),
-            "should name the missing intermediate: {}",
-            msg
+            "should name the missing intermediate: {msg}"
         );
-        assert!(msg.contains("--ca-cert"), "should suggest --ca-cert: {}", msg);
+        assert!(msg.contains("--ca-cert"), "should suggest --ca-cert: {msg}");
     }
 
     #[test]
@@ -1312,8 +1328,8 @@ mod tests {
         let details = vec!["depth 0: self signed certificate in certificate chain (CN=test)".to_string()];
         let err = handshake_verify_error("certificate verify failed", &details, false);
         let msg = err.to_string();
-        assert!(!msg.contains("TLS chain incomplete"), "got: {}", msg);
-        assert!(msg.contains("SSL_CERT_FILE"), "got: {}", msg);
+        assert!(!msg.contains("TLS chain incomplete"), "got: {msg}");
+        assert!(msg.contains("SSL_CERT_FILE"), "got: {msg}");
     }
 
     #[test]

@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.32"]
 build-backend = "hatchling.build"
 
 [project]
@@ -8,7 +8,7 @@ version = "3.0.45"
 description = "MCP server for TLS certificate analysis via the Model Context Protocol"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 authors = [
     { name = "sreengineer" },
 ]
@@ -16,30 +16,32 @@ keywords = ["tls", "certificate", "x509", "mcp", "model-context-protocol", "fast
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Topic :: Security",
     "Topic :: Software Development :: Libraries",
     "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
     "Operating System :: POSIX :: Linux",
     "Typing :: Typed",
 ]
 dependencies = [
-    "fastmcp>=3.0.2",
+    "fastmcp>=4.0.5,<5",
+    "click>=8.5,<9",
+    "pyyaml>=6.0.3,<7",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.24",
-    "pytest-cov>=6.0",
-    "pytest-timeout>=2.3",
-    "ruff>=0.9",
+    "pytest>=9.1",
+    "pytest-asyncio>=1.4",
+    "pytest-cov>=7.1",
+    "pytest-timeout>=2.4",
+    "ruff>=0.16",
+    "mypy>=2.3",
+    "types-PyYAML",
 ]
 otel = [
     "opentelemetry-sdk>=1.20.0",
@@ -73,13 +75,38 @@ include = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+timeout = 120
+addopts = "--strict-markers --cov=dcert --cov-report=term-missing --cov-fail-under=85"
+filterwarnings = ["error::DeprecationWarning"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["dcert"]
+mypy_path = "src"
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+# The OpenTelemetry SDK is an optional extra.
+module = ["opentelemetry.*"]
+ignore_missing_imports = true
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py312"
 line-length = 100
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "W", "UP", "B", "SIM", "RUF100", "ARG"]
+select = ["E", "F", "I", "W", "UP", "B", "SIM", "RUF100", "ARG", "S", "ASYNC", "PT", "ANN"]
+ignore = [
+    # PEP 695 type parameter syntax is deliberately avoided (see the project brief).
+    "UP040", "UP046", "UP047",
+    # The public ``timeout`` parameters are applied internally with asyncio.timeout.
+    "ASYNC109",
+]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["ARG001"]  # pytest fixtures appear as unused arguments
+# Tests: assert statements, missing annotations and fixture arguments are expected.
+"tests/*" = ["S101", "ANN", "ARG001", "S105", "S106", "S108", "ASYNC230", "ASYNC240"]
+"../scripts/test_*.py" = ["S101", "ANN", "ARG001", "S603", "S607"]
+"scripts/test_*.py" = ["S101", "ANN", "ARG001", "S603", "S607"]
