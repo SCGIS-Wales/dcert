@@ -579,6 +579,23 @@ fn warn_unrestricted(path: &str, detail: &str) {
 /// the new file is created with mode 0600 on Unix; on Windows the ACL is
 /// restricted immediately after the write.
 pub fn write_private_file(path: &str, contents: &[u8]) -> Result<()> {
+    write_replacing_links(path, contents, Some(0o600))?;
+    #[cfg(not(unix))]
+    restrict_file_permissions(path);
+    Ok(())
+}
+
+/// Remove whatever is at `path` and create the file fresh, with `mode` on Unix
+/// when one is given.
+///
+/// `create_new` is what makes this safe rather than merely tidy. Checking for a
+/// symlink and then writing leaves a window in which one can be planted, and an
+/// ordinary write would follow it; `create_new` fails instead, so the worst
+/// outcome of losing that race is an error rather than a write to a file the
+/// caller never named. Creating the file rather than truncating it is also what
+/// lets the mode apply from the first byte, so key material is never world
+/// readable even for an instant.
+fn write_replacing_links(path: &str, contents: &[u8], mode: Option<u32>) -> Result<()> {
     use std::io::Write;
 
     match fs::symlink_metadata(path) {
@@ -590,20 +607,19 @@ pub fn write_private_file(path: &str, contents: &[u8]) -> Result<()> {
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
-    {
+    if let Some(mode) = mode {
         use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+        options.mode(mode);
     }
+    #[cfg(not(unix))]
+    let _ = mode;
+
     let mut file = options
         .open(path)
         .with_context(|| format!("Failed to create file: {path}"))?;
     file.write_all(contents)
         .with_context(|| format!("Failed to write file: {path}"))?;
     file.sync_all().ok();
-    drop(file);
-
-    #[cfg(not(unix))]
-    restrict_file_permissions(path);
     Ok(())
 }
 
@@ -612,13 +628,7 @@ pub fn write_private_file(path: &str, contents: &[u8]) -> Result<()> {
 /// mode is left to the process umask; what matters is that an attacker cannot
 /// pre-plant a link at the output path and redirect the write elsewhere.
 pub fn write_public_file(path: &str, contents: &[u8]) -> Result<()> {
-    if fs::symlink_metadata(path)
-        .map(|m| m.file_type().is_symlink())
-        .unwrap_or(false)
-    {
-        fs::remove_file(path).with_context(|| format!("Failed to replace symlink at: {path}"))?;
-    }
-    fs::write(path, contents).with_context(|| format!("Failed to write file: {path}"))
+    write_replacing_links(path, contents, None)
 }
 
 /// Resolve `name` inside `output_dir`, refusing to write through a symlink

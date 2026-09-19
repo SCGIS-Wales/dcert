@@ -174,6 +174,7 @@ pub(crate) async fn run_child_with_timeout(
     /// truncated output. Draining to EOF lets the child finish and exit
     /// normally. The kept bytes are capped as they stream, so a chatty child
     /// still cannot grow the buffer without bound.
+    ///
     /// Returns the kept bytes, whether anything was discarded, and any read
     /// error.
     async fn drain_capped<R>(pipe: Option<R>) -> (Vec<u8>, bool, Option<String>)
