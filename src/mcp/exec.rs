@@ -31,6 +31,17 @@ pub(crate) fn truncate_output(output: String) -> String {
     }
 }
 
+/// Decode captured bytes, marking the result when the stream was cut at the
+/// cap. Without the marker a child that emits exactly the limit would have its
+/// output silently shortened, which reads as a complete but wrong answer.
+fn decode_capped(buf: &[u8], dropped: bool) -> String {
+    let mut text = String::from_utf8_lossy(buf).into_owned();
+    if dropped {
+        text.push_str("\n--- output truncated (exceeded 10 MB limit) ---");
+    }
+    text
+}
+
 /// Run dcert with given arguments and return (stdout, stderr, exit_code).
 ///
 /// Always passes `--debug` so MCP tool responses include diagnostic info.
@@ -154,39 +165,54 @@ pub(crate) async fn run_child_with_timeout(
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
 
-    async fn drain(pipe: Option<tokio::process::ChildStdout>) -> (Vec<u8>, Option<String>) {
-        let Some(pipe) = pipe else { return (Vec::new(), None) };
-        let mut buf = Vec::new();
-        let err = pipe
-            .take(MAX_OUTPUT_SIZE as u64 + 1)
-            .read_to_end(&mut buf)
-            .await
-            .err()
-            .map(|e| e.to_string());
-        (buf, err)
-    }
-    async fn drain_err(pipe: Option<tokio::process::ChildStderr>) -> (Vec<u8>, Option<String>) {
-        let Some(pipe) = pipe else { return (Vec::new(), None) };
-        let mut buf = Vec::new();
-        let err = pipe
-            .take(MAX_OUTPUT_SIZE as u64 + 1)
-            .read_to_end(&mut buf)
-            .await
-            .err()
-            .map(|e| e.to_string());
-        (buf, err)
+    /// Read a pipe to EOF, keeping at most [`MAX_OUTPUT_SIZE`] bytes and
+    /// discarding the rest.
+    ///
+    /// Reading only up to the cap and then dropping the pipe would close the
+    /// read end while the child is still writing: the child dies of SIGPIPE
+    /// and is reported as signalled, which reads as a crash rather than as
+    /// truncated output. Draining to EOF lets the child finish and exit
+    /// normally. The kept bytes are capped as they stream, so a chatty child
+    /// still cannot grow the buffer without bound.
+    /// Returns the kept bytes, whether anything was discarded, and any read
+    /// error.
+    async fn drain_capped<R>(pipe: Option<R>) -> (Vec<u8>, bool, Option<String>)
+    where
+        R: tokio::io::AsyncRead + Unpin,
+    {
+        let Some(mut pipe) = pipe else {
+            return (Vec::new(), false, None);
+        };
+        let mut kept = Vec::new();
+        let mut dropped = false;
+        let mut chunk = [0u8; 8192];
+        loop {
+            match pipe.read(&mut chunk).await {
+                Ok(0) => return (kept, dropped, None),
+                Ok(n) => {
+                    let room = MAX_OUTPUT_SIZE.saturating_sub(kept.len());
+                    if room < n {
+                        dropped = true;
+                    }
+                    if room > 0 {
+                        kept.extend_from_slice(&chunk[..n.min(room)]);
+                    }
+                }
+                Err(e) => return (kept, dropped, Some(e.to_string())),
+            }
+        }
     }
 
     let work = async {
-        let (out, err, status) = tokio::join!(drain(stdout_pipe), drain_err(stderr_pipe), child.wait());
+        let (out, err, status) = tokio::join!(drain_capped(stdout_pipe), drain_capped(stderr_pipe), child.wait());
         (out, err, status)
     };
 
     match tokio::time::timeout(config.subprocess_timeout, work).await {
-        Ok(((stdout_buf, stdout_err), (stderr_buf, stderr_err), status)) => {
+        Ok(((stdout_buf, stdout_dropped, stdout_err), (stderr_buf, stderr_dropped, stderr_err), status)) => {
             let status = status.map_err(|e| format!("Failed waiting for dcert: {e}"))?;
-            let stdout = truncate_output(String::from_utf8_lossy(&stdout_buf).to_string());
-            let mut stderr = truncate_output(String::from_utf8_lossy(&stderr_buf).to_string());
+            let stdout = truncate_output(decode_capped(&stdout_buf, stdout_dropped));
+            let mut stderr = truncate_output(decode_capped(&stderr_buf, stderr_dropped));
             for (name, e) in [("stdout", stdout_err), ("stderr", stderr_err)] {
                 if let Some(e) = e {
                     stderr.push_str(&format!("\n--- note: reading {name} failed: {e} ---"));

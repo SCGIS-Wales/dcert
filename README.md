@@ -1336,7 +1336,7 @@ The HTTP server exposes:
 
 > **Security:** the HTTP transport exposes cert tooling that spawns subprocesses. If no authentication is configured (neither `DCERT_MCP_OIDC_ISSUER` nor `DCERT_MCP_AUTH_TOKEN`), `dcert-mcp` **refuses to start when binding to a non-loopback address** (e.g. the default `0.0.0.0:3000`). Either configure authentication, bind to `127.0.0.1`, or set `DCERT_MCP_ALLOW_INSECURE=1` to explicitly opt in to an unauthenticated public bind (not recommended). Unauthenticated binds to loopback are always allowed.
 
-The transport also validates the `Host` header against an allowlist (loopback names and the bind address by default) to defeat DNS rebinding, rejects cross-origin requests unless `DCERT_MCP_ALLOWED_ORIGINS` names the origin, and bounds every request with a concurrency limit, a timeout and a body size limit. Both transports shut down gracefully on `SIGINT` and `SIGTERM`.
+The transport also validates the `Host` header against an allowlist (loopback names and the bind address by default) to defeat DNS rebinding, rejects cross-origin requests unless `DCERT_MCP_ALLOWED_ORIGINS` names the origin, and bounds every request with a timeout and a body size limit, and the `/mcp` endpoint with a concurrency limit (`/health` is exempt, so a liveness probe still answers while the tool API is saturated). Both transports shut down gracefully on `SIGINT` and `SIGTERM`.
 
 #### Per-tool authorization
 
@@ -1356,6 +1356,8 @@ dcert-mcp --mode http
 | `DCERT_MCP_SCOPE_READ` | Every read-only tool |
 
 Any listed scope or role satisfies the requirement. A tool with no applicable rule is allowed, so existing deployments keep working until a policy is set.
+
+> **Requires OIDC.** Scopes and roles are read from a validated token, which a static bearer token does not carry. Setting any `DCERT_MCP_SCOPE_*` variable without `DCERT_MCP_OIDC_ISSUER` makes `dcert-mcp` refuse to start, rather than run with a policy it cannot enforce.
 
 #### Authentication (OIDC/OAuth2)
 

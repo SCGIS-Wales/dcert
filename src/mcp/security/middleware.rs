@@ -30,6 +30,10 @@ pub struct AuthState {
     pub audit_logger: Option<Arc<AuditLogger>>,
     /// Per tool scope requirements, applied to every `tools/call`.
     pub tool_scopes: ToolScopePolicy,
+    /// Largest request body the middleware will buffer to read the tool name.
+    /// Set from the same limit the transport enforces, so a body the transport
+    /// would accept is never emptied here and reported as a parse error.
+    pub max_body_bytes: usize,
 }
 
 /// Axum middleware function for bearer token authentication.
@@ -117,7 +121,7 @@ pub async fn auth_middleware(
 
         // Per tool authorization: a token that passes the global scope check
         // is not automatically allowed to call a destructive tool.
-        let (request, tool) = read_tool_name(request).await;
+        let (request, tool) = read_tool_name(request, state.max_body_bytes).await;
         if let Some(tool) = tool.as_deref()
             && let Err(reason) = state.tool_scopes.authorize(tool, &claims)
         {
@@ -189,11 +193,12 @@ fn unauthorized() -> Response {
 /// Buffer the request body far enough to read the MCP method and tool name,
 /// returning a request that still carries the original body.
 ///
-/// The body is already bounded by the transport's own limit, so this cannot
-/// buffer an unbounded amount.
-async fn read_tool_name(request: Request<Body>) -> (Request<Body>, Option<String>) {
+/// `max_body_bytes` is the transport's own request limit, so this cannot
+/// buffer an unbounded amount and never rejects a body the transport
+/// would have accepted.
+async fn read_tool_name(request: Request<Body>, max_body_bytes: usize) -> (Request<Body>, Option<String>) {
     let (parts, body) = request.into_parts();
-    let Ok(bytes) = axum::body::to_bytes(body, MAX_BUFFERED_BODY).await else {
+    let Ok(bytes) = axum::body::to_bytes(body, max_body_bytes).await else {
         // Leave the body empty; the transport reports the real error.
         return (Request::from_parts(parts, Body::empty()), None);
     };
@@ -204,10 +209,6 @@ async fn read_tool_name(request: Request<Body>) -> (Request<Body>, Option<String
         .map(str::to_string);
     (Request::from_parts(parts, Body::from(bytes)), tool)
 }
-
-/// Upper bound on the body the middleware will buffer to inspect the tool
-/// name. Matches the transport's own default request limit.
-const MAX_BUFFERED_BODY: usize = 1024 * 1024;
 
 /// Derives a cache key from a bearer token by hashing it with SHA-256.
 /// This avoids storing the raw token in the cache while ensuring consistent keys.

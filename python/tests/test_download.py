@@ -15,7 +15,7 @@ from urllib.response import addinfourl
 
 import pytest
 
-import dcert.download as dl_mod
+from dcert import download as dl_mod
 from dcert.download import (
     build_opener,
     download_to_file,

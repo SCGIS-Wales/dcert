@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-import dcert.binary as binary_mod
+from dcert import binary as binary_mod
 from dcert.binary import (
     binary_filename,
     ensure_executable,

@@ -607,6 +607,20 @@ pub fn write_private_file(path: &str, contents: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Write a file that carries no secret, refusing to follow a symlink at the
+/// destination. The contents are public (a CSR, a certificate chain), so the
+/// mode is left to the process umask; what matters is that an attacker cannot
+/// pre-plant a link at the output path and redirect the write elsewhere.
+pub fn write_public_file(path: &str, contents: &[u8]) -> Result<()> {
+    if fs::symlink_metadata(path)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        fs::remove_file(path).with_context(|| format!("Failed to replace symlink at: {path}"))?;
+    }
+    fs::write(path, contents).with_context(|| format!("Failed to write file: {path}"))
+}
+
 /// Resolve `name` inside `output_dir`, refusing to write through a symlink
 /// so `--output-dir` pointed at an attacker prepared directory cannot
 /// overwrite arbitrary files.
@@ -707,6 +721,36 @@ mod tests {
         assert_eq!(fs::read(&link).unwrap(), b"SECRET");
         let mode = fs::metadata(&link).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_public_file_replaces_a_symlink_instead_of_following_it() {
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("victim.txt");
+        fs::write(&target, b"do not touch").unwrap();
+        let link = dir.path().join("request.csr");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        write_public_file(link.to_str().unwrap(), b"CSR").unwrap();
+
+        assert!(!fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read(&target).unwrap(), b"do not touch");
+        assert_eq!(fs::read(&link).unwrap(), b"CSR");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_public_file_replaces_a_dangling_symlink() {
+        let dir = TempDir::new().unwrap();
+        let absent = dir.path().join("not-created-yet.txt");
+        let link = dir.path().join("chain.pem");
+        std::os::unix::fs::symlink(&absent, &link).unwrap();
+
+        write_public_file(link.to_str().unwrap(), b"PEM").unwrap();
+
+        assert!(!absent.exists(), "the write must not have followed the link");
+        assert_eq!(fs::read(&link).unwrap(), b"PEM");
     }
 
     #[cfg(unix)]

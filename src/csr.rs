@@ -6,9 +6,8 @@ use openssl::pkey::PKey;
 use openssl::rsa::Rsa;
 use openssl::x509::extension::SubjectAlternativeName;
 use openssl::x509::{X509Name, X509NameBuilder, X509NameRef, X509Req, X509ReqBuilder};
-use std::fs;
 
-use crate::convert::write_private_file;
+use crate::convert::{write_private_file, write_public_file};
 use crate::secret::Secret;
 
 // ---------------------------------------------------------------------------
@@ -199,7 +198,7 @@ pub fn create_csr(opts: &CsrCreateOptions, csr_path: &str, key_path: &str) -> Re
 
     // Serialize CSR
     let csr_pem = req.to_pem().with_context(|| "Failed to encode CSR as PEM")?;
-    fs::write(csr_path, &csr_pem).with_context(|| format!("Failed to write CSR to: {csr_path}"))?;
+    write_public_file(csr_path, &csr_pem).with_context(|| format!("Failed to write CSR to: {csr_path}"))?;
 
     // Serialize private key
     let key_pem = zeroize::Zeroizing::new(if opts.encrypt_key {
@@ -790,6 +789,7 @@ fn check_signature_algorithm_compliance(sig_algo: &str, findings: &mut Vec<CsrFi
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use tempfile::TempDir;
 
     #[test]

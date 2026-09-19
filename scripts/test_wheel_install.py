@@ -11,6 +11,7 @@ import platform
 import subprocess
 import sys
 import tarfile
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -112,15 +113,13 @@ def test_dcert_python_help(install_wheel: Path):
 
 
 def test_binaries_and_config_bundled_in_package(install_wheel: Path):
-    result = run(
-        [
-            str(install_wheel / "python"),
-            "-c",
-            "from pathlib import Path; import dcert; pkg = Path(dcert.__file__).parent; "
-            "print(sorted(p.name for p in (pkg / 'bin').iterdir()), "
-            "(pkg / 'config.yaml').exists())",
-        ],
-        timeout=30,
-    )
+    script = textwrap.dedent("""
+        from pathlib import Path
+        import dcert
+
+        pkg = Path(dcert.__file__).parent
+        print(sorted(p.name for p in (pkg / "bin").iterdir()), (pkg / "config.yaml").exists())
+    """)
+    result = run([str(install_wheel / "python"), "-c", script], timeout=30)
     assert result.returncode == 0, result.stderr
     assert "['dcert', 'dcert-mcp'] True" in result.stdout

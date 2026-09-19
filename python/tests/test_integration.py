@@ -94,11 +94,14 @@ async def test_analyze_with_options(session):
 
 
 async def test_analyze_invalid_target(session):
-    try:
-        result = await analyze_certificate(target="invalid.nonexistent.example", session=session)
-        assert result is not None
-    except DcertError:
-        pass
+    # A host that does not resolve may surface either way: the binary can report
+    # the failure in its output (a result) or raise. Both are acceptable; what
+    # the test guards against is a hang, a crash or a silent empty success.
+    with contextlib.suppress(DcertError):
+        assert (
+            await analyze_certificate(target="invalid.nonexistent.example", session=session)
+            is not None
+        )
 
 
 # -- check_expiry / check_revocation ----------------------------------------

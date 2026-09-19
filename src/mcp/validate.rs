@@ -63,6 +63,41 @@ fn resolve_existing_prefix(path: &std::path::Path) -> std::path::PathBuf {
     probe.canonicalize().unwrap_or(probe)
 }
 
+/// How many links a chain may contain before it is treated as a loop.
+const MAX_SYMLINK_DEPTH: usize = 16;
+
+/// Follow a chain of symlinks at `path` and return the path a read or write
+/// would actually land on, whether or not the end of the chain exists yet.
+///
+/// [`resolve_existing_prefix`] alone is not enough here. `Path::exists`
+/// follows symlinks, so a *dangling* link is seen as absent: the probe pops to
+/// the link's parent, the parent is inside a root, and the check passes while
+/// the later write follows the link somewhere else entirely. A world writable
+/// root such as the system temp directory makes that reachable by any local
+/// user, who need only pre-plant `out.pem -> ~/.ssh/authorized_keys`.
+///
+/// Returns `None` for a loop or a chain deeper than [`MAX_SYMLINK_DEPTH`], so
+/// the caller refuses rather than guesses.
+fn resolve_link_chain(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut current = path.to_path_buf();
+    for _ in 0..MAX_SYMLINK_DEPTH {
+        let Ok(meta) = std::fs::symlink_metadata(&current) else {
+            // Nothing at this path: the chain ends somewhere not yet created.
+            return Some(current);
+        };
+        if !meta.file_type().is_symlink() {
+            return Some(current);
+        }
+        let target = std::fs::read_link(&current).ok()?;
+        current = if target.is_absolute() {
+            target
+        } else {
+            current.parent()?.join(target)
+        };
+    }
+    None
+}
+
 /// Validate a file path parameter to prevent argument injection and path
 /// traversal, and confine it to the allowed roots.
 ///
@@ -99,7 +134,12 @@ pub(crate) fn validate_path(path: &str, param_name: &str) -> Result<(), String> 
     } else {
         first.join(p)
     };
-    let resolved = resolve_existing_prefix(&joined);
+    let Some(landed) = resolve_link_chain(&joined) else {
+        return Err(format!(
+            "{param_name} '{path}' resolves through a symlink loop or too many links"
+        ));
+    };
+    let resolved = resolve_existing_prefix(&landed);
     if roots.iter().any(|root| resolved.starts_with(root)) {
         return Ok(());
     }

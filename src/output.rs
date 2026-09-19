@@ -12,7 +12,7 @@ use crate::cert::{CertInfo, CertProcessOpts, extract_ocsp_url, parse_cert_infos_
 use crate::cli::{CheckArgs, CipherNotation, HttpProtocol, OutputFormat, SortOrder};
 use crate::compliance::{self, ChainComplianceReport, Severity};
 use crate::connect::ConnectOverrides;
-use crate::convert::{CertRole, ConvertResult};
+use crate::convert::{CertRole, ConvertResult, write_public_file};
 use crate::debug::debug_log;
 use crate::diagnose::Diagnosis;
 use crate::ocsp::check_ocsp_status;
@@ -679,7 +679,8 @@ pub fn export_pem_chain(pem_data: &str, export_path: &str, exclude_expired: bool
         pem_data.to_string()
     };
 
-    fs::write(export_path, export_data).with_context(|| format!("Failed to write PEM file: {export_path}"))?;
+    write_public_file(export_path, export_data.as_bytes())
+        .with_context(|| format!("Failed to write PEM file: {export_path}"))?;
     println!("PEM chain exported to {export_path}");
     Ok(())
 }

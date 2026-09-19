@@ -141,17 +141,12 @@ impl OidcValidator {
         }
 
         // Serve from the cached keys when possible; discovery and JWKS fetches
-        // only happen on a cache miss, so an unauthenticated caller cannot make
-        // the server hammer the identity provider with one request per token.
+        // only happen on a cache miss, and are throttled, so an unauthenticated
+        // caller cannot make the server hammer the identity provider with one
+        // request per token.
         let key = match self.cached_signing_key(&kid).await {
             Some(key) => key,
-            None => {
-                let jwks_url = match &self.config.jwks_url {
-                    Some(url) if !url.is_empty() => url.clone(),
-                    _ => self.discover_jwks().await?,
-                };
-                self.get_signing_key(&jwks_url, &kid).await?
-            }
+            None => self.fetch_signing_key(&kid).await?,
         };
 
         // Set up validation — supports both RSA and ECDSA algorithms.
@@ -203,28 +198,32 @@ impl OidcValidator {
         if cache.is_expired() { None } else { cache.get_key(kid) }
     }
 
-    /// Gets a signing key from JWKS, refreshing if the kid is not found.
+    /// Fetch a signing key the cache does not hold, discovering the JWKS URL
+    /// first when one is not configured.
     ///
-    /// An unknown key id triggers at most one refresh per
-    /// [`MIN_REFRESH_INTERVAL`], so a flood of tokens bearing invented key ids
-    /// cannot be amplified into a flood of JWKS requests.
-    async fn get_signing_key(&self, jwks_url: &str, kid: &str) -> Result<DecodingKey, String> {
+    /// Every network path out of this function is behind one throttle, claimed
+    /// before the first request is sent. Discovery and the JWKS fetch are
+    /// therefore rate limited together: a flood of tokens bearing invented key
+    /// ids cannot be amplified into a flood of requests to the identity
+    /// provider, whether or not any keys have ever been loaded. The cost is
+    /// that a failed fetch is not retried for [`MIN_REFRESH_INTERVAL`], which
+    /// is the correct trade when the provider is already failing.
+    async fn fetch_signing_key(&self, kid: &str) -> Result<DecodingKey, String> {
+        if !self.claim_refresh_slot().await {
+            return Err(format!("signing key {kid:?} not found in JWKS (refresh throttled)"));
+        }
+
+        // Re-check under the claim: a concurrent caller may have just filled
+        // the cache between the miss and the claim.
         if let Some(key) = self.cached_signing_key(kid).await {
             return Ok(key);
         }
 
-        {
-            let cache = self.jwks_cache.read().await;
-            if let Some(last) = cache.last_attempt
-                && last.elapsed() < MIN_REFRESH_INTERVAL
-                && !cache.keys.is_empty()
-            {
-                return Err(format!("signing key {kid:?} not found in JWKS"));
-            }
-        }
-
-        // Fetch fresh keys.
-        self.refresh_jwks(jwks_url).await?;
+        let jwks_url = match &self.config.jwks_url {
+            Some(url) if !url.is_empty() => url.clone(),
+            _ => self.discover_jwks().await?,
+        };
+        self.refresh_jwks(&jwks_url).await?;
 
         let cache = self.jwks_cache.read().await;
         cache
@@ -232,12 +231,27 @@ impl OidcValidator {
             .ok_or_else(|| format!("signing key {kid:?} not found in JWKS"))
     }
 
-    /// Refreshes the JWKS cache.
-    async fn refresh_jwks(&self, jwks_url: &str) -> Result<(), String> {
+    /// Take the single refresh slot for this interval, returning `false` when
+    /// another attempt was made too recently. The attempt is recorded before
+    /// any request is sent, so concurrent callers are throttled too rather
+    /// than all passing a check that only the first would have failed.
+    async fn claim_refresh_slot(&self) -> bool {
+        let mut cache = self.jwks_cache.write().await;
+        // A cache TTL shorter than the throttle is a deliberate request for
+        // frequent refreshes, so the shorter of the two wins and the throttle
+        // can never starve a cache that has already expired.
+        let interval = MIN_REFRESH_INTERVAL.min(cache.ttl);
+        if let Some(last) = cache.last_attempt
+            && last.elapsed() < interval
         {
-            let mut cache = self.jwks_cache.write().await;
-            cache.last_attempt = Some(Instant::now());
+            return false;
         }
+        cache.last_attempt = Some(Instant::now());
+        true
+    }
+
+    /// Refreshes the JWKS cache. The caller holds the refresh slot.
+    async fn refresh_jwks(&self, jwks_url: &str) -> Result<(), String> {
         let keys = fetch_jwks(&self.http_client, jwks_url).await?;
         let mut cache = self.jwks_cache.write().await;
         cache.update(keys);
@@ -509,6 +523,62 @@ async fn fetch_jwks(client: &Client, jwks_url: &str) -> Result<HashMap<String, J
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_validator() -> OidcValidator {
+        OidcValidator::new(OidcConfig {
+            issuer_url: "https://issuer.example.com".to_string(),
+            audience: "api://test".to_string(),
+            jwks_url: None,
+            required_scopes: vec![],
+            required_roles: vec![],
+            allowed_client_ids: vec![],
+        })
+        .expect("validator")
+    }
+
+    #[tokio::test]
+    async fn refresh_slot_is_claimed_before_any_network_work() {
+        let v = test_validator();
+
+        // The first caller takes the slot. Taking it up front, rather than
+        // after a successful fetch, is what stops a burst of concurrent
+        // callers from all passing the check and each issuing a request.
+        assert!(v.claim_refresh_slot().await);
+        assert!(
+            !v.claim_refresh_slot().await,
+            "a second claim in the same interval must be refused"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_slot_is_throttled_even_with_an_empty_cache() {
+        let v = test_validator();
+        assert!(v.jwks_cache.read().await.keys.is_empty());
+
+        // The throttle must not depend on keys having been loaded: an identity
+        // provider that is down is exactly when unbounded retries hurt most,
+        // and discovery runs behind this slot too, so a flood of tokens with
+        // invented key ids cannot be amplified into a flood of requests.
+        assert!(v.claim_refresh_slot().await);
+        assert!(!v.claim_refresh_slot().await);
+        assert!(v.jwks_cache.read().await.keys.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_cache_ttl_shorter_than_the_throttle_wins() {
+        let v = test_validator();
+        {
+            let mut cache = v.jwks_cache.write().await;
+            cache.ttl = Duration::from_millis(10);
+        }
+        assert!(v.claim_refresh_slot().await);
+        assert!(!v.claim_refresh_slot().await);
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        assert!(
+            v.claim_refresh_slot().await,
+            "a short TTL asks for frequent refreshes and must not be starved by the throttle"
+        );
+    }
 
     #[test]
     fn test_oidc_config_validate_requires_issuer() {

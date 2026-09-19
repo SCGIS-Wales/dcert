@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-import dcert.tools as tools_mod
+from dcert import tools as tools_mod
 from dcert.resilience import resilience_config_from_env
 from dcert.tools import (
     TOOL_FUNCTIONS,

@@ -169,6 +169,59 @@ fn test_validate_path_defaults_allow_cwd_and_temp_dir() {
     assert!(validate_path("/etc/shadow", "cert").is_err());
 }
 
+#[cfg(unix)]
+#[test]
+fn test_validate_path_refuses_a_dangling_symlink_out_of_the_root() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().canonicalize().expect("canonicalize");
+    let _guard = EnvGuard::set("DCERT_MCP_FILE_ROOT", root.to_str().expect("utf-8 root"));
+
+    // A local user pre-plants a link inside a world writable root, pointing at
+    // a file that does not exist yet outside it. The link dangles, so a check
+    // that asks whether the path "exists" sees nothing and clears the write.
+    let planted = root.join("out.pem");
+    let escape = dir.path().parent().expect("parent").join("dcert-escape-target.pem");
+    std::os::unix::fs::symlink(&escape, &planted).expect("symlink");
+    assert!(!planted.exists(), "the link must dangle for this test to mean anything");
+
+    let err = validate_path(planted.to_str().expect("utf-8"), "output_path")
+        .expect_err("a link out of the root must be refused even when its target is absent");
+    assert!(err.contains("outside the allowed roots"), "{err}");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_validate_path_follows_a_link_chain_that_stays_inside_the_root() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().canonicalize().expect("canonicalize");
+    let _guard = EnvGuard::set("DCERT_MCP_FILE_ROOT", root.to_str().expect("utf-8 root"));
+
+    // Two hops, both landing inside the root: allowed.
+    let final_target = root.join("real.pem");
+    let middle = root.join("middle.pem");
+    let entry = root.join("entry.pem");
+    std::os::unix::fs::symlink(&final_target, &middle).expect("symlink");
+    std::os::unix::fs::symlink(&middle, &entry).expect("symlink");
+
+    assert!(validate_path(entry.to_str().expect("utf-8"), "output_path").is_ok());
+}
+
+#[cfg(unix)]
+#[test]
+fn test_validate_path_refuses_a_symlink_loop() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().canonicalize().expect("canonicalize");
+    let _guard = EnvGuard::set("DCERT_MCP_FILE_ROOT", root.to_str().expect("utf-8 root"));
+
+    let a = root.join("a.pem");
+    let b = root.join("b.pem");
+    std::os::unix::fs::symlink(&b, &a).expect("symlink a");
+    std::os::unix::fs::symlink(&a, &b).expect("symlink b");
+
+    let err = validate_path(a.to_str().expect("utf-8"), "output_path").expect_err("a loop must be refused");
+    assert!(err.contains("symlink loop"), "{err}");
+}
+
 #[test]
 fn test_validate_path_accepts_several_configured_roots() {
     let a = tempfile::tempdir().expect("tempdir");
@@ -1200,6 +1253,47 @@ fn test_sanitize_proxy_url_invalid() {
 // format_timeout_error tests
 // ---------------------------------------------------------------
 
+#[cfg(unix)]
+#[tokio::test]
+async fn test_oversized_child_output_is_truncated_not_killed() {
+    // A child that writes more than the cap must still be allowed to finish.
+    // Reading only up to the cap and dropping the pipe would close the read
+    // end under the child, which then dies of SIGPIPE and is reported as
+    // signalled: a truncation would read as a crash.
+    let config = McpConfig {
+        subprocess_timeout: Duration::from_secs(60),
+        connection_timeout: 10,
+        read_timeout: 5,
+        dcert_binary: PathBuf::from("dcert"),
+        proxy_config: McpProxyInfo {
+            https_proxy: None,
+            http_proxy: None,
+            no_proxy: None,
+        },
+    };
+
+    let over = MAX_OUTPUT_SIZE + 1_000_000;
+    let mut child = tokio::process::Command::new("sh")
+        .arg("-c")
+        // No trailing `exit 0`: the shell must propagate the pipeline's status,
+        // so a writer killed by SIGPIPE shows up as a non-zero code here.
+        .arg(format!("head -c {over} /dev/zero | tr '\\0' 'x'"))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn");
+
+    let (stdout, _stderr, code) = run_child_with_timeout(&mut child, &config).await.expect("run");
+
+    assert_eq!(code, 0, "the child must exit normally, not be reported as signalled");
+    assert!(stdout.contains("output truncated"), "truncation must be visible");
+    assert!(
+        stdout.len() <= MAX_OUTPUT_SIZE + 200,
+        "kept output must stay within the cap, got {}",
+        stdout.len()
+    );
+}
+
 #[test]
 fn test_format_timeout_error_with_proxy() {
     let config = McpConfig {
@@ -1412,6 +1506,7 @@ fn open_auth_state() -> security::middleware::AuthState {
         session_cache: None,
         audit_logger: None,
         tool_scopes: security::scope::ToolScopePolicy::default(),
+        max_body_bytes: 1024 * 1024,
     }
 }
 

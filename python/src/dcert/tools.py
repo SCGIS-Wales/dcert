@@ -280,18 +280,23 @@ async def create_session(
 
 _default_stack: AsyncExitStack | None = None
 _default_session: Session | None = None
-_default_loop: asyncio.AbstractEventLoop | None = None
-_default_lock: asyncio.Lock | None = None
+_default_guard: tuple[asyncio.AbstractEventLoop, asyncio.Lock] | None = None
 
 
 def _lock_for_current_loop() -> asyncio.Lock:
-    """Return the guard for the default session, fresh for each event loop."""
-    global _default_lock, _default_loop
+    """Return the guard for the default session, fresh for each event loop.
+
+    An :class:`asyncio.Lock` binds to the loop that first awaits it, so the
+    loop and its lock are kept together as one value. Rebinding them as a pair
+    means the two can never disagree about which loop the guard belongs to.
+    """
+    global _default_guard
     loop = asyncio.get_running_loop()
-    if _default_lock is None or _default_loop is not loop:
-        _default_lock = asyncio.Lock()
-        _default_loop = loop
-    return _default_lock
+    guard = _default_guard
+    if guard is None or guard[0] is not loop:
+        guard = (loop, asyncio.Lock())
+        _default_guard = guard
+    return guard[1]
 
 
 async def _close_default_unlocked() -> None:

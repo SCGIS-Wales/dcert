@@ -283,15 +283,32 @@ pub(crate) async fn run_http_mode(config: McpConfig, addr: &str) -> Result<(), B
         ..SessionConfig::default()
     }));
 
+    // Per tool authorization is decided from the token's scopes and roles, so
+    // it can only be enforced when tokens are validated. A static token
+    // carries no claims and would satisfy no rule. Refusing to start is the
+    // honest outcome: silently ignoring the policy, or silently denying every
+    // guarded tool, would both leave the operator with a server that does not
+    // behave as configured.
     let tool_scopes = ToolScopePolicy::from_env();
     if tool_scopes.is_empty() {
         tracing::info!(
             "per tool authorization: not configured (set DCERT_MCP_SCOPE_WRITE, DCERT_MCP_SCOPE_READ \
              or DCERT_MCP_SCOPE_<TOOL> to require scopes per tool)"
         );
+    } else if oidc_validator.is_none() {
+        return Err(
+            "refusing to start: DCERT_MCP_SCOPE_* requires OIDC. Per tool scopes are read \
+             from a validated token, which a static bearer token does not carry. Configure \
+             DCERT_MCP_OIDC_ISSUER, or unset the DCERT_MCP_SCOPE_* variables."
+                .into(),
+        );
     } else {
         tracing::info!("per tool authorization: enabled");
     }
+
+    // One limit for the body, shared by the transport and by the middleware
+    // that peeks at the tool name, so the two cannot disagree.
+    let max_body_bytes = env_usize("DCERT_MCP_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES);
 
     let auth_state = Arc::new(AuthState {
         oidc_validator: oidc_validator.map(Arc::new),
@@ -299,6 +316,7 @@ pub(crate) async fn run_http_mode(config: McpConfig, addr: &str) -> Result<(), B
         session_cache: Some(session_cache),
         audit_logger: Some(Arc::new(AuditLogger::new())),
         tool_scopes,
+        max_body_bytes,
     });
 
     // One cancellation token drives both the transport's session teardown and
@@ -310,7 +328,7 @@ pub(crate) async fn run_http_mode(config: McpConfig, addr: &str) -> Result<(), B
     let mut transport_config = StreamableHttpServerConfig::default()
         .with_cancellation_token(shutdown.clone())
         .with_allowed_hosts(hosts)
-        .with_max_request_body_bytes(env_usize("DCERT_MCP_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES));
+        .with_max_request_body_bytes(max_body_bytes);
 
     // Origin validation: an allowlist is enforced as given; with no allowlist
     // every request carrying an Origin header is rejected, which is what stops
@@ -340,10 +358,22 @@ pub(crate) async fn run_http_mode(config: McpConfig, addr: &str) -> Result<(), B
             .unwrap_or(DEFAULT_REQUEST_TIMEOUT_SECS),
     );
 
-    // Layer order matters. `axum::Router::layer` wraps outermost-last, so the
-    // listed order runs bottom-up: the concurrency limit and timeout bound
-    // every request, CORS answers preflights before authentication can reject
-    // them, and authentication guards only the MCP route (never /health).
+    // Layer order matters, and the two wrappers order in opposite directions.
+    //
+    // `ServiceBuilder::layer` wraps outermost-FIRST, so on the MCP route
+    // authentication runs before a concurrency permit is taken: a request with
+    // a bad token is rejected without occupying a slot, which is what stops an
+    // unauthenticated flood from filling the limit. The limit is scoped to
+    // `/mcp` so `/health` still answers a liveness probe while the tool API is
+    // saturated.
+    //
+    // `Router::layer` wraps outermost-LAST, so the listed order runs bottom-up
+    // and the timeout ends up OUTSIDE the concurrency limit. That is the point
+    // of the split: tower's concurrency queue is unbounded, so a timeout
+    // nested inside it would only start once a permit was granted and a queued
+    // request would wait indefinitely instead of receiving the 504. CORS sits
+    // below the timeout so preflights are answered before authentication can
+    // reject them.
     let app = axum::Router::new()
         .route("/health", get(health_handler))
         .nest_service(
@@ -351,6 +381,7 @@ pub(crate) async fn run_http_mode(config: McpConfig, addr: &str) -> Result<(), B
             axum::routing::any_service(
                 tower::ServiceBuilder::new()
                     .layer(axum::middleware::from_fn_with_state(auth_state, auth_middleware))
+                    .layer(tower::limit::GlobalConcurrencyLimitLayer::new(max_concurrent))
                     .service(mcp_service),
             ),
         )
@@ -359,7 +390,6 @@ pub(crate) async fn run_http_mode(config: McpConfig, addr: &str) -> Result<(), B
             axum::http::StatusCode::GATEWAY_TIMEOUT,
             request_timeout,
         ))
-        .layer(tower::limit::GlobalConcurrencyLimitLayer::new(max_concurrent))
         .layer(tower_http::trace::TraceLayer::new_for_http());
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
