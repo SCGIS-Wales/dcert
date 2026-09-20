@@ -14,7 +14,7 @@
 #
 # Layers, in the order the engine attributes a failure:
 #   local_proxy_env  proxy_connect  tls_handshake  viewer_mtls  interception
-#   edge_http  origin_http
+#   edge_http  gateway_http  origin_http
 #
 # Operators can add or override entries with `--kb-file` or DCERT_KB_FILE;
 # an entry with the same id replaces the built in one. Validate a file with
@@ -413,15 +413,24 @@ entries:
         required: true
     root_cause: >
       The client certificate was received but refused after validation. On
-      CloudFront this covers revocation via the uploaded CRL, a key usage
-      that does not include client authentication, an unsupported signature
-      algorithm or a mismatch between the certificate and the private key.
+      CloudFront viewer mTLS this covers a certificate reported revoked (or
+      undetermined, which denies by default) by OCSP when it is enabled on
+      the trust store, a certificate whose serial number a Connection
+      Function found in its KeyValueStore revocation list or that the
+      function denied for any other custom reason, a chain deeper than four
+      certificates or larger than the size limit, a key usage that does not
+      include client authentication, an unsupported key or signature
+      algorithm, or a mismatch between the certificate and the private key.
+      Connection logs record the exact reason code (ClientCertRejected,
+      ClientCertMaxChainDepthExceeded, ClientCertTypeUnsupported and so on).
     remediation:
-      - Check the certificate has the TLS client authentication extended key usage.
-      - Check the certificate is not on the CRL attached to the trust store.
-      - Verify the key matches the certificate with dcert verify-key.
+      - Check the certificate has the TLS client authentication extended key usage and an RSA 2048+ or P-256/P-384 key.
+      - If OCSP is enabled on the trust store, confirm every certificate below the trust anchor carries an OCSP URL and that the responder is reachable.
+      - Check the serial number is not in the Connection Function's KeyValueStore revocation list.
+      - Verify the key matches the certificate with dcert verify-key, and read the distribution's connection logs for the reason code.
     references:
-      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/mtls-validation-modes.html
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/certificate-revocation.html
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/connection-logs.html
 
   - id: mtls.viewer.optional-mode-origin-rejects
     title: Handshake succeeded but the origin rejected the identity
@@ -906,10 +915,11 @@ entries:
       - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/DefaultRootObject.html
 
   - id: cloudfront.origin.api-gateway-error
-    title: API Gateway origin returned an error
-    layer: origin_http
-    category: cloudfront
-    weight: 0.85
+    title: API Gateway returned an error
+    layer: gateway_http
+    category: api_gateway
+    weight: 0.7
+    fallback: true
     signals:
       - type: header
         name: x-amzn-errortype
@@ -917,19 +927,20 @@ entries:
         required: true
         weight: 2
       - type: status
-        codes: [401, 403, 404, 429, 500, 502, 503, 504]
+        codes: [400, 401, 403, 404, 413, 415, 429, 500, 502, 503, 504]
     root_cause: >
       The response carries an x-amzn-ErrorType header, so it was generated
-      by Amazon API Gateway behind the distribution. Common values are
-      MissingAuthenticationTokenException (no route matches, often because
-      the stage name is missing from the origin path), ForbiddenException
-      (API key or resource policy) and UnauthorizedException (authorizer).
+      by Amazon API Gateway itself (a gateway response) rather than by the
+      integration behind it, either directly or as the origin of the
+      distribution. The header value names the reason; run
+      `dcert kb explain x-amzn-errortype` for the full table.
     remediation:
-      - Set the origin path on the distribution to the API stage name.
-      - Forward the Authorization and x-api-key headers in the origin request policy.
-      - Check the API resource policy allows the CloudFront distribution or the public internet.
+      - Behind CloudFront, set the origin path to the API stage name and forward the Authorization and x-api-key headers in the origin request policy.
+      - Check the API resource policy allows the caller (or the CloudFront distribution and the public internet).
+      - Enable execution and access logging on the stage to see the gateway response type.
     references:
-      - https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-cloudfront-distribution.html
+      - https://docs.aws.amazon.com/apigateway/latest/developerguide/supported-gateway-response-types.html
+      - https://repost.aws/knowledge-center/api-gateway-cloudfront-distribution
 
   - id: cloudfront.origin.error-forwarded
     title: Origin error forwarded by CloudFront
@@ -1017,3 +1028,741 @@ entries:
       - Use the X-Amz-Cf-Pop and X-Amz-Cf-Id values when correlating with CloudFront logs.
     references:
       - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/troubleshooting-response-errors.html
+
+  # ---------------------------------------------------------------------
+  # CloudFront edge: additional edge generated responses
+  # (from the CloudFront Developer Guide and AWS Knowledge Center, 2026-09)
+  # ---------------------------------------------------------------------
+  - id: cloudfront.edge.method-not-allowed
+    title: HTTP method not allowed by the cache behaviour
+    layer: edge_http
+    category: cloudfront
+    weight: 0.95
+    signals:
+      - type: status
+        codes: [403]
+        required: true
+      - type: body
+        pattern: '(?i)not configured to allow the http request method'
+        required: true
+        weight: 3
+    root_cause: >
+      The cache behaviour only forwards GET and HEAD (optionally OPTIONS)
+      and the request used another method. CloudFront answers 403 at the
+      edge without contacting the origin.
+    remediation:
+      - Set Allowed HTTP methods on the behaviour to GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE.
+      - When enabling write methods on an S3 origin, restrict the bucket policy so viewers cannot delete objects.
+    references:
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/http-403-invalid-method.html
+
+  - id: cloudfront.edge.uri-too-long
+    title: URL exceeds the CloudFront limit
+    layer: edge_http
+    category: cloudfront
+    weight: 0.95
+    signals:
+      - type: status
+        codes: [414]
+        required: true
+      - type: header
+        name: server
+        pattern: '(?i)cloudfront'
+      - type: header
+        name: x-cache
+        pattern: '(?i)error from cloudfront'
+    root_cause: >
+      CloudFront constructs a URL from the request and refuses any longer
+      than 8,192 bytes with 414, then closes the TCP connection. The origin
+      was not contacted.
+    remediation:
+      - Shorten the path or query string; move large parameters into a POST body.
+      - Remember the whole request including headers is capped at 32,768 bytes.
+    references:
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/RequestAndResponseBehaviorCustomOrigin.html
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/cloudfront-limits.html
+
+  - id: cloudfront.edge.header-too-large
+    title: Request headers exceed the CloudFront limit
+    layer: edge_http
+    category: cloudfront
+    weight: 0.95
+    signals:
+      - type: status
+        codes: [494]
+        required: true
+    root_cause: >
+      CloudFront returns the non standard status 494 when a request exceeds
+      32,768 bytes because of its headers (large cookies, long bearer
+      tokens, many custom headers), and then terminates the connection.
+    remediation:
+      - Trim cookies scoped to the distribution's domain and shorten tokens.
+      - Check the request with --debug to see the header block dcert sent.
+    references:
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/RequestAndResponseBehaviorCustomOrigin.html
+
+  - id: cloudfront.edge.function-or-origin-mtls-503
+    title: Edge generated 503 (edge function error or origin mTLS pause)
+    layer: edge_http
+    category: cloudfront
+    weight: 0.75
+    signals:
+      - type: status
+        codes: [503]
+        required: true
+      - type: header
+        name: x-cache
+        pattern: '(?i)error from cloudfront'
+        required: true
+      - type: body
+        pattern: '(?i)capacity exceeded'
+        negate: true
+        required: true
+      - type: body
+        pattern: '(?i)request could not be satisfied'
+    root_cause: >
+      A 503 marked Error from cloudfront that is not the capacity page was
+      produced by the edge: a Lambda@Edge or CloudFront Function raised an
+      unhandled exception, Lambda@Edge hit its concurrency or invocation
+      quota in the Region, or the distribution uses origin mTLS and
+      CloudFront paused traffic after repeatedly failing to complete the
+      mutual TLS handshake with the origin (expired or untrusted ACM client
+      certificate, origin unreachable). The origin mTLS pause clears on its
+      own once handshakes succeed again.
+    remediation:
+      - Check Lambda@Edge and CloudFront Functions logs in the Region that served the request for exceptions and throttles.
+      - With origin mTLS enabled, confirm the ACM client certificate has not expired and that the origin trusts its issuing CA; allow time for a replaced certificate to propagate.
+      - Probe the origin directly with a client certificate to confirm it completes the handshake.
+    references:
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/http-503-service-unavailable.html
+      - https://repost.aws/knowledge-center/lambda-edge-500-errors
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/origin-mtls-authentication.html
+
+  - id: cloudfront.edge.stale-viewer-certificate
+    title: CloudFront edge still serves an expired viewer certificate
+    layer: tls_handshake
+    category: cloudfront
+    weight: 0.8
+    signals:
+      - type: chain_name
+        pattern: '(?i)amazon|cloudfront'
+        required: true
+      - type: verify_result
+        pattern: '(?i)expired'
+        weight: 2
+      - type: error
+        pattern: '(?i)expired'
+      - type: public_hostname
+    root_cause: >
+      The certificate presented by the edge chains to Amazon but has
+      expired. ACM renewals and reimports are applied to CloudFront
+      asynchronously and can take up to 24 hours, during which some edge
+      locations keep serving the previous certificate; a renewal completed
+      within the last day, or a reimport under a different ARN that was
+      never attached to the distribution, both look like this.
+    remediation:
+      - Confirm the ARN attached to the distribution (aws cloudfront get-distribution --query ...ViewerCertificate.ACMCertificateArn) is the renewed certificate.
+      - Force a redeploy by switching the distribution to another certificate covering the same names and back.
+      - Renew or reimport at least 24 hours before NotAfter in future.
+    references:
+      - https://repost.aws/knowledge-center/acm-certificate-not-appearing-cloudfront
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/cnames-and-https-requirements.html
+
+  - id: tls.handshake.cloudfront-security-policy
+    title: CloudFront security policy rejected the offered TLS version or ciphers
+    layer: tls_handshake
+    category: tls
+    weight: 0.97
+    signals:
+      - type: error
+        pattern: '(?i)protocol version|handshake failure|no protocols available|unsupported protocol'
+        required: true
+      - type: target_host
+        pattern: '(?i)\.cloudfront\.net$'
+        required: true
+        weight: 2
+      - type: client_auth_required
+        negate: true
+    root_cause: >
+      The handshake failed before a certificate was received against a
+      CloudFront host. The distribution's security policy sets the minimum
+      viewer TLS version and cipher list (TLSv1.2_2021 and later drop CBC
+      ciphers, TLSv1.3_2025 accepts only TLS 1.3), so a client limited to
+      TLS 1.0 or 1.1, or to CBC or static RSA suites, is refused with a
+      protocol_version or handshake_failure alert.
+    remediation:
+      - Retry with --tls-version and --ciphers matching the policy (TLS 1.2 with ECDHE AES-GCM or TLS 1.3 suites).
+      - If legacy clients must be supported, lower the security policy on the distribution.
+    references:
+      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/secure-connections-supported-viewer-protocols-ciphers.html
+      - https://repost.aws/knowledge-center/cloudfront-ssl-connection-errors
+
+  # ---------------------------------------------------------------------
+  # API Gateway: gateway responses (generated without calling the integration)
+  # ---------------------------------------------------------------------
+  - id: apigateway.gateway.missing-authentication-token
+    title: API Gateway found no resource or method for the request
+    layer: gateway_http
+    category: api_gateway
+    weight: 0.98
+    signals:
+      - type: status
+        codes: [403]
+        required: true
+      - type: body
+        pattern: '(?i)missing authentication token'
+        required: true
+        weight: 3
+      - type: header
+        name: x-amzn-errortype
+        pattern: '(?i)^MissingAuthenticationTokenException'
+    root_cause: >
+      Despite its wording, this gateway response means the deployed API
+      has no resource and method matching the request path, or the
+      request carried no token to a method that expects one. Typical
+      causes are a missing or wrong stage name, a path that was never
+      deployed, a method the resource does not define, or a custom domain
+      URL that repeats the stage the API mapping already supplies. Behind
+      CloudFront the same result appears when the origin path does not
+      name the stage.
+    remediation:
+      - Invoke the stage URL directly (https://<api-id>.execute-api.<region>.amazonaws.com/<stage>/<path>) to rule out custom domain mappings.
+      - Check the method exists on the resource and that the latest deployment was pushed to the stage.
+      - On a custom domain, drop the stage from the URL; behind CloudFront, set Origin Path to /<stage>.
+    references:
+      - https://repost.aws/knowledge-center/api-gateway-403-custom-domain
+      - https://docs.aws.amazon.com/apigateway/latest/developerguide/supported-gateway-response-types.html
+
+  - id: apigateway.gateway.forbidden-mtls
+    title: API Gateway mutual TLS rejected the client certificate
+    layer: gateway_http
+    category: mtls
+    weight: 0.9
+    signals:
+      - type: status
+        codes: [403]
+        required: true
+      - type: header
+        name: x-amzn-errortype
+        pattern: '(?i)^ForbiddenException'
+        required: true
+      - type: client_cert_supplied
+        required: true
+        weight: 2
+      - type: body
+        pattern: '(?i)"message"\s*:\s*"forbidden"'
+    root_cause: >
+      Unlike CloudFront, API Gateway completes the TLS handshake and then
+      denies the request with 403 Forbidden when the client certificate is
+      not acceptable to the custom domain's truststore: the issuer or an
+      intermediate is missing from the bundle, the certificate uses a
+      signature algorithm weaker than SHA-256 / RSA-2048 / ECDSA-256, it is
+      expired, or it is self signed and not itself in the truststore.
+      Execution logs record "Access denied. Reason: Could not find issuer
+      for certificate", "Client cert using an insecure Signature
+      Algorithm" or "self signed certificate".
+    remediation:
+      - Verify the chain locally with openssl verify -CAfile truststore.pem client.pem (add -untrusted intermediate.pem when the bundle has intermediates).
+      - Upload a truststore that contains the complete chain from issuing CA to root and update the domain name to the new truststore version.
+      - Enable execution logging on a REST API mapped to the domain to read the Access denied reason; HTTP APIs have no execution logs.
+      - "If the same 403 appears without --client-cert, the cause is not mTLS: check API key, WAF, resource policy, stage and mapping."
+    references:
+      - https://repost.aws/knowledge-center/api-gateway-mutual-tls-403-errors
+      - https://docs.aws.amazon.com/apigateway/latest/developerguide/rest-api-mutual-tls.html
+
+  - id: apigateway.gateway.forbidden
+    title: API Gateway refused the request (Forbidden)
+    layer: gateway_http
+    category: api_gateway
+    weight: 0.85
+    signals:
+      - type: status
+        codes: [403]
+        required: true
+      - type: header
+        name: x-amzn-errortype
+        pattern: '(?i)^ForbiddenException'
+        required: true
+        weight: 2
+      - type: client_cert_supplied
+        negate: true
+    root_cause: >
+      ForbiddenException is the catch all 403 from API Gateway. The usual
+      causes, in order of frequency: the method requires an API key and
+      x-api-key is missing, wrong, disabled or not attached to a usage plan
+      for this stage; AWS WAF blocked the request; a private API was called
+      through public DNS without the Host or x-apigw-api-id header, or a
+      public API was called from a VPC whose execute-api endpoint has
+      private DNS enabled; the custom domain has no base path mapping for
+      this path; the stage in the URL does not exist; the default
+      execute-api endpoint was disabled and the request did not use the
+      custom domain; or the custom domain requires mutual TLS and no
+      trusted client certificate was presented.
+    remediation:
+      - Send x-api-key if the method requires an API key, and confirm the key is in a usage plan attached to the stage.
+      - Check the AWS WAF web ACL sampled requests for a block.
+      - From a VPC, check whether the execute-api interface endpoint has private DNS enabled; public APIs then need a custom domain.
+      - Confirm the API mapping (base path and stage) for custom domains, and whether the default endpoint is disabled.
+      - For an mTLS custom domain, retry with --client-cert and --client-key.
+    references:
+      - https://repost.aws/knowledge-center/api-gateway-troubleshoot-403-forbidden
+      - https://repost.aws/knowledge-center/api-gateway-vpc-connections
+
+  - id: apigateway.gateway.access-denied
+    title: API Gateway authorization denied the caller
+    layer: gateway_http
+    category: api_gateway
+    weight: 0.95
+    signals:
+      - type: status
+        codes: [403]
+        required: true
+      - type: header
+        name: x-amzn-errortype
+        pattern: '(?i)^AccessDeniedException'
+        required: true
+        weight: 2
+      - type: body
+        pattern: '(?i)not authorized|security token included in the request is invalid'
+    root_cause: >
+      The IAM authorizer, the API resource policy or a Lambda authorizer
+      denied execute-api:Invoke. The message says which: "with an explicit
+      deny in a resource-based policy" (Deny statement), "because no
+      resource-based policy allows" (implicit deny, typical for private APIs
+      called from a VPC endpoint the policy does not list), "User:
+      anonymous" (no credentials or the caller was not evaluated as a
+      principal), "explicit deny in an identity-based policy" (a Lambda
+      authorizer returned Deny, possibly from its cache) or "The security
+      token included in the request is invalid" (bad access key). A Lambda
+      authorizer whose Allow policy names a different stage, method or path
+      ARN also produces a silent 403.
+    remediation:
+      - "Read the message in the body and fix the matching policy: resource policy, IAM policy of the caller, or the authorizer's returned policy."
+      - For Lambda authorizers, compare the Resource ARN in the returned policy with arn:aws:execute-api:<region>:<account>:<api-id>/<stage>/<METHOD>/<path> and flush the authorizer cache while testing.
+      - For private APIs, allow the VPC or VPC endpoint in the resource policy and redeploy the stage.
+    references:
+      - https://repost.aws/knowledge-center/api-gateway-403-error-lambda-authorizer
+      - https://repost.aws/knowledge-center/api-gateway-private-endpoint-connection
+
+  - id: apigateway.gateway.signature
+    title: API Gateway rejected the AWS request signature
+    layer: gateway_http
+    category: api_gateway
+    weight: 0.95
+    signals:
+      - type: status
+        codes: [403]
+        required: true
+      - type: header
+        name: x-amzn-errortype
+        pattern: '(?i)^(InvalidSignatureException|IncompleteSignatureException|ExpiredTokenException)'
+        required: true
+        weight: 2
+      - type: body
+        pattern: '(?i)signature|credential|token'
+    root_cause: >
+      The method uses AWS_IAM authorization and the Signature Version 4
+      material was rejected: the signature does not match (wrong secret
+      key, region or service in the credential scope, or a header included
+      in SignedHeaders that a proxy or CloudFront altered), the signature
+      or session token has expired (clock skew over 15 minutes), or an
+      Authorization header that is not a SigV4 signature reached a path
+      with no matching resource (IncompleteSignatureException).
+    remediation:
+      - Regenerate the signature with the correct credentials, region and service name execute-api, and check the client clock.
+      - Behind CloudFront, forward the Authorization header and avoid signing headers CloudFront rewrites (Host, User-Agent).
+      - If no IAM auth was intended, the path probably does not exist; see the Missing Authentication Token entry.
+    references:
+      - https://repost.aws/knowledge-center/api-gateway-troubleshoot-403-forbidden
+
+  - id: apigateway.gateway.unauthorized
+    title: API Gateway authorizer did not receive a valid token
+    layer: gateway_http
+    category: api_gateway
+    weight: 0.95
+    signals:
+      - type: status
+        codes: [401]
+        required: true
+      - type: header
+        name: x-amzn-errortype
+        pattern: '(?i)^UnauthorizedException'
+        weight: 2
+      - type: header
+        name: x-amzn-requestid
+        pattern: '.+'
+      - type: body
+        pattern: '(?i)"message"\s*:\s*"unauthorized"'
+    root_cause: >
+      The UNAUTHORIZED gateway response is returned before the integration
+      runs: the header named as the authorizer's Token Source is missing,
+      the token fails the Token Validation regular expression, a request
+      authorizer's identity sources are incomplete (all are required when
+      caching is on), or a Cognito user pool authorizer received an expired
+      token, a token from another user pool, or an ID token where an access
+      token with scopes was expected.
+    remediation:
+      - Send the exact header the authorizer reads (Authorization by default) with an unexpired token.
+      - Test the authorizer in the console with the same token; disable authorization caching while testing.
+      - For Cognito, decode the token and compare iss with the user pool and token_use with the method's scopes.
+    references:
+      - https://repost.aws/knowledge-center/api-gateway-401-error-lambda-authorizer
+      - https://repost.aws/knowledge-center/api-gateway-cognito-401-unauthorized
+
+  - id: apigateway.gateway.throttled
+    title: API Gateway throttled the request
+    layer: gateway_http
+    category: api_gateway
+    weight: 0.95
+    signals:
+      - type: status
+        codes: [429]
+        required: true
+      - type: header
+        name: x-amzn-requestid
+        pattern: '.+'
+        required: true
+      - type: body
+        pattern: '(?i)too many requests|limit exceeded'
+        weight: 2
+      - type: header
+        name: x-amzn-errortype
+        pattern: '(?i)throttl|toomanyrequests|limitexceeded'
+    root_cause: >
+      429 from API Gateway is either THROTTLED ("Too Many Requests"): the
+      token bucket for the usage plan, method, stage or account (10,000
+      requests per second with a 5,000 burst per Region by default) ran dry,
+      or QUOTA_EXCEEDED ("Limit Exceeded"): the usage plan quota for the
+      day, week or month is used up. Limits are applied per client, then
+      per method, then per account, then per AWS Region.
+    remediation:
+      - Retry with exponential backoff and jitter; the SDKs do this automatically.
+      - Raise the stage or usage plan throttle, or request an account level increase.
+    references:
+      - https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-request-throttling.html
+
+  - id: apigateway.gateway.request-too-large
+    title: Request payload exceeds the API Gateway 10 MB limit
+    layer: gateway_http
+    category: api_gateway
+    weight: 0.95
+    signals:
+      - type: status
+        codes: [413]
+        required: true
+      - type: body
+        pattern: '(?i)content length exceeded|request too large|request entity too large'
+        weight: 2
+      - type: header
+        name: x-amzn-requestid
+        pattern: '.+'
+    root_cause: >
+      REQUEST_TOO_LARGE: the request body exceeded 10 MB (10,485,760
+      bytes). The limit applies to requests and to backend responses, cannot
+      be raised, and this gateway response cannot be customised.
+    remediation:
+      - Upload large payloads to S3 with a presigned URL and pass a reference through the API.
+    references:
+      - https://docs.aws.amazon.com/apigateway/latest/developerguide/supported-gateway-response-types.html
+
+  - id: apigateway.gateway.unsupported-media-type
+    title: API Gateway has no mapping for the request Content-Type
+    layer: gateway_http
+    category: api_gateway
+    weight: 0.9
+    signals:
+      - type: status
+        codes: [415]
+        required: true
+      - type: header
+        name: x-amzn-requestid
+        pattern: '.+'
+        required: true
+    root_cause: >
+      UNSUPPORTED_MEDIA_TYPE: the integration request has passthrough
+      behaviour NEVER and no mapping template for the Content-Type sent, or
+      binary media handling rejected the payload.
+    remediation:
+      - Add a mapping template for the media type, set passthrough to WHEN_NO_MATCH, or send Content-Type application/json.
+    references:
+      - https://docs.aws.amazon.com/apigateway/latest/developerguide/supported-gateway-response-types.html
+
+  - id: apigateway.gateway.bad-request
+    title: API Gateway request validation failed
+    layer: gateway_http
+    category: api_gateway
+    weight: 0.85
+    signals:
+      - type: status
+        codes: [400]
+        required: true
+      - type: header
+        name: x-amzn-errortype
+        pattern: '(?i)^BadRequestException'
+        weight: 2
+      - type: body
+        pattern: '(?i)invalid request body|bad request'
+      - type: header
+        name: x-amzn-requestid
+        pattern: '.+'
+    root_cause: >
+      BAD_REQUEST_BODY or BAD_REQUEST_PARAMETERS: a request validator on
+      the method rejected the body or the parameters against the model, or
+      the query string used characters REST APIs do not accept unescaped
+      (|, {, } and ;).
+    remediation:
+      - Read the message field; validators name the failing property.
+      - URL encode reserved characters in the query string.
+    references:
+      - https://docs.aws.amazon.com/apigateway/latest/developerguide/supported-gateway-response-types.html
+      - https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-known-issues.html
+
+  - id: apigateway.gateway.not-found
+    title: API Gateway resource not found after authorization
+    layer: gateway_http
+    category: api_gateway
+    weight: 0.8
+    signals:
+      - type: status
+        codes: [404]
+        required: true
+      - type: header
+        name: x-amzn-requestid
+        pattern: '.+'
+        required: true
+      - type: header
+        name: x-amzn-errortype
+        pattern: '(?i)^NotFoundException'
+        weight: 2
+      - type: body
+        pattern: '(?i)"message"\s*:\s*"not found"'
+    root_cause: >
+      RESOURCE_NOT_FOUND is returned when the request authenticated and
+      authorised but the resource does not exist in the deployed stage, or
+      the integration itself answered 404. Note that an unknown path on a
+      REST API without authorization is reported as 403 Missing
+      Authentication Token, not 404.
+    remediation:
+      - Confirm the resource is part of the deployment on this stage and redeploy.
+      - If the integration returned 404, test the backend directly.
+    references:
+      - https://docs.aws.amazon.com/apigateway/latest/developerguide/supported-gateway-response-types.html
+
+  - id: apigateway.gateway.internal-server-error
+    title: API Gateway internal server error (integration or configuration)
+    layer: gateway_http
+    category: api_gateway
+    weight: 0.9
+    signals:
+      - type: status
+        codes: [500]
+        required: true
+      - type: header
+        name: x-amzn-requestid
+        pattern: '.+'
+        required: true
+      - type: body
+        pattern: '(?i)internal server error'
+        weight: 2
+      - type: header
+        name: x-amzn-errortype
+        pattern: '(?i)internalservererror|configuration|authorizer'
+    root_cause: >
+      A gateway generated 500 covers API_CONFIGURATION_ERROR (invalid
+      integration endpoint, base64 decoding failure, no integration
+      response template matched), AUTHORIZER_CONFIGURATION_ERROR (the
+      authorizer could not be reached), AUTHORIZER_FAILURE, a Lambda
+      integration the API is not permitted to invoke
+      (lambda:InvokeFunction for apigateway.amazonaws.com), a Lambda proxy
+      or authorizer response that is not the required JSON shape, a stage
+      variable the API cannot resolve, an integration host that only has
+      IPv6 (API Gateway integrations are IPv4 only), or a backend response
+      over 10 MB. HTTP APIs return {"message":"Internal Server Error"} for
+      the same faults.
+    remediation:
+      - Add $context.integrationErrorMessage, $context.error.message and $context.error.responseType to the access log format and invoke again.
+      - Grant apigateway.amazonaws.com lambda:InvokeFunction for the exact API, stage and route ARN.
+      - Test the method in the console; "Execution failed due to configuration error" names the fault.
+    references:
+      - https://repost.aws/knowledge-center/api-gateway-5xx-error
+      - https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-troubleshooting-lambda.html
+
+  - id: apigateway.gateway.bad-gateway
+    title: API Gateway could not process the integration response
+    layer: gateway_http
+    category: api_gateway
+    weight: 0.85
+    signals:
+      - type: status
+        codes: [502]
+        required: true
+      - type: header
+        name: x-amzn-requestid
+        pattern: '.+'
+        required: true
+      - type: header
+        name: x-cache
+        pattern: '(?i)error from cloudfront'
+        negate: true
+        required: true
+    root_cause: >
+      502 from API Gateway means the integration answered but the response
+      could not be handled as a proxy response: a Lambda proxy function
+      returned something other than {statusCode, headers, body,
+      isBase64Encoded} (body must be a string), the function threw or
+      timed out, or its package had a permission error. Execution logs show
+      "Execution failed due to configuration error" or "Lambda execution
+      failed with status 200 due to customer function error".
+    remediation:
+      - "Read the execution log lines before \"Method completed with status: 502\"."
+      - Return the proxy response shape from the function and stringify JSON bodies.
+      - Check the function's own logs for exceptions and timeouts.
+    references:
+      - https://repost.aws/knowledge-center/malformed-502-api-gateway
+
+  - id: apigateway.gateway.integration-timeout
+    title: API Gateway integration timed out
+    layer: gateway_http
+    category: api_gateway
+    weight: 0.95
+    signals:
+      - type: status
+        codes: [504]
+        required: true
+      - type: body
+        pattern: '(?i)endpoint request timed out'
+        weight: 3
+      - type: header
+        name: x-amzn-errortype
+        pattern: '(?i)timeout|integrationfailure'
+      - type: header
+        name: x-amzn-requestid
+        pattern: '.+'
+    root_cause: >
+      INTEGRATION_TIMEOUT: the Lambda, HTTP or AWS service integration did
+      not respond within the integration timeout (29 seconds by default;
+      raisable above 29 seconds for Regional and private REST APIs through
+      a quota request, after which each integration must be updated).
+      INTEGRATION_FAILURE shares the 504 code when the integration could
+      not be reached at all (VPC link, security groups, DNS).
+    remediation:
+      - Compare $context.integrationLatency in access logs with the configured timeout; execution logs show "Execution failed due to a timeout error".
+      - Reduce backend latency or move long work to asynchronous processing; raise the timeout only after a quota increase.
+      - For VPC links, check target health, security groups and the ephemeral port range.
+    references:
+      - https://repost.aws/knowledge-center/api-gateway-504-errors
+
+  - id: apigateway.gateway.service-unavailable
+    title: Backend behind API Gateway is unavailable
+    layer: gateway_http
+    category: api_gateway
+    weight: 0.8
+    signals:
+      - type: status
+        codes: [503]
+        required: true
+      - type: header
+        name: x-amzn-requestid
+        pattern: '.+'
+        required: true
+      - type: header
+        name: x-cache
+        pattern: '(?i)error from cloudfront'
+        negate: true
+        required: true
+    root_cause: >
+      API Gateway relayed a 503 because the backend integration could not
+      accept the request: overloaded beyond capacity, in maintenance, or
+      with no healthy targets behind a VPC link.
+    remediation:
+      - Scale the backend and retry with exponential backoff.
+      - Check the load balancer or service behind the VPC link for healthy targets.
+    references:
+      - https://repost.aws/knowledge-center/api-gateway-5xx-error
+
+  - id: apigateway.tls.security-policy
+    title: API Gateway security policy rejected the offered TLS version or ciphers
+    layer: tls_handshake
+    category: tls
+    weight: 0.97
+    signals:
+      - type: error
+        pattern: '(?i)protocol version|handshake failure|no protocols available|unsupported protocol'
+        required: true
+      - type: target_host
+        pattern: '(?i)\.execute-api\.[a-z0-9-]+\.(vpce\.)?amazonaws\.com$'
+        required: true
+        weight: 2
+    root_cause: >
+      The handshake with an API Gateway endpoint failed before a certificate
+      was received. Custom domains and private APIs default to the TLS_1_2
+      policy, HTTP APIs are fixed to it, and enhanced SecurityPolicy_*
+      policies can require TLS 1.3 only; a client limited to TLS 1.0 or
+      1.1 or to CBC only suites is refused. API Gateway does not support
+      SSLv3 at all.
+    remediation:
+      - Retry with --tls-version 1.2 or 1.3 and modern ECDHE AES-GCM ciphers.
+      - Check the security policy on the API or custom domain and its endpoint access mode.
+    references:
+      - https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-custom-domain-tls-version.html
+      - https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-security-policies-list.html
+
+  - id: apigateway.private.custom-domain-not-associated
+    title: Private API custom domain not associated with the VPC endpoint
+    layer: tls_handshake
+    category: api_gateway
+    weight: 0.75
+    signals:
+      - type: verify_result
+        pattern: '(?i)hostname|host name|alternative|mismatch'
+        required: true
+      - type: chain_name
+        pattern: '(?i)amazon'
+        required: true
+      - type: target_host
+        pattern: '(?i)execute-api|vpce'
+        negate: true
+      - type: public_hostname
+        negate: true
+    root_cause: >
+      The name resolved to an API Gateway VPC endpoint but the certificate
+      presented does not cover the custom domain ("SSL: no alternative
+      certificate subject name matches target host name"). For private
+      custom domain names the VPC endpoint needs a domain name access
+      association and the domain's resource policy must allow the endpoint;
+      without them the endpoint answers with the execute-api certificate.
+    remediation:
+      - Create the domain name access association between the private custom domain and the execute-api VPC endpoint.
+      - Update the custom domain's resource policy (it is provisioned with an explicit deny) to allow the VPC endpoint.
+      - Check nslookup of the custom domain returns the VPC endpoint's private IPs.
+    references:
+      - https://repost.aws/knowledge-center/api-gateway-private-endpoint-connection
+      - https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-private-api-test-invoke-url.html
+
+  - id: apigateway.info.served-by-api-gateway
+    title: Endpoint is served by API Gateway
+    layer: gateway_http
+    category: api_gateway
+    weight: 0.5
+    signals:
+      - type: header
+        name: x-amzn-requestid
+        pattern: '.+'
+        required: true
+      - type: header
+        name: x-amz-apigw-id
+        pattern: '.+'
+        required: true
+      - type: status
+        codes: [200, 201, 202, 204, 301, 302, 304, 307, 308]
+        required: true
+    root_cause: >
+      The response carries API Gateway's request identifiers
+      (x-amzn-RequestId and x-amz-apigw-id), so the request was accepted
+      by API Gateway and answered by the integration. When Via and X-Cache
+      are present too, the API is edge optimised (service owned CloudFront)
+      or sits behind your own distribution.
+    remediation:
+      - Nothing to fix; keep x-amzn-RequestId and x-amz-apigw-id when correlating with execution and access logs.
+    references:
+      - https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-api-endpoint-types.html

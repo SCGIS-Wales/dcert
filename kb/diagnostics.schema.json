@@ -4,6 +4,7 @@
       "description": "Broad grouping used for filtering and display.",
       "enum": [
         "cloudfront",
+        "api_gateway",
         "proxy",
         "tls",
         "mtls",
@@ -82,6 +83,7 @@
         "viewer_mtls",
         "interception",
         "edge_http",
+        "gateway_http",
         "origin_http"
       ],
       "type": "string"
