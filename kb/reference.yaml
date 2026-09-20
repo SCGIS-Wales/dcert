@@ -1,0 +1,2139 @@
+# dcert reference knowledge base for AWS edge services.
+#
+# Where kb/diagnostics.yaml answers "why did this probe fail", this file
+# answers "what does this response mean". It explains the HTTP status codes,
+# response headers, canonical error sentences and control plane exceptions
+# of Amazon CloudFront and Amazon API Gateway, plus longer topics (viewer
+# mTLS modes, origin mTLS, security policies, limits).
+#
+# Compiled from the AWS documentation and the AWS Knowledge Center on
+# 2026-09-20; see kb/SOURCES.md for every page consulted. The exception
+# lists come from the botocore service models (cloudfront 2020-05-31,
+# apigateway 2015-07-09, apigatewayv2 2018-11-29).
+#
+# Used by `dcert kb explain <query>`, `dcert kb topics`, the context notes
+# printed under a diagnosis, and the MCP `explain_edge_term` tool.
+version: 1
+services:
+  # =====================================================================
+  # Amazon CloudFront
+  # =====================================================================
+  - id: cloudfront
+    name: Amazon CloudFront
+    summary: >
+      Global content delivery network. Viewers connect to an edge location
+      (POP); the edge serves from cache or forwards to the origin (S3, ALB,
+      API Gateway, EC2, any HTTP server). Errors can be generated at the
+      edge ("The request could not be satisfied" pages, X-Cache: Error from
+      cloudfront) or forwarded from the origin (X-Cache: Miss from
+      cloudfront).
+    detect:
+      headers:
+        - name: via
+          pattern: '(?i)cloudfront'
+        - name: server
+          pattern: '(?i)^cloudfront$'
+        - name: x-amz-cf-id
+          pattern: '.+'
+        - name: x-amz-cf-pop
+          pattern: '.+'
+        - name: x-cache
+          pattern: '(?i)cloudfront'
+      hosts:
+        - '\.cloudfront\.net$'
+
+    statuses:
+      - code: 400
+        title: Bad Request
+        generated_by: either
+        summary: >
+          The viewer sent a request CloudFront or the origin could not accept.
+          CloudFront itself returns 400 for malformed requests; an S3 origin
+          returns it with "The authorization header is malformed" when the
+          bucket was recreated in another Region; an ALB origin returns it for
+          request lines over 16 KB, single headers over 16 KB or a header
+          block over 64 KB.
+        causes:
+          - Malformed request line or headers from the client.
+          - S3 origin bucket moved to a different Region (AuthorizationHeaderMalformed); re-save the origin to redeploy.
+          - ALB origin header size limits exceeded, or the client closed the connection before sending the body.
+        checks:
+          - Look at the body sentence; an S3 XML error names the expected Region.
+          - Compare the request headers dcert sent (--debug) with the origin's limits.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/http-400-bad-request.html
+      - code: 401
+        title: Unauthorized
+        generated_by: origin
+        summary: >
+          The origin demanded credentials it never received. CloudFront strips
+          the Authorization header on GET, HEAD and cached OPTIONS requests
+          unless a cache policy or origin request policy forwards it.
+        causes:
+          - Authorization header not included in the cache policy or origin request policy.
+          - Origin expects Basic or Bearer credentials on every request.
+        checks:
+          - Add Authorization to the cache key (cache policy) or use the Managed-AllViewer origin request policy.
+          - If Authorization is forwarded without being in the cache key, disable caching for that behaviour or unauthenticated viewers may receive cached responses.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/http-401-unauthorized.html
+      - code: 403
+        title: Forbidden
+        generated_by: either
+        summary: >
+          The most overloaded CloudFront status. The edge returns 403 for an
+          alternate domain name that is not on the distribution ("Bad
+          Request" page), an HTTP request to an HTTPS only behaviour, an HTTP
+          method the behaviour does not allow, a geo restriction, an AWS WAF
+          block ("Request Blocked"), a missing or invalid signed URL or
+          cookie, a GET with a body, or a chain of distributions. An origin
+          returns 403 for S3 access denied, an API Gateway rejection or an
+          origin firewall.
+        causes:
+          - Host header not an alternate domain name (CNAME) of the distribution.
+          - Viewer protocol policy is HTTPS only and the request was HTTP.
+          - HTTP method not in the behaviour's allowed methods (GET/HEAD, +OPTIONS, or all).
+          - Geographic restriction denies the viewer country (proxy egress country when probing through a proxy).
+          - AWS WAF web ACL blocked the request.
+          - Signed URL or cookie missing, expired, signed with an unknown key or malformed.
+          - S3 origin AccessDenied (missing object, no OAC/OAI grant, SSE-KMS without key grant, Block Public Access).
+          - API Gateway origin returned Forbidden or Missing Authentication Token.
+          - Two or more distributions chained in front of the origin.
+        checks:
+          - X-Cache says Error from cloudfront for edge generated pages and Miss from cloudfront for origin errors.
+          - Read the body sentence; CloudFront error pages state the reason.
+          - Probe the origin directly with --connect-to to separate edge from origin failures.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/http-403-permission-denied.html
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/http-403-invalid-method.html
+          - https://repost.aws/knowledge-center/cloudfront-troubleshoot-403-errors
+      - code: 404
+        title: Not Found
+        generated_by: origin
+        summary: >
+          The origin has no object at the requested path, or a custom error
+          page mapped another status to 404, or the custom error page object
+          itself was deleted. An incorrect Origin Path is appended to every
+          request and produces 404s for whole distributions.
+        causes:
+          - Object missing or URL wrong (S3 keys are case sensitive).
+          - Origin Path setting prepends a directory that does not exist.
+          - Custom error page translating another status to 404, or the error page object was removed.
+        checks:
+          - Request the origin directly with the same path.
+          - Check the Origin Path on the origin configuration.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/http-404-not-found.html
+      - code: 412
+        title: Precondition Failed
+        generated_by: either
+        summary: >
+          A conditional request (If-Unmodified-Since or If-None-Match) on a
+          method other than GET or HEAD was not satisfied, or an
+          UpdateDistribution call carried a stale If-Match ETag. CloudFront
+          cannot serve custom error pages for 412.
+        causes:
+          - Conditional upload or modification whose precondition failed.
+          - Control plane update with an outdated ETag.
+        checks:
+          - Fetch the current ETag with get-distribution-config before updating.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/http-412-precondition-failed.html
+      - code: 414
+        title: URI Too Long
+        generated_by: edge
+        summary: >
+          The URL CloudFront constructed from the request exceeds 8,192
+          bytes. CloudFront returns 414 and closes the TCP connection.
+        causes:
+          - Very long path or query string.
+        checks:
+          - Shorten the URL; the whole request including headers is capped at 32,768 bytes.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/RequestAndResponseBehaviorCustomOrigin.html
+      - code: 421
+        title: Misdirected Request
+        generated_by: edge
+        summary: >
+          An HTTP/2 connection was reused for a hostname that the negotiated
+          certificate does not cover, typically when a CloudFront alternate
+          domain name and an API Gateway custom domain share a host but the
+          client coalesced connections.
+        causes:
+          - Connection coalescing across hostnames served by different certificates.
+          - Alternate domain name and origin custom domain mismatch.
+        checks:
+          - Retry with a fresh connection or disable HTTP/2 coalescing in the client.
+        references:
+          - https://repost.aws/knowledge-center/api-gateway-cloudfront-distribution
+      - code: 494
+        title: Request Header Too Large
+        generated_by: edge
+        summary: >
+          The request exceeded 32,768 bytes because of its headers.
+          CloudFront returns the non standard 494 code and terminates the
+          TCP connection.
+        causes:
+          - Oversized cookies or custom headers (a large Authorization token, many cookies).
+        checks:
+          - Trim cookies for the distribution's domain and shorten tokens.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/RequestAndResponseBehaviorCustomOrigin.html
+      - code: 500
+        title: Internal Server Error
+        generated_by: origin
+        summary: >
+          Almost always forwarded from the origin (S3, API Gateway, ALB or an
+          application). Rarely a CloudFront POP internal error, in which case
+          AWS Support needs the X-Amz-Cf-Id value.
+        causes:
+          - Origin application error.
+          - API Gateway integration or authorizer failure.
+          - CloudFront internal error (rare).
+        checks:
+          - X-Cache Miss from cloudfront means the origin produced it; probe the origin directly.
+          - Keep the X-Amz-Cf-Id for a support case.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/http-500-internal-server-error.html
+      - code: 502
+        title: Bad Gateway
+        generated_by: edge
+        summary: >
+          CloudFront could not obtain a usable response from the origin. The
+          body sentence distinguishes DNS failure (NonS3OriginDnsError), a
+          failed TLS negotiation (certificate name, expiry, self signed,
+          missing intermediate, no common cipher, origin demanding a client
+          certificate), a closed port, a Lambda@Edge response that failed
+          validation, or a CloudFront Function that changed a read only
+          header. X-Cache is Error from cloudfront.
+        causes:
+          - Origin domain does not resolve in public DNS.
+          - Origin certificate does not cover the Origin Domain or forwarded Host header.
+          - Origin certificate expired, self signed, not from a Mozilla trusted CA, or chain missing an intermediate or in the wrong order.
+          - Origin supports no protocol or cipher in common with CloudFront (TLS 1.2 max to origin, ECDHE RSA or ECDSA ciphers).
+          - Origin requests a client certificate but origin mTLS is not enabled on the distribution.
+          - Origin closed the connection or does not listen on the configured HTTP/HTTPS ports.
+          - Lambda@Edge returned an invalid response; CloudFront Function modified a read only header.
+          - ALB or API Gateway origin returned its own 502.
+        checks:
+          - Probe the origin directly with dcert using --connect-to and the forwarded Host header as SNI.
+          - Run dig or nslookup on the origin domain from the public internet.
+          - Check the origin's cipher and protocol list against the CloudFront to origin table.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/http-502-bad-gateway.html
+          - https://repost.aws/knowledge-center/cloudfront-502-errors
+      - code: 503
+        title: Service Unavailable
+        generated_by: either
+        summary: >
+          Either the origin is out of capacity (S3 Slow Down, ALB with no
+          healthy targets, API Gateway backend overloaded), or CloudFront
+          itself could not satisfy the request: edge capacity exceeded
+          during load tests, a Lambda@Edge or CloudFront Function execution
+          error, a Lambda@Edge quota, or the origin mTLS circuit breaker when
+          CloudFront repeatedly fails to complete the mTLS handshake with an
+          origin.
+        causes:
+          - Origin overloaded or in maintenance.
+          - Lambda@Edge or CloudFront Function threw an unhandled exception.
+          - Lambda@Edge concurrency or invocation quota exceeded in the Region.
+          - Origin mTLS handshakes repeatedly failing (expired ACM client certificate, origin unreachable); CloudFront pauses traffic and resumes automatically.
+          - CloudFront capacity exceeded at the edge (load testing from a single resolver).
+        checks:
+          - Check the ACM client certificate attached to the origin has not expired and that the origin trusts its issuer.
+          - Review Lambda@Edge logs in the Region that served the request.
+          - Errors are cached for the error caching minimum TTL (10 s); a custom error response with TTL 0 disables that.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/http-503-service-unavailable.html
+          - https://repost.aws/knowledge-center/cloudfront-503-error
+      - code: 504
+        title: Gateway Timeout
+        generated_by: either
+        summary: >
+          Two flavours. "Gateway time-out" is the origin's own 504 forwarded
+          by the edge. "The request could not be satisfied" is CloudFront
+          giving up: no TCP connection within the connection timeout (10 s,
+          up to 3 attempts) or no response within the origin response
+          timeout (30 s default, 1 to 120 s).
+        causes:
+          - Origin firewall or security group blocks the CloudFront IP ranges (use the managed prefix list).
+          - Origin not reachable from the public internet (internal load balancer, private subnet).
+          - Slow application; time to first byte over the response timeout.
+          - API Gateway integration exceeded its own timeout (29 s default).
+        checks:
+          - Measure the origin directly with curl -w '%{time_starttransfer}'.
+          - Raise the origin response timeout only after fixing origin latency.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/http-504-gateway-timeout.html
+          - https://repost.aws/knowledge-center/cloudfront-troubleshoot-504-errors
+
+    headers:
+      # --- response headers viewers see ---
+      - name: X-Cache
+        direction: response
+        summary: >
+          Whether the response came from the edge cache, the origin, or was
+          an error generated by CloudFront.
+        values:
+          - pattern: '(?i)^hit from cloudfront'
+            meaning: Served from the edge cache; the origin was not contacted.
+          - pattern: '(?i)^miss from cloudfront'
+            meaning: Fetched from the origin for this request; an error status here was produced by the origin, not the edge.
+          - pattern: '(?i)^refreshhit from cloudfront'
+            meaning: Cached object was revalidated with the origin (304) and served.
+          - pattern: '(?i)^error from cloudfront'
+            meaning: CloudFront generated the error itself (edge error page, origin unreachable, Lambda@Edge validation failure); the origin did not produce this status.
+          - pattern: '(?i)^lambdageneratedresponse from cloudfront'
+            meaning: A Lambda@Edge function generated the response without contacting the origin.
+          - pattern: '(?i)^functiongeneratedresponse from cloudfront'
+            meaning: A CloudFront Function generated the response without contacting the origin.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/troubleshooting-response-errors.html
+      - name: Via
+        direction: response
+        summary: >
+          Set by CloudFront to "<http-version> <id>.cloudfront.net (CloudFront)";
+          its presence proves the response traversed a CloudFront edge.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/RequestAndResponseBehaviorCustomOrigin.html
+      - name: X-Amz-Cf-Pop
+        direction: response
+        summary: >
+          The edge location (point of presence) that served the request, as an
+          airport style code plus a suffix, e.g. LHR62-P1.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/troubleshooting-distributions.html
+      - name: X-Amz-Cf-Id
+        direction: both
+        summary: >
+          Encrypted request identifier CloudFront adds to every origin request
+          and echoes to the viewer. AWS Support and CloudFront logs correlate
+          on this value; keep it when raising a case.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/troubleshooting-distributions.html
+      - name: Server
+        direction: response
+        summary: >
+          "CloudFront" on edge generated pages. On forwarded responses it is
+          whatever the origin sent (AmazonS3, awselb, nginx), which tells you
+          who produced the status.
+        values:
+          - pattern: '(?i)^cloudfront$'
+            meaning: The page was generated by the edge, not the origin.
+          - pattern: '(?i)^amazons3$'
+            meaning: An S3 origin produced the response.
+          - pattern: '(?i)awselb'
+            meaning: An Elastic Load Balancing origin produced the response.
+        references:
+          - https://repost.aws/knowledge-center/cloudfront-troubleshoot-403-errors
+      - name: Transfer-Encoding
+        direction: response
+        summary: >
+          CloudFront only supports chunked; any Transfer-Encoding from the
+          origin is rewritten to chunked. Range requests against chunked
+          origin responses return the whole object.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/RequestAndResponseBehaviorCustomOrigin.html
+      - name: Vary
+        direction: response
+        summary: >
+          CloudFront keeps Accept-Encoding, Cookie, User-Agent (when device
+          headers are forwarded) and headers it forwards; other values are
+          removed. Vary:* with a minimum TTL of 0 forces a revalidation on
+          every request.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/RequestAndResponseBehaviorCustomOrigin.html
+      - name: Cache-Control
+        direction: response
+        summary: >
+          Governs how long the edge caches the object and, for 400, 403, 405,
+          412 and 415 responses, whether the error is cached at all (only
+          with max-age or s-maxage).
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/HTTPStatusCodes.html
+      - name: Age
+        direction: response
+        summary: Seconds the object has been in the edge cache.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/ConfiguringCaching.html
+      - name: X-Amz-Request-Id
+        direction: response
+        summary: >
+          S3 request id. CloudFront normally strips X-Amz-Request-Id and
+          X-Amz-Id-2 from S3 origin responses; seeing it means S3 was reached
+          without CloudFront in front.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/RequestAndResponseBehaviorS3Origin.html
+      # --- headers CloudFront adds to origin requests ---
+      - name: X-Forwarded-For
+        direction: request
+        summary: >
+          CloudFront appends the viewer IP from the TCP connection; load
+          balancers and API Gateway then append the edge server IP.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/RequestAndResponseBehaviorCustomOrigin.html
+      - name: User-Agent
+        direction: request
+        summary: >
+          Replaced with "Amazon CloudFront" unless the behaviour forwards
+          User-Agent; origins that fingerprint browsers see CloudFront instead.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/RequestAndResponseBehaviorCustomOrigin.html
+      - name: Authorization
+        direction: request
+        summary: >
+          Removed on GET, HEAD and cached OPTIONS unless a cache policy or
+          origin request policy forwards it; kept on DELETE, PATCH, POST and
+          PUT. Missing Authorization at the origin is the usual cause of 401.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/http-401-unauthorized.html
+      - name: Host
+        direction: request
+        summary: >
+          Set to the Origin Domain unless the policy forwards the viewer Host.
+          When forwarded, the origin certificate must cover the viewer host
+          name or the origin TLS handshake fails with a 502.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/http-502-bad-gateway.html
+      - name: CloudFront-Forwarded-Proto
+        direction: request
+        summary: The protocol of the viewer request, http or https.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/adding-cloudfront-headers.html
+      - name: CloudFront-Viewer-Http-Version
+        direction: request
+        summary: The HTTP version the viewer used (1.1, 2.0, 3.0).
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/adding-cloudfront-headers.html
+      - name: CloudFront-Viewer-TLS
+        direction: request
+        summary: >
+          "version:cipher:handshake" for the viewer connection, e.g.
+          TLSv1.3:TLS_AES_128_GCM_SHA256:sessionResumed; the last field is
+          fullHandshake, sessionResumed or connectionReused. Origin request
+          policies only, not cache policies.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/adding-cloudfront-headers.html
+      - name: CloudFront-Viewer-JA3-Fingerprint
+        direction: request
+        summary: JA3 fingerprint of the viewer's TLS Client Hello (HTTPS only).
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/adding-cloudfront-headers.html
+      - name: CloudFront-Viewer-JA4-Fingerprint
+        direction: request
+        summary: JA4 fingerprint of the viewer's TLS Client Hello (HTTPS only).
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/adding-cloudfront-headers.html
+      - name: CloudFront-Viewer-Address
+        direction: request
+        summary: Viewer IP and source port, e.g. 198.51.100.10:46532 (origin request policy only).
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/adding-cloudfront-headers.html
+      - name: CloudFront-Viewer-ASN
+        direction: request
+        summary: Autonomous system number of the viewer (origin request policy only).
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/adding-cloudfront-headers.html
+      - name: CloudFront-Viewer-Country
+        direction: request
+        summary: >
+          ISO 3166-1 alpha-2 country of the viewer; siblings are
+          CloudFront-Viewer-Country-Name, -Country-Region, -Country-Region-Name,
+          -City, -Postal-Code, -Metro-Code (US only), -Latitude, -Longitude
+          and -Time-Zone.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/adding-cloudfront-headers.html
+      - name: CloudFront-Is-Mobile-Viewer
+        direction: request
+        summary: >
+          Device type flags derived from User-Agent; siblings are
+          CloudFront-Is-Android-Viewer, -Desktop-, -IOS-, -SmartTV- and
+          -Tablet-Viewer. More than one may be true.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/adding-cloudfront-headers.html
+      - name: CloudFront-Viewer-Header-Order
+        direction: request
+        summary: >
+          Colon separated list of the viewer's header names in the order
+          sent (truncated at 7,680 characters); CloudFront-Viewer-Header-Count
+          carries the total.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/adding-cloudfront-headers.html
+      - name: CloudFront-Error-Uri
+        direction: request
+        summary: >
+          Original request URI when CloudFront fetches a custom error page;
+          CloudFront-Error-Args carries the original query string.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/adding-cloudfront-headers.html
+      # --- viewer mTLS headers ---
+      - name: CloudFront-Viewer-Cert-Present
+        direction: request
+        summary: >
+          1 when the viewer presented a client certificate, 0 otherwise
+          (always 1 in required mode). Available in required, optional and
+          passthrough viewer mTLS modes and usable in cache policies.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/viewer-mtls-headers.html
+      - name: CloudFront-Viewer-Cert-Subject
+        direction: request
+        summary: RFC 2253 subject DN of the viewer's client certificate.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/viewer-mtls-headers.html
+      - name: CloudFront-Viewer-Cert-Issuer
+        direction: request
+        summary: RFC 2253 issuer DN of the viewer's client certificate.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/viewer-mtls-headers.html
+      - name: CloudFront-Viewer-Cert-Serial-Number
+        direction: request
+        summary: Hexadecimal, colon separated serial number of the client certificate.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/viewer-mtls-headers.html
+      - name: CloudFront-Viewer-Cert-Sha256
+        direction: request
+        summary: SHA-256 fingerprint of the client certificate, lower case hex.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/viewer-mtls-headers.html
+      - name: CloudFront-Viewer-Cert-Validity
+        direction: request
+        summary: >
+          "NotBefore=<ISO8601>;NotAfter=<ISO8601>" of the client certificate.
+          Origin requests only; must be allow listed in the origin request policy.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/viewer-mtls-headers.html
+      - name: CloudFront-Viewer-Cert-Pem
+        direction: request
+        summary: >
+          URL encoded PEM of the leaf client certificate (required and
+          optional modes). Too large for edge functions; forwarded to the
+          origin only.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/viewer-mtls-headers.html
+      - name: Client-Cert
+        direction: request
+        summary: >
+          Passthrough mode only: the leaf client certificate, base64 encoded
+          as an HTTP structured field byte sequence (:MII...:). Any Client-Cert
+          header sent by the viewer is dropped before CloudFront adds its own.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/mtls-validation-modes.html
+      - name: Client-Cert-Chain
+        direction: request
+        summary: >
+          Passthrough mode only: the non leaf chain as a structured field
+          list (may repeat; omitted for a single certificate; maximum depth 4).
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/mtls-validation-modes.html
+
+    bodies:
+      - pattern: "(?i)wasn't able to resolve the origin domain name"
+        status: 502
+        meaning: >
+          NonS3OriginDnsError. The origin domain does not resolve in public
+          DNS. CloudFront resolves origins from the public internet even when
+          the origin itself is private; check the zone's NS and SOA records
+          and any delegated subdomain.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/http-502-bad-gateway.html
+      - pattern: '(?i)attempted to establish a connection with the origin, but either the attempt failed or the origin closed the connection'
+        status: 502
+        meaning: >
+          The TCP or TLS connection to the origin failed: certificate name,
+          expiry, self signed or incomplete chain, no common cipher, a closed
+          port, an origin demanding a client certificate without origin mTLS,
+          or an origin that closed the connection.
+        references:
+          - https://repost.aws/knowledge-center/resolve-cloudfront-connection-error
+      - pattern: "(?i)wasn't able to connect to the origin"
+        status: 502
+        meaning: >
+          Same family as the failed connection sentence; TLS negotiation,
+          port, firewall or DNS problem between the edge and the origin.
+        references:
+          - https://repost.aws/knowledge-center/resolve-cloudfront-connection-error
+      - pattern: '(?i)request could not be satisfied\.?\s*bad request'
+        status: 403
+        meaning: >
+          Edge generated 403 "Bad Request": the Host header is not an
+          alternate domain name of any distribution, or an HTTP request hit
+          an HTTPS only behaviour.
+        references:
+          - https://repost.aws/knowledge-center/resolve-cloudfront-bad-request-error
+      - pattern: '(?i)request blocked'
+        status: 403
+        meaning: >
+          AWS WAF blocked the request under the web ACL attached to the
+          distribution.
+        references:
+          - https://repost.aws/knowledge-center/cloudfront-error-request-blocked
+      - pattern: '(?i)request could not be satisfied\.?\s*the amazon cloudfront distribution is configured to block access from your country'
+        status: 403
+        meaning: Geographic restriction on the distribution denies the viewer's country.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/georestrictions.html
+      - pattern: '(?i)missing key-pair-id'
+        status: 403
+        meaning: >
+          The behaviour requires a signed URL or signed cookie and the request
+          carried no Key-Pair-Id (or CloudFront-Key-Pair-Id cookie).
+        references:
+          - https://repost.aws/knowledge-center/cloudfront-troubleshoot-signed-url-cookies
+      - pattern: '(?i)unknown key'
+        status: 403
+        meaning: >
+          The Key-Pair-Id of the signed URL or cookie is not in any trusted key
+          group (or the trusted signer's access key) on the distribution.
+        references:
+          - https://repost.aws/knowledge-center/cloudfront-troubleshoot-signed-url-cookies
+      - pattern: '(?i)the lambda function associated with the cloudfront distribution is invalid or doesn'
+        status: 502
+        meaning: >
+          Lambda@Edge validation error: the function returned a malformed
+          response (not a JSON object, missing fields, read only header
+          changed, body over 1 MB for origin events or 40 KB for viewer events).
+        references:
+          - https://repost.aws/knowledge-center/lambda-edge-500-errors
+      - pattern: '(?i)cloudfront function associated with the cloudfront distribution is invalid'
+        status: 502
+        meaning: >
+          A CloudFront Function tried to add, delete or change a read only
+          header; this only shows after deployment, not in the test console.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/http-502-bad-gateway.html
+      - pattern: '(?i)capacity exceeded'
+        status: 503
+        meaning: >
+          CloudFront could not route the request to another edge location;
+          common when load testing a single resolver's IP set.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/load-testing.html
+      - pattern: '(?i)generated by cloudfront'
+        meaning: >
+          Footer of every CloudFront error page; the "Request ID" that follows
+          it is the X-Amz-Cf-Id value for the request.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/troubleshooting-response-errors.html
+      - pattern: '<Code>AccessDenied</Code>'
+        status: 403
+        meaning: >
+          S3 error XML forwarded by the edge. Causes: object missing (S3 hides
+          404 behind AccessDenied when s3:ListBucket is not granted), no OAC
+          or OAI grant in the bucket policy, SSE-KMS object without a key
+          grant to cloudfront.amazonaws.com, Block Public Access, or an
+          explicit deny. CloudFront caches this for up to five minutes.
+        references:
+          - https://repost.aws/knowledge-center/s3-rest-api-cloudfront-error-403
+      - pattern: '<Code>NoSuchKey</Code>'
+        status: 404
+        meaning: The S3 origin has no object with that key (keys are case sensitive; check the Origin Path).
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/http-404-not-found.html
+      - pattern: '<Code>NoSuchBucket</Code>'
+        status: 404
+        meaning: The origin bucket does not exist in the Region the origin domain implies.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/http-404-not-found.html
+      - pattern: '(?i)the authorization header is malformed; the region'
+        status: 400
+        meaning: >
+          The S3 bucket behind the origin was recreated in another Region;
+          re-save the origin in the CloudFront console so it is redeployed
+          against the new Region.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/http-400-bad-request.html
+      - pattern: '<Code>SlowDown</Code>'
+        status: 503
+        meaning: >
+          S3 request rate limit per prefix (3,500 writes or 5,500 reads per
+          second); spread keys across prefixes.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/http-503-service-unavailable.html
+
+    errors:
+      # --- common errors shared by every AWS API ---
+      - name: AccessDeniedException
+        http_status: 403
+        summary: '(common) You do not have permission to perform this action; check the IAM policy.'
+      - name: ExpiredTokenException
+        http_status: 403
+        summary: '(common) The security token in the request has expired.'
+      - name: IncompleteSignature
+        http_status: 403
+        summary: '(common) The request signature does not conform to AWS standards.'
+      - name: InternalFailure
+        http_status: 500
+        summary: '(common) Internal server issue; retry later.'
+      - name: MalformedHttpRequestException
+        http_status: 400
+        summary: '(common) The request body could not be processed, usually a content encoding mismatch.'
+      - name: NotAuthorized
+        http_status: 401
+        summary: '(common) You do not have permission to perform this action.'
+      - name: OptInRequired
+        http_status: 403
+        summary: '(common) The account needs a subscription for this service.'
+      - name: RequestAbortedException
+        http_status: 400
+        summary: '(common) The client closed the connection before a response was returned.'
+      - name: RequestEntityTooLargeException
+        http_status: 413
+        summary: '(common) The request entity is too large.'
+      - name: RequestTimeoutException
+        http_status: 408
+        summary: '(common) The server did not receive the complete request in time.'
+      - name: ServiceUnavailable
+        http_status: 503
+        summary: '(common) The service is temporarily unavailable; retry later.'
+      - name: ThrottlingException
+        http_status: 400
+        summary: '(common) Request rate too high; the SDKs retry automatically.'
+      - name: UnknownOperationException
+        http_status: 404
+        summary: '(common) The action is not recognised for this API version.'
+      - name: UnrecognizedClientException
+        http_status: 403
+        summary: '(common) The X.509 certificate or access key id does not exist in AWS records.'
+      - name: ValidationError
+        http_status: 400
+        summary: '(common) The input does not meet the required format or constraints.'
+      # --- cloudfront (152 exceptions from botocore service-2.json) ---
+      - name: AccessDenied
+        http_status: 403
+        summary: 'Access denied.'
+      - name: BatchTooLarge
+        http_status: 413
+        summary: 'Invalidation batch specified is too large.'
+      - name: CNAMEAlreadyExists
+        http_status: 409
+        summary: 'The CNAME specified is already defined for CloudFront.'
+      - name: CachePolicyAlreadyExists
+        http_status: 409
+        summary: 'A cache policy with this name already exists.'
+      - name: CachePolicyInUse
+        http_status: 409
+        summary: 'Cannot delete the cache policy because it is attached to one or more cache behaviors.'
+      - name: CannotChangeImmutablePublicKeyFields
+        http_status: 400
+        summary: 'You can''t change the value of a public key.'
+      - name: CannotDeleteEntityWhileInUse
+        http_status: 409
+        summary: 'The entity cannot be deleted while it is in use.'
+      - name: CannotUpdateEntityWhileInUse
+        http_status: 409
+        summary: 'The entity cannot be updated while it is in use.'
+      - name: CloudFrontOriginAccessIdentityAlreadyExists
+        http_status: 409
+        summary: 'If the CallerReference is a value you already sent in a previous request to create an identity but the content of the CloudFrontOriginAccessIdentityConfig is different from the original request, CloudFront returns a CloudFrontOriginAccessIdentityAlreadyExists error.'
+      - name: CloudFrontOriginAccessIdentityInUse
+        http_status: 409
+        summary: 'The Origin Access Identity specified is already in use.'
+      - name: ContinuousDeploymentPolicyAlreadyExists
+        http_status: 409
+        summary: 'A continuous deployment policy with this configuration already exists.'
+      - name: ContinuousDeploymentPolicyInUse
+        http_status: 409
+        summary: 'You cannot delete a continuous deployment policy that is associated with a primary distribution.'
+      - name: DistributionAlreadyExists
+        http_status: 409
+        summary: 'The caller reference you attempted to create the distribution with is associated with another distribution.'
+      - name: DistributionNotDisabled
+        http_status: 409
+        summary: 'The specified CloudFront distribution is not disabled.'
+      - name: EntityAlreadyExists
+        http_status: 409
+        summary: 'The entity already exists.'
+      - name: EntityLimitExceeded
+        http_status: 400
+        summary: 'The entity limit has been exceeded.'
+      - name: EntityNotFound
+        http_status: 404
+        summary: 'The entity was not found.'
+      - name: EntitySizeLimitExceeded
+        http_status: 413
+        summary: 'The entity size limit was exceeded.'
+      - name: FieldLevelEncryptionConfigAlreadyExists
+        http_status: 409
+        summary: 'The specified configuration for field-level encryption already exists.'
+      - name: FieldLevelEncryptionConfigInUse
+        http_status: 409
+        summary: 'The specified configuration for field-level encryption is in use.'
+      - name: FieldLevelEncryptionProfileAlreadyExists
+        http_status: 409
+        summary: 'The specified profile for field-level encryption already exists.'
+      - name: FieldLevelEncryptionProfileInUse
+        http_status: 409
+        summary: 'The specified profile for field-level encryption is in use.'
+      - name: FieldLevelEncryptionProfileSizeExceeded
+        http_status: 400
+        summary: 'The maximum size of a profile for field-level encryption was exceeded.'
+      - name: FunctionAlreadyExists
+        http_status: 409
+        summary: 'A function with the same name already exists in this Amazon Web Services account.'
+      - name: FunctionInUse
+        http_status: 409
+        summary: 'Cannot delete the function because it''s attached to one or more cache behaviors.'
+      - name: FunctionSizeLimitExceeded
+        http_status: 413
+        summary: 'The function is too large.'
+      - name: IllegalDelete
+        http_status: 400
+        summary: 'Deletion is not allowed for this entity.'
+      - name: IllegalFieldLevelEncryptionConfigAssociationWithCacheBehavior
+        http_status: 400
+        summary: 'The specified configuration for field-level encryption can''t be associated with the specified cache behavior.'
+      - name: IllegalOriginAccessConfiguration
+        http_status: 400
+        summary: 'An origin cannot contain both an origin access control (OAC) and an origin access identity (OAI).'
+      - name: IllegalUpdate
+        http_status: 400
+        summary: 'The update contains modifications that are not allowed.'
+      - name: InconsistentQuantities
+        http_status: 400
+        summary: 'The value of Quantity and the size of Items don''t match.'
+      - name: InvalidArgument
+        http_status: 400
+        summary: 'An argument is invalid.'
+      - name: InvalidAssociation
+        http_status: 409
+        summary: 'The specified CloudFront resource can''t be associated.'
+      - name: InvalidDefaultRootObject
+        http_status: 400
+        summary: 'The default root object file name is too big or contains an invalid character.'
+      - name: InvalidDomainNameForOriginAccessControl
+        http_status: 400
+        summary: 'An origin access control is associated with an origin whose domain name is not supported.'
+      - name: InvalidErrorCode
+        http_status: 400
+        summary: 'An invalid error code was specified.'
+      - name: InvalidForwardCookies
+        http_status: 400
+        summary: 'Your request contains forward cookies option which doesn''t match with the expectation for the whitelisted list of cookie names.'
+      - name: InvalidFunctionAssociation
+        http_status: 400
+        summary: 'A CloudFront function association is invalid.'
+      - name: InvalidGeoRestrictionParameter
+        http_status: 400
+        summary: 'The specified geo restriction parameter is not valid.'
+      - name: InvalidHeadersForS3Origin
+        http_status: 400
+        summary: 'The headers specified are not valid for an Amazon S3 origin.'
+      - name: InvalidIfMatchVersion
+        http_status: 400
+        summary: 'The If-Match version is missing or not valid.'
+      - name: InvalidLambdaFunctionAssociation
+        http_status: 400
+        summary: 'The specified Lambda@Edge function association is invalid.'
+      - name: InvalidLocationCode
+        http_status: 400
+        summary: 'The location code specified is not valid.'
+      - name: InvalidMinimumProtocolVersion
+        http_status: 400
+        summary: 'The minimum protocol version specified is not valid.'
+      - name: InvalidOrigin
+        http_status: 400
+        summary: 'The Amazon S3 origin server specified does not refer to a valid Amazon S3 bucket.'
+      - name: InvalidOriginAccessControl
+        http_status: 400
+        summary: 'The origin access control is not valid.'
+      - name: InvalidOriginAccessIdentity
+        http_status: 400
+        summary: 'The origin access identity is not valid or doesn''t exist.'
+      - name: InvalidOriginKeepaliveTimeout
+        http_status: 400
+        summary: 'The keep alive timeout specified for the origin is not valid.'
+      - name: InvalidOriginReadTimeout
+        http_status: 400
+        summary: 'The read timeout specified for the origin is not valid.'
+      - name: InvalidProtocolSettings
+        http_status: 400
+        summary: 'You cannot specify SSLv3 as the minimum protocol version if you only want to support only clients that support Server Name Indication (SNI).'
+      - name: InvalidQueryStringParameters
+        http_status: 400
+        summary: 'The query string parameters specified are not valid.'
+      - name: InvalidRelativePath
+        http_status: 400
+        summary: 'The relative path is too big, is not URL-encoded, or does not begin with a slash (/).'
+      - name: InvalidRequiredProtocol
+        http_status: 400
+        summary: 'This operation requires the HTTPS protocol.'
+      - name: InvalidResponseCode
+        http_status: 400
+        summary: 'A response code is not valid.'
+      - name: InvalidTTLOrder
+        http_status: 400
+        summary: 'The TTL order specified is not valid.'
+      - name: InvalidTagging
+        http_status: 400
+        summary: 'The tagging specified is not valid.'
+      - name: InvalidViewerCertificate
+        http_status: 400
+        summary: 'A viewer certificate specified is not valid: no certificate attached, more than five certificates in the chain, a certificate outside its validity dates, not signed by a trusted CA (self signed rejected), malformed, or not covering the alternate domain name being added.'
+      - name: InvalidWebACLId
+        http_status: 400
+        summary: 'A web ACL ID specified is not valid.'
+      - name: KeyGroupAlreadyExists
+        http_status: 409
+        summary: 'A key group with this name already exists.'
+      - name: MissingBody
+        http_status: 400
+        summary: 'This operation requires a body.'
+      - name: MonitoringSubscriptionAlreadyExists
+        http_status: 409
+        summary: 'A monitoring subscription already exists for the specified distribution.'
+      - name: NoSuchCachePolicy
+        http_status: 404
+        summary: 'The cache policy does not exist.'
+      - name: NoSuchCloudFrontOriginAccessIdentity
+        http_status: 404
+        summary: 'The specified origin access identity does not exist.'
+      - name: NoSuchContinuousDeploymentPolicy
+        http_status: 404
+        summary: 'The continuous deployment policy doesn''t exist.'
+      - name: NoSuchDistribution
+        http_status: 404
+        summary: 'The specified distribution does not exist.'
+      - name: NoSuchFieldLevelEncryptionConfig
+        http_status: 404
+        summary: 'The specified configuration for field-level encryption doesn''t exist.'
+      - name: NoSuchFieldLevelEncryptionProfile
+        http_status: 404
+        summary: 'The specified profile for field-level encryption doesn''t exist.'
+      - name: NoSuchFunctionExists
+        http_status: 404
+        summary: 'The function does not exist.'
+      - name: NoSuchInvalidation
+        http_status: 404
+        summary: 'The specified invalidation does not exist.'
+      - name: NoSuchMonitoringSubscription
+        http_status: 404
+        summary: 'A monitoring subscription does not exist for the specified distribution.'
+      - name: NoSuchOrigin
+        http_status: 404
+        summary: 'No origin exists with the specified Origin Id.'
+      - name: NoSuchOriginAccessControl
+        http_status: 404
+        summary: 'The origin access control does not exist.'
+      - name: NoSuchOriginRequestPolicy
+        http_status: 404
+        summary: 'The origin request policy does not exist.'
+      - name: NoSuchPublicKey
+        http_status: 404
+        summary: 'The specified public key doesn''t exist.'
+      - name: NoSuchRealtimeLogConfig
+        http_status: 404
+        summary: 'The real-time log configuration does not exist.'
+      - name: NoSuchResource
+        http_status: 404
+        summary: 'A resource that was specified is not valid.'
+      - name: NoSuchResponseHeadersPolicy
+        http_status: 404
+        summary: 'The response headers policy does not exist.'
+      - name: NoSuchStreamingDistribution
+        http_status: 404
+        summary: 'The specified streaming distribution does not exist.'
+      - name: OriginAccessControlAlreadyExists
+        http_status: 409
+        summary: 'An origin access control with the specified parameters already exists.'
+      - name: OriginAccessControlInUse
+        http_status: 409
+        summary: 'Cannot delete the origin access control because it''s in use by one or more distributions.'
+      - name: OriginRequestPolicyAlreadyExists
+        http_status: 409
+        summary: 'An origin request policy with this name already exists.'
+      - name: OriginRequestPolicyInUse
+        http_status: 409
+        summary: 'Cannot delete the origin request policy because it is attached to one or more cache behaviors.'
+      - name: PreconditionFailed
+        http_status: 412
+        summary: 'The precondition in one or more of the request fields evaluated to false (stale If-Match ETag).'
+      - name: PublicKeyAlreadyExists
+        http_status: 409
+        summary: 'The specified public key already exists.'
+      - name: PublicKeyInUse
+        http_status: 409
+        summary: 'The specified public key is in use.'
+      - name: QueryArgProfileEmpty
+        http_status: 400
+        summary: 'No profile specified for the field-level encryption query argument.'
+      - name: RealtimeLogConfigAlreadyExists
+        http_status: 409
+        summary: 'A real-time log configuration with this name already exists.'
+      - name: RealtimeLogConfigInUse
+        http_status: 400
+        summary: 'Cannot delete the real-time log configuration because it is attached to one or more cache behaviors.'
+      - name: RealtimeLogConfigOwnerMismatch
+        http_status: 401
+        summary: 'The specified real-time log configuration belongs to a different Amazon Web Services account.'
+      - name: ResourceInUse
+        http_status: 409
+        summary: 'Cannot delete this resource because it is in use.'
+      - name: ResourceNotDisabled
+        http_status: 409
+        summary: 'The specified CloudFront resource hasn''t been disabled yet.'
+      - name: ResponseHeadersPolicyAlreadyExists
+        http_status: 409
+        summary: 'A response headers policy with this name already exists.'
+      - name: ResponseHeadersPolicyInUse
+        http_status: 409
+        summary: 'Cannot delete the response headers policy because it is attached to one or more cache behaviors in a CloudFront distribution.'
+      - name: StagingDistributionInUse
+        http_status: 409
+        summary: 'A continuous deployment policy for this staging distribution already exists.'
+      - name: StreamingDistributionAlreadyExists
+        http_status: 409
+        summary: 'The caller reference you attempted to create the streaming distribution with is associated with another distribution.'
+      - name: StreamingDistributionNotDisabled
+        http_status: 409
+        summary: 'The specified CloudFront distribution is not disabled.'
+      - name: TestFunctionFailed
+        http_status: 500
+        summary: 'The CloudFront function failed.'
+      - name: TooLongCSPInResponseHeadersPolicy
+        http_status: 400
+        summary: 'The length of the Content-Security-Policy header value in the response headers policy exceeds the maximum (1,783 characters).'
+      - name: TooManyCacheBehaviors
+        http_status: 400
+        summary: 'You cannot create more cache behaviors for the distribution.'
+      - name: TooManyCachePolicies
+        http_status: 400
+        summary: 'You have reached the maximum number of cache policies for this Amazon Web Services account.'
+      - name: TooManyCertificates
+        http_status: 400
+        summary: 'You cannot create anymore custom SSL/TLS certificates.'
+      - name: TooManyCloudFrontOriginAccessIdentities
+        http_status: 400
+        summary: 'Processing your request would cause you to exceed the maximum number of origin access identities allowed.'
+      - name: TooManyContinuousDeploymentPolicies
+        http_status: 400
+        summary: 'You have reached the maximum number of continuous deployment policies for this Amazon Web Services account.'
+      - name: TooManyCookieNamesInWhiteList
+        http_status: 400
+        summary: 'Your request contains more cookie names in the whitelist than are allowed per cache behavior.'
+      - name: TooManyCookiesInCachePolicy
+        http_status: 400
+        summary: 'The number of cookies in the cache policy exceeds the maximum.'
+      - name: TooManyCookiesInOriginRequestPolicy
+        http_status: 400
+        summary: 'The number of cookies in the origin request policy exceeds the maximum.'
+      - name: TooManyCustomHeadersInResponseHeadersPolicy
+        http_status: 400
+        summary: 'The number of custom headers in the response headers policy exceeds the maximum.'
+      - name: TooManyDistributionCNAMEs
+        http_status: 400
+        summary: 'Your request contains more CNAMEs than are allowed per distribution.'
+      - name: TooManyDistributions
+        http_status: 400
+        summary: 'Processing your request would cause you to exceed the maximum number of distributions allowed.'
+      - name: TooManyDistributionsAssociatedToCachePolicy
+        http_status: 400
+        summary: 'The maximum number of distributions have been associated with the specified cache policy.'
+      - name: TooManyDistributionsAssociatedToFieldLevelEncryptionConfig
+        http_status: 400
+        summary: 'The maximum number of distributions have been associated with the specified configuration for field-level encryption.'
+      - name: TooManyDistributionsAssociatedToKeyGroup
+        http_status: 400
+        summary: 'The number of distributions that reference this key group is more than the maximum allowed.'
+      - name: TooManyDistributionsAssociatedToOriginAccessControl
+        http_status: 400
+        summary: 'The maximum number of distributions have been associated with the specified origin access control.'
+      - name: TooManyDistributionsAssociatedToOriginRequestPolicy
+        http_status: 400
+        summary: 'The maximum number of distributions have been associated with the specified origin request policy.'
+      - name: TooManyDistributionsAssociatedToResponseHeadersPolicy
+        http_status: 400
+        summary: 'The maximum number of distributions have been associated with the specified response headers policy.'
+      - name: TooManyDistributionsWithFunctionAssociations
+        http_status: 400
+        summary: 'You have reached the maximum number of distributions that are associated with a CloudFront function.'
+      - name: TooManyDistributionsWithLambdaAssociations
+        http_status: 400
+        summary: 'Processing your request would cause the maximum number of distributions with Lambda@Edge function associations per owner to be exceeded.'
+      - name: TooManyDistributionsWithSingleFunctionARN
+        http_status: 400
+        summary: 'The maximum number of distributions have been associated with the specified Lambda@Edge function.'
+      - name: TooManyFieldLevelEncryptionConfigs
+        http_status: 400
+        summary: 'The maximum number of configurations for field-level encryption have been created.'
+      - name: TooManyFieldLevelEncryptionContentTypeProfiles
+        http_status: 400
+        summary: 'The maximum number of content type profiles for field-level encryption have been created.'
+      - name: TooManyFieldLevelEncryptionEncryptionEntities
+        http_status: 400
+        summary: 'The maximum number of encryption entities for field-level encryption have been created.'
+      - name: TooManyFieldLevelEncryptionFieldPatterns
+        http_status: 400
+        summary: 'The maximum number of field patterns for field-level encryption have been created.'
+      - name: TooManyFieldLevelEncryptionProfiles
+        http_status: 400
+        summary: 'The maximum number of profiles for field-level encryption have been created.'
+      - name: TooManyFieldLevelEncryptionQueryArgProfiles
+        http_status: 400
+        summary: 'The maximum number of query arg profiles for field-level encryption have been created.'
+      - name: TooManyFunctionAssociations
+        http_status: 400
+        summary: 'You have reached the maximum number of CloudFront function associations for this distribution.'
+      - name: TooManyFunctions
+        http_status: 400
+        summary: 'You have reached the maximum number of CloudFront functions for this Amazon Web Services account.'
+      - name: TooManyHeadersInCachePolicy
+        http_status: 400
+        summary: 'The number of headers in the cache policy exceeds the maximum.'
+      - name: TooManyHeadersInForwardedValues
+        http_status: 400
+        summary: 'Your request contains too many headers in forwarded values.'
+      - name: TooManyHeadersInOriginRequestPolicy
+        http_status: 400
+        summary: 'The number of headers in the origin request policy exceeds the maximum.'
+      - name: TooManyInvalidationsInProgress
+        http_status: 400
+        summary: 'You have exceeded the maximum number of allowable InProgress invalidation batch requests, or invalidation objects.'
+      - name: TooManyKeyGroups
+        http_status: 400
+        summary: 'You have reached the maximum number of key groups for this Amazon Web Services account.'
+      - name: TooManyKeyGroupsAssociatedToDistribution
+        http_status: 400
+        summary: 'The number of key groups referenced by this distribution is more than the maximum allowed.'
+      - name: TooManyLambdaFunctionAssociations
+        http_status: 400
+        summary: 'Your request contains more Lambda@Edge function associations than are allowed per distribution.'
+      - name: TooManyOriginAccessControls
+        http_status: 400
+        summary: 'The number of origin access controls in your Amazon Web Services account exceeds the maximum allowed.'
+      - name: TooManyOriginCustomHeaders
+        http_status: 400
+        summary: 'Your request contains too many origin custom headers.'
+      - name: TooManyOriginGroupsPerDistribution
+        http_status: 400
+        summary: 'Processing your request would cause you to exceed the maximum number of origin groups allowed.'
+      - name: TooManyOriginRequestPolicies
+        http_status: 400
+        summary: 'You have reached the maximum number of origin request policies for this Amazon Web Services account.'
+      - name: TooManyOrigins
+        http_status: 400
+        summary: 'You cannot create more origins for the distribution.'
+      - name: TooManyPublicKeys
+        http_status: 400
+        summary: 'The maximum number of public keys for field-level encryption have been created.'
+      - name: TooManyPublicKeysInKeyGroup
+        http_status: 400
+        summary: 'The number of public keys in this key group is more than the maximum allowed.'
+      - name: TooManyQueryStringParameters
+        http_status: 400
+        summary: 'Your request contains too many query string parameters.'
+      - name: TooManyQueryStringsInCachePolicy
+        http_status: 400
+        summary: 'The number of query strings in the cache policy exceeds the maximum.'
+      - name: TooManyQueryStringsInOriginRequestPolicy
+        http_status: 400
+        summary: 'The number of query strings in the origin request policy exceeds the maximum.'
+      - name: TooManyRealtimeLogConfigs
+        http_status: 400
+        summary: 'You have reached the maximum number of real-time log configurations for this Amazon Web Services account.'
+      - name: TooManyRemoveHeadersInResponseHeadersPolicy
+        http_status: 400
+        summary: 'The number of headers in RemoveHeadersConfig in the response headers policy exceeds the maximum.'
+      - name: TooManyResponseHeadersPolicies
+        http_status: 400
+        summary: 'You have reached the maximum number of response headers policies for this Amazon Web Services account.'
+      - name: TooManyStreamingDistributionCNAMEs
+        http_status: 400
+        summary: 'Your request contains more CNAMEs than are allowed per distribution.'
+      - name: TooManyStreamingDistributions
+        http_status: 400
+        summary: 'Processing your request would cause you to exceed the maximum number of streaming distributions allowed.'
+      - name: TooManyTrustedSigners
+        http_status: 400
+        summary: 'Your request contains more trusted signers than are allowed per distribution.'
+      - name: TrustedKeyGroupDoesNotExist
+        http_status: 400
+        summary: 'The specified key group does not exist.'
+      - name: TrustedSignerDoesNotExist
+        http_status: 400
+        summary: 'One or more of your trusted signers don''t exist.'
+      - name: UnsupportedOperation
+        http_status: 400
+        summary: 'This operation is not supported in this Amazon Web Services Region.'
+
+    topics:
+      - id: viewer-mtls
+        title: Viewer mutual TLS (client certificates at the edge)
+        tags: [mtls, viewer, trust store, required, optional, passthrough, client certificate]
+        text:
+          - >
+            Viewer mTLS makes CloudFront request a client certificate during
+            the TLS handshake and validate it against an account level trust
+            store (a PEM bundle of root and intermediate CAs read once from
+            S3; RSA 2048/3072/4096 or ECDSA P-256/P-384; up to 25 certificates
+            and 1 MB; chain depth 4). Validation happens at the edge before
+            any HTTP request exists, so failures surface as TLS alerts, never
+            as HTTP status codes.
+          - >
+            Required mode (default): no certificate or a failed validation
+            aborts the handshake. Optional mode: a valid certificate is
+            accepted, an invalid one is refused, and no certificate is
+            allowed through with CloudFront-Viewer-Cert-Present set to 0.
+            Passthrough mode: CloudFront only proves possession of the
+            private key, does not validate against a trust store, forwards
+            the leaf as Client-Cert and the chain as Client-Cert-Chain, and
+            leaves validation to the origin; it requires zero trust stores,
+            the managed CachingDisabled cache policy on every behaviour, no
+            Origin Shield, no Lambda@Edge, and an origin request policy that
+            allow lists Client-Cert and Client-Cert-Chain.
+          - >
+            Prerequisites: every cache behaviour must be HTTPS only or
+            redirect HTTP to HTTPS, HTTP/3 must be disabled (viewer mTLS is
+            not supported over HTTP/3), and mTLS cannot be enabled while
+            creating a distribution in the console. Options:
+            AdvertiseTrustStoreCaNames sends the CA names in the
+            CertificateRequest so clients pick the right certificate;
+            IgnoreCertificateExpiry accepts expired client certificates while
+            still checking the chain and signature.
+          - >
+            Revocation: enable OCSP on the trust store (every certificate
+            below the trust anchor must carry an AIA OCSP URL or CloudFront
+            refuses the connection; responses are cached about 30 minutes;
+            an unreachable responder denies by default) or check serial
+            numbers in a KeyValueStore from a Connection Function.
+            Connection Functions run after trust store validation, once per
+            connection, and can only allow or deny.
+          - >
+            What dcert sees: required mode without a certificate ends in a
+            "certificate required" or handshake failure alert (exit code 6);
+            an untrusted certificate ends in an unknown CA alert; an expired
+            one in a certificate expired alert; a rejection by a Connection
+            Function or OCSP in a bad certificate or access denied alert.
+            Connection logs record the reason code (ClientCertUntrusted,
+            ClientCertExpired, ClientCertNotYetValid, ClientCertMissing,
+            ClientCertMaxChainDepthExceeded, ClientCertMaxSizeExceeded,
+            ClientCertTypeUnsupported, ClientCertInvalid,
+            ClientCertIntentInvalid, ClientCertRejected, TcpError, TcpTimeout,
+            ConnectionFunctionError, Internal, UnmappedConnectionError).
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/mtls-authentication.html
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/mtls-validation-modes.html
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/enable-mtls-distributions.html
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/certificate-revocation.html
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/connection-logs.html
+      - id: origin-mtls
+        title: Origin mutual TLS (CloudFront presenting a client certificate to the origin)
+        tags: [mtls, origin, acm, client certificate, 502, 503]
+        text:
+          - >
+            With origin mTLS, CloudFront acts as the TLS client and presents
+            a certificate imported into ACM in us-east-1 (only certificates
+            whose Extended Key Usage includes TLS Client Authentication are
+            offered). It is configured per origin, works with custom origins,
+            ALB and API Gateway, and needs a Business, Premium or pay as you
+            go pricing plan.
+          - >
+            Not supported with VPC origins, gRPC, WebSockets, Lambda@Edge
+            origin request and origin response triggers, or embedded POPs.
+            The origin must present a publicly trusted server certificate
+            (Mozilla CA list) and must request, validate and, if wanted,
+            revocation check the CloudFront certificate itself: CloudFront
+            does not check its own certificate's expiry or revocation. If the
+            origin never requests a certificate, CloudFront simply does not
+            send one.
+          - >
+            Failure modes: an origin that requests a client certificate while
+            origin mTLS is off gets no certificate and CloudFront drops the
+            request, which viewers see as a 502 "attempted to establish a
+            connection with the origin" page. When the origin repeatedly
+            rejects the CloudFront certificate (expired ACM certificate,
+            issuer not in the origin trust store) or is unreachable,
+            CloudFront returns 503 for a while and resumes automatically once
+            handshakes succeed again; certificate changes take time to
+            propagate.
+          - >
+            How to verify with dcert: probe the origin directly. If it
+            reports client certificate required (exit code 6), enable origin
+            mTLS on the distribution and load the ACM certificate's issuing
+            chain into the origin's trust store (ALB trust store, nginx
+            ssl_client_certificate, API Gateway truststore).
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/origin-mtls-authentication.html
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/origin-enable-mtls-distributions.html
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/http-503-service-unavailable.html
+      - id: viewer-tls-policies
+        title: Viewer security policies, ciphers and certificates
+        tags: [tls, cipher, security policy, protocol_version, handshake_failure, certificate, acm, sni]
+        text:
+          - >
+            The distribution's security policy sets the minimum viewer TLS
+            version and cipher list: SSLv3, TLSv1, TLSv1_2016, TLSv1.1_2016,
+            TLSv1.2_2018, TLSv1.2_2019, TLSv1.2_2021, TLSv1.2_2025 and
+            TLSv1.3_2025 (TLS 1.3 only). TLSv1.2_2021 and later drop CBC
+            ciphers; TLSv1.2_2019 drops static RSA key exchange. Key exchange
+            supports prime256v1, X25519, secp384r1 and, on TLS 1.3, the
+            hybrid post quantum groups X25519MLKEM768 and SecP256r1MLKEM768.
+            A viewer that offers no common protocol or cipher fails the
+            handshake with a protocol_version or handshake_failure alert.
+          - >
+            Viewer certificates must be public ACM certificates in
+            us-east-1 (or IAM certificates uploaded with a /cloudfront/ path),
+            issued by a CA on the Mozilla list, RSA 1024 to 4096 or ECDSA
+            P-256/P-384, with intermediates but not the root in the chain.
+            Only one certificate per distribution; it must cover every
+            alternate domain name (exact SAN or same level wildcard) or
+            UpdateDistribution fails with InvalidViewerCertificate.
+          - >
+            Renewals and reimports propagate asynchronously and may take up
+            to 24 hours, during which some edges still serve the previous
+            certificate; renew at least 24 hours before NotAfter. A request
+            for a host that is not an alternate domain name of any
+            distribution is answered with the default *.cloudfront.net
+            certificate (hostname mismatch) or a 403 "Bad Request" page.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/secure-connections-supported-viewer-protocols-ciphers.html
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/cnames-and-https-requirements.html
+          - https://repost.aws/knowledge-center/acm-certificate-not-appearing-cloudfront
+      - id: origin-tls
+        title: TLS between CloudFront and the origin
+        tags: [origin, cipher, certificate, 502, host header, sni]
+        text:
+          - >
+            CloudFront connects to origins with TLS 1.0 to 1.2 (no TLS 1.3
+            to origins) using ECDHE-ECDSA or ECDHE-RSA AES-GCM and CBC
+            suites, AES-SHA, 3DES and RC4 legacy suites, curves prime256v1,
+            secp384r1 and X25519, and signature schemes RSA PKCS1 and ECDSA
+            with SHA-1/224/256/384/512 (no RSA-PSS). The Origin SSL
+            Protocols setting restricts which versions CloudFront offers.
+          - >
+            The origin certificate must be issued by a Mozilla trusted CA
+            (self signed and private CAs are rejected), be unexpired, be sent
+            with its full intermediate chain in order, and cover either the
+            Origin Domain or, when the behaviour forwards Host, the viewer's
+            host name. Any of these failing makes CloudFront drop the TCP
+            connection and answer 502 with X-Cache: Error from cloudfront.
+          - >
+            Probe the origin the way CloudFront does: dcert
+            https://<viewer-host> --connect-to <origin>:443 --sni
+            <forwarded-host> reproduces the SNI and hostname check the edge
+            performs.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/secure-connections-supported-ciphers-cloudfront-to-origin.html
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/using-https-cloudfront-to-custom-origin.html
+      - id: error-caching
+        title: How CloudFront caches and serves errors
+        tags: [cache, error, ttl, stale, custom error page]
+        text:
+          - >
+            Origin 404, 414, 500, 501, 502, 503 and 504 responses are cached
+            for the error caching minimum TTL (10 seconds by default) or the
+            origin's Cache-Control max-age/s-maxage if longer. 400, 403, 405,
+            412 and 415 are cached only when the origin sends max-age or
+            s-maxage. The CachingDisabled managed policy disables error
+            caching altogether.
+          - >
+            When a cached object has expired and the origin answers 5xx or
+            times out, CloudFront keeps serving the stale copy for the error
+            caching minimum TTL (stale-if-error behaviour); a 4xx is passed
+            to the viewer instead. Custom error pages can be configured for
+            400, 403, 404, 405, 414, 416, 500, 501, 502, 503 and 504 but not
+            412 or 415, and if the error page object itself is missing the
+            viewer receives the status of that fetch (often 404).
+          - >
+            Consequence for probing: a fix at the origin may not be visible
+            through the edge for up to the error TTL (five minutes for S3
+            AccessDenied); invalidate the path to check immediately.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/HTTPStatusCodes.html
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/GeneratingCustomErrorResponses.html
+      - id: request-limits
+        title: Request and origin limits that produce edge errors
+        tags: [limits, quotas, timeout, 414, 494, 504, 413]
+        text:
+          - >
+            Maximum request or origin response size including headers and
+            query string but not body is 32,768 bytes (494 when headers push
+            a request over); maximum URL length 8,192 bytes (414); maximum
+            request body 64 GB; maximum cacheable object 50 GB.
+          - >
+            Origin connection timeout 1 to 10 seconds with 1 to 3 attempts
+            (default 10 s x 3 = 30 s), origin response timeout 1 to 120
+            seconds (default 30 s; GET and HEAD are retried up to the attempt
+            count, other methods are not), keep alive 1 to 300 seconds,
+            WebSocket idle timeout 10 minutes. Lambda@Edge functions time out
+            at 30 seconds and may return 40 KB (viewer events) or 1 MB
+            (origin events).
+          - >
+            mTLS quotas: 20 trust stores per account, 25 distributions per
+            trust store, CA bundle 1 MB with up to 25 certificates of 16 KB
+            each, certificate chain depth 4. At most two distributions may be
+            chained in front of an origin; more returns 403.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/cloudfront-limits.html
+      - id: signed-urls
+        title: Signed URLs and signed cookies
+        tags: [signed url, signed cookie, key group, 403, private content]
+        text:
+          - >
+            A behaviour with Restrict viewer access requires a signature made
+            with a key in one of the distribution's trusted key groups (or
+            the legacy trusted signer's CloudFront key pair). CloudFront
+            answers 403 with "Missing Key-Pair-Id query parameter or cookie
+            value" when no key id is present and "Unknown Key" when the id is
+            not trusted.
+          - >
+            Other 403 causes: the request time is past Expires,
+            CloudFront-Expires or DateLessThan or before DateGreaterThan
+            (epoch seconds, UTC); more than one statement in the policy; a
+            Resource that is not the full URL with matching scheme and host;
+            whitespace in the policy or a policy that was not hashed before
+            signing; an IpAddress condition with an IPv6 viewer or an address
+            outside the range; signed cookies without matching Domain and
+            Path attributes.
+        references:
+          - https://repost.aws/knowledge-center/cloudfront-troubleshoot-signed-url-cookies
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/PrivateContent.html
+      - id: s3-origins
+        title: S3 origins (REST endpoint versus website endpoint)
+        tags: [s3, oac, oai, access denied, kms, website endpoint]
+        text:
+          - >
+            A REST endpoint origin (bucket.s3.region.amazonaws.com) can be
+            private behind an origin access control (OAC, service principal
+            cloudfront.amazonaws.com with an AWS:SourceArn condition) or a
+            legacy origin access identity; only OAC can read SSE-KMS objects
+            and the key policy must grant the CloudFront principal. A website
+            endpoint origin (bucket.s3-website-region.amazonaws.com) is plain
+            HTTP, cannot use HTTPS to the origin, and serves only public
+            objects.
+          - >
+            AccessDenied from S3 also hides missing objects unless
+            s3:ListBucket is granted, so a 403 may really be a 404: keys are
+            case sensitive and the Origin Path is prepended to every request.
+            Block Public Access, Requester Pays, object ownership by another
+            account and organisation SCPs are the remaining causes.
+        references:
+          - https://repost.aws/knowledge-center/s3-rest-api-cloudfront-error-403
+          - https://repost.aws/knowledge-center/s3-website-cloudfront-error-403
+
+  # =====================================================================
+  # Amazon API Gateway
+  # =====================================================================
+  - id: api_gateway
+    name: Amazon API Gateway
+    summary: >
+      Managed HTTP front door for Lambda, HTTP and AWS service integrations.
+      REST APIs (edge optimised behind a service owned CloudFront
+      distribution, Regional, or private via an interface VPC endpoint),
+      HTTP APIs and WebSocket APIs. Gateway responses are generated by API
+      Gateway itself without calling the integration and carry
+      x-amzn-ErrorType; integration responses carry x-amzn-Remapped-* headers.
+    detect:
+      headers:
+        - name: x-amzn-errortype
+          pattern: '.+'
+        - name: x-amz-apigw-id
+          pattern: '.+'
+        - name: x-amzn-requestid
+          pattern: '.+'
+      hosts:
+        - '\.execute-api\.[a-z0-9-]+\.amazonaws\.com$'
+        - '\.execute-api\.[a-z0-9-]+\.vpce\.amazonaws\.com$'
+
+    statuses:
+      - code: 400
+        title: Bad Request
+        generated_by: edge
+        summary: >
+          Request validation failed (BAD_REQUEST_PARAMETERS or
+          BAD_REQUEST_BODY gateway responses) or the request could not be
+          parsed. REST APIs reject unescaped |, { and } in query strings
+          and split on semicolons.
+        causes:
+          - A request validator rejected parameters or body against the model.
+          - Unsupported characters in the query string.
+        checks:
+          - Read the message field; validators name the failing property.
+        references:
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/supported-gateway-response-types.html
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-known-issues.html
+      - code: 401
+        title: Unauthorized
+        generated_by: edge
+        summary: >
+          UNAUTHORIZED gateway response: the request was rejected before any
+          authorizer ran, or a Cognito or Lambda authorizer failed to
+          authenticate the caller. The token header named as Token Source is
+          missing, fails the Token Validation regex, or all identity sources
+          of a request authorizer are not present. WWW-Authenticate from an
+          integration is remapped to x-amzn-Remapped-WWW-Authenticate.
+        causes:
+          - Missing Authorization (or configured) header.
+          - Token failed validation regex or expired; issuer does not match the Cognito user pool.
+          - Wrong token type (ID token versus access token when scopes are configured).
+        checks:
+          - Send the exact header the authorizer is configured to read; retest with caching disabled.
+        references:
+          - https://repost.aws/knowledge-center/api-gateway-401-error-lambda-authorizer
+          - https://repost.aws/knowledge-center/api-gateway-cognito-401-unauthorized
+      - code: 403
+        title: Forbidden
+        generated_by: edge
+        summary: >
+          Several gateway responses share 403 and are told apart by
+          x-amzn-ErrorType and the message. MissingAuthenticationTokenException
+          "Missing Authentication Token" means no resource or method matches
+          the path (wrong stage, path, method, or the stage repeated on a
+          custom domain). ForbiddenException "Forbidden" covers a missing or
+          invalid API key, an AWS WAF block, a private API reached through
+          public DNS without the Host or x-apigw-api-id header, a custom
+          domain without a base path mapping, a stage that does not exist,
+          a client certificate the mTLS truststore does not trust, the
+          default execute-api endpoint after it was disabled, or public APIs
+          called from a VPC whose endpoint has private DNS enabled.
+          AccessDeniedException carries the IAM or resource policy reason.
+          InvalidSignatureException and IncompleteSignatureException relate
+          to SigV4; EXPIRED_TOKEN is 403 as well.
+        causes:
+          - Path, method or stage does not exist in the deployed API.
+          - Custom domain URL includes the stage that the API mapping already maps.
+          - API key missing, disabled, wrong, or not attached to a usage plan for the stage (send x-api-key).
+          - AWS WAF web ACL blocked the request.
+          - Resource policy or IAM policy denies execute-api:Invoke (explicit or implicit deny); Lambda authorizer returned Deny or a policy whose Resource ARN does not match the invoked method.
+          - Private API invoked from outside its VPC endpoint, or public API invoked from a VPC endpoint with private DNS on.
+          - Mutual TLS custom domain rejected the client certificate (issuer not in truststore, insecure signature algorithm, self signed).
+          - Default execute-api endpoint disabled while the request did not use the custom domain.
+        checks:
+          - Compare x-amzn-ErrorType with the table in `dcert kb explain x-amzn-errortype`.
+          - "Enable execution and access logging; an mTLS 403 logs \"Access denied. Reason: ...\", and no log entry at all means the request never matched the API."
+          - curl -v the stage URL directly to rule out the custom domain mapping.
+        references:
+          - https://repost.aws/knowledge-center/api-gateway-troubleshoot-403-forbidden
+          - https://repost.aws/knowledge-center/api-gateway-mutual-tls-403-errors
+          - https://repost.aws/knowledge-center/api-gateway-403-error-lambda-authorizer
+      - code: 404
+        title: Not Found
+        generated_by: either
+        summary: >
+          RESOURCE_NOT_FOUND gateway response when the resource cannot be
+          found after authentication and authorization, or a 404 from the
+          integration. An unknown path on a REST API without authorization
+          is reported as 403 Missing Authentication Token rather than 404.
+        causes:
+          - Integration returned 404.
+          - Resource missing in the deployed stage.
+        checks:
+          - Confirm the deployment contains the resource and redeploy the stage.
+        references:
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/supported-gateway-response-types.html
+      - code: 413
+        title: Request Too Large
+        generated_by: edge
+        summary: >
+          REQUEST_TOO_LARGE: the payload exceeded 10 MB ("HTTP content
+          length exceeded 10485760 bytes"). The quota cannot be raised and
+          this gateway response cannot be customised.
+        causes:
+          - Request body over 10 MB.
+        checks:
+          - Upload large objects to S3 with a presigned URL instead.
+        references:
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/supported-gateway-response-types.html
+      - code: 415
+        title: Unsupported Media Type
+        generated_by: edge
+        summary: >
+          UNSUPPORTED_MEDIA_TYPE: the Content-Type has no mapping template
+          and passthrough behaviour is NEVER, or binary media type handling
+          rejected the payload.
+        causes:
+          - Integration request passthrough set to NEVER without a template for the media type.
+        checks:
+          - Add a mapping template for the Content-Type or set passthrough to WHEN_NO_MATCH.
+        references:
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/supported-gateway-response-types.html
+      - code: 429
+        title: Too Many Requests
+        generated_by: edge
+        summary: >
+          THROTTLED ("Too Many Requests") when usage plan, method, stage or
+          account throttling (10,000 requests per second, burst 5,000 per
+          Region by default) is exceeded, or QUOTA_EXCEEDED ("Limit
+          Exceeded") when the usage plan quota is exhausted. Throttles are
+          best effort token buckets.
+        causes:
+          - Account, stage, method or per API key rate or burst exceeded.
+          - Usage plan quota for the period exhausted.
+        checks:
+          - Retry with exponential backoff; raise stage or account limits.
+        references:
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-request-throttling.html
+      - code: 500
+        title: Internal Server Error
+        generated_by: edge
+        summary: >
+          Generic "Internal server error" gateway response. It covers
+          API_CONFIGURATION_ERROR (bad integration URI, base64 decoding
+          failure, no matching integration response template),
+          AUTHORIZER_CONFIGURATION_ERROR (cannot reach the authorizer),
+          AUTHORIZER_FAILURE, a Lambda invocation the API has no permission
+          for, a malformed Lambda proxy or authorizer output, a stage
+          variable without permission, an IPv6 only integration host, or a
+          backend response over 10 MB. HTTP APIs return
+          {"message":"Internal Server Error"} for the same class of faults.
+        causes:
+          - lambda:InvokeFunction not granted to apigateway.amazonaws.com for this API, stage and route.
+          - Lambda proxy response not in the required JSON shape or authorizer policy malformed.
+          - Integration endpoint unreachable, IPv6 only, or returning more than 10 MB.
+          - No integration response mapping matched the backend status.
+        checks:
+          - Add $context.integrationErrorMessage, $context.error.message and $context.error.responseType to the access log format.
+          - Test the method in the console; "Execution failed due to configuration error" names the fault.
+        references:
+          - https://repost.aws/knowledge-center/api-gateway-5xx-error
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-troubleshooting-lambda.html
+      - code: 502
+        title: Bad Gateway
+        generated_by: edge
+        summary: >
+          The integration returned a response API Gateway could not process
+          as a proxy: a Lambda proxy function returned something other than
+          {statusCode, headers, body, isBase64Encoded}, threw an error, or
+          failed with a package permission error ("Execution failed due to
+          configuration error", "Lambda execution failed with status 200 due
+          to customer function error").
+        causes:
+          - Lambda proxy integration response not JSON of the required shape (body must be a string).
+          - Lambda function crashed, timed out or had a permission error on its package.
+        checks:
+          - "Read the execution log lines before \"Method completed with status: 502\"."
+        references:
+          - https://repost.aws/knowledge-center/malformed-502-api-gateway
+      - code: 503
+        title: Service Unavailable
+        generated_by: origin
+        summary: >
+          The backend integration did not accept the request: overloaded
+          beyond capacity or in maintenance. API Gateway relays it.
+        causes:
+          - Backend cannot accept new connections.
+        checks:
+          - Scale the backend and retry with exponential backoff.
+        references:
+          - https://repost.aws/knowledge-center/api-gateway-5xx-error
+      - code: 504
+        title: Endpoint Request Timed Out
+        generated_by: edge
+        summary: >
+          INTEGRATION_TIMEOUT ("Endpoint request timed out") when the
+          integration took longer than the integration timeout (29 seconds by
+          default; raisable above 29 s for Regional and private REST APIs by
+          quota request), or INTEGRATION_FAILURE when API Gateway could not
+          reach the integration at all. Execution logs show "Execution
+          failed due to a timeout error".
+        causes:
+          - Lambda or HTTP backend slower than the integration timeout.
+          - Integration endpoint unreachable (VPC link, security groups, DNS).
+        checks:
+          - Compare $context.integrationLatency with the configured timeout.
+          - Move long work to asynchronous processing or raise the timeout after a quota increase.
+        references:
+          - https://repost.aws/knowledge-center/api-gateway-504-errors
+
+    headers:
+      - name: x-amzn-ErrorType
+        direction: response
+        summary: >
+          Present on responses API Gateway generated itself (gateway
+          responses); the integration was not called. The value names the
+          reason.
+        values:
+          - pattern: '(?i)^MissingAuthenticationTokenException'
+            meaning: No resource or method matches the request (path, method, stage, or the stage repeated on a custom domain), or the request carried no token; the API definition, not the backend, rejected it.
+          - pattern: '(?i)^ForbiddenException'
+            meaning: Plain "Forbidden" with many possible causes, including API key, AWS WAF, private API DNS, custom domain base path mapping, unknown stage, mTLS client certificate rejection, or a disabled default endpoint.
+          - pattern: '(?i)^AccessDeniedException'
+            meaning: IAM authorization, resource policy or a Lambda authorizer denied execute-api:Invoke; the message states whether the deny is explicit or implicit and which principal was evaluated.
+          - pattern: '(?i)^UnauthorizedException'
+            meaning: The authorizer rejected or never received the token (401).
+          - pattern: '(?i)^InvalidSignatureException'
+            meaning: SigV4 signature mismatch or expired signature; check the secret key, signing region and clock.
+          - pattern: '(?i)^IncompleteSignatureException'
+            meaning: An Authorization header that is not a complete SigV4 signature was sent to a path that does not exist.
+          - pattern: '(?i)^InternalServerErrorException'
+            meaning: Integration, authorizer or configuration failure (500); enable execution logs.
+          - pattern: '(?i)^IntegrationTimeoutException'
+            meaning: The integration did not answer within the integration timeout (504).
+          - pattern: '(?i)^ThrottlingException|^TooManyRequestsException|^LimitExceededException'
+            meaning: Throttled by rate, burst or usage plan quota (429).
+          - pattern: '(?i)^NotFoundException'
+            meaning: The resource was not found after authorization (404).
+          - pattern: '(?i)^BadRequestException'
+            meaning: Request validation or parsing failed (400).
+          - pattern: '(?i)^RequestEntityTooLargeException'
+            meaning: Payload over 10 MB (413).
+          - pattern: '(?i)^UnsupportedMediaTypeException'
+            meaning: No mapping template for the Content-Type with passthrough NEVER (415).
+          - pattern: '(?i)^ExpiredTokenException'
+            meaning: The AWS authentication token in the request has expired (403).
+        references:
+          - https://repost.aws/knowledge-center/api-gateway-troubleshoot-403-forbidden
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/supported-gateway-response-types.html
+      - name: x-amzn-RequestId
+        direction: response
+        summary: >
+          API Gateway request id ($context.requestId); search execution and
+          access logs for it.
+        references:
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-mapping-template-reference.html
+      - name: x-amz-apigw-id
+        direction: response
+        summary: >
+          Extended request id ($context.extendedRequestId); AWS Support uses
+          this together with x-amzn-RequestId.
+        references:
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-mapping-template-reference.html
+      - name: x-amzn-Remapped-Connection
+        direction: response
+        summary: >
+          Integration response headers that API Gateway does not pass through
+          are renamed to x-amzn-Remapped-<name>: Authorization, Connection,
+          Content-MD5, Max-Forwards, User-Agent, WWW-Authenticate are
+          remapped; Date and Server are remapped and overwritten; Host,
+          Expect, Proxy-Authenticate, TE, Transfer-Encoding, Trailer and
+          Upgrade are dropped.
+        references:
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-known-issues.html
+      - name: x-amzn-Remapped-WWW-Authenticate
+        direction: response
+        summary: >
+          The integration's WWW-Authenticate header, renamed. Old Android
+          HttpURLConnection clients throw on a 401 without a real
+          WWW-Authenticate.
+        references:
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-known-issues.html
+      - name: x-amzn-Remapped-Server
+        direction: response
+        summary: The integration's Server header; API Gateway overwrites the real Server header.
+        references:
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-known-issues.html
+      - name: x-amzn-Remapped-Date
+        direction: response
+        summary: The integration's Date header; API Gateway overwrites the real Date header.
+        references:
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-known-issues.html
+      - name: x-amzn-Trace-Id
+        direction: response
+        summary: AWS X-Ray trace id when tracing is enabled on the stage.
+        references:
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-xray.html
+      - name: Content-Type
+        direction: response
+        summary: >
+          API Gateway adds Content-Type application/json to every integration
+          response that lacks one, and to requests with an empty body on
+          HTTP APIs.
+        references:
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-known-issues.html
+      - name: x-api-key
+        direction: request
+        summary: >
+          API key for methods that require one; missing, wrong, disabled or
+          not attached to a usage plan for the stage yields 403 Forbidden.
+        references:
+          - https://repost.aws/knowledge-center/api-gateway-troubleshoot-403-forbidden
+      - name: x-apigw-api-id
+        direction: request
+        summary: >
+          Selects the private API when invoking an endpoint specific VPC
+          endpoint DNS name (alternative to setting Host to the API's
+          execute-api name).
+        references:
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-private-api-test-invoke-url.html
+      - name: Forwarded
+        direction: request
+        summary: >
+          HTTP APIs translate X-Forwarded-* into a standard Forwarded header
+          and append the egress IP, Host and protocol.
+        references:
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-known-issues.html
+      - name: X-Forwarded-For
+        direction: request
+        summary: >
+          REST APIs append the caller IP; behind CloudFront the edge server IP
+          is appended after the viewer IP.
+        references:
+          - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/RequestAndResponseBehaviorCustomOrigin.html
+
+    bodies:
+      - pattern: '(?i)missing authentication token'
+        status: 403
+        meaning: >
+          No deployed resource and method match the request path. Check the
+          stage name, the path, the HTTP method, and on a custom domain do
+          not repeat the stage that the API mapping already supplies.
+        references:
+          - https://repost.aws/knowledge-center/api-gateway-403-custom-domain
+      - pattern: '(?i)"message"\s*:\s*"forbidden"'
+        status: 403
+        meaning: >
+          ForbiddenException. Causes: API key, AWS WAF, private API via public
+          DNS, custom domain without base path mapping, unknown stage, mTLS
+          client certificate rejected, default endpoint disabled, or a VPC
+          endpoint with private DNS in front of a public API.
+        references:
+          - https://repost.aws/knowledge-center/api-gateway-troubleshoot-403-forbidden
+      - pattern: '(?i)not authorized to perform: execute-api:Invoke'
+        status: 403
+        meaning: >
+          Resource policy or IAM evaluation denied the call; "with an explicit
+          deny" names a Deny statement, "because no resource-based policy
+          allows" is an implicit deny, and "User: anonymous" means no
+          credentials or the VPC endpoint was not allowed.
+        references:
+          - https://repost.aws/knowledge-center/api-gateway-403-error-lambda-authorizer
+      - pattern: '(?i)not authorized to access this resource with an explicit deny in an identity-based policy'
+        status: 403
+        meaning: A Lambda authorizer returned a Deny policy (possibly cached; flush the authorizer cache to retest).
+        references:
+          - https://repost.aws/knowledge-center/api-gateway-403-error-lambda-authorizer
+      - pattern: '(?i)security token included in the request is invalid'
+        status: 403
+        meaning: The IAM access key used to sign the request is unknown or expired.
+        references:
+          - https://repost.aws/knowledge-center/api-gateway-troubleshoot-403-forbidden
+      - pattern: '(?i)signature expired|request signature we calculated does not match'
+        status: 403
+        meaning: "SigV4 signature problem: clock skew beyond 15 minutes, wrong secret key, region or service name in the signing scope."
+        references:
+          - https://repost.aws/knowledge-center/api-gateway-troubleshoot-403-forbidden
+      - pattern: '(?i)authorization header requires ''credential'' parameter'
+        status: 403
+        meaning: A non SigV4 Authorization header reached a path with no matching resource, so API Gateway tried to treat it as IAM auth.
+        references:
+          - https://repost.aws/knowledge-center/api-gateway-troubleshoot-403-forbidden
+      - pattern: '(?i)"message"\s*:\s*"unauthorized"'
+        status: 401
+        meaning: The authorizer did not receive a valid token; check the token source header and validation regex.
+        references:
+          - https://repost.aws/knowledge-center/api-gateway-401-error-lambda-authorizer
+      - pattern: '(?i)invalid api key'
+        status: 403
+        meaning: "INVALID_API_KEY gateway response: the x-api-key value is unknown, disabled, or not in a usage plan for this stage."
+        references:
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/supported-gateway-response-types.html
+      - pattern: '(?i)"message"\s*:\s*"internal server error"'
+        status: 500
+        meaning: >
+          Gateway generated 500: integration permission, malformed Lambda
+          output, configuration error or backend over 10 MB. Enable execution
+          logging to see the reason.
+        references:
+          - https://repost.aws/knowledge-center/api-gateway-5xx-error
+      - pattern: '(?i)endpoint request timed out'
+        status: 504
+        meaning: "INTEGRATION_TIMEOUT: the integration exceeded the integration timeout (29 s default)."
+        references:
+          - https://repost.aws/knowledge-center/api-gateway-504-errors
+      - pattern: '(?i)"message"\s*:\s*"too many requests"'
+        status: 429
+        meaning: "THROTTLED: rate or burst limit exceeded at usage plan, method, stage or account level."
+        references:
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-request-throttling.html
+      - pattern: '(?i)"message"\s*:\s*"limit exceeded"'
+        status: 429
+        meaning: "QUOTA_EXCEEDED: the usage plan quota for the period is used up."
+        references:
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/supported-gateway-response-types.html
+      - pattern: '(?i)http content length exceeded 10485760 bytes'
+        status: 413
+        meaning: "REQUEST_TOO_LARGE: payload over the fixed 10 MB limit."
+        references:
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/supported-gateway-response-types.html
+      - pattern: '(?i)"message"\s*:\s*"not found"'
+        status: 404
+        meaning: RESOURCE_NOT_FOUND after authorization succeeded, or an integration 404.
+        references:
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/supported-gateway-response-types.html
+      - pattern: '(?i)invalid request body|bad request body|bad request parameters'
+        status: 400
+        meaning: A request validator rejected the body or parameters against the configured model.
+        references:
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/supported-gateway-response-types.html
+
+    errors:
+      # --- apigateway REST control plane (2015-07-09) ---
+      - name: BadRequestException
+        http_status: 400
+        summary: '(REST API control plane) The submitted request is not valid, for example, the input is incomplete or incorrect.'
+      - name: ConflictException
+        http_status: 409
+        summary: '(REST API control plane) The request configuration has conflicts.'
+      - name: LimitExceededException
+        http_status: 429
+        summary: '(REST API control plane) The request exceeded the rate limit.'
+      - name: NotFoundException
+        http_status: 404
+        summary: '(REST API control plane) The requested resource is not found.'
+      - name: ServiceUnavailableException
+        http_status: 503
+        summary: '(REST API control plane) The requested service is not available.'
+      - name: TooManyRequestsException
+        http_status: 429
+        summary: '(REST API control plane) The request has reached its throttling limit.'
+      - name: UnauthorizedException
+        http_status: 401
+        summary: '(REST API control plane) The request is denied because the caller has insufficient permissions.'
+      # --- apigatewayv2 HTTP and WebSocket control plane (2018-11-29) ---
+      - name: AccessDeniedException
+        http_status: 403
+        summary: '(HTTP and WebSocket API control plane) The caller is not allowed to perform the operation.'
+      - name: BadRequestException.v2
+        http_status: 400
+        summary: '(HTTP and WebSocket API control plane) The request is not valid, for example, the input is incomplete or incorrect.'
+      - name: ConflictException.v2
+        http_status: 409
+        summary: '(HTTP and WebSocket API control plane) The requested operation would cause a conflict with the current state of a service resource.'
+      - name: NotFoundException.v2
+        http_status: 404
+        summary: '(HTTP and WebSocket API control plane) The resource specified in the request was not found.'
+      - name: TooManyRequestsException.v2
+        http_status: 429
+        summary: '(HTTP and WebSocket API control plane) A limit has been exceeded.'
+      # --- gateway response types (data plane), listed here so `kb explain` finds them by name ---
+      - name: ACCESS_DENIED
+        http_status: 403
+        summary: '(gateway response) Authorization failure from a custom or Cognito authorizer.'
+      - name: API_CONFIGURATION_ERROR
+        http_status: 500
+        summary: '(gateway response) Invalid endpoint address, base64 decode failure, or no integration response template matched.'
+      - name: AUTHORIZER_CONFIGURATION_ERROR
+        http_status: 500
+        summary: '(gateway response) API Gateway could not connect to the custom or Cognito authorizer.'
+      - name: AUTHORIZER_FAILURE
+        http_status: 500
+        summary: '(gateway response) The custom or Cognito authorizer failed to authenticate the caller.'
+      - name: BAD_REQUEST_PARAMETERS
+        http_status: 400
+        summary: '(gateway response) Request parameters failed validation.'
+      - name: BAD_REQUEST_BODY
+        http_status: 400
+        summary: '(gateway response) Request body failed validation.'
+      - name: EXPIRED_TOKEN
+        http_status: 403
+        summary: '(gateway response) AWS authentication token expired.'
+      - name: INTEGRATION_FAILURE
+        http_status: 504
+        summary: '(gateway response) The integration failed.'
+      - name: INTEGRATION_TIMEOUT
+        http_status: 504
+        summary: '(gateway response) The integration timed out.'
+      - name: INVALID_API_KEY
+        http_status: 403
+        summary: '(gateway response) Invalid API key for a method that requires one.'
+      - name: INVALID_SIGNATURE
+        http_status: 403
+        summary: '(gateway response) Invalid AWS SigV4 signature.'
+      - name: MISSING_AUTHENTICATION_TOKEN
+        http_status: 403
+        summary: '(gateway response) Missing authentication token, including calls to an unsupported method or resource.'
+      - name: QUOTA_EXCEEDED
+        http_status: 429
+        summary: '(gateway response) Usage plan quota exceeded.'
+      - name: REQUEST_TOO_LARGE
+        http_status: 413
+        summary: '(gateway response) Request too large; cannot be customised.'
+      - name: RESOURCE_NOT_FOUND
+        http_status: 404
+        summary: '(gateway response) Resource not found after authentication and authorization.'
+      - name: THROTTLED
+        http_status: 429
+        summary: '(gateway response) Usage plan, method, stage or account throttling limit exceeded.'
+      - name: UNAUTHORIZED
+        http_status: 401
+        summary: '(gateway response) The custom or Cognito authorizer failed to authenticate the caller.'
+      - name: UNSUPPORTED_MEDIA_TYPE
+        http_status: 415
+        summary: '(gateway response) Payload media type unsupported with strict passthrough.'
+      - name: WAF_FILTERED
+        http_status: 403
+        summary: '(gateway response) Request blocked by AWS WAF.'
+      - name: DEFAULT_4XX
+        http_status: 400
+        summary: '(gateway response) Fallback for every 4XX type; overriding its status changes all 4XX responses.'
+      - name: DEFAULT_5XX
+        http_status: 500
+        summary: '(gateway response) Fallback for every 5XX type; overriding its status changes all 5XX responses.'
+
+    topics:
+      - id: apigateway-mtls
+        title: Mutual TLS on API Gateway custom domain names
+        tags: [mtls, truststore, client certificate, custom domain, 403]
+        text:
+          - >
+            Mutual TLS is enabled per Regional custom domain name (REST APIs
+            need the TLS_1_2 policy, HTTP APIs a minimum TLS 1.2; not
+            available for private APIs or edge optimised domains, and not
+            with enhanced SecurityPolicy_* policies). The truststore is a PEM
+            bundle in S3, versioned, that must contain the complete chain
+            from the issuing CA up to the root; chain length at most 4;
+            SHA-256 or stronger, RSA-2048 or stronger, ECDSA-256/384;
+            self signed certificates are accepted as anchors.
+          - >
+            API Gateway validates X.509 syntax, integrity, validity period
+            and name and key chaining, but never revocation (use a Lambda
+            authorizer with requestContext.identity.clientCert for CRL or
+            OCSP). Unlike CloudFront it completes the handshake and then
+            denies the request with HTTP 403 {"message":"Forbidden"} and
+            x-amzn-ErrorType ForbiddenException; execution logs show
+            "Access denied. Reason: Could not find issuer for certificate",
+            "Client cert using an insecure Signature Algorithm" or "self
+            signed certificate". No log entry at all means the 403 is not
+            about mTLS.
+          - >
+            Disable the default execute-api endpoint or clients can bypass
+            mTLS. Imported or Private CA server certificates need an ACM
+            issued ownershipVerificationCertificate; if it expires and cannot
+            auto renew, domain updates are locked
+            (PENDING_OWNERSHIP_VERIFICATION); a reimported certificate whose
+            SANs are not covered leaves PENDING_CERTIFICATE_REIMPORT. "The
+            certificate subject <subject> conflicts with an existing
+            certificate from a different issuer" means one subject may only
+            have one issuer across mTLS domains. Truststore warnings ("Your
+            truststore bundle has N invalid certificates") are raised only at
+            update time.
+          - >
+            Verify with dcert: probe the custom domain with --client-cert and
+            --client-key; a 403 Forbidden with ForbiddenException and no
+            other cause is the truststore rejecting the chain. Check the
+            chain locally with openssl verify -CAfile bundle.pem client.pem.
+        references:
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/rest-api-mutual-tls.html
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-mutual-tls.html
+          - https://repost.aws/knowledge-center/api-gateway-mutual-tls-403-errors
+      - id: apigateway-backend-mtls
+        title: API Gateway presenting a client certificate to the backend
+        tags: [mtls, backend, client certificate, integration]
+        text:
+          - >
+            REST and WebSocket APIs can present a client certificate to HTTP
+            integrations: either an API Gateway generated self signed
+            certificate (valid 365 days, rotate before expiry) or your own
+            ACM certificate. The backend must trust it (requestCert plus the
+            PEM in its CA list) and must itself use a server certificate from
+            a CA API Gateway trusts that matches the integration host name.
+          - >
+            NGINX and Heroku backends are documented as possibly incompatible
+            with this client authentication. A backend that presents a self
+            signed certificate, a missing intermediate, or an unknown CA
+            makes the console test report "unknown endpoint errors" and the
+            method returns 500 or 504.
+        references:
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/getting-started-client-side-ssl-authentication.html
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-known-issues.html
+      - id: apigateway-endpoint-types
+        title: Endpoint types, custom domains and private APIs
+        tags: [edge optimized, regional, private, vpc endpoint, custom domain, cloudfront, dns]
+        text:
+          - >
+            Edge optimised REST APIs (the default) sit behind a service
+            owned CloudFront distribution: responses carry Via, X-Cache and
+            X-Amz-Cf-Pop, header names are capitalised and cookies sorted.
+            Regional endpoints pass headers as is and are the only type that
+            supports mTLS; put your own CloudFront distribution in front of a
+            Regional API (origin = the execute-api host or the custom
+            domain's target domain d-xxxx.execute-api.<region>.amazonaws.com,
+            HTTPS only, minimum origin TLS 1.2, Origin Path = /stage, forward
+            Authorization and Host where needed). Private APIs are reachable
+            only through an interface VPC endpoint and need a resource policy
+            that allows the VPC or endpoint.
+          - >
+            Custom domain names use API mappings (stage to base path); the
+            stage must not be repeated in the URL or the response is 403
+            Missing Authentication Token. Custom domains cannot be shared
+            between REST and WebSocket APIs, and /ping and /sping are
+            reserved.
+          - >
+            VPC endpoint DNS: with private DNS on, every
+            *.execute-api.<region>.amazonaws.com name in the VPC resolves to
+            the endpoint, which serves private APIs only, so public APIs
+            return 403 Forbidden from inside the VPC. With private DNS off,
+            private APIs must be invoked through
+            <vpce-dns>.execute-api.<region>.vpce.amazonaws.com with a Host or
+            x-apigw-api-id header, or <api-id>-<vpce-id>.execute-api...
+            alias names. "SSL: no alternative certificate subject name
+            matches target host name" on a private custom domain means the
+            domain name access association with the VPC endpoint is missing.
+        references:
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-api-endpoint-types.html
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-private-api-test-invoke-url.html
+          - https://repost.aws/knowledge-center/api-gateway-vpc-connections
+          - https://repost.aws/knowledge-center/api-gateway-private-endpoint-connection
+          - https://repost.aws/knowledge-center/api-gateway-cloudfront-distribution
+      - id: apigateway-tls-policies
+        title: Security policies and ciphers
+        tags: [tls, cipher, security policy, protocol_version, handshake_failure]
+        text:
+          - >
+            REST APIs and custom domains choose a security policy. Legacy
+            TLS_1_0 (TLS 1.0 to 1.3, CBC and static RSA suites) and TLS_1_2
+            (TLS 1.2 and 1.3). Defaults: TLS_1_0 for Regional and edge
+            optimised APIs, TLS_1_2 for private APIs and every custom domain.
+            Enhanced policies (SecurityPolicy_TLS13_1_3_2025_09 TLS 1.3 only,
+            _FIPS_, _PFS_PQ_, _PQ_, SecurityPolicy_TLS13_1_2_2021_06, and
+            the _EDGE variants) require endpoint access mode STRICT, cannot
+            be combined with mTLS, and cannot front HTTP API mappings.
+          - >
+            HTTP and WebSocket APIs are fixed to TLS_1_2 (TLS 1.2 and 1.3
+            with AES-GCM, CHACHA20 and CBC-SHA256 ECDHE suites). API Gateway
+            only speaks TLS 1.2 on egress to integrations. Changing a custom
+            domain's policy takes about 15 minutes (lastUpdateStatus
+            PENDING). $context.tlsVersion and $context.cipherSuite in access
+            logs record what clients negotiated.
+        references:
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-custom-domain-tls-version.html
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-security-policies-list.html
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-ciphers.html
+      - id: apigateway-gateway-responses
+        title: Gateway responses versus integration responses
+        tags: [gateway response, x-amzn-errortype, remapped, headers, default 4xx]
+        text:
+          - >
+            A gateway response is produced by API Gateway without invoking
+            the integration and carries x-amzn-ErrorType; the default body is
+            {"message":"<reason>"}. Each type (ACCESS_DENIED 403,
+            API_CONFIGURATION_ERROR 500, AUTHORIZER_CONFIGURATION_ERROR 500,
+            AUTHORIZER_FAILURE 500, BAD_REQUEST_PARAMETERS 400,
+            BAD_REQUEST_BODY 400, EXPIRED_TOKEN 403, INTEGRATION_FAILURE 504,
+            INTEGRATION_TIMEOUT 504, INVALID_API_KEY 403, INVALID_SIGNATURE
+            403, MISSING_AUTHENTICATION_TOKEN 403, QUOTA_EXCEEDED 429,
+            REQUEST_TOO_LARGE 413, RESOURCE_NOT_FOUND 404, THROTTLED 429,
+            UNAUTHORIZED 401, UNSUPPORTED_MEDIA_TYPE 415, WAF_FILTERED 403)
+            can be customised with headers and a template, except
+            REQUEST_TOO_LARGE; changing DEFAULT_4XX or DEFAULT_5XX changes
+            the status of every response of that class. AWS WAF custom
+            responses take precedence.
+          - >
+            Integration responses pass most headers through but remap
+            Authorization, Connection, Content-MD5, Max-Forwards, User-Agent
+            and WWW-Authenticate to x-amzn-Remapped-<name>, overwrite Date and
+            Server (originals remapped), and drop Host, Expect,
+            Proxy-Authenticate, TE, Transfer-Encoding, Trailer and Upgrade.
+            Header names and query parameters are case sensitive; the
+            Authorization request header is dropped when it carries a SigV4
+            signature or AWS_IAM authorization is used.
+        references:
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/supported-gateway-response-types.html
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-gatewayResponse-definition.html
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-known-issues.html
+      - id: apigateway-limits
+        title: Quotas that surface as errors
+        tags: [limits, quotas, throttling, timeout, payload]
+        text:
+          - >
+            Account throttle 10,000 requests per second with a 5,000 request
+            burst bucket per Region (2,500 and 1,250 in some newer Regions);
+            throttling order is per client or per method in a usage plan,
+            per method on the stage, account, then AWS Regional. Payload
+            limit 10 MB for requests and backend responses; integration
+            timeout 29 seconds by default (raisable for Regional and private
+            REST APIs); WebSocket frames 32 KB and messages 128 KB (larger
+            closes the connection with code 1009); log events truncated at
+            1,024 bytes; mapping templates 300 KB.
+        references:
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/limits.html
+          - https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-request-throttling.html

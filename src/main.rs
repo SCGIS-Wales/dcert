@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use clap::CommandFactory;
 use clap::Parser;
 use colored::*;
-use dcert::{cert, cli, connect, convert, csr, diagnose, output, proxy, trust, vault};
+use dcert::{cert, cli, connect, convert, csr, diagnose, kbref, output, proxy, trust, vault};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -273,6 +273,13 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
             args.kb_file.as_deref().map(std::path::Path::new),
         )?)
     };
+    // The reference base explains what a CloudFront or API Gateway response
+    // means; it rides along with the diagnostics pass and is skipped with it.
+    let reference = if args.no_diagnose {
+        None
+    } else {
+        Some(kbref::ReferenceBase::builtin()?)
+    };
     let probe = diagnose::ProbeContext {
         proxy: Some(&proxy_config),
         client_cert_supplied: args.client_cert.is_some() || args.pkcs12.is_some(),
@@ -303,6 +310,9 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
                     let report = diagnose::diagnose(kb, &evidence);
                     keep_body |= report.body_matched;
                     result.diagnosis = report.findings;
+                    if let Some(rb) = &reference {
+                        result.context = kbref::annotate(rb, &evidence);
+                    }
                 }
                 // The body excerpt is evidence, not output: keep it only when
                 // asked for or when a finding cites it.
@@ -320,6 +330,7 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
                             .map(|c| c.http_response_code)
                             .filter(|c| *c > 0),
                         diagnosis: result.diagnosis.clone(),
+                        context: result.context.clone(),
                         body_excerpt: result.conn_info.as_ref().and_then(|c| c.http_body_excerpt.clone()),
                         body_truncated: result.conn_info.as_ref().is_some_and(|c| c.http_body_truncated),
                     });
@@ -354,6 +365,7 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
                             error: Some(format!("{e:#}")),
                             http_status: None,
                             diagnosis: report.findings,
+                            context: Vec::new(),
                             // A probe that failed outright never read a body.
                             body_excerpt: None,
                             body_truncated: false,
@@ -1219,6 +1231,9 @@ struct DiagnoseOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     http_status: Option<u16>,
     diagnosis: Vec<diagnose::Diagnosis>,
+    /// What the status, headers and body sentences mean, from the reference base.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    context: Vec<kbref::Note>,
     /// The response body the findings were matched against. Carried here
     /// because several entries tell the reader to look at it, so `--show-body`
     /// has to mean something on this subcommand and not only on `check`.
@@ -1243,6 +1258,10 @@ fn print_diagnose_output_pretty(items: &[DiagnoseOutput]) {
             println!();
         } else {
             output::print_diagnosis_pretty(&item.diagnosis);
+        }
+        if !item.context.is_empty() {
+            let mut out = std::io::stdout().lock();
+            let _ = output::write_context(&mut out, &item.context);
         }
         if let Some(body) = &item.body_excerpt {
             println!("{}", "Response body:".bold());
@@ -1313,13 +1332,84 @@ fn run_kb(args: cli::KbArgs) -> Result<i32> {
             );
             Ok(exit_code::SUCCESS)
         }
-        KbMode::Schema => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&diagnose::KnowledgeBase::json_schema())?
-            );
+        KbMode::Schema { reference } => {
+            let schema = if reference {
+                kbref::ReferenceBase::json_schema()
+            } else {
+                diagnose::KnowledgeBase::json_schema()
+            };
+            println!("{}", serde_json::to_string_pretty(&schema)?);
             Ok(exit_code::SUCCESS)
         }
+        KbMode::Explain { query, service, format } => {
+            let rb = kbref::ReferenceBase::builtin()?;
+            if let Some(id) = service.as_deref()
+                && rb.service(id).is_none()
+            {
+                let known: Vec<&str> = rb.services.iter().map(|s| s.id.as_str()).collect();
+                anyhow::bail!("unknown service '{id}'; known services: {}", known.join(", "));
+            }
+            let answers = kbref::explain(&rb, &query, service.as_deref());
+            // An empty answer is still printed in structured formats so callers
+            // (the MCP tool included) get a well formed empty list, but the exit
+            // code says nothing matched.
+            print_structured(format, &answers, || print_explanations_pretty(&answers))?;
+            if answers.is_empty() {
+                eprintln!(
+                    "{} nothing in the reference base matches '{query}'; try `dcert kb topics` for what can be looked up",
+                    "Note:".yellow().bold()
+                );
+                return Ok(exit_code::ERROR);
+            }
+            Ok(exit_code::SUCCESS)
+        }
+        KbMode::Topics { format } => {
+            let rb = kbref::ReferenceBase::builtin()?;
+            let idx = kbref::index(&rb);
+            print_structured(format, &idx, || {
+                for svc in &idx {
+                    println!("{} {}", svc.name.bold(), format!("[{}]", svc.service).dimmed());
+                    let codes: Vec<String> = svc.statuses.iter().map(ToString::to_string).collect();
+                    println!("  status codes: {}", codes.join(" "));
+                    println!("  headers:      {}", svc.headers.join(", "));
+                    println!(
+                        "  api errors:   {} names (try `dcert kb explain <ExceptionName>`)",
+                        svc.error_count
+                    );
+                    println!("  topics:       {}", svc.topics.join(", "));
+                    println!();
+                }
+            })?;
+            Ok(exit_code::SUCCESS)
+        }
+    }
+}
+
+/// Render `dcert kb explain` answers for humans.
+fn print_explanations_pretty(answers: &[kbref::Explanation]) {
+    for a in answers {
+        println!(
+            "{} {} {}",
+            a.kind.to_uppercase().cyan().bold(),
+            a.subject.bold(),
+            format!("[{}]", a.service).dimmed()
+        );
+        for line in output::wrap_lines(&a.summary, 96) {
+            println!("    {line}");
+        }
+        for d in &a.details {
+            let mut lines = output::wrap_lines(d, 92).into_iter();
+            if let Some(first) = lines.next() {
+                println!("      - {first}");
+            }
+            for rest in lines {
+                println!("        {rest}");
+            }
+        }
+        for r in &a.references {
+            println!("      {}", r.dimmed());
+        }
+        println!();
     }
 }
 

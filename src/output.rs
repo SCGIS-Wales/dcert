@@ -320,6 +320,9 @@ pub struct TargetResult {
     pub root_trust: Option<RootTrustInfo>,
     /// CloudFront, mTLS and proxy findings, earliest layer first.
     pub diagnosis: Vec<Diagnosis>,
+    /// Context notes from the reference knowledge base (what the status,
+    /// headers and body sentences of the response mean).
+    pub context: Vec<crate::kbref::Note>,
 }
 
 /// JSON/YAML wrapper that includes both certificates and connection metadata.
@@ -334,6 +337,8 @@ pub struct StructuredOutput {
     pub root_trust: Option<RootTrustInfo>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub diagnosis: Vec<Diagnosis>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub context: Vec<crate::kbref::Note>,
 }
 
 impl From<&TargetResult> for StructuredOutput {
@@ -344,6 +349,7 @@ impl From<&TargetResult> for StructuredOutput {
             compliance: result.compliance_report.clone(),
             root_trust: result.root_trust.clone(),
             diagnosis: result.diagnosis.clone(),
+            context: result.context.clone(),
         }
     }
 }
@@ -533,6 +539,7 @@ pub fn process_target(
         compliance_report,
         root_trust,
         diagnosis: Vec::new(),
+        context: Vec::new(),
     })
 }
 
@@ -752,6 +759,10 @@ pub fn output_results(
         if !result.diagnosis.is_empty() {
             print_diagnosis_pretty(&result.diagnosis);
         }
+        if !result.context.is_empty() {
+            let mut out = std::io::stdout().lock();
+            let _ = write_context(&mut out, &result.context);
+        }
     })
 }
 
@@ -803,6 +814,37 @@ pub fn write_diagnosis(w: &mut impl std::io::Write, findings: &[Diagnosis]) -> s
         writeln!(w)?;
     }
     Ok(())
+}
+
+/// Render reference notes: what the status, body sentences and headers of the
+/// response mean, grouped under one heading after the diagnosis.
+pub fn write_context(w: &mut impl std::io::Write, notes: &[crate::kbref::Note]) -> std::io::Result<()> {
+    use crate::kbref::NoteKind;
+    writeln!(w, "{}", "=== Context ===".bold())?;
+    for n in notes {
+        let label = match n.kind {
+            NoteKind::Status => "status",
+            NoteKind::Body => "body  ",
+            NoteKind::Header => "header",
+        };
+        writeln!(
+            w,
+            "  {} {} {}",
+            label.dimmed(),
+            n.subject.bold(),
+            format!("[{}]", n.service).dimmed()
+        )?;
+        for line in textwrap_lines(&n.text, 92) {
+            writeln!(w, "      {line}")?;
+        }
+    }
+    writeln!(w)?;
+    Ok(())
+}
+
+/// Greedy word wrap for callers outside this module.
+pub fn wrap_lines(text: &str, width: usize) -> Vec<String> {
+    textwrap_lines(text, width)
 }
 
 /// Greedy word wrap, so long root cause paragraphs stay readable in a terminal.

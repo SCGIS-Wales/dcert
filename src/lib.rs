@@ -13,6 +13,7 @@ pub mod csr;
 pub mod debug;
 pub mod diagnose;
 pub mod http;
+pub mod kbref;
 pub mod ocsp;
 pub mod output;
 pub mod proxy;
