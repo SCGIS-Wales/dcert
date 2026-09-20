@@ -650,7 +650,7 @@ impl DcertMcpServer {
 
     /// Diagnose CloudFront, mTLS and forward proxy failures for an endpoint.
     #[tool(
-        description = "Diagnose why an HTTPS endpoint fails or misbehaves, with a focus on Amazon CloudFront (edge generated 4xx/5xx pages, origin errors forwarded by the edge, viewer mTLS in verify, optional and passthrough modes, origin mTLS gaps), forward web proxies (CONNECT 407/403/5xx, wrong proxy scheme, HTTP_PROXY only environments) and TLS inspection (chains re signed by Zscaler, Netskope and similar gateways). Probes the target, captures the TLS handshake, certificate chain, HTTP status, headers and a bounded body excerpt, and scores them against the diagnostics knowledge base. Returns JSON findings ordered earliest layer first, each with a confidence figure, the evidence that matched, a root cause and remediation steps. Supports mTLS, connection overrides and per request proxy settings like analyze_certificate.",
+        description = "Diagnose why an HTTPS endpoint fails or misbehaves, with a focus on Amazon CloudFront (edge generated 4xx/5xx pages, origin errors forwarded by the edge, viewer mTLS in required, optional and passthrough modes, origin mTLS gaps, security policy mismatches), Amazon API Gateway (gateway responses such as Missing Authentication Token, Forbidden, AccessDenied, Unauthorized, throttling, integration timeouts and 5xx, mutual TLS custom domains, private API endpoints), forward web proxies (CONNECT 407/403/5xx, wrong proxy scheme, HTTP_PROXY only environments) and TLS inspection (chains re signed by Zscaler, Netskope and similar gateways). Probes the target, captures the TLS handshake, certificate chain, HTTP status, headers and a bounded body excerpt, and scores them against the diagnostics knowledge base. Returns JSON findings ordered earliest layer first, each with a confidence figure, the evidence that matched, a root cause and remediation steps, plus `context` notes explaining what the status, headers and body sentences of the response mean. Supports mTLS, connection overrides and per request proxy settings like analyze_certificate.",
         annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true)
     )]
     pub async fn diagnose_endpoint(
@@ -689,6 +689,35 @@ impl DcertMcpServer {
             // A failed probe is the expected input for a diagnosis, so exit
             // codes are reported inline rather than treated as tool errors.
             Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "stderr", &[0])),
+            Err(e) => ok_error(e),
+        }
+    }
+
+    /// Explain a CloudFront or API Gateway status code, header, error name or topic.
+    #[tool(
+        description = "Look up what an Amazon CloudFront or Amazon API Gateway response means, from dcert's built in reference knowledge base compiled from the AWS documentation and Knowledge Center. Accepts an HTTP status code (403, 502, 504), a response header (x-cache, x-amz-cf-pop, x-amzn-errortype, cloudfront-viewer-cert-present), a control plane exception name (NoSuchDistribution, InvalidViewerCertificate, TooManyRequestsException), a gateway response type (MISSING_AUTHENTICATION_TOKEN, INTEGRATION_TIMEOUT) or a topic keyword (viewer-mtls, passthrough, origin-mtls, truststore, security policy, signed url, error caching, limits). Returns JSON answers with a summary, causes and checks, and documentation references. Use it to interpret the `context` notes and diagnosis ids returned by diagnose_endpoint, or to answer questions about CloudFront and API Gateway behaviour without probing anything.",
+        annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true)
+    )]
+    pub async fn explain_edge_term(
+        &self,
+        Parameters(params): Parameters<ExplainEdgeTermParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if let Err(e) = validate_arg(&params.query, "query") {
+            return ok_error(e);
+        }
+        if let Some(service) = params.service.as_deref()
+            && let Err(e) = validate_arg(service, "service")
+        {
+            return ok_error(e);
+        }
+        let mut args = vec!["kb", "explain", params.query.as_str(), "--format", "json"];
+        if let Some(service) = params.service.as_deref() {
+            args.push("--service");
+            args.push(service);
+        }
+        match run_dcert_raw(&args, &self.config, None).await {
+            // Exit code 1 means "nothing matched", which is an answer, not a failure.
+            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "stderr", &[0, 1])),
             Err(e) => ok_error(e),
         }
     }

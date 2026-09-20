@@ -1966,6 +1966,142 @@ fn test_diagnose_pretty_output_for_failed_probe() {
 }
 
 #[test]
+fn test_diagnose_json_carries_reference_context() {
+    let port = spawn_loopback_tls_server_with(CLOUDFRONT_502);
+    let output = dcert_bin()
+        .args([
+            "diagnose",
+            &format!("https://127.0.0.1:{port}"),
+            "--no-verify",
+            "--noproxy",
+            "*",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("failed to run dcert");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("JSON");
+    let context = parsed[0]["context"].as_array().expect("context array");
+    assert_eq!(context[0]["kind"], "status");
+    assert_eq!(context[0]["subject"], "502");
+    assert_eq!(context[0]["service"], "cloudfront");
+    assert!(
+        context
+            .iter()
+            .any(|n| n["kind"] == "body" && n["text"].as_str().unwrap().contains("NonS3OriginDnsError")),
+        "{context:#?}"
+    );
+    assert!(
+        context
+            .iter()
+            .any(|n| n["kind"] == "header" && n["subject"].as_str().unwrap().starts_with("X-Cache")),
+        "{context:#?}"
+    );
+
+    // The same notes appear in `check` output, and the pretty renderer prints them.
+    let port = spawn_loopback_tls_server_with(CLOUDFRONT_502);
+    let pretty = dcert_bin()
+        .args([&format!("https://127.0.0.1:{port}"), "--no-verify", "--noproxy", "*"])
+        .output()
+        .expect("failed to run dcert");
+    let text = String::from_utf8_lossy(&pretty.stdout);
+    assert!(text.contains("=== Context ==="), "{text}");
+    assert!(text.contains("X-Cache"), "{text}");
+
+    // --no-diagnose skips the context too.
+    let port = spawn_loopback_tls_server_with(CLOUDFRONT_502);
+    let quiet = dcert_bin()
+        .args([
+            &format!("https://127.0.0.1:{port}"),
+            "--no-verify",
+            "--noproxy",
+            "*",
+            "--no-diagnose",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("failed to run dcert");
+    let parsed: serde_json::Value = serde_json::from_slice(&quiet.stdout).expect("JSON");
+    assert!(parsed.get("context").is_none());
+}
+
+#[test]
+fn test_kb_explain_and_topics() {
+    let by_code = dcert_bin()
+        .args(["kb", "explain", "502", "--format", "json"])
+        .output()
+        .expect("kb explain");
+    assert!(by_code.status.success());
+    let parsed: serde_json::Value = serde_json::from_slice(&by_code.stdout).expect("JSON");
+    let answers = parsed.as_array().unwrap();
+    assert!(
+        answers
+            .iter()
+            .any(|a| a["service"] == "cloudfront" && a["kind"] == "status")
+    );
+    assert!(
+        answers
+            .iter()
+            .any(|a| a["service"] == "api_gateway" && a["kind"] == "status")
+    );
+
+    let scoped = dcert_bin()
+        .args(["kb", "explain", "x-amzn-errortype", "--service", "api_gateway"])
+        .output()
+        .expect("kb explain");
+    assert!(scoped.status.success());
+    let text = String::from_utf8_lossy(&scoped.stdout);
+    assert!(text.contains("HEADER x-amzn-ErrorType"), "{text}");
+    assert!(text.contains("MissingAuthenticationTokenException"), "{text}");
+
+    let error_name = dcert_bin()
+        .args(["kb", "explain", "InvalidViewerCertificate", "--format", "json"])
+        .output()
+        .expect("kb explain");
+    let parsed: serde_json::Value = serde_json::from_slice(&error_name.stdout).expect("JSON");
+    assert_eq!(parsed[0]["kind"], "error");
+    assert!(parsed[0]["summary"].as_str().unwrap().starts_with("HTTP 400"));
+
+    let unknown_service = dcert_bin()
+        .args(["kb", "explain", "502", "--service", "lambda"])
+        .output()
+        .expect("kb explain");
+    assert!(!unknown_service.status.success());
+
+    let nothing = dcert_bin()
+        .args(["kb", "explain", "zzz-nothing-here", "--format", "json"])
+        .output()
+        .expect("kb explain");
+    assert!(!nothing.status.success());
+    let parsed: serde_json::Value = serde_json::from_slice(&nothing.stdout).expect("JSON");
+    assert_eq!(parsed.as_array().unwrap().len(), 0);
+
+    let topics = dcert_bin()
+        .args(["kb", "topics", "--format", "json"])
+        .output()
+        .expect("kb topics");
+    assert!(topics.status.success());
+    let parsed: serde_json::Value = serde_json::from_slice(&topics.stdout).expect("JSON");
+    let services: Vec<&str> = parsed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["service"].as_str().unwrap())
+        .collect();
+    assert_eq!(services, vec!["cloudfront", "api_gateway"]);
+
+    let schema = dcert_bin()
+        .args(["kb", "schema", "--reference"])
+        .output()
+        .expect("kb schema");
+    assert!(schema.status.success());
+    let parsed: serde_json::Value = serde_json::from_slice(&schema.stdout).expect("JSON");
+    assert_eq!(parsed["title"], "ReferenceBase");
+}
+
+#[test]
 fn test_kb_commands() {
     let list = dcert_bin()
         .args(["kb", "list", "--format", "json"])

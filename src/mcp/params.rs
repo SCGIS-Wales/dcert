@@ -344,6 +344,16 @@ pub(crate) struct DiagnoseEndpointParams {
     pub(crate) http_tls: HttpTlsParams,
 }
 
+/// Parameters for the explain_edge_term tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct ExplainEdgeTermParams {
+    /// What to look up: an HTTP status code (502), a response header (x-cache, x-amzn-errortype), a CloudFront or API Gateway API exception (NoSuchDistribution, ForbiddenException), a gateway response type (INTEGRATION_TIMEOUT), or a topic keyword (viewer-mtls, passthrough, truststore, origin-mtls, signed url)
+    pub(crate) query: String,
+    /// Restrict the answer to one service: "cloudfront" or "api_gateway" (default: both)
+    #[serde(default)]
+    pub(crate) service: Option<String>,
+}
+
 /// Parameters for the analyze_certificate tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct AnalyzeCertificateParams {

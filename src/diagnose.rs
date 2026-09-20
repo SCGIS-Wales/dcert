@@ -43,6 +43,7 @@ pub enum Layer {
     ViewerMtls,
     Interception,
     EdgeHttp,
+    GatewayHttp,
     OriginHttp,
 }
 
@@ -55,6 +56,7 @@ impl Layer {
             Layer::ViewerMtls => "viewer mTLS",
             Layer::Interception => "TLS interception",
             Layer::EdgeHttp => "CloudFront edge",
+            Layer::GatewayHttp => "API Gateway",
             Layer::OriginHttp => "origin",
         }
     }
@@ -65,6 +67,7 @@ impl Layer {
 #[serde(rename_all = "snake_case")]
 pub enum Category {
     Cloudfront,
+    ApiGateway,
     Proxy,
     Tls,
     Mtls,
@@ -1163,6 +1166,175 @@ mod tests {
             !report.body_matched,
             "no surviving finding matched on the body, so the excerpt must not be flagged"
         );
+    }
+
+    fn apigw(status: u16, error_type: Option<&str>, body: &str) -> Evidence {
+        let mut headers = vec![
+            header("x-amzn-RequestId", "8b1c2d3e-0000-1111-2222-333344445555"),
+            header("x-amz-apigw-id", "AbCdEfGhIjKlMnO="),
+            header("content-type", "application/json"),
+        ];
+        if let Some(t) = error_type {
+            headers.push(header("x-amzn-ErrorType", t));
+        }
+        Evidence {
+            target_host: "abc123.execute-api.eu-west-2.amazonaws.com".to_string(),
+            http_status: Some(status),
+            http_headers: headers,
+            http_body: Some(body.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn api_gateway_missing_token_is_attributed_to_the_gateway_layer() {
+        let ev = apigw(
+            403,
+            Some("MissingAuthenticationTokenException"),
+            r#"{"message":"Missing Authentication Token"}"#,
+        );
+        let report = diagnose(&kb(), &ev);
+        let d = &report.findings[0];
+        assert_eq!(d.id, "apigateway.gateway.missing-authentication-token");
+        assert_eq!(d.layer, Layer::GatewayHttp);
+        assert_eq!(d.category, Category::ApiGateway);
+        assert!(d.confidence > 0.9);
+        // The gateway fallback yields to the specific entry.
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|f| f.id == "cloudfront.origin.api-gateway-error")
+        );
+        assert!(report.body_matched);
+    }
+
+    #[test]
+    fn api_gateway_forbidden_points_at_mtls_only_with_a_client_certificate() {
+        let mut ev = apigw(403, Some("ForbiddenException"), r#"{"message":"Forbidden"}"#);
+        assert_eq!(primary(&ev).id, "apigateway.gateway.forbidden");
+        ev.client_cert_supplied = true;
+        let d = primary(&ev);
+        assert_eq!(d.id, "apigateway.gateway.forbidden-mtls");
+        assert_eq!(d.category, Category::Mtls);
+    }
+
+    #[test]
+    fn api_gateway_access_denied_signature_and_unauthorized() {
+        let denied = apigw(
+            403,
+            Some("AccessDeniedException"),
+            r#"{"Message":"User: anonymous is not authorized to perform: execute-api:Invoke on resource: arn:aws:execute-api:eu-west-2:1:abc/prod/GET/"}"#,
+        );
+        assert_eq!(primary(&denied).id, "apigateway.gateway.access-denied");
+        let sig = apigw(
+            403,
+            Some("InvalidSignatureException"),
+            r#"{"message":"Signature expired"}"#,
+        );
+        assert_eq!(primary(&sig).id, "apigateway.gateway.signature");
+        let unauth = apigw(401, Some("UnauthorizedException"), r#"{"message":"Unauthorized"}"#);
+        assert_eq!(primary(&unauth).id, "apigateway.gateway.unauthorized");
+    }
+
+    #[test]
+    fn api_gateway_throttle_timeout_and_size_limits() {
+        let throttled = apigw(429, None, r#"{"message":"Too Many Requests"}"#);
+        assert_eq!(primary(&throttled).id, "apigateway.gateway.throttled");
+        let timeout = apigw(504, None, r#"{"message":"Endpoint request timed out"}"#);
+        assert_eq!(primary(&timeout).id, "apigateway.gateway.integration-timeout");
+        let too_large = apigw(
+            413,
+            None,
+            r#"{"message":"HTTP content length exceeded 10485760 bytes."}"#,
+        );
+        assert_eq!(primary(&too_large).id, "apigateway.gateway.request-too-large");
+        let bad_gateway = apigw(502, None, r#"{"message": "Internal server error"}"#);
+        assert_eq!(primary(&bad_gateway).id, "apigateway.gateway.bad-gateway");
+        let internal = apigw(500, None, r#"{"message": "Internal server error"}"#);
+        assert_eq!(primary(&internal).id, "apigateway.gateway.internal-server-error");
+    }
+
+    #[test]
+    fn api_gateway_unknown_error_type_falls_back_to_the_generic_entry() {
+        let ev = Evidence {
+            target_host: "api.example.com".to_string(),
+            http_status: Some(500),
+            http_headers: vec![header("x-amzn-ErrorType", "SomethingNewException")],
+            ..Default::default()
+        };
+        let d = primary(&ev);
+        assert_eq!(d.id, "cloudfront.origin.api-gateway-error");
+        assert_eq!(d.layer, Layer::GatewayHttp);
+    }
+
+    #[test]
+    fn healthy_api_gateway_response_is_informational() {
+        let ev = apigw(200, None, r#"{"ok":true}"#);
+        let report = diagnose(&kb(), &ev);
+        assert_eq!(report.findings.len(), 1);
+        assert_eq!(report.findings[0].id, "apigateway.info.served-by-api-gateway");
+    }
+
+    #[test]
+    fn cloudfront_request_size_limits_are_identified() {
+        let mut ev = cloudfront_page(414, "The request could not be satisfied.");
+        assert_eq!(primary(&ev).id, "cloudfront.edge.uri-too-long");
+        ev.http_status = Some(494);
+        assert_eq!(primary(&ev).id, "cloudfront.edge.header-too-large");
+        let method = cloudfront_page(
+            403,
+            "This distribution is not configured to allow the HTTP request method that was used for this request.",
+        );
+        assert_eq!(primary(&method).id, "cloudfront.edge.method-not-allowed");
+    }
+
+    #[test]
+    fn edge_503_is_split_between_capacity_and_function_or_origin_mtls() {
+        let capacity = cloudfront_page(503, "CloudFront capacity exceeded. Please try again later.");
+        assert_eq!(primary(&capacity).id, "cloudfront.edge.capacity");
+        let other = cloudfront_page(503, "The request could not be satisfied.");
+        let d = primary(&other);
+        assert_eq!(d.id, "cloudfront.edge.function-or-origin-mtls-503");
+        assert!(d.root_cause.contains("origin mTLS"));
+    }
+
+    #[test]
+    fn handshake_failures_name_the_service_security_policy() {
+        let cf = Evidence {
+            target_host: "d111111abcdef8.cloudfront.net".to_string(),
+            error: Some("TLS handshake failed: sslv3 alert handshake failure".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(primary(&cf).id, "tls.handshake.cloudfront-security-policy");
+        let gw = Evidence {
+            target_host: "abc123.execute-api.eu-west-2.amazonaws.com".to_string(),
+            error: Some("TLS handshake failed: tlsv1 alert protocol version".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(primary(&gw).id, "apigateway.tls.security-policy");
+    }
+
+    #[test]
+    fn expired_amazon_certificate_hints_at_propagation() {
+        let ev = Evidence {
+            target_host: "www.example.com".to_string(),
+            verify_result: Some("certificate has expired".to_string()),
+            chain_names: vec![
+                "CN=www.example.com".to_string(),
+                "CN=Amazon RSA 2048 M02, O=Amazon".to_string(),
+            ],
+            ..Default::default()
+        };
+        let d = primary(&ev);
+        assert_eq!(d.id, "cloudfront.edge.stale-viewer-certificate");
+        assert!(d.root_cause.contains("24 hours"));
+    }
+
+    #[test]
+    fn every_layer_has_a_label_and_sorts_in_path_order() {
+        assert!(Layer::EdgeHttp < Layer::GatewayHttp && Layer::GatewayHttp < Layer::OriginHttp);
+        assert_eq!(Layer::GatewayHttp.label(), "API Gateway");
     }
 
     #[test]

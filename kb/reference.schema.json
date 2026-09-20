@@ -1,0 +1,336 @@
+{
+  "$defs": {
+    "BodyNote": {
+      "additionalProperties": false,
+      "description": "A canonical sentence in an error body and what it means.",
+      "properties": {
+        "meaning": {
+          "type": "string"
+        },
+        "pattern": {
+          "type": "string"
+        },
+        "references": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "status": {
+          "default": null,
+          "description": "The status the sentence normally accompanies, when it is fixed.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "pattern",
+        "meaning"
+      ],
+      "type": "object"
+    },
+    "Detect": {
+      "additionalProperties": false,
+      "description": "Signals that identify the service in a captured response.",
+      "properties": {
+        "headers": {
+          "default": [],
+          "description": "Any of these response headers matching marks the service as present.",
+          "items": {
+            "$ref": "#/$defs/HeaderMatch"
+          },
+          "type": "array"
+        },
+        "hosts": {
+          "default": [],
+          "description": "Any of these patterns matching the target host marks the service as present.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "ErrorNote": {
+      "additionalProperties": false,
+      "description": "One control plane exception.",
+      "properties": {
+        "http_status": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "http_status",
+        "summary"
+      ],
+      "type": "object"
+    },
+    "HeaderMatch": {
+      "additionalProperties": false,
+      "description": "A header name and a pattern its value must match.",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "pattern": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "pattern"
+      ],
+      "type": "object"
+    },
+    "HeaderNote": {
+      "additionalProperties": false,
+      "description": "What one header means, with optional per value meanings.",
+      "properties": {
+        "direction": {
+          "description": "`request` (added or removed on the way to the origin), `response`\n(visible to the viewer) or `both`.",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "references": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "values": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ValueMeaning"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "direction",
+        "summary"
+      ],
+      "type": "object"
+    },
+    "Service": {
+      "additionalProperties": false,
+      "description": "One AWS service and everything dcert knows about its responses.",
+      "properties": {
+        "bodies": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/BodyNote"
+          },
+          "type": "array"
+        },
+        "detect": {
+          "$ref": "#/$defs/Detect",
+          "default": {
+            "headers": [],
+            "hosts": []
+          },
+          "description": "How a probe recognises that a response came from this service."
+        },
+        "errors": {
+          "default": [],
+          "description": "Control plane (API) exceptions, for `kb explain <ExceptionName>`.",
+          "items": {
+            "$ref": "#/$defs/ErrorNote"
+          },
+          "type": "array"
+        },
+        "headers": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/HeaderNote"
+          },
+          "type": "array"
+        },
+        "id": {
+          "description": "Stable identifier, e.g. `cloudfront` or `api_gateway`.",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "statuses": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StatusNote"
+          },
+          "type": "array"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "topics": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Topic"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "summary"
+      ],
+      "type": "object"
+    },
+    "StatusNote": {
+      "additionalProperties": false,
+      "description": "What one HTTP status code means when this service returns it.",
+      "properties": {
+        "causes": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "checks": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "code": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "generated_by": {
+          "default": null,
+          "description": "`edge`, `origin` or `either`: which hop usually generates it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "references": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "title",
+        "summary"
+      ],
+      "type": "object"
+    },
+    "Topic": {
+      "additionalProperties": false,
+      "description": "A longer explanation on one subject (mTLS modes, limits, ciphers).",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "references": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tags": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "text": {
+          "description": "Paragraphs or bullet lines, printed in order.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "text"
+      ],
+      "type": "object"
+    },
+    "ValueMeaning": {
+      "additionalProperties": false,
+      "description": "A value pattern and what it means.",
+      "properties": {
+        "meaning": {
+          "type": "string"
+        },
+        "pattern": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "pattern",
+        "meaning"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The whole reference file.",
+  "properties": {
+    "services": {
+      "items": {
+        "$ref": "#/$defs/Service"
+      },
+      "type": "array"
+    },
+    "version": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "version",
+    "services"
+  ],
+  "title": "ReferenceBase",
+  "type": "object"
+}

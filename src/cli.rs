@@ -278,7 +278,30 @@ pub enum KbMode {
         file: String,
     },
     /// Print the JSON schema for knowledge base files
-    Schema,
+    Schema {
+        /// Print the schema of the reference base (kb/reference.yaml) instead
+        #[arg(long)]
+        reference: bool,
+    },
+    /// Explain a status code, header, error name or topic for CloudFront and API Gateway
+    Explain {
+        /// What to look up: a status code (502), a header (x-cache), an API exception
+        /// (NoSuchDistribution), a gateway response (INTEGRATION_TIMEOUT) or a topic
+        /// keyword (passthrough, truststore)
+        query: String,
+        /// Restrict the answer to one service: cloudfront or api_gateway
+        #[arg(long, value_name = "ID")]
+        service: Option<String>,
+        /// Output format
+        #[arg(short, long, value_enum, default_value_t = OutputFormat::Pretty)]
+        format: OutputFormat,
+    },
+    /// List what `kb explain` can answer, per service
+    Topics {
+        /// Output format
+        #[arg(short, long, value_enum, default_value_t = OutputFormat::Pretty)]
+        format: OutputFormat,
+    },
 }
 
 /// Known subcommand names for backward-compatible default routing.

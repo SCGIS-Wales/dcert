@@ -1595,6 +1595,7 @@ async fn http_transport_exposes_every_tool() {
         "analyze_certificate",
         "validate_certificate",
         "diagnose_endpoint",
+        "explain_edge_term",
         "vault_issue",
         "vault_revoke",
         "create_truststore",

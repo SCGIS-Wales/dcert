@@ -25,8 +25,8 @@
   - [dcert convert -- Format Conversion](#dcert-convert--format-conversion)
   - [dcert verify-key -- Key Matching](#dcert-verify-key--key-matching)
   - [dcert vault -- HashiCorp Vault PKI](#dcert-vault--hashicorp-vault-pki)
-  - [dcert diagnose -- CloudFront, mTLS and Proxy Diagnostics](#dcert-diagnose--cloudfront-mtls-and-proxy-diagnostics)
-  - [dcert kb -- Diagnostics Knowledge Base](#dcert-kb--diagnostics-knowledge-base)
+  - [dcert diagnose -- CloudFront, API Gateway, mTLS and Proxy Diagnostics](#dcert-diagnose--cloudfront-api-gateway-mtls-and-proxy-diagnostics)
+  - [dcert kb -- Diagnostics and Reference Knowledge Bases](#dcert-kb--diagnostics-and-reference-knowledge-bases)
 - [MCP Server (AI IDE Integration)](#mcp-server-ai-ide-integration)
   - [Proxy and Timeout Configuration](#proxy-and-timeout-configuration)
   - [Troubleshooting](#troubleshooting)
@@ -946,9 +946,9 @@ dcert vault renew [OPTIONS] <PATH>
 
 ---
 
-### dcert diagnose -- CloudFront, mTLS and Proxy Diagnostics
+### dcert diagnose -- CloudFront, API Gateway, mTLS and Proxy Diagnostics
 
-`dcert diagnose` probes a target the way `dcert check` does, then explains **why** it failed. It captures the TLS handshake, the certificate chain and its trust anchor, the HTTP status, response headers and a bounded body excerpt, plus the forward-proxy `CONNECT` reply and the local proxy environment, and scores that evidence against a knowledge base of failure signatures.
+`dcert diagnose` probes a target the way `dcert check` does, then explains **why** it failed and **what** the response means. It captures the TLS handshake, the certificate chain and its trust anchor, the HTTP status, response headers and a bounded body excerpt, plus the forward-proxy `CONNECT` reply and the local proxy environment, and scores that evidence against a knowledge base of failure signatures.
 
 ```bash
 # Explain a failing endpoint
@@ -970,11 +970,12 @@ Findings are reported earliest layer first, so the primary attribution names the
 |-------|----------------|
 | Local proxy environment | `HTTP_PROXY` set without `HTTPS_PROXY`, unreachable proxy, TLS spoken to a plain proxy port |
 | Proxy `CONNECT` | 407 authentication, 403 policy denial, 5xx upstream failure (including `X-Squid-Error`), `CONNECT` not supported, captive portal |
-| TLS handshake | No common protocol version or cipher, SNI not served, CloudFront's default `*.cloudfront.net` certificate, incomplete chain |
-| Viewer mTLS | Client certificate required but absent, unknown CA, expired, or rejected after validation |
+| TLS handshake | No common protocol version or cipher, SNI not served, CloudFront's default `*.cloudfront.net` certificate, incomplete chain, a CloudFront or API Gateway security policy refusing the offered TLS version, an expired certificate still served by an edge after an ACM renewal |
+| Viewer mTLS | Client certificate required but absent, unknown CA, expired, or rejected after validation (OCSP, Connection Function, chain depth, key usage) |
 | TLS interception | Chain re-signed by a known inspection product (Zscaler, Netskope, Umbrella, FortiGate, Palo Alto, Blue Coat, Forcepoint and others), or a public hostname anchored to a private root |
-| CloudFront edge | Alternate domain not configured, AWS WAF block, geo restriction, missing or invalid signed URL, origin DNS failure, origin TLS failure, origin timeout, Lambda@Edge and CloudFront Functions errors, capacity |
-| Origin | S3 access denied or missing key, API Gateway errors, any origin status forwarded by the edge, origin mTLS not enabled on the distribution |
+| CloudFront edge | Alternate domain not configured, AWS WAF block, geo restriction, HTTP method not allowed, URL or header size limits (414, 494), missing or invalid signed URL, origin DNS failure, origin TLS failure, origin timeout, Lambda@Edge and CloudFront Functions errors, capacity, edge 503 from an edge function or the origin mTLS pause |
+| API Gateway | Gateway responses told apart by `x-amzn-ErrorType` and the message: Missing Authentication Token (no matching resource, stage or mapping), Forbidden (API key, WAF, private DNS, base path mapping, disabled default endpoint), Forbidden on a mutual TLS custom domain when a client certificate was sent, AccessDenied (IAM, resource policy, Lambda authorizer), SigV4 signature errors, Unauthorized, throttling and quota (429), request too large (413), unsupported media type (415), request validation (400), internal server error and configuration errors (500), bad gateway (502), integration timeout (504), backend unavailable (503) |
+| Origin | S3 access denied or missing key, any origin status forwarded by the edge, origin mTLS not enabled on the distribution |
 
 Each finding carries a confidence figure, the evidence that matched, remediation steps and a link to the authoritative documentation:
 
@@ -991,7 +992,20 @@ PRIMARY   CloudFront could not complete TLS with the origin [cloudfront.edge.ori
       - Probe the origin directly with dcert, using --connect-to if its DNS name differs, ...
 ```
 
-The same `diagnosis` array is added to `dcert check` output in every format, so existing checks gain the explanation without changing command. Pass `--no-diagnose` to skip the pass.
+Under the diagnosis, a **Context** section explains the response itself from the reference knowledge base: what the status code means for the service that produced it (and whether the edge or the origin usually generates it), what each recognised header says (`X-Cache`, `Via`, `X-Amz-Cf-Pop`, `X-Amz-Cf-Id`, `x-amzn-ErrorType`, `x-amz-apigw-id` and others), and what the canonical error sentences in the body mean. Notes are only produced when a CloudFront or API Gateway fingerprint is present, so probes of unrelated hosts stay quiet:
+
+```
+=== Context ===
+  status 502 [cloudfront]
+      Bad Gateway: CloudFront could not obtain a usable response from the origin. ...
+      (usually generated at the edge)
+  body   wasn't able to resolve the origin domain name [cloudfront]
+      NonS3OriginDnsError. The origin domain does not resolve in public DNS. ...
+  header X-Cache: Error from cloudfront [cloudfront]
+      ... CloudFront generated the error itself; the origin did not produce this status.
+```
+
+The same `diagnosis` and `context` arrays are added to `dcert check` output in every format, so existing checks gain the explanation without changing command. Pass `--no-diagnose` to skip both.
 
 **Related options**
 
@@ -1004,17 +1018,29 @@ The same `diagnosis` array is added to `dcert check` output in every format, so 
 
 > The body excerpt is treated as evidence, not output: it is emitted only when a finding cites it or `--show-body` is set.
 
-### dcert kb -- Diagnostics Knowledge Base
+### dcert kb -- Diagnostics and Reference Knowledge Bases
 
-The knowledge base is data, not code: a versioned YAML catalogue embedded at build time and extendable at runtime, so a team can add its own signatures without waiting for a release.
+dcert ships two knowledge bases, both data rather than code, compiled from the AWS documentation and the AWS Knowledge Center (every page consulted is listed in [kb/SOURCES.md](kb/SOURCES.md)):
+
+- **Diagnostics** (`kb/diagnostics.yaml`): failure signatures scored against the evidence of a probe. A versioned YAML catalogue embedded at build time and extendable at runtime, so a team can add its own signatures without waiting for a release.
+- **Reference** (`kb/reference.yaml`): what CloudFront and API Gateway responses mean. Every status code each service returns with its causes and checks, every response header they add or rewrite (including the `CloudFront-Viewer-*` and mTLS headers), the canonical error sentences of their error pages, all 167 CloudFront and 33 API Gateway control plane exceptions and gateway response types, and longer topics on viewer mTLS (required, optional and passthrough modes, trust stores, OCSP and Connection Functions), origin mTLS, security policies and ciphers, error caching, limits, signed URLs, S3 origins, API Gateway mutual TLS, endpoint types and private APIs.
 
 ```bash
-dcert kb list                                   # every entry: id, layer, title
+dcert kb list                                   # every diagnostics entry: id, layer, title
 dcert kb show cloudfront.edge.waf-blocked       # one entry in full
 dcert kb validate my-entries.yaml               # schema, unique ids, regex check
-dcert kb schema > schema.json                   # JSON schema for editor validation
+dcert kb schema > schema.json                   # JSON schema for diagnostics files
+dcert kb schema --reference > reference.json    # JSON schema for the reference base
 
-# Use extra entries for a single run, or export DCERT_KB_FILE
+dcert kb explain 502                            # what a 502 means on CloudFront and on API Gateway
+dcert kb explain x-cache                        # a header and the meaning of each value
+dcert kb explain x-amzn-errortype               # the API Gateway error type table
+dcert kb explain InvalidViewerCertificate       # a control plane exception
+dcert kb explain passthrough                    # topics: viewer mTLS modes, origin mTLS, truststore, limits...
+dcert kb explain 403 --service api_gateway      # restrict to one service; --format json for tooling
+dcert kb topics                                 # what can be looked up, per service
+
+# Use extra diagnostics entries for a single run, or export DCERT_KB_FILE
 dcert diagnose https://api.example.com --kb-file my-entries.yaml
 ```
 
@@ -1064,7 +1090,8 @@ It implements the current MCP specification revision (**2025-11-25**) via the `r
 | `export_pem` | Export TLS certificate chain from an HTTPS endpoint as PEM. Optionally saves to file and can exclude expired certs. Supports mTLS. |
 | `create_csr` | Create a PKCS#10 CSR and private key. Supports RSA/ECDSA, OU metadata, and encrypted keys. Compliant with CA/B Forum, DigiCert, and X9 standards. |
 | `validate_csr` | Validate a CSR for compliance with CA/B Forum Baseline Requirements, DigiCert, and X9 standards. Returns findings with severity levels. |
-| `diagnose_endpoint` | Diagnose why an endpoint fails: CloudFront edge and origin errors, viewer and origin mTLS, forward proxy failures and TLS interception. Returns findings ordered earliest layer first with confidence, evidence and remediation. |
+| `diagnose_endpoint` | Diagnose why an endpoint fails: CloudFront edge and origin errors, API Gateway gateway responses, viewer and origin mTLS, forward proxy failures and TLS interception. Returns findings ordered earliest layer first with confidence, evidence and remediation, plus context notes explaining the status, headers and body. |
+| `explain_edge_term` | Look up what a CloudFront or API Gateway status code, header, error name, gateway response type or topic (viewer mTLS modes, origin mTLS, truststores, security policies, limits) means, from the built-in reference knowledge base. No network access. |
 | `validate_certificate` | Run compliance checks on a certificate (PEM file or HTTPS endpoint). Checks key size, signature algorithm, validity period, SANs, CT, EKU, and Basic Constraints against CA/B Forum standards. |
 | `verify_key_match` | Verify that a private key matches a certificate (PEM file or HTTPS endpoint). |
 | `verify_key_auto_discover` | Auto-discover and verify all matching cert/key pairs in a directory. |
