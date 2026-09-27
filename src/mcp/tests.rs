@@ -633,6 +633,44 @@ fn test_server_construction() {
 }
 
 #[test]
+fn test_server_sends_instructions() {
+    let info = DcertMcpServer::default().get_info();
+    let instructions = info.instructions.expect("instructions are set");
+    assert!(instructions.contains("analyze_certificate"));
+    assert!(instructions.contains("vault_revoke"));
+}
+
+/// Clients use the title in tool pickers and `openWorldHint` to decide whether
+/// a call needs network permission, so every tool must declare both.
+#[test]
+fn test_every_tool_declares_title_and_open_world() {
+    let server = DcertMcpServer::default();
+    let tools = server.tool_router.list_all();
+    assert!(!tools.is_empty());
+    for tool in &tools {
+        let title = tool.title.as_deref().unwrap_or_default();
+        assert!(!title.is_empty(), "{} has no title", tool.name);
+        let annotations = tool.annotations.as_ref().expect("annotations are set");
+        assert!(
+            annotations.open_world_hint.is_some(),
+            "{} has no openWorldHint",
+            tool.name
+        );
+    }
+    let open_world = |name: &str| {
+        tools
+            .iter()
+            .find(|t| t.name == name)
+            .and_then(|t| t.annotations.as_ref())
+            .and_then(|a| a.open_world_hint)
+    };
+    assert_eq!(open_world("analyze_certificate"), Some(true));
+    assert_eq!(open_world("vault_issue"), Some(true));
+    assert_eq!(open_world("create_csr"), Some(false));
+    assert_eq!(open_world("explain_edge_term"), Some(false));
+}
+
+#[test]
 fn test_server_default() {
     let server = DcertMcpServer::default();
     let info = server.get_info();
