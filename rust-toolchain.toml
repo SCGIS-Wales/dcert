@@ -1,6 +1,6 @@
 # Pin the toolchain to a recent stable for reproducible builds across all
 # platforms (Linux, macOS, Windows). The crate's MSRV support floor remains
-# `rust-version = "1.88"` in Cargo.toml; this pin is what we build/ship with.
+# `rust-version = "1.91"` in Cargo.toml; this pin is what we build/ship with.
 [toolchain]
 channel = "1.98.1"
 components = ["rustfmt", "clippy"]
