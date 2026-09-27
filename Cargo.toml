@@ -1,6 +1,6 @@
 [package]
 name = "dcert"
-version = "3.0.48"
+version = "3.0.49"
 edition = "2024"
 rust-version = "1.91"
 license = "MIT"
