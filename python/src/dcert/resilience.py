@@ -445,8 +445,7 @@ def setup_otel(config: OTelConfig) -> None:
     try:
         from opentelemetry import trace
         from opentelemetry.sdk.resources import Resource
-        from opentelemetry.sdk.trace import TracerProvider
-        from opentelemetry.sdk.trace.export import SpanProcessor
+        from opentelemetry.sdk.trace import SpanProcessor, TracerProvider
 
         processor: SpanProcessor
         if config.exporter == "otlp":
