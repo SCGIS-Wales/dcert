@@ -114,6 +114,11 @@ Defaults live in the packaged `dcert/config.yaml`: the release URL, download lim
 
 Resilience values can be overridden with `DCERT_MCP_*` environment variables (listed in `dcert/resilience.py`) and the `dcert-python` flags override those.
 
+The proxy reads each tool's MCP annotations before applying caching or retries:
+
+- **Caching** (`--cache`) replays results only for tools marked read-only and idempotent. Tools that generate keys, issue or sign certificates, or change Vault state (`create_csr`, `vault_issue`, `vault_sign`, `vault_renew`, …) are always run.
+- **Retry** after a transport failure applies only to read-only or idempotent tools. Any other call surfaces the error instead of running a second time, because the first attempt may already have issued a certificate.
+
 ## Binary discovery
 
 1. `DCERT_MCP_BINARY` (or `DCERT_PATH` for the `dcert` CLI)
