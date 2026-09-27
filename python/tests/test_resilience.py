@@ -525,8 +525,8 @@ def test_setup_otel_with_fake_sdk():
     fake["opentelemetry.sdk.resources"].Resource = MagicMock()
     provider = MagicMock()
     fake["opentelemetry.sdk.trace"].TracerProvider = MagicMock(return_value=provider)
+    fake["opentelemetry.sdk.trace"].SpanProcessor = MagicMock
     export = fake["opentelemetry.sdk.trace.export"]
-    export.SpanProcessor = MagicMock
     export.BatchSpanProcessor = MagicMock()
     export.SimpleSpanProcessor = MagicMock()
     export.ConsoleSpanExporter = MagicMock()

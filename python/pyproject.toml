@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.32"]
+requires = ["hatchling>=1.32.4"]
 build-backend = "hatchling.build"
 
 [project]
@@ -28,24 +28,24 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "fastmcp>=4.0.5,<5",
+    "fastmcp>=4.0.10,<5",
     "click>=8.5,<9",
     "pyyaml>=6.0.3,<7",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=9.1",
+    "pytest>=9.1.1",
     "pytest-asyncio>=1.4",
     "pytest-cov>=7.1",
     "pytest-timeout>=2.4",
-    "ruff>=0.16",
-    "mypy>=2.3",
-    "types-PyYAML",
+    "ruff>=0.16.9",
+    "mypy>=2.3.1",
+    "types-PyYAML>=6.0.12.20260906",
 ]
 otel = [
-    "opentelemetry-sdk>=1.20.0",
-    "opentelemetry-exporter-otlp-proto-grpc>=1.20.0",
+    "opentelemetry-sdk>=1.45.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.45.0",
 ]
 
 [project.urls]
