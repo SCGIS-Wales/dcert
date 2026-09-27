@@ -9,7 +9,7 @@ from fastmcp.server.middleware.caching import ResponseCachingMiddleware
 
 import dcert
 from dcert.client import create_client
-from dcert.middleware import ResilienceMiddleware
+from dcert.middleware import ReadOnlyCachingMiddleware, ResilienceMiddleware
 from dcert.resilience import resilience_config_from_env
 from dcert.server import (
     PASSTHROUGH_ENV_VARS,
@@ -193,7 +193,7 @@ def test_create_server_with_cache(fake_binary, monkeypatch):
     monkeypatch.delenv("DCERT_MCP_CACHE_ENABLED", raising=False)
     cfg = replace(resilience_config_from_env(), cache_enabled=True)
     server = create_server(binary_path=str(fake_binary), resilience=cfg)
-    assert _dcert_middleware(server) == [ResponseCachingMiddleware, ResilienceMiddleware]
+    assert _dcert_middleware(server) == [ReadOnlyCachingMiddleware, ResilienceMiddleware]
 
 
 def test_create_server_binary_not_found(no_binary):

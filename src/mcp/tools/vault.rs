@@ -17,8 +17,14 @@ impl DcertMcpServer {
 
     /// Issue a new TLS certificate from HashiCorp Vault PKI.
     #[tool(
+        title = "Vault: Issue Certificate",
         description = "Issue a new TLS certificate from HashiCorp Vault PKI. Generates a private key and certificate signed by the Vault PKI CA. Supports DNS and IP SANs, configurable TTL, PEM or PFX output, and optional KV storage. Requires Vault connectivity (vault_addr + authentication). Supports token, LDAP, and AppRole auth methods.",
-        annotations(read_only_hint = false, destructive_hint = false, idempotent_hint = false)
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
     )]
     pub async fn vault_issue(
         &self,
@@ -95,8 +101,14 @@ impl DcertMcpServer {
 
     /// Sign a Certificate Signing Request (CSR) using Vault PKI.
     #[tool(
+        title = "Vault: Sign CSR",
         description = "Sign a Certificate Signing Request (CSR) using HashiCorp Vault PKI. Takes a PEM-encoded CSR file and returns a signed certificate with the full CA chain. Supports CN override, SANs, and optional KV storage. Requires Vault connectivity. Supports token, LDAP, and AppRole auth methods.",
-        annotations(read_only_hint = false, destructive_hint = false, idempotent_hint = false)
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
     )]
     pub async fn vault_sign(
         &self,
@@ -173,8 +185,14 @@ impl DcertMcpServer {
 
     /// Revoke a certificate in Vault PKI by serial number or PEM file.
     #[tool(
+        title = "Vault: Revoke Certificate",
         description = "Revoke a TLS certificate in HashiCorp Vault PKI. Specify either the serial number (hex) or a PEM certificate file path. The certificate is added to the CRL. Requires Vault connectivity. Supports token, LDAP, and AppRole auth methods.",
-        annotations(read_only_hint = false, destructive_hint = true, idempotent_hint = true)
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
     )]
     pub async fn vault_revoke(
         &self,
@@ -216,8 +234,14 @@ impl DcertMcpServer {
 
     /// List all certificates issued by Vault PKI.
     #[tool(
+        title = "Vault: List Certificates",
         description = "List all certificates issued by HashiCorp Vault PKI with optional filtering by expired/valid status. Supports export to JSON, CSV, or XLSX files. Returns serial numbers, common names, expiry dates, and status. Requires Vault connectivity. Supports token, LDAP, and AppRole auth methods.",
-        annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true)
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
     )]
     pub async fn vault_list(
         &self,
@@ -264,8 +288,14 @@ impl DcertMcpServer {
 
     /// Store a local certificate and private key in Vault KV.
     #[tool(
+        title = "Vault: Store Certificate",
         description = "Store a local PEM certificate and private key in HashiCorp Vault KV secret store. Supports KV v1 and v2. Configurable key names for the certificate and private key within the secret. Requires Vault connectivity. Supports token, LDAP, and AppRole auth methods.",
-        annotations(read_only_hint = false, destructive_hint = false, idempotent_hint = true)
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
     )]
     pub async fn vault_store(
         &self,
@@ -316,8 +346,14 @@ impl DcertMcpServer {
 
     /// Read and validate a certificate stored in Vault KV.
     #[tool(
+        title = "Vault: Validate Stored Certificate",
         description = "Read and validate a TLS certificate stored in HashiCorp Vault KV. Checks expiry, key match, and displays certificate details. Supports KV v1 and v2. Requires Vault connectivity. Supports token, LDAP, and AppRole auth methods.",
-        annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true)
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
     )]
     pub async fn vault_validate(
         &self,
@@ -358,8 +394,14 @@ impl DcertMcpServer {
 
     /// Renew an existing certificate in Vault KV by re-issuing from Vault PKI.
     #[tool(
+        title = "Vault: Renew Certificate",
         description = "Renew a TLS certificate stored in HashiCorp Vault KV by re-issuing from Vault PKI. Reads the existing cert to preserve CN and SANs, issues a new cert with a fresh TTL, and updates the KV secret. Optionally override SANs. Requires Vault connectivity. Supports token, LDAP, and AppRole auth methods.",
-        annotations(read_only_hint = false, destructive_hint = false, idempotent_hint = false)
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
     )]
     pub async fn vault_renew(
         &self,

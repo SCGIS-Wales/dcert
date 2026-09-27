@@ -9,6 +9,21 @@ use dcert::debug::sanitize_url;
 pub(crate) const MCP_DESCRIPTION: &str =
     "MCP server for TLS certificate analysis, format conversion, and key verification — for AI-powered IDEs";
 
+/// Guidance sent to clients in the `initialize` result. MCP clients typically
+/// add it to the model's context, so it says which tool fits which question
+/// rather than repeating the per-tool descriptions.
+pub(crate) const MCP_INSTRUCTIONS: &str = "dcert inspects and manages TLS certificates.\n\
+- Start with `analyze_certificate` for a certificate or endpoint, `check_expiry` for a quick expiry check, \
+and `diagnose_endpoint` when an HTTPS endpoint (especially Amazon CloudFront or API Gateway) fails or misbehaves. \
+Use `explain_edge_term` to look up an edge error, header or status without contacting the network.\n\
+- `target` accepts an HTTPS URL, a hostname, or a local PEM file path. To test a specific backend IP while \
+validating the hostname, keep the hostname in `target` and set `connect_to` or `resolve`.\n\
+- Tools marked openWorld contact remote hosts (the target, OCSP responders, or HashiCorp Vault); the others work \
+only on local files.\n\
+- `create_csr`, `vault_issue`, `vault_sign` and `vault_renew` create new keys or certificates on every call, and \
+`vault_revoke` is irreversible: confirm with the user before calling them, and do not retry them blindly.\n\
+- Results are JSON text. A tool error result explains what failed and usually how to fix the input.";
+
 /// Return the version string from Cargo.toml.
 pub(crate) fn dcert_mcp_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
