@@ -398,8 +398,8 @@ jobs:
           sed -i "s/^__version__ = \".*\"/__version__ = \"$VERSION\"/" python/src/dcert/__init__.py
 
           # Commit the version bump
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "api-py"
+          git config user.email "5954680+api-py@users.noreply.github.com"
           git add Cargo.toml Cargo.lock python/pyproject.toml python/src/dcert/__init__.py
           git commit -m "chore: bump version to ${VERSION} [skip ci]"
           git push origin main
@@ -905,8 +905,8 @@ jobs:
 
           # Commit and push if there are changes
           cd homebrew-tap
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "api-py"
+          git config user.email "5954680+api-py@users.noreply.github.com"
 
           if git diff --quiet; then
             echo "No changes to formula"
