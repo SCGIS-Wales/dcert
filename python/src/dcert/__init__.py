@@ -23,7 +23,7 @@ Usage with the typed async wrappers::
         result = await analyze_certificate(target="example.com", session=session)
 """
 
-__version__ = "3.0.49"
+__version__ = "3.0.50"
 
 from dcert.client import create_client
 from dcert.config import Config, load_config
