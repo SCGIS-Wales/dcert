@@ -15,18 +15,44 @@ release:
     - githubusercontent.com
 
 download:
+  # Socket timeout for each read while streaming the archive.
   timeout_seconds: 60
+  # Deadline for the whole transfer, so a trickling server cannot hold the
+  # installer open indefinitely.
+  total_timeout_seconds: 600
   # Hard cap on the archive size, checked against Content-Length and while
   # streaming (100 MiB).
   max_bytes: 104857600
   chunk_size: 65536
   lock_file_name: ".dcert-install.lock"
+  # Interval between attempts to take the install lock on Windows, whose
+  # file locks have no indefinitely blocking mode.
+  lock_poll_seconds: 0.1
 
-# Rust binaries shipped in each release and the environment variable that
-# points at an explicit path for each of them.
+install:
+  # Environment variable naming an explicit install directory.
+  env_override: DCERT_INSTALL_DIR
+  # Where downloaded binaries are installed, keyed by the lower-cased
+  # platform.system(); "default" covers every other system. The directory
+  # belongs to dcert, never to pip, so a download can never replace a pip
+  # console script wrapper. "~" and environment variables are expanded
+  # (${LOCALAPPDATA} is %LOCALAPPDATA% on Windows).
+  directories:
+    windows: "${LOCALAPPDATA}/dcert/bin"
+    default: "~/.local/share/dcert/bin"
+
 binaries:
-  dcert: DCERT_PATH
-  dcert-mcp: DCERT_MCP_BINARY
+  # Environment variable that points at an explicit path for each of the
+  # Rust binaries shipped in a release.
+  env:
+    dcert: DCERT_PATH
+    dcert-mcp: DCERT_MCP_BINARY
+  # Variable named in the "binary not found" message for a name without a
+  # row above.
+  fallback_env: DCERT_MCP_BINARY
+  # Bytes read from the head of a candidate file to tell a pip console
+  # script wrapper ("#!...python") from a compiled binary.
+  wrapper_probe_bytes: 128
 
 # One row per supported platform. "system" and "machine" are the lower-cased
 # values of platform.system() and platform.machine(); "wheel_tag" is used by
@@ -80,9 +106,18 @@ server:
   name: dcert-mcp
   host: 127.0.0.1
   port: 8080
+  # Transports dcert-python accepts and the one used when none is given.
+  transports:
+    - stdio
+    - http
+    - sse
+  default_transport: stdio
 
 resilience:
   tool_timeout: 300.0
+  # Seconds allowed to start the subprocess and complete the MCP handshake,
+  # and to look up a tool's annotations.
+  connect_timeout: 30.0
   reconnect_max: 3
   retry_max_attempts: 3
   retry_base_delay: 0.5
@@ -97,13 +132,22 @@ resilience:
   cache_list_ttl: 60
   # 256 KiB; 0 disables truncation.
   max_response_bytes: 262144
+  # A truncation cut is moved back to the last newline within this many
+  # characters so output is not broken mid line.
+  truncation_lookback_chars: 200
 
 otel:
   service_name: dcert-mcp
   exporter: console
+  # Exporters dcert-python accepts.
+  exporters:
+    - console
+    - otlp
 
 tools:
   # Default password applied by the Rust server to new truststores.
   truststore_password: changeit
   keystore_alias: server
   expiry_days: 30
+  # Directory convert_pfx_to_pem writes PEM files to when none is given.
+  output_dir: "."

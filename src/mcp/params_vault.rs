@@ -2,10 +2,9 @@
 
 use schemars::JsonSchema;
 use serde::Deserialize;
-use tokio::process::Command;
 
 use crate::config::McpConfig;
-use crate::exec::{SUBPROCESS_SEMAPHORE, run_child_with_timeout};
+use crate::exec::{SUBPROCESS_SEMAPHORE, run_child_with_timeout, spawn_dcert};
 use crate::params::{
     default_cert_key_name, default_key_key_name, default_kv_version, default_ttl, default_vault_mount,
 };
@@ -159,21 +158,6 @@ impl VaultParams {
     }
 }
 
-/// Cap untrusted upstream text before echoing it into an error message, so a
-/// large or sensitive Vault response body isn't returned verbatim to the MCP
-/// client or written to logs.
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn truncate_upstream_error(s: &str) -> String {
-    const MAX_CHARS: usize = 512;
-    let trimmed = s.trim();
-    if trimmed.chars().count() > MAX_CHARS {
-        let head: String = trimmed.chars().take(MAX_CHARS).collect();
-        format!("{head}… (truncated)")
-    } else {
-        trimmed.to_string()
-    }
-}
-
 /// Operator policy for which Vault servers tool calls may contact.
 ///
 /// `DCERT_MCP_VAULT_ADDR_ALLOWLIST` is a comma separated list of origins
@@ -320,27 +304,20 @@ pub(crate) async fn run_dcert_vault(
         full_args.push(arg.to_string());
     }
 
-    let mut cmd = Command::new(&config.dcert_binary);
-    let args_refs: Vec<&str> = full_args.iter().map(String::as_str).collect();
-    cmd.args(&args_refs);
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
-
-    // Set vault env vars on the subprocess
-    if let Some(ref addr) = vault_params.resolve_addr() {
-        cmd.env("VAULT_ADDR", addr);
+    // Vault settings travel as environment variables: the address so the
+    // subprocess needs no flag, the token so it never appears in argv.
+    let mut env: Vec<(&str, &str)> = Vec::with_capacity(extra_env.len() + 2);
+    let addr = vault_params.resolve_addr();
+    if let Some(ref addr) = addr {
+        env.push(("VAULT_ADDR", addr.as_str()));
     }
     if let Some(ref token) = resolved_token {
-        cmd.env("VAULT_TOKEN", token.as_str());
+        env.push(("VAULT_TOKEN", token.as_str()));
     }
-    for (k, v) in extra_env {
-        cmd.env(k, v);
-    }
+    env.extend_from_slice(extra_env);
 
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("Failed to run dcert at {}: {}", config.dcert_binary.display(), e))?;
-
+    let args_refs: Vec<&str> = full_args.iter().map(String::as_str).collect();
+    let mut child = spawn_dcert(config, &args_refs, &env)?;
     run_child_with_timeout(&mut child, config).await
 }
 

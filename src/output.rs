@@ -15,10 +15,12 @@ use crate::connect::ConnectOverrides;
 use crate::convert::{CertRole, ConvertResult, write_public_file};
 use crate::debug::debug_log;
 use crate::diagnose::Diagnosis;
+use crate::keyex::{self, EffectiveTlsSettings, KeyExchangeClass, PqProbeStatus};
 use crate::ocsp::check_ocsp_status;
 use crate::proxy::ProxyConfig;
 use crate::tls::{
-    StarttlsFetchOptions, TlsConnectionInfo, TlsFetchOptions, fetch_tls_chain_openssl, fetch_tls_chain_starttls,
+    ClientIdentity, PqProbeRequest, ProbeTransport, StarttlsFetchOptions, TlsConnectionInfo, TlsFetchOptions,
+    TlsProbeOptions, fetch_tls_chain_openssl, fetch_tls_chain_starttls, probe_post_quantum,
 };
 use crate::trust::{PublicRoots, RootTrustClass, RootTrustInfo, TrustOpts, assess_root_trust};
 
@@ -29,6 +31,41 @@ pub struct PrettyDebugInfo<'a> {
     pub conn: Option<&'a TlsConnectionInfo>,
     pub http_protocol: &'a HttpProtocol,
     pub cipher_notation: Option<CipherNotation>,
+}
+
+/// Key exchange group, its post quantum classification and the optional
+/// `--pq-probe` verdict.
+fn print_key_exchange(conn: &TlsConnectionInfo) {
+    match conn.tls_key_exchange_group.as_deref() {
+        Some(group) => {
+            let class = conn.key_exchange_class;
+            let label = match class {
+                KeyExchangeClass::HybridPq | KeyExchangeClass::PurePq => class.label().green(),
+                KeyExchangeClass::ObsoletePq => class.label().yellow(),
+                KeyExchangeClass::Classical | KeyExchangeClass::Unknown => class.label().normal(),
+            };
+            println!("  TLS key exchange: {group} ({label})");
+            if let Some(replacement) = keyex::obsolete_group_replacement(group) {
+                println!(
+                    "    {} pre standard draft group; the server should offer {replacement}",
+                    "Warning:".yellow().bold()
+                );
+            }
+        }
+        None => println!(
+            "  TLS key exchange: not reported by the linked {} (needs OpenSSL 3.2 or later)",
+            openssl::version::version()
+        ),
+    }
+    if let Some(ref pq) = conn.post_quantum_probe {
+        let status = match pq.status {
+            PqProbeStatus::Supported => "supported".green(),
+            PqProbeStatus::NotSupported => "not supported".red(),
+            PqProbeStatus::NotTestable => "not testable".yellow(),
+        };
+        println!("  Post quantum key exchange (RFC 10024 hybrids): {status}");
+        println!("    {}", crate::debug::redact_key_material(&pq.detail));
+    }
 }
 
 pub fn print_pretty(infos: &[CertInfo], debug: &PrettyDebugInfo<'_>) {
@@ -112,6 +149,7 @@ pub fn print_pretty(infos: &[CertInfo], debug: &PrettyDebugInfo<'_>) {
                 println!("  TLS ciphersuite agreed: {}", conn.tls_cipher);
             }
         }
+        print_key_exchange(conn);
         let ct_str = if leaf.ct_present { "true".green() } else { "false".red() };
         println!("  Certificate transparency: {ct_str}");
 
@@ -377,6 +415,21 @@ pub fn process_target(
         extensions: args.extensions || compliance_mode,
     };
 
+    let tls_settings = keyex::effective_tls_settings(
+        args.tls_profile,
+        args.min_tls,
+        args.cipher_list.as_deref(),
+        args.cipher_suites.as_deref(),
+        args.groups.as_deref(),
+    );
+    if let Some(profile) = args.tls_profile {
+        eprintln!(
+            "Note: --tls-profile {profile:?} offers groups {} (ML-KEM hybrids need OpenSSL 3.5+; linked: {})",
+            tls_settings.groups.as_deref().unwrap_or("default"),
+            openssl::version::version()
+        );
+    }
+
     let (pem_data, conn_info) = if target == "-" {
         let pem = stdin_pem
             .ok_or_else(|| anyhow::anyhow!("No PEM data received from stdin"))?
@@ -403,22 +456,26 @@ pub fn process_target(
             );
         }
 
-        let conn = fetch_tls_chain_starttls(&StarttlsFetchOptions {
+        let probe = probe_options(args, connect_overrides, &tls_settings);
+        let mut conn = fetch_tls_chain_starttls(&StarttlsFetchOptions {
+            probe,
             host,
             port,
             protocol,
-            no_verify: args.no_verify,
-            timeout_secs: args.timeout,
-            read_timeout_secs: args.read_timeout,
-            sni_override: args.sni.as_deref(),
-            connect_overrides,
-            min_tls: args.min_tls,
-            max_tls: args.max_tls,
-            cipher_list: args.cipher_list.as_deref(),
-            cipher_suites: args.cipher_suites.as_deref(),
-            debug: args.debug,
-            ca_cert_path: args.ca_cert.as_deref(),
         })?;
+        if args.pq_probe {
+            conn.post_quantum_probe = Some(probe_post_quantum(
+                &PqProbeRequest {
+                    host,
+                    port,
+                    transport: ProbeTransport::Starttls(protocol),
+                    proxy_config: None,
+                    identity: ClientIdentity::default(),
+                    alpn: None,
+                },
+                &probe,
+            ));
+        }
         let pem = conn.pem_data.clone();
         (pem, Some(conn))
     } else if target.starts_with("https://") {
@@ -430,30 +487,40 @@ pub fn process_target(
             );
         }
         let method_str = args.method.to_string();
-        let conn = fetch_tls_chain_openssl(&TlsFetchOptions {
+        let probe = probe_options(args, connect_overrides, &tls_settings);
+        let identity = ClientIdentity {
+            client_cert_path: args.client_cert.as_deref(),
+            client_key_path: args.client_key.as_deref(),
+            pkcs12_path: args.pkcs12.as_deref(),
+            cert_password: args.cert_password.as_deref(),
+        };
+        let mut conn = fetch_tls_chain_openssl(&TlsFetchOptions {
+            probe,
             endpoint: target,
             method: &method_str,
             headers: &args.header,
             body,
             http_protocol: args.http_protocol,
-            no_verify: args.no_verify,
-            timeout_secs: args.timeout,
-            read_timeout_secs: args.read_timeout,
-            sni_override: args.sni.as_deref(),
-            connect_overrides,
             proxy_config,
-            min_tls: args.min_tls,
-            max_tls: args.max_tls,
-            cipher_list: args.cipher_list.as_deref(),
-            cipher_suites: args.cipher_suites.as_deref(),
-            debug: args.debug,
-            client_cert_path: args.client_cert.as_deref(),
-            client_key_path: args.client_key.as_deref(),
-            pkcs12_path: args.pkcs12.as_deref(),
-            cert_password: args.cert_password.as_deref(),
-            ca_cert_path: args.ca_cert.as_deref(),
+            identity,
             body_limit: args.body_limit,
         })?;
+        if args.pq_probe
+            && let Ok(url) = Url::parse(target)
+            && let Some(host) = url.host_str()
+        {
+            conn.post_quantum_probe = Some(probe_post_quantum(
+                &PqProbeRequest {
+                    host,
+                    port: url.port().unwrap_or(443),
+                    transport: ProbeTransport::Tls,
+                    proxy_config: Some(proxy_config),
+                    identity,
+                    alpn: Some(args.http_protocol),
+                },
+                &probe,
+            ));
+        }
         let pem = conn.pem_data.clone();
         (pem, Some(conn))
     } else {
@@ -463,23 +530,25 @@ pub fn process_target(
 
     let mut infos = parse_cert_infos_from_pem(&pem_data, &opts).with_context(|| "Failed to parse PEM certificates")?;
 
+    // The chain as DER, in presentation order (leaf first), parsed once and
+    // shared by revocation checking and root trust classification.
+    let chain_ders: Vec<Vec<u8>> = pem::parse_many(&pem_data)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|b| b.tag() == "CERTIFICATE")
+        .map(|b| b.contents().to_vec())
+        .collect();
+
     // OCSP revocation checking
     if args.check_revocation {
-        let blocks = pem::parse_many(&pem_data).unwrap_or_default();
-        let cert_ders: Vec<&[u8]> = blocks
-            .iter()
-            .filter(|b| b.tag() == "CERTIFICATE")
-            .map(pem::Pem::contents)
-            .collect();
-
         // Pair each info with its DER by the original chain index, not by
         // position: `--expired-only` drops entries from `infos`.
         for info in infos.iter_mut() {
-            if let Some(der) = cert_ders.get(info.index)
+            if let Some(der) = chain_ders.get(info.index)
                 && let Ok((_, cert)) = X509Certificate::from_der(der)
             {
                 if let Some(ocsp_url) = extract_ocsp_url(&cert) {
-                    let issuer_der = cert_ders.get(info.index + 1).copied();
+                    let issuer_der = chain_ders.get(info.index + 1).map(Vec::as_slice);
                     info.revocation_status = Some(check_ocsp_status(der, issuer_der, &ocsp_url, args.debug));
                 } else {
                     info.revocation_status = Some("unknown (no OCSP responder)".to_string());
@@ -495,13 +564,6 @@ pub fn process_target(
     let root_trust = if args.no_trust_check {
         None
     } else {
-        let chain_ders: Vec<Vec<u8>> = pem::parse_many(&pem_data)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|b| b.tag() == "CERTIFICATE")
-            .map(|b| b.contents().to_vec())
-            .collect();
-
         // Per-cert: flag any presented cert that is itself a public root.
         for info in infos.iter_mut() {
             if let Some(der) = chain_ders.get(info.index)
@@ -713,6 +775,29 @@ pub fn print_findings(findings: &[compliance::Finding], indent: &str) {
             Severity::Info => "INFO ".cyan(),
         };
         println!("{indent}{badge} [{}] {}", finding.category, finding.message);
+    }
+}
+
+/// Shared TLS probe settings for a target, from the check arguments and the
+/// profile resolved settings.
+fn probe_options<'a>(
+    args: &'a CheckArgs,
+    connect_overrides: &'a ConnectOverrides,
+    tls: &'a EffectiveTlsSettings,
+) -> TlsProbeOptions<'a> {
+    TlsProbeOptions {
+        no_verify: args.no_verify,
+        timeout_secs: args.timeout,
+        read_timeout_secs: args.read_timeout,
+        sni_override: args.sni.as_deref(),
+        connect_overrides,
+        min_tls: tls.min_tls,
+        max_tls: args.max_tls,
+        cipher_list: tls.cipher_list.as_deref(),
+        cipher_suites: tls.cipher_suites.as_deref(),
+        groups: tls.groups.as_deref(),
+        ca_cert_path: args.ca_cert.as_deref(),
+        debug: args.debug,
     }
 }
 

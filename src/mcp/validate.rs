@@ -1,5 +1,36 @@
 //! Input validation for tool parameters: everything that reaches the dcert
 //! subprocess argv or the file system passes through here first.
+//!
+//! The checks here are synchronous and run inside async tool handlers. That
+//! is a deliberate choice: the only file system work is [`validate_path`],
+//! which performs a bounded handful of `lstat`/`readlink`/`realpath` calls
+//! (at most [`MAX_SYMLINK_DEPTH`] links plus the path's depth) on local
+//! paths. Moving each of them to `spawn_blocking` would cost a thread
+//! hand-off per parameter for microseconds of work and would force the
+//! parameter structs' `validate` methods to become async as well. Should a
+//! deployment ever validate paths on a slow network file system, wrapping the
+//! call sites is the place to revisit.
+
+/// Reject a value that the dcert subprocess would parse as a flag or that
+/// cannot be passed as an argument at all.
+///
+/// Every argv bound parameter shares these three rules: it must not be empty
+/// (whitespace only counts as empty), must not start with `-` and must not
+/// contain a NUL byte. The specific validators layer their own rules on top.
+pub(crate) fn reject_flag_like(value: &str, param_name: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        return Err(format!("{param_name} must not be empty"));
+    }
+    if value.starts_with('-') {
+        return Err(format!(
+            "Invalid {param_name}: '{value}' must not start with '-' (looks like a CLI flag)"
+        ));
+    }
+    if value.contains('\0') {
+        return Err(format!("{param_name} must not contain null bytes"));
+    }
+    Ok(())
+}
 
 /// Validate a target string to prevent argument injection.
 ///
@@ -10,16 +41,7 @@ pub(crate) fn validate_target(target: &str) -> Result<(), String> {
     if target.is_empty() {
         return Err("Target must not be empty".to_string());
     }
-    if target.starts_with('-') {
-        return Err(format!(
-            "Invalid target '{target}': targets must not start with '-' (looks like a CLI flag)"
-        ));
-    }
-    // Reject targets with embedded null bytes
-    if target.contains('\0') {
-        return Err("Target must not contain null bytes".to_string());
-    }
-    Ok(())
+    reject_flag_like(target, "target")
 }
 
 /// Root directory tool file parameters must stay inside. Defaults to the
@@ -108,12 +130,7 @@ pub(crate) fn validate_path(path: &str, param_name: &str) -> Result<(), String> 
     if path.is_empty() {
         return Err(format!("{param_name} must not be empty"));
     }
-    if path.starts_with('-') {
-        return Err(format!("Invalid {param_name}: '{path}' must not start with '-'"));
-    }
-    if path.contains('\0') {
-        return Err(format!("{param_name} must not contain null bytes"));
-    }
+    reject_flag_like(path, param_name)?;
     let p = std::path::Path::new(path);
     if p.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
         return Err(format!("{param_name} must not contain '..' path traversal sequences"));
@@ -158,12 +175,7 @@ pub(crate) fn validate_path(path: &str, param_name: &str) -> Result<(), String> 
 /// Rejects flag lookalikes, control characters and absurd lengths.
 pub(crate) fn validate_arg(value: &str, param_name: &str) -> Result<(), String> {
     const MAX_LEN: usize = 1024;
-    if value.trim().is_empty() {
-        return Err(format!("{param_name} must not be empty"));
-    }
-    if value.starts_with('-') {
-        return Err(format!("Invalid {param_name}: '{value}' must not start with '-'"));
-    }
+    reject_flag_like(value, param_name)?;
     if value.chars().any(char::is_control) {
         return Err(format!("{param_name} must not contain control characters"));
     }
@@ -226,11 +238,20 @@ pub(crate) fn validate_key_algorithm(algo: &str) -> Result<(), String> {
     }
 }
 
-/// Validate that a TLS version string is one of the accepted values.
-pub(crate) fn validate_tls_version(version: &str) -> Result<(), String> {
-    match version {
-        "1.2" | "1.3" => Ok(()),
-        _ => Err(format!("Invalid TLS version '{version}': must be \"1.2\" or \"1.3\"")),
+/// Parse a TLS version parameter into the CLI's own enum, so the MCP layer
+/// accepts exactly the versions the CLI does and can compare them with `Ord`.
+pub(crate) fn validate_tls_version(version: &str) -> Result<dcert::cli::TlsVersionArg, String> {
+    use clap::ValueEnum;
+    dcert::cli::TlsVersionArg::from_str(version, true)
+        .map_err(|_| format!("Invalid TLS version '{version}': must be \"1.2\" or \"1.3\""))
+}
+
+/// Validate a Vault KV engine version parameter: only 1 and 2 exist.
+pub(crate) fn validate_kv_version(kv_version: u8) -> Result<(), String> {
+    if (1..=2).contains(&kv_version) {
+        Ok(())
+    } else {
+        Err(format!("kv_version must be 1 or 2, got {kv_version}"))
     }
 }
 

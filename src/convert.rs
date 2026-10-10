@@ -210,7 +210,10 @@ pub fn pem_to_pfx(
     ca_path: Option<&str>,
 ) -> Result<ConvertResult> {
     let cert_pem = fs::read(cert_path).with_context(|| format!("Failed to read certificate file: {cert_path}"))?;
-    let key_pem = fs::read(key_path).with_context(|| format!("Failed to read private key file: {key_path}"))?;
+    // Zeroizing: the PEM bytes hold the private key and are wiped on drop.
+    let key_pem = fs::read(key_path)
+        .map(zeroize::Zeroizing::new)
+        .with_context(|| format!("Failed to read private key file: {key_path}"))?;
 
     let cert = X509::from_pem(&cert_pem).with_context(|| format!("Failed to parse PEM certificate: {cert_path}"))?;
     let pkey =
@@ -265,7 +268,10 @@ pub fn create_keystore(
     alias: &str,
 ) -> Result<ConvertResult> {
     let cert_pem = fs::read(cert_path).with_context(|| format!("Failed to read certificate file: {cert_path}"))?;
-    let key_pem = fs::read(key_path).with_context(|| format!("Failed to read private key file: {key_path}"))?;
+    // Zeroizing: the PEM bytes hold the private key and are wiped on drop.
+    let key_pem = fs::read(key_path)
+        .map(zeroize::Zeroizing::new)
+        .with_context(|| format!("Failed to read private key file: {key_path}"))?;
 
     let certs =
         X509::stack_from_pem(&cert_pem).with_context(|| format!("Failed to parse PEM certificates: {cert_path}"))?;

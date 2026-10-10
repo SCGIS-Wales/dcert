@@ -64,7 +64,7 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-Leaving out `session` uses a shared default session that is created on first use and reused afterwards; `close_default_session()` shuts it down.
+Leaving out `session` uses a shared default session that is created on first use and reused afterwards; `close_default_session()` shuts it down. The shared session belongs to the event loop that created it: a later `asyncio.run()` gets a fresh one, and calling `close_default_session()` before a loop ends releases the subprocess cleanly.
 
 | Function | Description |
 |----------|-------------|
@@ -93,7 +93,7 @@ from dcert import (
 )
 ```
 
-Only transport failures are retried, with exponential backoff and full jitter. `TypeError` and `ValueError` surface immediately and cancellation is never swallowed.
+Only transport failures are retried, with exponential backoff and full jitter, and only for tools whose MCP annotations mark them read-only or idempotent (the typed client reads the backend's tool list once per session to decide). `TypeError` and `ValueError` surface immediately and cancellation is never swallowed. A call that times out closes the subprocess (it is reconnected on the next call) and counts against the circuit breaker; concurrent calls that fail together share one reconnect and count as one failure.
 
 ### Command line
 
@@ -106,13 +106,13 @@ dcert-python --rate-limit 20 --bulkhead-max 4  # resilience flags
 dcert-python --help                            # every option
 ```
 
-`dcert` and `dcert-mcp` are thin wrappers that exec the Rust binaries with all arguments.
+`dcert` and `dcert-mcp` are thin wrappers that exec the Rust binaries with all arguments. A wrapper refuses to run when the only `dcert-mcp` it can find is itself (for example the pip console script on `PATH`), instead of exec-ing in a loop.
 
 ## Configuration
 
-Defaults live in the packaged `dcert/config.yaml`: the release URL, download limits, the platform table, the environment variables forwarded to the subprocess, the server bind address and every resilience value. `dcert.load_config()` returns them as an immutable record.
+Defaults live in the packaged `dcert/config.yaml`: the release URL, download limits, the install directory, the platform table, the environment variables forwarded to the subprocess, the server bind address, the transports and exporters offered by `dcert-python`, and every resilience value. `dcert.load_config()` returns them as an immutable record.
 
-Resilience values can be overridden with `DCERT_MCP_*` environment variables (listed in `dcert/resilience.py`) and the `dcert-python` flags override those.
+Resilience values can be overridden with `DCERT_MCP_*` environment variables (listed in `dcert/resilience.py`) and the `dcert-python` flags override those. A value outside its valid range (for example `DCERT_MCP_CB_THRESHOLD=0` or `DCERT_MCP_BULKHEAD_MAX=0`) is rejected with a message naming the variable rather than crashing or hanging later. `DCERT_MCP_NO_RETRY` disables retries in both the proxy and the typed client, and `DCERT_MCP_CONNECT_TIMEOUT` bounds how long starting the subprocess and reading its tool list may take.
 
 The proxy reads each tool's MCP annotations before applying caching or retries:
 
@@ -121,10 +121,12 @@ The proxy reads each tool's MCP annotations before applying caching or retries:
 
 ## Binary discovery
 
-1. `DCERT_MCP_BINARY` (or `DCERT_PATH` for the `dcert` CLI)
+1. `DCERT_MCP_BINARY` (or `DCERT_PATH` for the `dcert` CLI); a relative path is resolved against the working directory, never through `PATH`
 2. The bundled binary in the package `bin/` directory
-3. A compiled `dcert-mcp` on `PATH` (pip console script wrappers are skipped)
-4. Download from GitHub Releases: https only, redirects restricted to GitHub hosts, size capped, SHA256 verified before extraction, installed atomically under a lock
+3. A compiled `dcert-mcp` on `PATH` (pip console script wrappers and the running launcher are skipped)
+4. Download from GitHub Releases: https only, redirects restricted to GitHub hosts, size and time capped, SHA256 verified before extraction, installed atomically under a lock
+
+Downloaded binaries are installed into a directory owned by dcert, never into pip's scripts directory, so a download can never replace a console script: `~/.local/share/dcert/bin` on Linux and macOS, `%LOCALAPPDATA%\dcert\bin` on Windows. Set `DCERT_INSTALL_DIR` to use another directory. `dcert-python --setup` downloads the binary ahead of time and prints where it was installed.
 
 ## Environment variables forwarded to the binary
 

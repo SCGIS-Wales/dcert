@@ -1,10 +1,13 @@
 # Lightweight Docker image that copies pre-built binaries from CI.
 # No Rust compilation — the build-linux job already produces the binaries.
 # Uses debian-slim (glibc) since binaries are built with x86_64-unknown-linux-gnu.
+# trixie ships OpenSSL 3.5 LTS, so the image negotiates the RFC 10024 hybrid
+# post quantum groups (X25519MLKEM768) out of the box; bookworm (OpenSSL 3.0)
+# left public support on 2026-09-07.
 
 # Pinned by digest so rebuilding a given commit yields the same base layer.
 # Dependabot's docker ecosystem opens a pull request when the tag moves on.
-FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
+FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \

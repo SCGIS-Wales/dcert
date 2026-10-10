@@ -5,9 +5,10 @@ The search order for :func:`find_binary` is:
 1. An explicit path from the environment (``DCERT_MCP_BINARY`` for
    ``dcert-mcp``, ``DCERT_PATH`` for ``dcert``; see ``config.yaml``).
 2. A binary bundled in the package ``bin/`` directory (``.exe`` on Windows).
-3. A compiled binary on ``PATH``, skipping pip console-script wrappers so the
+3. A compiled binary on ``PATH``, skipping console script wrappers so the
    universal wheel can never exec itself in a loop.
-4. An automatic download from GitHub Releases with checksum verification.
+4. An automatic download from GitHub Releases with checksum verification,
+   installed into a directory owned by dcert rather than by pip.
 """
 
 from __future__ import annotations
@@ -17,6 +18,9 @@ import os
 import shutil
 import stat
 import sys
+import tarfile
+import zipfile
+from collections.abc import Callable
 from pathlib import Path
 
 from dcert.config import load_config
@@ -25,20 +29,45 @@ logger = logging.getLogger(__name__)
 
 _EXECUTABLE_BITS = stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
 
+#: Receives progress messages meant for a person, such as "Downloading ...".
+Notify = Callable[[str], None]
+
 
 def is_python_script(path: str) -> bool:
     """Return ``True`` when *path* is a Python console-script wrapper.
 
-    Reads the first 128 bytes; a file starting with ``#!`` whose first line
-    mentions ``python`` is a pip generated wrapper, not a compiled binary.
+    Reads the configured number of leading bytes; a file starting with
+    ``#!`` whose first line mentions ``python`` is a pip generated wrapper,
+    not a compiled binary.
     """
     try:
         with open(path, "rb") as handle:
-            head = handle.read(128)
+            head = handle.read(load_config().binaries.wrapper_probe_bytes)
     except OSError:
         return False
     first_line = head.split(b"\n", 1)[0].lower()
     return head[:2] == b"#!" and b"python" in first_line
+
+
+def is_running_script(path: str) -> bool:
+    """Return ``True`` when *path* is the script the interpreter is running.
+
+    On Windows pip installs a native ``.exe`` launcher that runs Python on
+    itself, so ``sys.argv[0]`` is that launcher; comparing by file identity
+    catches it where :func:`is_python_script` cannot.
+    """
+    argv0 = sys.argv[0] if sys.argv else ""
+    if not argv0:
+        return False
+    try:
+        return os.path.samefile(path, argv0)
+    except (OSError, ValueError):
+        return False
+
+
+def is_wrapper(path: str) -> bool:
+    """Return ``True`` when *path* is a console script wrapper rather than a binary."""
+    return is_python_script(path) or is_running_script(path)
 
 
 def ensure_executable(path: Path) -> bool:
@@ -74,12 +103,15 @@ def find_bundled_binary(name: str) -> str | None:
 
 
 def _explicit_binary(name: str) -> str | None:
-    """Return the binary named by its environment variable, if any is set."""
-    variable = load_config().binaries.get(name)
+    """Return the binary named by its environment variable, if any is set.
+
+    The value is made absolute so it can never be resolved through ``PATH``.
+    """
+    variable = load_config().binaries.env.get(name)
     value = os.environ.get(variable, "") if variable else ""
     if not value:
         return None
-    candidate = Path(value)
+    candidate = Path(value).expanduser().resolve()
     if candidate.is_file() and os.access(candidate, os.X_OK):
         logger.debug("Using %s from %s: %s", name, variable, candidate)
         return str(candidate)
@@ -87,28 +119,28 @@ def _explicit_binary(name: str) -> str | None:
 
 
 def _path_binary(name: str) -> str | None:
-    """Return a compiled *name* on ``PATH``, skipping Python wrappers."""
+    """Return a compiled *name* on ``PATH``, skipping console script wrappers."""
     found = shutil.which(name)
-    if found and not is_python_script(found):
+    if found and not is_wrapper(found):
         return found
     return None
 
 
-def _downloaded_binary(name: str) -> str | None:
+def _downloaded_binary(name: str, notify: Notify | None = None) -> str | None:
     """Download the release archive and return the installed *name*.
 
     Raises:
-        RuntimeError: When the download fails integrity verification; this is
-            a tamper indicator and is never masked.
+        IntegrityError: When the download fails a supply chain check; this
+            is a tamper indicator and is never masked.
     """
     from dcert import __version__
-    from dcert.download import ensure_binary, get_install_dir
+    from dcert.download import IntegrityError, ensure_binary, get_install_dir
 
     try:
-        installed = ensure_binary(__version__)
-    except RuntimeError as exc:
-        raise RuntimeError(f"{name} download failed integrity verification: {exc}") from exc
-    except OSError as exc:
+        installed = ensure_binary(__version__, notify=notify)
+    except IntegrityError as exc:
+        raise IntegrityError(f"{name} download failed integrity verification: {exc}") from exc
+    except (OSError, tarfile.TarError, zipfile.BadZipFile) as exc:
         logger.warning("Automatic download of %s failed: %s", name, exc)
         return None
     if installed is None:
@@ -119,19 +151,28 @@ def _downloaded_binary(name: str) -> str | None:
     return None
 
 
-def find_binary(name: str) -> str:
+def find_binary(name: str, notify: Notify | None = None) -> str:
     """Return the absolute path to the Rust binary *name*.
+
+    Args:
+        name: ``dcert`` or ``dcert-mcp``.
+        notify: Receives progress messages when a download is needed.
 
     Raises:
         FileNotFoundError: If no usable binary can be located.
-        RuntimeError: If a downloaded archive fails checksum verification.
+        RuntimeError: If a downloaded archive fails verification or is malformed.
     """
-    for locate in (_explicit_binary, find_bundled_binary, _path_binary, _downloaded_binary):
+    for locate in (_explicit_binary, find_bundled_binary, _path_binary):
         found = locate(name)
         if found:
             logger.debug("Resolved %s to %s", name, found)
             return found
-    variable = load_config().binaries.get(name, "DCERT_MCP_BINARY")
+    downloaded = _downloaded_binary(name, notify)
+    if downloaded:
+        logger.debug("Resolved %s to %s", name, downloaded)
+        return downloaded
+    binaries = load_config().binaries
+    variable = binaries.env.get(name, binaries.fallback_env)
     raise FileNotFoundError(
         f"{name} binary not found. Either:\n"
         f"  1. Set {variable}=/path/to/{name}\n"

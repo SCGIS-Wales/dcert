@@ -4,6 +4,11 @@ use openssl::ssl::SslVersion;
 use crate::connect::{ConnectOverride, parse_connect_to, parse_resolve};
 pub use crate::secret::Secret;
 
+/// Validate an OpenSSL group list before it reaches libssl.
+fn parse_groups(value: &str) -> Result<String, String> {
+    crate::keyex::validate_groups_list(value).map(|()| value.trim().to_string())
+}
+
 /// Return the version string for `--version` output.
 ///
 /// Uses CARGO_PKG_VERSION from Cargo.toml, which is set to the correct
@@ -111,7 +116,7 @@ pub enum HttpProtocol {
     Http2,
 }
 
-#[derive(ValueEnum, Clone, Copy, Debug)]
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TlsVersionArg {
     #[value(name = "1.2")]
     Tls1_2,
@@ -182,7 +187,14 @@ pub const DCERT_DESCRIPTION: &str =
 pub fn dcert_long_version() -> &'static str {
     use std::sync::OnceLock;
     static LONG_VER: OnceLock<String> = OnceLock::new();
-    let s = LONG_VER.get_or_init(|| format!("{}\n{}", dcert_version(), DCERT_DESCRIPTION));
+    let s = LONG_VER.get_or_init(|| {
+        format!(
+            "{}\n{}\n{}",
+            dcert_version(),
+            DCERT_DESCRIPTION,
+            crate::keyex::openssl_summary()
+        )
+    });
     s.as_str()
 }
 
@@ -423,6 +435,26 @@ pub struct CheckArgs {
     /// Controls TLS 1.3 ciphers only. Uses colon-separated IANA cipher names.
     #[arg(long, value_name = "CIPHERSUITES")]
     pub cipher_suites: Option<String>,
+
+    /// Key exchange groups to offer, as an OpenSSL group list
+    /// (e.g. "X25519MLKEM768:X25519:secp384r1"). Post quantum hybrids
+    /// (RFC 10024) need OpenSSL 3.5 or later; the default keeps the linked
+    /// library's own list, which on 3.5+ already offers X25519MLKEM768.
+    #[arg(long, value_name = "GROUPS", value_parser = parse_groups)]
+    pub groups: Option<String>,
+
+    /// Apply a named TLS client profile (Mozilla configurator v6): `modern`
+    /// is TLS 1.3 only, `intermediate` adds forward secret AEAD TLS 1.2
+    /// suites. Both put X25519MLKEM768 first when OpenSSL supports it.
+    /// Explicit --min-tls, --cipher-list, --cipher-suites and --groups win.
+    #[arg(long, value_enum, value_name = "PROFILE")]
+    pub tls_profile: Option<crate::keyex::TlsProfile>,
+
+    /// Run a second handshake offering only the RFC 10024 hybrid post quantum
+    /// groups and report whether the server supports post quantum key
+    /// agreement (requires OpenSSL 3.5 or later; reported as not testable otherwise).
+    #[arg(long)]
+    pub pq_probe: bool,
 
     /// Disable TLS certificate verification (insecure)
     #[arg(long)]
@@ -943,7 +975,7 @@ pub struct VaultIssueArgs {
     pub store_path: Option<String>,
 
     /// Vault KV version (1 or 2) for --store-path
-    #[arg(long, default_value_t = 1)]
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=2))]
     pub kv_version: u8,
 }
 
@@ -994,7 +1026,7 @@ pub struct VaultSignArgs {
     pub store_path: Option<String>,
 
     /// Vault KV version (1 or 2) for --store-path
-    #[arg(long, default_value_t = 1)]
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=2))]
     pub kv_version: u8,
 }
 
@@ -1062,7 +1094,7 @@ pub struct VaultStoreArgs {
     pub key_key: String,
 
     /// Vault KV version (1 or 2). KV v1 uses flat paths; v2 uses /data/ prefix.
-    #[arg(long, default_value_t = 1)]
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=2))]
     pub kv_version: u8,
 }
 
@@ -1080,7 +1112,7 @@ pub struct VaultValidateArgs {
     pub key_key: String,
 
     /// Vault KV version (1 or 2)
-    #[arg(long, default_value_t = 1)]
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=2))]
     pub kv_version: u8,
 
     /// Output format
@@ -1114,7 +1146,7 @@ pub struct VaultRenewArgs {
     pub key_key: String,
 
     /// Vault KV version (1 or 2)
-    #[arg(long, default_value_t = 1)]
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=2))]
     pub kv_version: u8,
 
     /// Additional Subject Alternative Names (override existing SANs if provided)

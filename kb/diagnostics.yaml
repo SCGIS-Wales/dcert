@@ -328,6 +328,180 @@ entries:
       - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/http-502-bad-gateway.html
 
   # ---------------------------------------------------------------------
+  # Retired or expired intermediates and distrusted roots (2025 to 2026)
+  # ---------------------------------------------------------------------
+  - id: tls.handshake.letsencrypt-expired-intermediate
+    title: Chain carries an expired Let's Encrypt intermediate (R3, R4, E1 or E2)
+    layer: tls_handshake
+    category: tls
+    weight: 0.9
+    signals:
+      - type: chain_name
+        pattern: '(?i)O=Let''s Encrypt'
+        required: true
+      - type: chain_name
+        pattern: 'CN=(R3|R4|E1|E2)(,|$)'
+        required: true
+      - type: verify_result
+        pattern: '(?i)expired|unable to get (local )?issuer|unable to verify|certificate verify failed'
+        weight: 2
+      - type: error
+        pattern: '(?i)expired|unable to get (local )?issuer|certificate verify failed'
+        weight: 2
+    root_cause: >
+      The server sends one of Let's Encrypt's first generation intermediates,
+      R3, R4, E1 or E2, which all expired on 2025-09-15. Issuance moved to
+      R10 to R14 and E5 to E9 in 2024 and, since 2026-05-13, to the
+      Generation Y hierarchy (YR1, YR2, YE1, YE2). A chain that still
+      contains R3, R4, E1 or E2 was either never renewed or the renewed
+      leaf is deployed next to a stale intermediate file, so path building
+      stops at an expired certificate.
+    remediation:
+      - Renew the certificate; any ACME client issued after 2024 receives the current intermediate in the chain it downloads.
+      - Deploy the fullchain.pem (or equivalent) the ACME client produced instead of a hand copied intermediate.
+      - Remove pinned or cached copies of R3, R4, E1 and E2 from load balancers, CDNs and truststores.
+    references:
+      - https://letsencrypt.org/certificates/
+      - https://letsencrypt.org/2025/11/24/gen-y-hierarchy
+
+  - id: tls.handshake.letsencrypt-retired-intermediate
+    title: Chain fails through a retired Let's Encrypt intermediate (R10 to R14, E5 to E9)
+    layer: tls_handshake
+    category: tls
+    weight: 0.8
+    signals:
+      - type: chain_name
+        pattern: '(?i)O=Let''s Encrypt'
+        required: true
+      - type: chain_name
+        pattern: 'CN=(R1[0-4]|E[5-9])(,|$)'
+        required: true
+      - type: verify_result
+        pattern: '(?i)expired|unable to get (local )?issuer|unable to verify|certificate verify failed|signature'
+        weight: 2
+      - type: error
+        pattern: '(?i)expired|unable to get (local )?issuer|certificate verify failed'
+        weight: 2
+    root_cause: >
+      The chain goes through one of Let's Encrypt's second generation
+      intermediates, R10 to R14 or E5 to E9. They remain valid until
+      2027-03-12 but no longer issue subscriber certificates; new
+      certificates have been signed by the Generation Y intermediates YR1,
+      YR2, YE1 and YE2 since 2026-05-13. A verification failure here
+      usually means the leaf was renewed under a Y intermediate while the
+      server still ships the old R or E intermediate, so the issuer of the
+      leaf is not in the presented chain and the chain cannot be built.
+    remediation:
+      - Serve the chain file the ACME client produced for the current leaf (fullchain.pem) rather than a stored copy of an earlier intermediate.
+      - Clear intermediate caches or pinned chains on load balancers and CDNs that were captured before 2026-05-13.
+      - Re-run with --resolve-issuers to fetch the leaf's real issuer via AIA and confirm which hierarchy it belongs to.
+    references:
+      - https://letsencrypt.org/certificates/
+      - https://letsencrypt.org/2025/11/24/gen-y-hierarchy
+
+  - id: tls.handshake.distrusted-root-entrust
+    title: Chain anchors on a distrusted Entrust root
+    layer: tls_handshake
+    category: tls
+    weight: 0.9
+    signals:
+      - type: chain_name
+        pattern: '(?i)CN=Entrust Root Certification Authority( - (G2|EC1))?(,|$)'
+        required: true
+        weight: 2
+      - type: root_class
+        is: publicly_trusted
+        negate: true
+        required: true
+        weight: 2
+      - type: verify_result
+        pattern: '(?i)unable to get (local )?issuer|self.signed|unable to verify|certificate verify failed|untrusted'
+      - type: error
+        pattern: '(?i)unable to get (local )?issuer|self.signed|certificate verify failed|unknown ca'
+    root_cause: >
+      The chain anchors on Entrust Root Certification Authority, G2 or EC1.
+      Chrome stopped trusting TLS certificates issued under these roots
+      after 2024-11-11 (enforced from Chrome 131, November 2024) and Mozilla
+      removed the websites trust bit on 2026-04-15, so the embedded public
+      root set dcert classifies against no longer contains them and the
+      chain is reported as private or incomplete. Browsers show an
+      interstitial for this site.
+    remediation:
+      - Reissue the certificate from a CA whose roots are still in the Chrome and Mozilla root programs; Entrust now issues publicly trusted TLS certificates through SSL.com roots.
+      - Replace the Entrust root in any pinned chain, truststore or CDN configuration with the new CA's chain.
+      - If this is an internal service that deliberately keeps the Entrust root, distribute that root to clients explicitly; it will not be trusted by default anywhere.
+    references:
+      - https://security.googleblog.com/2024/06/sustaining-digital-certificate-security.html
+      - https://wiki.mozilla.org/CA/Root_CA_Lifecycles
+      - https://groups.google.com/a/mozilla.org/g/dev-security-policy/c/jCvkhBjg9Yw
+      - https://googlechrome.github.io/chromerootprogram/
+
+  - id: tls.handshake.distrusted-root-digicert-g1
+    title: Chain anchors on a removed DigiCert G1 root
+    layer: tls_handshake
+    category: tls
+    weight: 0.9
+    signals:
+      - type: chain_name
+        pattern: '(?i)CN=DigiCert (Global Root CA|High Assurance EV Root CA|Assured ID Root CA)(,|$)'
+        required: true
+        weight: 2
+      - type: root_class
+        is: publicly_trusted
+        negate: true
+        required: true
+        weight: 2
+      - type: verify_result
+        pattern: '(?i)unable to get (local )?issuer|self.signed|unable to verify|certificate verify failed|untrusted'
+      - type: error
+        pattern: '(?i)unable to get (local )?issuer|self.signed|certificate verify failed|unknown ca'
+    root_cause: >
+      The chain anchors on a first generation DigiCert root (DigiCert Global
+      Root CA, DigiCert High Assurance EV Root CA or DigiCert Assured ID
+      Root CA). Chrome and Mozilla removed these G1 roots on 2026-04-15 as
+      part of the root programs' lifecycle limits, so the embedded public
+      root set no longer contains them and the chain is reported as private
+      or incomplete. DigiCert moved default issuance to its G2 hierarchies
+      in 2023 and to the G5 roots (DigiCert TLS RSA4096 Root G5 and DigiCert
+      TLS ECC P384 Root G5) from 2026-10-15; certificates still chaining to
+      G1 come from a legacy or pinned chain.
+    remediation:
+      - Reissue the certificate from DigiCert's current hierarchy (G5 by default from 2026-10-15) and install the chain DigiCert supplies with it.
+      - Remove the G1 root and its cross signed intermediates from pinned chains, truststores and CDN or load balancer configurations.
+      - Check client truststores (Java cacerts, embedded devices) contain the G2 and G5 roots before switching.
+    references:
+      - https://knowledge.digicert.com/alerts/digicert-root-strategy-aligning-with-industry-standards
+      - https://wiki.mozilla.org/CA/Root_CA_Lifecycles
+      - https://googlechrome.github.io/chromerootprogram/
+
+  - id: tls.handshake.chrome-distrusted-root-chunghwa-netlock
+    title: Chain anchors on a root Chrome distrusts for new certificates (Chunghwa Telecom, NetLock)
+    layer: tls_handshake
+    category: tls
+    weight: 0.7
+    signals:
+      - type: chain_name
+        pattern: '(?i)Chunghwa Telecom|HiPKI Root CA|ePKI Root Certification Authority|NetLock'
+        required: true
+        weight: 2
+      - type: public_hostname
+    root_cause: >
+      The chain anchors on a Chunghwa Telecom (HiPKI, ePKI) or NetLock
+      root. Chrome stopped trusting TLS certificates from these CAs whose
+      earliest SCT is after 2025-07-31 (Chrome 139 onwards). The roots are
+      still in the Mozilla root store, so dcert's embedded root set still
+      recognises them and reports the chain as publicly trusted, but Chrome
+      users on Windows, macOS, ChromeOS, Android and Linux see a full page
+      interstitial when the certificate was issued after that date.
+    remediation:
+      - Check the leaf's notBefore; a certificate issued after 2025-07-31 under these roots must be replaced for Chrome users.
+      - Reissue from a CA that is in the Chrome Root Store and keep it there for renewals.
+      - Enterprises that must keep these roots can trust them explicitly on managed devices, which restores trust in Chrome only there.
+    references:
+      - https://security.googleblog.com/2025/05/sustaining-digital-certificate-security-chrome-root-store-changes.html
+      - https://googlechrome.github.io/chromerootprogram/
+
+  # ---------------------------------------------------------------------
   # Viewer mTLS
   # ---------------------------------------------------------------------
   - id: mtls.viewer.certificate-required

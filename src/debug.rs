@@ -44,6 +44,36 @@ pub fn sanitize_url(url_str: &str) -> String {
     }
 }
 
+/// Remove PEM private key blocks from free text before it is displayed, so
+/// an error message that quotes a key file (or a stream that echoed one)
+/// never puts key material on a terminal or in a log. Returns a new string;
+/// text without such a block is copied unchanged.
+pub fn redact_key_material(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut inside = false;
+    for (i, line) in text.split('\n').enumerate() {
+        let trimmed = line.trim();
+        let begins = trimmed.starts_with("-----BEGIN") && trimmed.contains("PRIVATE KEY");
+        let ends = trimmed.starts_with("-----END") && trimmed.contains("PRIVATE KEY");
+        if i > 0 && !inside {
+            out.push('\n');
+        }
+        if begins {
+            inside = true;
+            out.push_str("[private key redacted]");
+            continue;
+        }
+        if inside {
+            if ends {
+                inside = false;
+            }
+            continue;
+        }
+        out.push_str(line);
+    }
+    out
+}
+
 /// Print a debug section header to stderr.
 pub fn dbg_section(enabled: bool, section: &str) {
     if enabled {
@@ -136,5 +166,17 @@ mod tests {
     fn test_sanitize_url_invalid() {
         let result = sanitize_url("not-a-url");
         assert_eq!(result, "not-a-url");
+    }
+
+    #[test]
+    fn redact_key_material_strips_private_key_blocks() {
+        let text = "handshake failed\n-----BEGIN RSA PRIVATE KEY-----\nMIIE\n-----END RSA PRIVATE KEY-----\nafter";
+        let redacted = redact_key_material(text);
+        assert!(!redacted.contains("MIIE"), "{redacted}");
+        assert!(redacted.contains("[private key redacted]"));
+        assert!(redacted.contains("after"));
+        assert_eq!(redact_key_material("plain text"), "plain text");
+        let cert_only = "-----BEGIN CERTIFICATE-----\nAAA\n-----END CERTIFICATE-----";
+        assert_eq!(redact_key_material(cert_only), cert_only);
     }
 }

@@ -9,6 +9,7 @@ use std::time::Duration;
 use crate::cli::{HttpProtocol, StarttlsProtocol, TlsVersionArg};
 use crate::connect::{ConnectOverrides, ResolvedOverride};
 use crate::debug::{dbg_section, debug_log, sanitize_header_value, sanitize_url};
+use crate::keyex::{KeyExchangeClass, PqProbeResult, classify_group};
 use crate::proxy::{ProxyConfig, connect_through_proxy};
 
 pub const CONNECTION_TIMEOUT_SECS: u64 = 10;
@@ -222,7 +223,7 @@ impl HttpResponseCapture {
 }
 
 /// Result of a TLS connection, containing the certificate chain and connection metadata.
-#[derive(Debug, serde::Serialize, Clone)]
+#[derive(Debug, serde::Serialize, Clone, Default)]
 pub struct TlsConnectionInfo {
     #[serde(skip)]
     pub pem_data: String,
@@ -236,6 +237,16 @@ pub struct TlsConnectionInfo {
     pub tls_cipher_iana: Option<String>,
     /// ALPN negotiated protocol (e.g. "h2", "http/1.1")
     pub negotiated_protocol: Option<String>,
+    /// Negotiated key exchange group, e.g. "X25519MLKEM768" or "X25519".
+    /// `None` when the linked OpenSSL cannot report it (older than 3.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_key_exchange_group: Option<String>,
+    /// Classification of that group: hybrid_pq, pure_pq, obsolete_pq,
+    /// classical or unknown.
+    pub key_exchange_class: KeyExchangeClass,
+    /// Result of the opt in `--pq-probe` second handshake, when it ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post_quantum_probe: Option<PqProbeResult>,
     pub http_response_code: u16,
     /// Reason phrase from the status line, e.g. `Forbidden`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -407,14 +418,40 @@ struct ConnectorOptions<'a> {
     max_tls: Option<TlsVersionArg>,
     cipher_list: Option<&'a str>,
     cipher_suites: Option<&'a str>,
+    /// OpenSSL group list (`--groups`); `None` keeps the library default,
+    /// which on OpenSSL 3.5+ already offers `X25519MLKEM768`.
+    groups: Option<&'a str>,
     ca_cert_path: Option<&'a str>,
-    client_cert_path: Option<&'a str>,
-    client_key_path: Option<&'a str>,
-    pkcs12_path: Option<&'a str>,
-    cert_password: Option<&'a str>,
+    identity: ClientIdentity<'a>,
     /// ALPN to advertise. `None` sends no ALPN extension (STARTTLS).
     alpn: Option<HttpProtocol>,
     debug: bool,
+}
+
+/// Client certificate material for mutual TLS.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ClientIdentity<'a> {
+    pub client_cert_path: Option<&'a str>,
+    pub client_key_path: Option<&'a str>,
+    pub pkcs12_path: Option<&'a str>,
+    pub cert_password: Option<&'a str>,
+}
+
+impl<'a> ConnectorOptions<'a> {
+    fn from_probe(probe: &TlsProbeOptions<'a>, identity: ClientIdentity<'a>, alpn: Option<HttpProtocol>) -> Self {
+        Self {
+            no_verify: probe.no_verify,
+            min_tls: probe.min_tls,
+            max_tls: probe.max_tls,
+            cipher_list: probe.cipher_list,
+            cipher_suites: probe.cipher_suites,
+            groups: probe.groups,
+            ca_cert_path: probe.ca_cert_path,
+            identity,
+            alpn,
+            debug: probe.debug,
+        }
+    }
 }
 
 /// Server chain and per-depth verification errors captured inside the
@@ -470,12 +507,13 @@ fn build_connector(opts: &ConnectorOptions<'_>) -> Result<(SslConnector, VerifyC
     }
 
     // Client identity for mTLS.
-    if let Some(cert_path) = opts.client_cert_path {
+    let identity = opts.identity;
+    if let Some(cert_path) = identity.client_cert_path {
         debug_log!(debug, "Loading client certificate: {}", cert_path);
         builder
             .set_certificate_file(cert_path, openssl::ssl::SslFiletype::PEM)
             .map_err(|e| anyhow::anyhow!("Failed to load client certificate '{cert_path}': {e}"))?;
-        if let Some(key_path) = opts.client_key_path {
+        if let Some(key_path) = identity.client_key_path {
             debug_log!(debug, "Loading client private key: {}", key_path);
             builder
                 .set_private_key_file(key_path, openssl::ssl::SslFiletype::PEM)
@@ -485,14 +523,14 @@ fn build_connector(opts: &ConnectorOptions<'_>) -> Result<(SslConnector, VerifyC
             .check_private_key()
             .map_err(|e| anyhow::anyhow!("Client certificate and private key do not match: {e}"))?;
         debug_log!(debug, "Client certificate and key verified");
-    } else if let Some(p12_path) = opts.pkcs12_path {
+    } else if let Some(p12_path) = identity.pkcs12_path {
         debug_log!(debug, "Loading PKCS12 client identity: {}", p12_path);
         let p12_data =
             std::fs::read(p12_path).map_err(|e| anyhow::anyhow!("Failed to read PKCS12 file '{p12_path}': {e}"))?;
         let pkcs12 = openssl::pkcs12::Pkcs12::from_der(&p12_data)
             .map_err(|e| anyhow::anyhow!("Failed to parse PKCS12 file '{p12_path}': {e}"))?;
         let parsed = pkcs12
-            .parse2(opts.cert_password.unwrap_or(""))
+            .parse2(identity.cert_password.unwrap_or(""))
             .map_err(|e| anyhow::anyhow!("Failed to decrypt PKCS12 '{p12_path}' (wrong password?): {e}"))?;
         if let Some(ref cert) = parsed.cert {
             builder
@@ -538,6 +576,15 @@ fn build_connector(opts: &ConnectorOptions<'_>) -> Result<(SslConnector, VerifyC
         builder
             .set_ciphersuites(suites)
             .map_err(|e| anyhow::anyhow!("Invalid TLS 1.3 cipher suites '{suites}': {e}"))?;
+    }
+    if let Some(groups) = opts.groups {
+        debug_log!(debug, "Key exchange groups offered: {}", groups);
+        builder.set_groups_list(groups).map_err(|e| {
+            anyhow::anyhow!(
+                "Invalid TLS groups list '{groups}': {e} (linked {}; ML-KEM groups need OpenSSL 3.5 or later)",
+                openssl::version::version()
+            )
+        })?;
     }
 
     // ALPN. Only HTTP/1.1 framing is implemented on the wire; advertising h2
@@ -596,6 +643,19 @@ fn log_tls_session_debug(ssl: &openssl::ssl::SslRef, sni_host: &str, no_verify: 
             debug_log!(true, "Cipher (IANA): {}", std_name);
         }
     }
+    match negotiated_group_name(ssl) {
+        Some(group) => debug_log!(
+            true,
+            "Key exchange group: {} ({})",
+            group,
+            classify_group(&group).label()
+        ),
+        None => debug_log!(
+            true,
+            "Key exchange group: not reported by {}",
+            openssl::version::version()
+        ),
+    }
     if let Some(proto) = ssl.selected_alpn_protocol()
         && let Ok(proto_str) = std::str::from_utf8(proto)
     {
@@ -610,12 +670,65 @@ fn log_tls_session_debug(ssl: &openssl::ssl::SslRef, sni_host: &str, no_verify: 
     }
 }
 
+/// Name of the negotiated key exchange group ("X25519MLKEM768", "X25519",
+/// "secp384r1", ...). Uses `SSL_get0_group_name` on OpenSSL 3.2+ and falls
+/// back to the server's ephemeral key type on older releases, which can name
+/// classical groups only.
+pub fn negotiated_group_name(ssl: &openssl::ssl::SslRef) -> Option<String> {
+    #[cfg(dcert_ossl320)]
+    {
+        if let Some(name) = group_name_ffi(ssl) {
+            return Some(name);
+        }
+    }
+    group_name_from_tmp_key(ssl)
+}
+
+#[cfg(dcert_ossl320)]
+#[allow(unsafe_code)] // The openssl crate does not wrap SSL_get0_group_name yet.
+fn group_name_ffi(ssl: &openssl::ssl::SslRef) -> Option<String> {
+    use foreign_types::ForeignTypeRef;
+    // SAFETY: `ssl.as_ptr()` is a live SSL handle for the duration of this
+    // borrow. OpenSSL returns either null or a pointer to an internal,
+    // NUL terminated string owned by the SSL object; it is copied into an owned
+    // String before the borrow ends and never freed here.
+    let ptr = unsafe { openssl_sys::SSL_get0_group_name(ssl.as_ptr()) };
+    if ptr.is_null() {
+        return None;
+    }
+    // SAFETY: non null and NUL terminated as documented for SSL_get0_group_name.
+    let name = unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
+    if name.is_empty() { None } else { Some(name) }
+}
+
+/// Derive a classical group name from the server's ephemeral key. ML-KEM
+/// hybrids cannot be named this way, which is fine: an OpenSSL too old to
+/// report group names is also too old to negotiate them.
+fn group_name_from_tmp_key(ssl: &openssl::ssl::SslRef) -> Option<String> {
+    let key = ssl.peer_tmp_key().ok()?;
+    match key.id() {
+        openssl::pkey::Id::X25519 => Some("X25519".to_string()),
+        openssl::pkey::Id::X448 => Some("X448".to_string()),
+        openssl::pkey::Id::EC => key
+            .ec_key()
+            .ok()?
+            .group()
+            .curve_name()
+            .and_then(|nid| nid.short_name().ok())
+            .map(ToString::to_string),
+        openssl::pkey::Id::DH => Some(format!("DHE-{}", key.bits())),
+        _ => None,
+    }
+}
+
 /// Negotiated session parameters, read once after the handshake.
 struct TlsSessionSummary {
     tls_version: String,
     tls_cipher: String,
     tls_cipher_iana: Option<String>,
     negotiated_protocol: Option<String>,
+    key_exchange_group: Option<String>,
+    key_exchange_class: KeyExchangeClass,
     verify_result: Option<String>,
     chain_validation_errors: Vec<String>,
 }
@@ -631,6 +744,10 @@ fn session_summary(ssl: &openssl::ssl::SslRef, capture: &VerifyCapture, debug: b
         }
     };
     let chain_validation_errors = capture.errors();
+    let key_exchange_group = negotiated_group_name(ssl);
+    let key_exchange_class = key_exchange_group
+        .as_deref()
+        .map_or(KeyExchangeClass::Unknown, classify_group);
     if debug {
         if let Some(ref result) = verify_result {
             debug_log!(true, "Verification: {}", result);
@@ -651,6 +768,8 @@ fn session_summary(ssl: &openssl::ssl::SslRef, capture: &VerifyCapture, debug: b
             .selected_alpn_protocol()
             .and_then(|p| std::str::from_utf8(p).ok())
             .map(ToString::to_string),
+        key_exchange_group,
+        key_exchange_class,
         verify_result,
         chain_validation_errors,
     }
@@ -671,9 +790,12 @@ fn peer_chain_pem(ssl: &openssl::ssl::SslRef) -> Result<String> {
 /// Read an HTTP/1.x response head and a bounded body prefix from `stream`.
 ///
 /// Stops at EOF, at the read deadline, when `Content-Length` bytes of body
-/// have arrived, or when `body_limit + 1` body bytes are buffered. The
-/// result is raw bytes for [`HttpResponseCapture::parse`].
-fn read_http_response<R: Read>(stream: &mut R, read_timeout_secs: u64, body_limit: usize) -> Vec<u8> {
+/// have arrived, when `body_limit + 1` body bytes are buffered, or right
+/// after the head when `body_limit` is zero. The result is raw bytes for
+/// [`HttpResponseCapture::parse`]. Shared by the HTTPS probe, the proxy
+/// CONNECT exchange and the OCSP client so every HTTP read has one deadline
+/// and one size cap.
+pub(crate) fn read_http_response<R: Read>(stream: &mut R, read_timeout_secs: u64, body_limit: usize) -> Vec<u8> {
     const MAX_HEAD_SIZE: usize = 64 * 1024;
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
@@ -684,7 +806,10 @@ fn read_http_response<R: Read>(stream: &mut R, read_timeout_secs: u64, body_limi
     while std::time::Instant::now() < deadline {
         if let Some(hl) = head_len {
             let body_have = buf.len().saturating_sub(hl);
-            if body_have > body_limit || content_length.is_some_and(|cl| body_have >= cl) {
+            // With no body wanted at all (proxy CONNECT answers, bare status
+            // checks) stop as soon as the head is complete rather than
+            // waiting for a body the peer may never send.
+            if body_limit == 0 || body_have > body_limit || content_length.is_some_and(|cl| body_have >= cl) {
                 break;
             }
         } else if buf.len() > MAX_HEAD_SIZE {
@@ -720,15 +845,10 @@ fn read_http_response<R: Read>(stream: &mut R, read_timeout_secs: u64, body_limi
     buf
 }
 
-/// Options for `fetch_tls_chain_openssl`, grouped to avoid an unwieldy
-/// 20-parameter function signature.
-#[derive(Debug)]
-pub struct TlsFetchOptions<'a> {
-    pub endpoint: &'a str,
-    pub method: &'a str,
-    pub headers: &'a [(String, String)],
-    pub body: Option<&'a [u8]>,
-    pub http_protocol: HttpProtocol,
+/// Settings shared by every TLS probe (HTTPS and STARTTLS): verification,
+/// protocol bounds, cipher and group preferences, timeouts and where to dial.
+#[derive(Debug, Clone, Copy)]
+pub struct TlsProbeOptions<'a> {
     pub no_verify: bool,
     pub timeout_secs: u64,
     pub read_timeout_secs: u64,
@@ -736,50 +856,202 @@ pub struct TlsFetchOptions<'a> {
     /// `--resolve` / `--connect-to` table. A match redirects where we dial; the
     /// hostname is still used for SNI, the `Host:` header and validation.
     pub connect_overrides: &'a ConnectOverrides,
-    pub proxy_config: &'a ProxyConfig,
     pub min_tls: Option<TlsVersionArg>,
     pub max_tls: Option<TlsVersionArg>,
     pub cipher_list: Option<&'a str>,
     pub cipher_suites: Option<&'a str>,
-    pub debug: bool,
-    pub client_cert_path: Option<&'a str>,
-    pub client_key_path: Option<&'a str>,
-    pub pkcs12_path: Option<&'a str>,
-    pub cert_password: Option<&'a str>,
+    /// OpenSSL group list (`--groups`), e.g. "X25519MLKEM768:X25519".
+    /// `None` keeps the library default.
+    pub groups: Option<&'a str>,
     pub ca_cert_path: Option<&'a str>,
+    pub debug: bool,
+}
+
+/// Options for `fetch_tls_chain_openssl`.
+#[derive(Debug)]
+pub struct TlsFetchOptions<'a> {
+    pub probe: TlsProbeOptions<'a>,
+    pub endpoint: &'a str,
+    pub method: &'a str,
+    pub headers: &'a [(String, String)],
+    pub body: Option<&'a [u8]>,
+    pub http_protocol: HttpProtocol,
+    pub proxy_config: &'a ProxyConfig,
+    pub identity: ClientIdentity<'a>,
     /// Maximum number of response body bytes to keep for diagnostics.
     pub body_limit: usize,
 }
 
+/// How a probe reached its peer (layers 3 and 4).
+#[derive(Debug, Clone)]
+struct DialInfo {
+    dns_latency: u128,
+    l4_latency: u128,
+    peer_address: Option<String>,
+    connect_override: Option<String>,
+}
+
+/// Layers 3 and 4: reach `host:port` through a `--resolve`/`--connect-to`
+/// override, directly, or through the forward proxy (HTTPS only, and never
+/// for an override), then apply the read timeout. Shared by the HTTPS probe,
+/// the STARTTLS probe and the post quantum probe so the dial logic, its
+/// timeouts and its debug output exist once.
+fn dial(
+    host: &str,
+    port: u16,
+    probe: &TlsProbeOptions<'_>,
+    proxy_config: Option<&ProxyConfig>,
+) -> Result<(TcpStream, DialInfo)> {
+    let debug = probe.debug;
+    let connect_timeout = Duration::from_secs(probe.timeout_secs);
+    let l4_start = std::time::Instant::now();
+
+    let mut connect_override = None;
+    let (stream, dns_latency, peer_address) = if let Some(ov) = probe.connect_overrides.lookup(host, port) {
+        // --resolve / --connect-to: dial the override target, bypassing any
+        // proxy. The hostname is still used for SNI and validation.
+        let (s, addr, dns) = connect_via_override(&ov, connect_timeout)?;
+        dbg_section(debug, "Layer 3 (Network)");
+        let description = ov.describe(host, port);
+        debug_log!(
+            debug,
+            "Connection override: {} (dialled {}, proxy bypassed)",
+            description,
+            addr
+        );
+        connect_override = Some(description);
+        (s, dns, Some(addr))
+    } else if let Some(proxy_url) = proxy_config
+        .filter(|p| !p.should_bypass(host))
+        .and_then(|p| p.get_proxy_url("https"))
+    {
+        debug_log!(debug, "Using proxy: {}", sanitize_url(proxy_url));
+        // Proxy connections resolve the proxy host, not the target.
+        let stream = connect_through_proxy(proxy_url, host, port, connect_timeout, probe.read_timeout_secs, debug)?;
+        dbg_section(debug, "Layer 3 (Network)");
+        debug_log!(debug, "DNS resolution handled by proxy");
+        (stream, 0, None)
+    } else {
+        let (s, dns, addr) = direct_tcp_connect(host, port, connect_timeout)?;
+        dbg_section(debug, "Layer 3 (Network)");
+        debug_log!(debug, "Resolved {} -> {} ({} ms)", host, addr.ip(), dns);
+        (s, dns, Some(addr))
+    };
+
+    stream
+        .set_read_timeout(Some(Duration::from_secs(probe.read_timeout_secs)))
+        .map_err(|e| anyhow::anyhow!("Failed to set read timeout: {e}"))?;
+
+    let l4_latency = l4_start.elapsed().as_millis();
+    dbg_section(debug, "Layer 4 (Transport)");
+    debug_log!(debug, "TCP connection established ({} ms)", l4_latency);
+
+    Ok((
+        stream,
+        DialInfo {
+            dns_latency,
+            l4_latency,
+            peer_address: peer_address.map(|a| a.to_string()),
+            connect_override,
+        },
+    ))
+}
+
+/// Assemble the result of a completed handshake.
+fn connection_info(
+    session: TlsSessionSummary,
+    dialled: &DialInfo,
+    l7_latency: u128,
+    no_verify: bool,
+    pem_data: String,
+    http: Option<&HttpResponseCapture>,
+) -> TlsConnectionInfo {
+    TlsConnectionInfo {
+        pem_data,
+        dns_latency: dialled.dns_latency,
+        l4_latency: dialled.l4_latency,
+        l7_latency,
+        tls_version: session.tls_version,
+        tls_cipher: session.tls_cipher,
+        tls_cipher_iana: session.tls_cipher_iana,
+        negotiated_protocol: session.negotiated_protocol,
+        tls_key_exchange_group: session.key_exchange_group,
+        key_exchange_class: session.key_exchange_class,
+        post_quantum_probe: None,
+        http_response_code: http.map_or(0, |h| h.status),
+        http_reason: http.and_then(|h| h.reason.clone()),
+        http_headers: http.map(|h| h.headers.clone()).unwrap_or_default(),
+        http_body_excerpt: http.and_then(HttpResponseCapture::body_text),
+        http_body_truncated: http.is_some_and(|h| h.body_truncated),
+        verify_result: session.verify_result,
+        chain_validation_errors: session.chain_validation_errors,
+        client_auth_required: false,
+        verification_disabled: no_verify,
+        peer_address: dialled.peer_address.clone(),
+        connect_override: dialled.connect_override.clone(),
+    }
+}
+
+/// Request target for the HTTP/1.1 request line: path plus query string, so
+/// `https://host/v1/x?key=1` asks for `/v1/x?key=1` and not `/v1/x`.
+fn request_target(url: &url::Url) -> String {
+    let path = if url.path().is_empty() { "/" } else { url.path() };
+    match url.query() {
+        Some(query) => format!("{path}?{query}"),
+        None => path.to_string(),
+    }
+}
+
+/// `Host` header value: the port is included whenever it is not the HTTPS
+/// default, as RFC 9112 requires and as virtual hosts and gateways expect.
+fn host_header_value(host: &str, port: u16) -> String {
+    if port == 443 {
+        host.to_string()
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
+/// Build the HTTP/1.1 request head (and the headers that describe `body`).
+fn build_http_request(
+    url: &url::Url,
+    host: &str,
+    port: u16,
+    method: &str,
+    headers: &[(String, String)],
+    body: Option<&[u8]>,
+) -> Result<String> {
+    let mut req = format!(
+        "{method} {} HTTP/1.1\r\nHost: {}\r\n",
+        request_target(url),
+        host_header_value(host, port)
+    );
+    for (key, value) in headers {
+        // Reject headers containing CR/LF to prevent header injection
+        if key.contains('\r') || key.contains('\n') || value.contains('\r') || value.contains('\n') {
+            return Err(anyhow::anyhow!(
+                "HTTP header contains invalid characters (CR/LF): {key}:{value}"
+            ));
+        }
+        req.push_str(&format!("{key}: {value}\r\n"));
+    }
+    // When a body is present, add Content-Length and default Content-Type
+    if let Some(body_bytes) = body {
+        req.push_str(&format!("Content-Length: {}\r\n", body_bytes.len()));
+        let has_content_type = headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("content-type"));
+        if !has_content_type {
+            req.push_str("Content-Type: application/x-www-form-urlencoded\r\n");
+        }
+    }
+    req.push_str("Connection: close\r\n\r\n");
+    Ok(req)
+}
+
 /// Fetch TLS certificate chain using OpenSSL, with proxy support, custom CA certificates, and mTLS.
 pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnectionInfo> {
-    let TlsFetchOptions {
-        endpoint,
-        method,
-        headers,
-        body,
-        http_protocol,
-        no_verify,
-        timeout_secs,
-        read_timeout_secs,
-        sni_override,
-        connect_overrides,
-        proxy_config,
-        min_tls,
-        max_tls,
-        cipher_list,
-        cipher_suites,
-        debug,
-        client_cert_path,
-        client_key_path,
-        pkcs12_path,
-        cert_password,
-        ca_cert_path,
-        body_limit,
-    } = *opts;
-    // Acquire a connection permit (released automatically when _permit is dropped)
-    // Validate URL more thoroughly
-    let url = url::Url::parse(endpoint).map_err(|e| anyhow::anyhow!("Invalid URL: {e}"))?;
+    let probe = &opts.probe;
+    let debug = probe.debug;
+    let url = url::Url::parse(opts.endpoint).map_err(|e| anyhow::anyhow!("Invalid URL: {e}"))?;
     if url.scheme() != "https" {
         return Err(anyhow::anyhow!("Only HTTPS scheme is supported"));
     }
@@ -794,78 +1066,33 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
         return Err(anyhow::anyhow!("Invalid port number: {port}"));
     }
 
-    debug_log!(debug, "Target URL: {}", endpoint);
+    // Rebuilt from the parsed components rather than echoing the argument,
+    // so userinfo or anything else embedded in the input never reaches
+    // the debug stream.
+    debug_log!(
+        debug,
+        "Target URL: {}://{}:{}{}",
+        url.scheme(),
+        host,
+        port,
+        request_target(&url)
+    );
     debug_log!(debug, "Host: {}, Port: {}", host, port);
-    if let Some(sni) = sni_override {
+    if let Some(sni) = probe.sni_override {
         debug_log!(debug, "SNI override: {}", sni);
     }
 
-    // Layer 4: TCP connect with timeout (with proxy support)
-    let connect_timeout = Duration::from_secs(timeout_secs);
-    let l4_start = std::time::Instant::now();
-
-    let mut connect_override = None;
-    let (stream, dns_latency, peer_address) = if let Some(ov) = connect_overrides.lookup(host, port) {
-        // --resolve / --connect-to: dial the override target, bypassing any
-        // proxy. The hostname is still used for SNI and validation below.
-        let (s, addr, dns) = connect_via_override(&ov, connect_timeout)?;
-        dbg_section(debug, "Layer 3 (Network)");
-        let description = ov.describe(host, port);
-        debug_log!(
-            debug,
-            "Connection override: {} (dialled {}, proxy bypassed)",
-            description,
-            addr
-        );
-        connect_override = Some(description);
-        (s, dns, Some(addr))
-    } else if proxy_config.should_bypass(host) {
-        let (s, dns, addr) = direct_tcp_connect(host, port, connect_timeout)?;
-        dbg_section(debug, "Layer 3 (Network)");
-        debug_log!(debug, "Resolved {} -> {} ({} ms)", host, addr.ip(), dns);
-        (s, dns, Some(addr))
-    } else if let Some(proxy_url) = proxy_config.get_proxy_url("https") {
-        debug_log!(debug, "Using proxy: {}", sanitize_url(proxy_url));
-        // Proxy connections resolve the proxy host, not the target
-        let stream = connect_through_proxy(proxy_url, host, port, debug)?;
-        dbg_section(debug, "Layer 3 (Network)");
-        debug_log!(debug, "DNS resolution handled by proxy");
-        (stream, 0, None)
-    } else {
-        let (s, dns, addr) = direct_tcp_connect(host, port, connect_timeout)?;
-        dbg_section(debug, "Layer 3 (Network)");
-        debug_log!(debug, "Resolved {} -> {} ({} ms)", host, addr.ip(), dns);
-        (s, dns, Some(addr))
-    };
-
-    // Set read timeout
-    stream
-        .set_read_timeout(Some(Duration::from_secs(read_timeout_secs)))
-        .map_err(|e| anyhow::anyhow!("Failed to set read timeout: {e}"))?;
-
-    let l4_latency = l4_start.elapsed().as_millis();
-
-    dbg_section(debug, "Layer 4 (Transport)");
-    debug_log!(debug, "TCP connection established ({} ms)", l4_latency);
+    let (stream, dialled) = dial(host, port, probe, Some(opts.proxy_config))?;
 
     // Layer 7: TLS handshake + HTTP request
     let l7_start = std::time::Instant::now();
-    let (connector, verify) = build_connector(&ConnectorOptions {
-        no_verify,
-        min_tls,
-        max_tls,
-        cipher_list,
-        cipher_suites,
-        ca_cert_path,
-        client_cert_path,
-        client_key_path,
-        pkcs12_path,
-        cert_password,
-        alpn: Some(http_protocol),
-        debug,
-    })?;
+    let (connector, verify) = build_connector(&ConnectorOptions::from_probe(
+        probe,
+        opts.identity,
+        Some(opts.http_protocol),
+    ))?;
 
-    let sni_host = sni_override.unwrap_or(host);
+    let sni_host = probe.sni_override.unwrap_or(host);
     let mut ssl_stream = match connector.connect(sni_host, stream) {
         Ok(s) => s,
         Err(e) => {
@@ -880,83 +1107,52 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
                     let l7_latency = l7_start.elapsed().as_millis();
                     return Ok(TlsConnectionInfo {
                         pem_data: pem,
-                        dns_latency,
-                        l4_latency,
+                        dns_latency: dialled.dns_latency,
+                        l4_latency: dialled.l4_latency,
                         l7_latency,
                         tls_version: "unknown (handshake aborted)".to_string(),
                         tls_cipher: "unknown".to_string(),
-                        tls_cipher_iana: None,
-                        negotiated_protocol: None,
-                        http_response_code: 0,
-                        http_reason: None,
-                        http_headers: Vec::new(),
-                        http_body_excerpt: None,
-                        http_body_truncated: false,
                         verify_result: Some("client certificate required (mTLS)".to_string()),
                         chain_validation_errors: verify.errors(),
                         client_auth_required: true,
-                        verification_disabled: no_verify,
-                        peer_address: peer_address.map(|a| a.to_string()),
-                        connect_override,
+                        verification_disabled: probe.no_verify,
+                        peer_address: dialled.peer_address,
+                        connect_override: dialled.connect_override,
+                        ..Default::default()
                     });
                 }
                 // Fall through to the regular error path if no chain was captured.
             }
-            return Err(verify.handshake_error(&e, ca_cert_path.is_some()));
+            return Err(verify.handshake_error(&e, probe.ca_cert_path.is_some()));
         }
     };
 
-    log_tls_session_debug(ssl_stream.ssl(), sni_host, no_verify, debug);
+    log_tls_session_debug(ssl_stream.ssl(), sni_host, probe.no_verify, debug);
 
-    // Warn if the server negotiated h2 — we only send HTTP/1.1 framing,
-    // so the HTTP response parsing below may fail or produce incorrect results.
+    // Warn if the server negotiated h2: only HTTP/1.1 framing is sent, so the
+    // HTTP response parsing below may fail or produce incorrect results.
     if let Some(proto) = ssl_stream.ssl().selected_alpn_protocol()
         && proto == b"h2"
     {
         eprintln!(
             "Warning: Server negotiated HTTP/2 but dcert only implements HTTP/1.1 framing. \
-                 The HTTP status code may be incorrect. Use --http1.1 to force HTTP/1.1."
+                 The HTTP status code may be incorrect. Use --http-protocol http1-1 to force HTTP/1.1."
         );
     }
 
-    // Build HTTP request
-    let path = if url.path().is_empty() { "/" } else { url.path() };
-    let req = format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\n");
-
-    let mut req = req;
-    for (key, value) in headers {
-        // Reject headers containing CR/LF to prevent header injection
-        if key.contains('\r') || key.contains('\n') || value.contains('\r') || value.contains('\n') {
-            return Err(anyhow::anyhow!(
-                "HTTP header contains invalid characters (CR/LF): {key}:{value}"
-            ));
-        }
-        req.push_str(&format!("{key}: {value}\r\n"));
-    }
-
-    // When a body is present, add Content-Length and default Content-Type
-    if let Some(body_bytes) = body {
-        req.push_str(&format!("Content-Length: {}\r\n", body_bytes.len()));
-
-        let has_content_type = headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("content-type"));
-        if !has_content_type {
-            req.push_str("Content-Type: application/x-www-form-urlencoded\r\n");
-        }
-    }
-
-    req.push_str("Connection: close\r\n\r\n");
+    let req = build_http_request(&url, host, port, opts.method, opts.headers, opts.body)?;
 
     // Debug: Layer 7 - HTTP request details
     if debug {
         dbg_section(true, "Layer 7 (Application - HTTP)");
-        debug_log!(true, "> {} {} HTTP/1.1", method, path);
-        debug_log!(true, "> Host: {}", host);
-        for (key, value) in headers {
+        debug_log!(true, "> {} {} HTTP/1.1", opts.method, request_target(&url));
+        debug_log!(true, "> Host: {}", host_header_value(host, port));
+        for (key, value) in opts.headers {
             debug_log!(true, "> {}: {}", key, sanitize_header_value(key, value));
         }
-        if let Some(body_bytes) = body {
+        if let Some(body_bytes) = opts.body {
             debug_log!(true, "> Content-Length: {}", body_bytes.len());
-            let has_content_type = headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("content-type"));
+            let has_content_type = opts.headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("content-type"));
             if !has_content_type {
                 debug_log!(true, "> Content-Type: application/x-www-form-urlencoded");
             }
@@ -970,7 +1166,7 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
         .map_err(|e| anyhow::anyhow!("Failed to send HTTP request: {e}"))?;
 
     // Send body after headers if present
-    if let Some(body_bytes) = body {
+    if let Some(body_bytes) = opts.body {
         ssl_stream
             .write_all(body_bytes)
             .map_err(|e| anyhow::anyhow!("Failed to send request body: {e}"))?;
@@ -985,12 +1181,11 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
     // `body_limit` bytes of body (plus one so truncation is detectable). Each
     // socket read is bounded by `--read-timeout` and the loop as a whole never
     // exceeds that deadline either, so a silent server costs one timeout.
-    let response_buffer = read_http_response(&mut ssl_stream, read_timeout_secs, body_limit);
-    let capture = HttpResponseCapture::parse(&response_buffer, body_limit);
-    let http_response_code = capture.status;
+    let response_buffer = read_http_response(&mut ssl_stream, probe.read_timeout_secs, opts.body_limit);
+    let capture = HttpResponseCapture::parse(&response_buffer, opts.body_limit);
     if response_buffer.is_empty() {
         eprintln!("Warning: No response data received");
-    } else if http_response_code == 0 {
+    } else if capture.status == 0 {
         eprintln!(
             "Warning: Could not parse HTTP status line: {}",
             String::from_utf8_lossy(&response_buffer[..response_buffer.len().min(100)])
@@ -999,54 +1194,29 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
 
     let l7_latency = l7_start.elapsed().as_millis();
 
-    debug_log!(debug, "< HTTP response: {}", http_response_code);
+    debug_log!(debug, "< HTTP response: {}", capture.status);
     debug_log!(debug, "Layer 7 complete ({} ms)", l7_latency);
 
     let pem = peer_chain_pem(ssl_stream.ssl())?;
     let session = session_summary(ssl_stream.ssl(), &verify, debug);
 
-    Ok(TlsConnectionInfo {
-        pem_data: pem,
-        dns_latency,
-        l4_latency,
+    Ok(connection_info(
+        session,
+        &dialled,
         l7_latency,
-        tls_version: session.tls_version,
-        tls_cipher: session.tls_cipher,
-        tls_cipher_iana: session.tls_cipher_iana,
-        negotiated_protocol: session.negotiated_protocol,
-        http_response_code,
-        http_reason: capture.reason.clone(),
-        http_headers: capture.headers.clone(),
-        http_body_excerpt: capture.body_text(),
-        http_body_truncated: capture.body_truncated,
-        verify_result: session.verify_result,
-        chain_validation_errors: session.chain_validation_errors,
-        client_auth_required: false,
-        verification_disabled: no_verify,
-        peer_address: peer_address.map(|a| a.to_string()),
-        connect_override,
-    })
+        probe.no_verify,
+        pem,
+        Some(&capture),
+    ))
 }
 
 /// Options for STARTTLS connections.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct StarttlsFetchOptions<'a> {
+    pub probe: TlsProbeOptions<'a>,
     pub host: &'a str,
     pub port: u16,
     pub protocol: StarttlsProtocol,
-    pub no_verify: bool,
-    pub timeout_secs: u64,
-    pub read_timeout_secs: u64,
-    pub sni_override: Option<&'a str>,
-    /// `--resolve` / `--connect-to` table. A match redirects where we dial; the
-    /// hostname is still used for SNI and certificate validation.
-    pub connect_overrides: &'a ConnectOverrides,
-    pub min_tls: Option<TlsVersionArg>,
-    pub max_tls: Option<TlsVersionArg>,
-    pub cipher_list: Option<&'a str>,
-    pub cipher_suites: Option<&'a str>,
-    pub debug: bool,
-    pub ca_cert_path: Option<&'a str>,
 }
 
 /// Read a line from a TCP stream (up to `\n`), with a size limit.
@@ -1065,7 +1235,7 @@ fn read_line_from_stream(stream: &mut TcpStream) -> Result<String> {
                     return Err(anyhow::anyhow!("STARTTLS: server response line too long"));
                 }
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => break,
             Err(e) => return Err(anyhow::anyhow!("STARTTLS: read error: {e}")),
         }
     }
@@ -1167,113 +1337,125 @@ fn negotiate_starttls(stream: &mut TcpStream, protocol: StarttlsProtocol, debug:
 
 /// Fetch TLS certificate chain via STARTTLS negotiation.
 pub fn fetch_tls_chain_starttls(opts: &StarttlsFetchOptions<'_>) -> Result<TlsConnectionInfo> {
-    let StarttlsFetchOptions {
-        host,
-        port,
-        protocol,
-        no_verify,
-        timeout_secs,
-        read_timeout_secs,
-        sni_override,
-        connect_overrides,
-        min_tls,
-        max_tls,
-        cipher_list,
-        cipher_suites,
+    let probe = &opts.probe;
+    let debug = probe.debug;
+    debug_log!(
         debug,
-        ca_cert_path,
-    } = *opts;
+        "STARTTLS target: {}:{} (protocol: {})",
+        opts.host,
+        opts.port,
+        opts.protocol
+    );
 
-    debug_log!(debug, "STARTTLS target: {}:{} (protocol: {})", host, port, protocol);
+    // STARTTLS never goes through the forward proxy: CONNECT tunnels are an
+    // HTTPS convention and mail/FTP proxies speak their own protocols.
+    let (mut stream, dialled) = dial(opts.host, opts.port, probe, None)?;
 
-    // Layer 4: TCP connect
-    let connect_timeout = Duration::from_secs(timeout_secs);
-    let l4_start = std::time::Instant::now();
-    let mut connect_override = None;
-    let (mut stream, dns_latency, peer_address) = if let Some(ov) = connect_overrides.lookup(host, port) {
-        let (s, addr, dns) = connect_via_override(&ov, connect_timeout)?;
-        let description = ov.describe(host, port);
-        if debug {
-            dbg_section(true, "Layer 3 (Network)");
-            debug_log!(true, "Connection override: {} (dialled {})", description, addr);
-        }
-        connect_override = Some(description);
-        (s, dns, Some(addr))
-    } else {
-        let (s, dns_latency, addr) = direct_tcp_connect(host, port, connect_timeout)?;
-        if debug {
-            dbg_section(true, "Layer 3 (Network)");
-            debug_log!(true, "Resolved {} -> {} ({} ms)", host, addr.ip(), dns_latency);
-        }
-        (s, dns_latency, Some(addr))
-    };
-
-    stream
-        .set_read_timeout(Some(Duration::from_secs(read_timeout_secs)))
-        .map_err(|e| anyhow::anyhow!("Failed to set read timeout: {e}"))?;
-
-    let l4_latency = l4_start.elapsed().as_millis();
-
-    if debug {
-        dbg_section(true, "Layer 4 (Transport)");
-        debug_log!(true, "TCP connection established ({} ms)", l4_latency);
-    }
-
-    // STARTTLS protocol negotiation on plain TCP
-    if debug {
-        dbg_section(true, "STARTTLS Negotiation");
-    }
-    negotiate_starttls(&mut stream, protocol, debug)?;
+    dbg_section(debug, "STARTTLS Negotiation");
+    negotiate_starttls(&mut stream, opts.protocol, debug)?;
 
     // TLS handshake on the upgraded stream
     let l7_start = std::time::Instant::now();
-    let (connector, capture) = build_connector(&ConnectorOptions {
-        no_verify,
-        min_tls,
-        max_tls,
-        cipher_list,
-        cipher_suites,
-        ca_cert_path,
-        client_cert_path: None,
-        client_key_path: None,
-        pkcs12_path: None,
-        cert_password: None,
-        alpn: None,
-        debug,
-    })?;
+    let (connector, capture) = build_connector(&ConnectorOptions::from_probe(probe, ClientIdentity::default(), None))?;
 
-    let sni_host = sni_override.unwrap_or(host);
+    let sni_host = probe.sni_override.unwrap_or(opts.host);
     let ssl_stream = connector
         .connect(sni_host, stream)
-        .map_err(|e| capture.handshake_error(&e, ca_cert_path.is_some()))?;
+        .map_err(|e| capture.handshake_error(&e, probe.ca_cert_path.is_some()))?;
 
-    log_tls_session_debug(ssl_stream.ssl(), sni_host, no_verify, debug);
+    log_tls_session_debug(ssl_stream.ssl(), sni_host, probe.no_verify, debug);
 
     let l7_latency = l7_start.elapsed().as_millis();
     let pem = peer_chain_pem(ssl_stream.ssl())?;
     let session = session_summary(ssl_stream.ssl(), &capture, debug);
 
-    Ok(TlsConnectionInfo {
-        pem_data: pem,
-        dns_latency,
-        l4_latency,
+    Ok(connection_info(
+        session,
+        &dialled,
         l7_latency,
-        tls_version: session.tls_version,
-        tls_cipher: session.tls_cipher,
-        tls_cipher_iana: session.tls_cipher_iana,
-        negotiated_protocol: session.negotiated_protocol,
-        http_response_code: 0,
-        http_reason: None,
-        http_headers: Vec::new(),
-        http_body_excerpt: None,
-        http_body_truncated: false,
-        verify_result: session.verify_result,
-        chain_validation_errors: session.chain_validation_errors,
-        client_auth_required: false,
-        verification_disabled: no_verify,
-        peer_address: peer_address.map(|a| a.to_string()),
-        connect_override,
-    })
+        probe.no_verify,
+        pem,
+        None,
+    ))
+}
+
+/// How the post quantum probe reaches the TLS layer.
+#[derive(Debug, Clone, Copy)]
+pub enum ProbeTransport {
+    /// Plain TLS (HTTPS targets).
+    Tls,
+    /// Opportunistic TLS after the protocol's STARTTLS exchange.
+    Starttls(StarttlsProtocol),
+}
+
+/// Everything the post quantum probe needs beyond the shared probe options.
+#[derive(Debug, Clone, Copy)]
+pub struct PqProbeRequest<'a> {
+    pub host: &'a str,
+    pub port: u16,
+    pub transport: ProbeTransport,
+    /// Forward proxy for HTTPS targets; ignored for STARTTLS.
+    pub proxy_config: Option<&'a ProxyConfig>,
+    /// Client identity, so an mTLS server completes the handshake.
+    pub identity: ClientIdentity<'a>,
+    pub alpn: Option<HttpProtocol>,
+}
+
+/// Opt in second handshake (`--pq-probe`) that offers only the RFC 10024
+/// hybrid groups, answering "does this server support post quantum key
+/// agreement?" independently of what the default handshake negotiated.
+///
+/// Verification is skipped for this handshake: the identity was already
+/// checked on the main connection and a verification failure here would
+/// masquerade as missing post quantum support.
+pub fn probe_post_quantum(req: &PqProbeRequest<'_>, probe: &TlsProbeOptions<'_>) -> PqProbeResult {
+    if !crate::keyex::openssl_supports_mlkem() {
+        return PqProbeResult::not_testable();
+    }
+    if probe.max_tls == Some(TlsVersionArg::Tls1_2) {
+        return PqProbeResult::not_testable_with(
+            "hybrid groups exist in TLS 1.3 only, but --max-tls 1.2 was given".to_string(),
+        );
+    }
+    let groups = crate::keyex::pq_probe_groups();
+    let pq_probe = TlsProbeOptions {
+        no_verify: true,
+        min_tls: Some(TlsVersionArg::Tls1_3),
+        cipher_list: None,
+        cipher_suites: None,
+        groups: Some(&groups),
+        ..*probe
+    };
+    dbg_section(probe.debug, "Post quantum probe (RFC 10024 hybrid groups only)");
+    match pq_handshake(req, &pq_probe) {
+        Ok(Some(group)) if classify_group(&group).is_post_quantum() => PqProbeResult::supported(group),
+        Ok(Some(group)) => PqProbeResult::not_supported(&format!("negotiated {group} instead")),
+        Ok(None) => PqProbeResult::not_supported("group name not reported after the handshake"),
+        Err(e) => PqProbeResult::not_supported(&e.to_string()),
+    }
+}
+
+/// Run the probe handshake and return the negotiated group, if any. A server
+/// that demands a client certificate still reveals its chosen group in the
+/// ServerHello, so that failure is read as a result rather than an error.
+fn pq_handshake(req: &PqProbeRequest<'_>, probe: &TlsProbeOptions<'_>) -> Result<Option<String>> {
+    let proxy = match req.transport {
+        ProbeTransport::Tls => req.proxy_config,
+        ProbeTransport::Starttls(_) => None,
+    };
+    let (mut stream, _dialled) = dial(req.host, req.port, probe, proxy)?;
+    if let ProbeTransport::Starttls(protocol) = req.transport {
+        negotiate_starttls(&mut stream, protocol, probe.debug)?;
+    }
+    let (connector, _capture) = build_connector(&ConnectorOptions::from_probe(probe, req.identity, req.alpn))?;
+    let sni_host = probe.sni_override.unwrap_or(req.host);
+    match connector.connect(sni_host, stream) {
+        Ok(ssl_stream) => Ok(negotiated_group_name(ssl_stream.ssl())),
+        Err(openssl::ssl::HandshakeError::Failure(mid)) if is_client_auth_required(&mid.error().to_string()) => {
+            Ok(negotiated_group_name(mid.ssl()))
+        }
+        Err(e) => Err(anyhow::anyhow!("{e}")),
+    }
 }
 
 #[cfg(test)]

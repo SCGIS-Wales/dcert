@@ -15,6 +15,7 @@ use super::oidc::TokenClaims;
 use tracing::info;
 
 /// Structured audit logger for security events.
+#[derive(Debug)]
 pub struct AuditLogger;
 
 impl AuditLogger {
@@ -48,6 +49,18 @@ impl AuditLogger {
             audit.result = "denied",
             audit.error = reason,
             audit.remote_addr = remote_addr,
+            "security_audit"
+        );
+    }
+
+    /// Logs a client refused before authentication because it exceeded the
+    /// failed attempt limit for its address.
+    pub fn log_auth_rate_limited(&self, remote_addr: &str, retry_after_secs: u64) {
+        info!(
+            audit.event_type = "auth_rate_limited",
+            audit.result = "denied",
+            audit.remote_addr = remote_addr,
+            audit.retry_after_secs = retry_after_secs,
             "security_audit"
         );
     }
@@ -108,6 +121,12 @@ mod tests {
     fn test_log_auth_failure_does_not_panic() {
         let logger = AuditLogger::new();
         logger.log_auth_failure("invalid token", "127.0.0.1");
+    }
+
+    #[test]
+    fn test_log_auth_rate_limited_does_not_panic() {
+        let logger = AuditLogger::new();
+        logger.log_auth_rate_limited("127.0.0.1", 42);
     }
 
     #[test]

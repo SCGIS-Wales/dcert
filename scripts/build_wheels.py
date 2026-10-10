@@ -6,8 +6,8 @@ The universal ``py3-none-any`` wheel is copied and the ``dcert`` and
 ``dcert/bin/``. The console script wrappers installed by pip exec those
 binaries and mark them executable on first use.
 
-The platform table (archive name to wheel tag) is read from
-``python/src/dcert/config.yaml`` so the package and this script agree.
+The platform table (archive name to wheel tag) and the archive reader come
+from the ``dcert`` package in ``python/src`` so the two cannot disagree.
 
 Usage::
 
@@ -23,70 +23,54 @@ import argparse
 import base64
 import glob
 import hashlib
+import importlib.util
 import logging
 import sys
-import tarfile
 from pathlib import Path
-from typing import TypedDict
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
-import yaml
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PACKAGE_DIR = PROJECT_ROOT / "python" / "src" / "dcert"
+
+
+def _register_source_package() -> None:
+    """Make ``dcert.*`` importable from the source tree without running ``dcert/__init__``.
+
+    The package ``__init__`` imports FastMCP, which this script does not
+    need and the CI job that runs it does not install. The modules used
+    here depend only on the standard library and PyYAML, so the package is
+    registered with its search path but its ``__init__`` is left unexecuted.
+    """
+    if "dcert" in sys.modules:
+        return
+    spec = importlib.util.spec_from_file_location(
+        "dcert", PACKAGE_DIR / "__init__.py", submodule_search_locations=[str(PACKAGE_DIR)]
+    )
+    if spec is None:
+        raise ImportError(f"dcert package not found at {PACKAGE_DIR}")
+    sys.modules["dcert"] = importlib.util.module_from_spec(spec)
+
+
+_register_source_package()
+
+from dcert.config import archive_name_for, find_platform, load_config  # noqa: E402
+from dcert.download import iter_archive_members  # noqa: E402
 
 logger = logging.getLogger(__name__)
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-CONFIG_PATH = PROJECT_ROOT / "python" / "src" / "dcert" / "config.yaml"
 
 #: Binaries extracted from each archive (Windows uses ``.exe`` names).
 BINARY_NAMES: tuple[str, ...] = ("dcert", "dcert-mcp", "dcert.exe", "dcert-mcp.exe")
 
-
-class PlatformRow(TypedDict):
-    """One row of the ``platforms`` table in ``config.yaml``."""
-
-    system: str
-    machine: str
-    triple: str
-    archive_extension: str
-    wheel_tag: str
+#: Release archive name to wheel platform tag, from the packaged config.
+PLATFORM_MAP: dict[str, str] = {
+    archive_name_for(row): row.wheel_tag for row in load_config().platforms
+}
 
 
-def load_platform_rows(config_path: Path = CONFIG_PATH) -> list[PlatformRow]:
-    """Read the platform table from the packaged configuration file."""
-    with config_path.open("rb") as handle:
-        raw = yaml.safe_load(handle)
-    rows = raw.get("platforms") if isinstance(raw, dict) else None
-    if not isinstance(rows, list) or not rows:
-        raise ValueError(f"{config_path}: 'platforms' must be a non-empty list")
-    return [
-        PlatformRow(
-            system=str(row["system"]).lower(),
-            machine=str(row["machine"]).lower(),
-            triple=str(row["triple"]),
-            archive_extension=str(row["archive_extension"]),
-            wheel_tag=str(row["wheel_tag"]),
-        )
-        for row in rows
-    ]
-
-
-def archive_name(row: PlatformRow) -> str:
-    """Return the release archive name for *row*."""
-    return f"dcert-{row['triple']}.{row['archive_extension']}"
-
-
-def platform_map(rows: list[PlatformRow]) -> dict[str, str]:
-    """Map each archive name to its wheel platform tag."""
-    return {archive_name(row): row["wheel_tag"] for row in rows}
-
-
-def archive_name_for_host(system: str, machine: str, rows: list[PlatformRow]) -> str | None:
+def archive_name_for_host(system: str, machine: str) -> str | None:
     """Return the archive name for a ``platform.system()``/``machine()`` pair."""
-    key = (system.lower(), machine.lower())
-    return next((archive_name(row) for row in rows if (row["system"], row["machine"]) == key), None)
-
-
-PLATFORM_MAP: dict[str, str] = platform_map(load_platform_rows())
+    target = find_platform(system, machine)
+    return archive_name_for(target) if target else None
 
 
 def record_entry(filename: str, data: bytes) -> str:
@@ -105,23 +89,10 @@ def parse_wheel_filename(wheel_path: Path) -> tuple[str, str]:
 
 def extract_binaries_from_archive(archive_path: Path) -> dict[str, bytes]:
     """Return the binaries in a ``.tar.gz`` or ``.zip`` archive keyed by basename."""
-    binaries: dict[str, bytes] = {}
-    if archive_path.suffix == ".zip":
-        with ZipFile(archive_path) as archive:
-            for member in archive.infolist():
-                name = Path(member.filename).name
-                if name in BINARY_NAMES:
-                    binaries[name] = archive.read(member)
-        return binaries
-    with tarfile.open(archive_path, "r:gz") as tar:
-        for tar_member in tar.getmembers():
-            name = Path(tar_member.name).name
-            if name not in BINARY_NAMES:
-                continue
-            handle = tar.extractfile(tar_member)
-            if handle is not None:
-                binaries[name] = handle.read()
-    return binaries
+    return {
+        name: handle.read()
+        for name, handle in iter_archive_members(archive_path, set(BINARY_NAMES))
+    }
 
 
 def _binary_zip_info(path_in_wheel: str) -> ZipInfo:

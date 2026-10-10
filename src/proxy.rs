@@ -1,12 +1,11 @@
 use anyhow::Result;
 use std::env;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 use url::Url;
 
 use crate::debug::debug_log;
-use crate::tls::{CONNECTION_TIMEOUT_SECS, READ_TIMEOUT_SECS};
 
 /// The forward proxy refused the `CONNECT` tunnel. Carries the proxy's
 /// response head so diagnostics can name the reason (authentication,
@@ -158,8 +157,20 @@ fn validate_proxy_url(proxy: &str) -> Result<()> {
     Ok(())
 }
 
-/// Connect through HTTP proxy using CONNECT method
-pub fn connect_through_proxy(proxy_url: &str, target_host: &str, target_port: u16, debug: bool) -> Result<TcpStream> {
+/// Connect through an HTTP proxy using the CONNECT method.
+///
+/// `connect_timeout` bounds the TCP connection to the proxy and
+/// `read_timeout_secs` bounds both each socket read and the whole wait for
+/// the proxy's answer, so a proxy that drips one byte at a time cannot hold
+/// the client beyond `--read-timeout`.
+pub fn connect_through_proxy(
+    proxy_url: &str,
+    target_host: &str,
+    target_port: u16,
+    connect_timeout: Duration,
+    read_timeout_secs: u64,
+    debug: bool,
+) -> Result<TcpStream> {
     let proxy = Url::parse(proxy_url).map_err(|e| anyhow::anyhow!("Invalid proxy URL {proxy_url}: {e}"))?;
 
     let proxy_host = proxy
@@ -176,11 +187,11 @@ pub fn connect_through_proxy(proxy_url: &str, target_host: &str, target_port: u1
 
     debug_log!(debug, "Proxy resolved: {} -> {}", proxy_host, proxy_addr);
 
-    let mut stream = TcpStream::connect_timeout(&proxy_addr, Duration::from_secs(CONNECTION_TIMEOUT_SECS))
+    let mut stream = TcpStream::connect_timeout(&proxy_addr, connect_timeout)
         .map_err(|e| anyhow::anyhow!("Failed to connect to proxy: {e}"))?;
 
     stream
-        .set_read_timeout(Some(Duration::from_secs(READ_TIMEOUT_SECS)))
+        .set_read_timeout(Some(Duration::from_secs(read_timeout_secs.max(1))))
         .map_err(|e| anyhow::anyhow!("Failed to set proxy read timeout: {e}"))?;
 
     // Build Proxy-Authorization header if credentials are present in the proxy URL
@@ -207,35 +218,9 @@ pub fn connect_through_proxy(proxy_url: &str, target_host: &str, target_port: u1
         .write_all(connect_request.as_bytes())
         .map_err(|e| anyhow::anyhow!("Failed to send CONNECT request: {e}"))?;
 
-    // Read proxy response with size limit to prevent unbounded allocation
-    const MAX_PROXY_HEADER_SIZE: usize = 64 * 1024; // 64 KB
-    let mut response = Vec::new();
-    let mut buffer = [0u8; 1024];
-
-    // Read until we get the full HTTP response headers
-    loop {
-        let n = stream
-            .read(&mut buffer)
-            .map_err(|e| anyhow::anyhow!("Failed to read proxy response: {e}"))?;
-
-        if n == 0 {
-            break;
-        }
-
-        response.extend_from_slice(&buffer[..n]);
-
-        if response.len() > MAX_PROXY_HEADER_SIZE {
-            return Err(anyhow::anyhow!(
-                "Proxy response headers too large (>{} KB)",
-                MAX_PROXY_HEADER_SIZE / 1024
-            ));
-        }
-
-        // Check if we have the complete headers (ending with \r\n\r\n)
-        if response.windows(4).any(|w| w == b"\r\n\r\n") {
-            break;
-        }
-    }
+    // Read the proxy's answer: the head only (no body is expected before the
+    // tunnel opens), capped at 64 KiB and bounded by the read deadline.
+    let response = crate::tls::read_http_response(&mut stream, read_timeout_secs, 0);
 
     let capture = crate::tls::HttpResponseCapture::parse(&response, 0);
     if response.is_empty() {

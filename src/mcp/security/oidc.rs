@@ -50,6 +50,11 @@ const CLOCK_SKEW_LEEWAY_SECS: u64 = 60;
 /// Minimum interval between JWKS refreshes triggered by an unknown key id.
 const MIN_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
+/// Largest discovery document or JWKS the validator will read from the
+/// identity provider. Both are a few kilobytes in practice; the cap keeps a
+/// misbehaving or impersonated provider from exhausting memory.
+const MAX_IDP_RESPONSE_BYTES: usize = 1024 * 1024;
+
 /// How long fetched JWKS keys stay cached, from `DCERT_MCP_JWKS_TTL`
 /// (seconds, default one hour).
 fn jwks_ttl() -> Duration {
@@ -192,10 +197,36 @@ impl OidcValidator {
         Ok(claims)
     }
 
-    /// Look up a key in the cache without any network access.
+    /// Look up a key in the cache without any network access. An entry past
+    /// its TTL is not served here, so a refresh is attempted first; see
+    /// [`OidcValidator::stale_signing_key`] for what happens when it cannot be.
     async fn cached_signing_key(&self, kid: &str) -> Option<DecodingKey> {
         let cache = self.jwks_cache.read().await;
         if cache.is_expired() { None } else { cache.get_key(kid) }
+    }
+
+    /// Look up a key in the cache even when the entry has passed its TTL.
+    ///
+    /// Used when the keys cannot be refreshed right now, because a refresh
+    /// was attempted too recently or the identity provider did not answer.
+    /// A key the provider published an hour ago is still the provider's key:
+    /// serving it is strictly better than failing every token for the
+    /// throttle interval, and a rotated out key is withdrawn as soon as a
+    /// refresh succeeds. The fallback is logged at warn level once per
+    /// interval so an outage is visible without flooding the log.
+    async fn stale_signing_key(&self, kid: &str, reason: &str) -> Option<DecodingKey> {
+        let mut cache = self.jwks_cache.write().await;
+        let key = cache.get_key(kid)?;
+        if cache.should_warn_stale() {
+            let age_secs = cache.fetched.map(|t| t.elapsed().as_secs());
+            warn!(
+                kid = kid,
+                reason = reason,
+                key_age_secs = age_secs,
+                "JWKS refresh unavailable; serving a cached signing key past its TTL"
+            );
+        }
+        Some(key)
     }
 
     /// Fetch a signing key the cache does not hold, discovering the JWKS URL
@@ -205,12 +236,19 @@ impl OidcValidator {
     /// before the first request is sent. Discovery and the JWKS fetch are
     /// therefore rate limited together: a flood of tokens bearing invented key
     /// ids cannot be amplified into a flood of requests to the identity
-    /// provider, whether or not any keys have ever been loaded. The cost is
-    /// that a failed fetch is not retried for [`MIN_REFRESH_INTERVAL`], which
-    /// is the correct trade when the provider is already failing.
+    /// provider, whether or not any keys have ever been loaded. A failed
+    /// fetch is not retried for [`MIN_REFRESH_INTERVAL`], which is the correct
+    /// trade when the provider is already failing.
+    ///
+    /// While a refresh is throttled or failing, a key the cache already holds
+    /// is served even past its TTL, so a provider outage does not take the
+    /// server down with it. Only a key id the cache has never seen fails.
     async fn fetch_signing_key(&self, kid: &str) -> Result<DecodingKey, String> {
         if !self.claim_refresh_slot().await {
-            return Err(format!("signing key {kid:?} not found in JWKS (refresh throttled)"));
+            return match self.stale_signing_key(kid, "refresh throttled").await {
+                Some(key) => Ok(key),
+                None => Err(format!("signing key {kid:?} not found in JWKS (refresh throttled)")),
+            };
         }
 
         // Re-check under the claim: a concurrent caller may have just filled
@@ -219,11 +257,19 @@ impl OidcValidator {
             return Ok(key);
         }
 
-        let jwks_url = match &self.config.jwks_url {
-            Some(url) if !url.is_empty() => url.clone(),
-            _ => self.discover_jwks().await?,
+        let refreshed = match &self.config.jwks_url {
+            Some(url) if !url.is_empty() => self.refresh_jwks(url).await,
+            _ => match self.discover_jwks().await {
+                Ok(url) => self.refresh_jwks(&url).await,
+                Err(e) => Err(e),
+            },
         };
-        self.refresh_jwks(&jwks_url).await?;
+        if let Err(e) = refreshed {
+            return match self.stale_signing_key(kid, &e).await {
+                Some(key) => Ok(key),
+                None => Err(e),
+            };
+        }
 
         let cache = self.jwks_cache.read().await;
         cache
@@ -282,10 +328,9 @@ impl OidcValidator {
             jwks_uri: String,
         }
 
-        let doc: DiscoveryDoc = resp
-            .json()
-            .await
-            .map_err(|e| format!("parsing discovery document: {e}"))?;
+        let body = read_body_limited(resp, "discovery document").await?;
+        let doc: DiscoveryDoc =
+            serde_json::from_slice(&body).map_err(|e| format!("parsing discovery document: {e}"))?;
 
         if doc.jwks_uri.is_empty() {
             return Err("discovery document missing jwks_uri".to_string());
@@ -361,7 +406,9 @@ fn validate_required_strings(kind: &str, actual: &[String], required: &[String])
 
 // --- JWKS Cache ---
 
-/// Cached JWKS key data — supports both RSA and EC keys.
+/// Cached JWKS key data — supports both RSA and EC keys. These are public
+/// key components, so deriving `Debug` exposes nothing secret.
+#[derive(Debug)]
 enum JwksCachedKey {
     Rsa {
         /// The RSA modulus (n parameter, base64url-decoded).
@@ -384,6 +431,9 @@ struct JwksCache {
     /// When a refresh was last attempted, successful or not. Used to rate
     /// limit refreshes triggered by unknown key ids.
     last_attempt: Option<Instant>,
+    /// When a key past its TTL was last reported as served, so the warning
+    /// is written once per interval rather than once per token.
+    stale_warned: Option<Instant>,
     ttl: Duration,
 }
 
@@ -393,8 +443,21 @@ impl JwksCache {
             keys: HashMap::new(),
             fetched: None,
             last_attempt: None,
+            stale_warned: None,
             ttl: jwks_ttl(),
         }
+    }
+
+    /// `true` once per refresh interval, on the first call after it opens.
+    fn should_warn_stale(&mut self) -> bool {
+        let interval = MIN_REFRESH_INTERVAL.min(self.ttl);
+        if let Some(last) = self.stale_warned
+            && last.elapsed() < interval
+        {
+            return false;
+        }
+        self.stale_warned = Some(Instant::now());
+        true
     }
 
     fn is_expired(&self) -> bool {
@@ -414,6 +477,8 @@ impl JwksCache {
     fn update(&mut self, keys: HashMap<String, JwksCachedKey>) {
         self.keys = keys;
         self.fetched = Some(Instant::now());
+        // A fresh set of keys ends the outage, so the next one warns again.
+        self.stale_warned = None;
     }
 }
 
@@ -425,8 +490,12 @@ struct JwksResponse {
 
 #[derive(Deserialize)]
 struct JwkKeyEntry {
-    kty: String,
+    /// Key type. Required by RFC 7517, but a malformed entry must only skip
+    /// itself rather than fail the whole document.
+    kty: Option<String>,
     kid: Option<String>,
+    /// Public key use. Optional in RFC 7517; when absent the key may be used
+    /// for signatures, so only an explicit other value excludes it.
     #[serde(rename = "use")]
     use_: Option<String>,
     /// RSA modulus
@@ -441,6 +510,27 @@ struct JwkKeyEntry {
     crv: Option<String>,
 }
 
+/// Read a response body, refusing one larger than [`MAX_IDP_RESPONSE_BYTES`]
+/// whether or not its length was declared.
+async fn read_body_limited(mut resp: reqwest::Response, what: &str) -> Result<Vec<u8>, String> {
+    let limit = u64::try_from(MAX_IDP_RESPONSE_BYTES).unwrap_or(u64::MAX);
+    if let Some(declared) = resp.content_length()
+        && declared > limit
+    {
+        return Err(format!("{what} response too large ({declared} bytes)"));
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| format!("reading {what}: {e}"))? {
+        if body.len().saturating_add(chunk.len()) > MAX_IDP_RESPONSE_BYTES {
+            return Err(format!(
+                "{what} response too large (over {MAX_IDP_RESPONSE_BYTES} bytes)"
+            ));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
 /// Fetches and parses JWKS from the given URL.
 async fn fetch_jwks(client: &Client, jwks_url: &str) -> Result<HashMap<String, JwksCachedKey>, String> {
     let resp = client
@@ -453,7 +543,18 @@ async fn fetch_jwks(client: &Client, jwks_url: &str) -> Result<HashMap<String, J
         return Err(format!("JWKS endpoint returned {}", resp.status().as_u16()));
     }
 
-    let jwks: JwksResponse = resp.json().await.map_err(|e| format!("parsing JWKS: {e}"))?;
+    let body = read_body_limited(resp, "JWKS").await?;
+    parse_jwks(&body)
+}
+
+/// Parse a JWKS document into the keys this server can verify with.
+///
+/// Per RFC 7517 `use` is optional: a key without it is accepted, a key
+/// marked for anything other than `sig` is skipped. Entries that are
+/// malformed or of an unsupported type skip themselves without failing the
+/// document.
+fn parse_jwks(body: &[u8]) -> Result<HashMap<String, JwksCachedKey>, String> {
+    let jwks: JwksResponse = serde_json::from_slice(body).map_err(|e| format!("parsing JWKS: {e}"))?;
 
     use base64::Engine;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -467,7 +568,7 @@ async fn fetch_jwks(client: &Client, jwks_url: &str) -> Result<HashMap<String, J
 
     let mut keys = HashMap::new();
     for k in jwks.keys {
-        if k.use_.as_deref() != Some("sig") {
+        if !matches!(k.use_.as_deref(), None | Some("sig")) {
             continue;
         }
         let kid = match &k.kid {
@@ -475,7 +576,7 @@ async fn fetch_jwks(client: &Client, jwks_url: &str) -> Result<HashMap<String, J
             None => continue,
         };
 
-        let cached_key = match k.kty.as_str() {
+        let cached_key = match k.kty.as_deref().unwrap_or("") {
             "RSA" => {
                 let (Some(n_str), Some(e_str)) = (&k.n, &k.e) else {
                     continue;
@@ -523,6 +624,8 @@ async fn fetch_jwks(client: &Client, jwks_url: &str) -> Result<HashMap<String, J
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn test_validator() -> OidcValidator {
         OidcValidator::new(OidcConfig {
@@ -534,6 +637,173 @@ mod tests {
             allowed_client_ids: vec![],
         })
         .expect("validator")
+    }
+
+    /// A validator whose JWKS URL is fixed and whose client ignores any proxy
+    /// in the test environment, so it talks to a loopback mock directly.
+    fn validator_with_jwks_url(jwks_url: &str) -> OidcValidator {
+        OidcValidator {
+            config: OidcConfig {
+                issuer_url: "https://issuer.example.com".to_string(),
+                audience: "api://test".to_string(),
+                jwks_url: Some(jwks_url.to_string()),
+                required_scopes: vec![],
+                required_roles: vec![],
+                allowed_client_ids: vec![],
+            },
+            http_client: Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_secs(10))
+                .build()
+                .expect("client"),
+            jwks_cache: Arc::new(RwLock::new(JwksCache::new())),
+        }
+    }
+
+    /// RFC 7515 appendix A.2 modulus, as a base64url string.
+    const RSA_N: &str = "ofgWCuLjybRlzo0tZWJjNiuSfb4p4fAkd_wWJcyQoTbji9k0l8W26mPddxHmfHQp-Vaw-4qPCJrcS2mJPMEzP1Pt0Bm4d4QlL-yRT-SFd2lZS-pCgNMsD1W_YpRPEwOWvG6b32690r2jZ47soMZo9wGzjb_7OMg0LOL-bSf63kpaSHSXndS5z5rexMdbBYUsLA9e-KXBdQOS-UTo7WTBEMa2R2CapHg665xsmtdVMTBQY4uDZlxvb3qCo5ZwKh9kG4LT6_I5IhlJH7aGhyxXFvUK-DWNmoudF8NAco9_h9iaGNj8q2ethFkMLs91kzk2PAcDTW9gb54h4FRWyuXpoQ";
+
+    fn rsa_jwk(kid: &str, use_: Option<&str>) -> serde_json::Value {
+        let mut key = serde_json::json!({"kty": "RSA", "kid": kid, "alg": "RS256", "n": RSA_N, "e": "AQAB"});
+        if let Some(u) = use_ {
+            key["use"] = serde_json::json!(u);
+        }
+        key
+    }
+
+    fn rsa_cached_key() -> JwksCachedKey {
+        JwksCachedKey::Rsa {
+            n: vec![1, 2, 3],
+            e: vec![1, 0, 1],
+        }
+    }
+
+    /// Put one key in the cache, already past its TTL, so the next lookup
+    /// must try a refresh.
+    async fn prime_expired_cache(v: &OidcValidator, kid: &str) {
+        let mut cache = v.jwks_cache.write().await;
+        cache.update(HashMap::from([(kid.to_string(), rsa_cached_key())]));
+        cache.ttl = Duration::from_secs(1);
+        cache.fetched = Instant::now().checked_sub(Duration::from_secs(2));
+        assert!(cache.is_expired());
+    }
+
+    // --- M7: `use` is optional, stale keys survive a failed refresh ---
+
+    #[test]
+    fn parse_jwks_accepts_a_key_without_use_and_skips_other_uses() {
+        let doc = serde_json::json!({"keys": [
+            rsa_jwk("no-use", None),
+            rsa_jwk("sig", Some("sig")),
+            rsa_jwk("enc", Some("enc")),
+            {"kid": "no-kty", "n": RSA_N, "e": "AQAB"},
+            {"kty": "oct", "kid": "symmetric", "k": "AQAB"},
+        ]});
+        let keys = parse_jwks(doc.to_string().as_bytes()).expect("parses");
+        let mut kids: Vec<&String> = keys.keys().collect();
+        kids.sort();
+        assert_eq!(kids, ["no-use", "sig"]);
+    }
+
+    #[test]
+    fn parse_jwks_fails_when_no_key_is_usable() {
+        let doc = serde_json::json!({"keys": [rsa_jwk("enc", Some("enc"))]});
+        let err = parse_jwks(doc.to_string().as_bytes()).unwrap_err();
+        assert!(err.contains("no valid signing keys"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_key_without_use_is_served_end_to_end() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/jwks"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "keys": [rsa_jwk("k1", None)]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let v = validator_with_jwks_url(&format!("{}/jwks", server.uri()));
+        assert!(v.fetch_signing_key("k1").await.is_ok());
+        assert!(v.cached_signing_key("k1").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_throttled_refresh_serves_the_stale_cached_key() {
+        // The URL is never contacted: the throttle refuses the refresh first.
+        let v = validator_with_jwks_url("http://127.0.0.1:9/jwks");
+        prime_expired_cache(&v, "k1").await;
+        v.jwks_cache.write().await.last_attempt = Some(Instant::now());
+
+        assert!(
+            v.cached_signing_key("k1").await.is_none(),
+            "an expired entry is not served on the fast path"
+        );
+        assert!(
+            v.fetch_signing_key("k1").await.is_ok(),
+            "while the refresh is throttled the stale key is still the provider's key"
+        );
+        let err = v.fetch_signing_key("k2").await.unwrap_err();
+        assert!(err.contains("throttled"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_failed_refresh_serves_the_stale_cached_key() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/jwks"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+
+        let v = validator_with_jwks_url(&format!("{}/jwks", server.uri()));
+        prime_expired_cache(&v, "k1").await;
+
+        assert!(
+            v.fetch_signing_key("k1").await.is_ok(),
+            "a provider outage must not fail tokens signed with a key the cache holds"
+        );
+        // A key id the cache has never seen cannot be served from anywhere;
+        // this attempt is throttled by the failed one just before it.
+        assert!(v.fetch_signing_key("k2").await.is_err());
+        assert!(
+            v.jwks_cache.read().await.is_expired(),
+            "a failed refresh leaves the TTL untouched so the next interval retries"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_stale_key_warning_is_written_once_per_interval() {
+        let mut cache = JwksCache::new();
+        cache.ttl = Duration::from_millis(20);
+        assert!(cache.should_warn_stale());
+        assert!(!cache.should_warn_stale());
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        assert!(cache.should_warn_stale());
+        // A successful refresh resets it so the next outage is reported.
+        cache.update(HashMap::new());
+        assert!(cache.should_warn_stale());
+    }
+
+    #[tokio::test]
+    async fn an_oversized_jwks_response_is_refused() {
+        let server = MockServer::start().await;
+        let body = format!(
+            "{{\"keys\": [], \"padding\": \"{}\"}}",
+            "x".repeat(MAX_IDP_RESPONSE_BYTES)
+        );
+        Mock::given(method("GET"))
+            .and(path("/jwks"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+
+        let v = validator_with_jwks_url(&format!("{}/jwks", server.uri()));
+        let err = fetch_jwks(&v.http_client, &format!("{}/jwks", server.uri()))
+            .await
+            .unwrap_err();
+        assert!(err.contains("too large"), "{err}");
     }
 
     #[tokio::test]

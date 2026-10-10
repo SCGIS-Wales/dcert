@@ -32,8 +32,10 @@ struct McpCli {
     #[arg(long, env = "DCERT_MCP_MODE", default_value = "stdio")]
     mode: String,
 
-    /// HTTP bind address (only used in http mode)
-    #[arg(long, env = "DCERT_MCP_ADDR", default_value = "0.0.0.0:3000")]
+    /// HTTP bind address (http mode only). Defaults to loopback; binding a
+    /// non-loopback address such as 0.0.0.0:3000 requires authentication
+    /// (DCERT_MCP_OIDC_ISSUER or DCERT_MCP_AUTH_TOKEN) or DCERT_MCP_ALLOW_INSECURE=1
+    #[arg(long, env = "DCERT_MCP_ADDR", default_value = "127.0.0.1:3000")]
     addr: String,
 }
 

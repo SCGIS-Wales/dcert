@@ -436,8 +436,28 @@ pub fn interactive_create() -> Result<(CsrCreateOptions, String, String)> {
     Ok((opts, csr_path, key_path))
 }
 
+/// Refuse to prompt when stdin is not a terminal.
+///
+/// Every interactive prompt except [`prompt_secret`] goes through this guard.
+/// With piped stdin (a script, CI, or the MCP server driving `dcert` as a
+/// subprocess) whatever bytes are queued there are not an answer to the
+/// question, and reading them would either hang or, worse, treat a stray
+/// line as a confirmation. Failing closed with a message that names the
+/// prompt lets the caller supply the value as a flag instead.
+fn require_terminal(label: &str) -> Result<()> {
+    use std::io::IsTerminal;
+    if std::io::stdin().is_terminal() {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "Cannot prompt for '{label}': stdin is not a terminal. Supply the value with a command line flag instead."
+        ))
+    }
+}
+
 pub fn prompt_required(label: &str) -> Result<String> {
     use std::io::{self, Write};
+    require_terminal(label)?;
     loop {
         eprint!("{label}: ");
         io::stderr().flush().ok();
@@ -479,6 +499,7 @@ pub fn prompt_secret(label: &str) -> Result<Secret> {
 
 pub fn prompt_optional(label: &str) -> Result<Option<String>> {
     use std::io::{self, Write};
+    require_terminal(label)?;
     eprint!("{label}: ");
     io::stderr().flush().ok();
     let mut input = String::new();
@@ -491,6 +512,7 @@ pub fn prompt_optional(label: &str) -> Result<Option<String>> {
 
 pub fn prompt_with_default(label: &str, default: &str) -> Result<String> {
     use std::io::{self, Write};
+    require_terminal(label)?;
     eprint!("{label} [{default}]: ");
     io::stderr().flush().ok();
     let mut input = String::new();
@@ -1122,5 +1144,22 @@ mod tests {
                 .any(|f| f.severity == Severity::Error && f.message.contains("SAN"))
         );
         assert!(!validation.compliant);
+    }
+
+    #[test]
+    fn plain_prompts_fail_closed_without_a_terminal() {
+        use std::io::IsTerminal;
+        if std::io::stdin().is_terminal() {
+            eprintln!("Skipping: stdin is a terminal, the prompts would block");
+            return;
+        }
+        for (name, result) in [
+            ("required", prompt_required("Role name").map(|_| ())),
+            ("optional", prompt_optional("Organization").map(|_| ())),
+            ("default", prompt_with_default("Overwrite? [Y/n]", "Y").map(|_| ())),
+        ] {
+            let err = result.expect_err(name).to_string();
+            assert!(err.contains("stdin is not a terminal"), "{name}: {err}");
+        }
     }
 }

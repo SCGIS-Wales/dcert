@@ -1331,6 +1331,184 @@ mod tests {
         assert!(d.root_cause.contains("24 hours"));
     }
 
+    // --- retired intermediates and distrusted roots -------------------
+
+    #[test]
+    fn expired_lets_encrypt_r3_intermediate_is_explained() {
+        let ev = Evidence {
+            target_host: "www.example.com".to_string(),
+            verify_result: Some("certificate has expired".to_string()),
+            chain_names: vec![
+                "CN=www.example.com".to_string(),
+                "C=US, O=Let's Encrypt, CN=R3".to_string(),
+                "C=US, O=Internet Security Research Group, CN=ISRG Root X1".to_string(),
+            ],
+            root_class: Some(RootClass::PubliclyTrusted),
+            ..Default::default()
+        };
+        let d = primary(&ev);
+        assert_eq!(d.id, "tls.handshake.letsencrypt-expired-intermediate");
+        assert!(d.root_cause.contains("2025-09-15"));
+        // The same chain without a failure is not reported: the entry
+        // explains a verification failure, not the mere presence of R3.
+        let ok = Evidence {
+            verify_result: None,
+            ..ev
+        };
+        assert!(
+            !diagnose(&kb(), &ok)
+                .findings
+                .iter()
+                .any(|d| d.id == "tls.handshake.letsencrypt-expired-intermediate")
+        );
+    }
+
+    #[test]
+    fn expired_lets_encrypt_intermediate_matches_from_handshake_error() {
+        let ev = Evidence {
+            target_host: "www.example.com".to_string(),
+            error: Some("TLS handshake failed: certificate verify failed: certificate has expired".to_string()),
+            chain_names: vec![
+                "CN=www.example.com".to_string(),
+                "C=US, O=Let's Encrypt, CN=E1".to_string(),
+            ],
+            ..Default::default()
+        };
+        let d = primary(&ev);
+        assert_eq!(d.id, "tls.handshake.letsencrypt-expired-intermediate");
+    }
+
+    #[test]
+    fn retired_lets_encrypt_r11_intermediate_only_reported_on_failure() {
+        let mut ev = Evidence {
+            target_host: "www.example.com".to_string(),
+            verify_result: Some("unable to get local issuer certificate".to_string()),
+            chain_names: vec![
+                "CN=www.example.com".to_string(),
+                "C=US, O=Let's Encrypt, CN=R11".to_string(),
+            ],
+            root_class: Some(RootClass::Incomplete),
+            ..Default::default()
+        };
+        let d = primary(&ev);
+        assert_eq!(d.id, "tls.handshake.letsencrypt-retired-intermediate");
+        assert!(d.root_cause.contains("2026-05-13"));
+        ev.verify_result = None;
+        ev.root_class = Some(RootClass::PubliclyTrusted);
+        assert!(diagnose(&kb(), &ev).findings.is_empty());
+        // R3 does not match the retired pattern and vice versa.
+        let r3 = Evidence {
+            chain_names: vec!["C=US, O=Let's Encrypt, CN=R3".to_string()],
+            verify_result: Some("certificate has expired".to_string()),
+            ..Default::default()
+        };
+        assert!(
+            !diagnose(&kb(), &r3)
+                .findings
+                .iter()
+                .any(|d| d.id == "tls.handshake.letsencrypt-retired-intermediate")
+        );
+    }
+
+    #[test]
+    fn entrust_anchored_chain_is_explained_when_not_publicly_trusted() {
+        let ev = Evidence {
+            target_host: "www.example.com".to_string(),
+            verify_result: Some("unable to get local issuer certificate".to_string()),
+            chain_names: vec![
+                "CN=www.example.com".to_string(),
+                "C=US, O=Entrust, Inc., CN=Entrust Certification Authority - L1K".to_string(),
+                "C=US, O=Entrust, Inc., CN=Entrust Root Certification Authority - G2".to_string(),
+            ],
+            root_class: Some(RootClass::Incomplete),
+            ..Default::default()
+        };
+        let d = primary(&ev);
+        assert_eq!(d.id, "tls.handshake.distrusted-root-entrust");
+        assert!(d.root_cause.contains("2026-04-15"));
+        // A chain the embedded set still verifies as public is not an Entrust distrust case.
+        let public = Evidence {
+            verify_result: None,
+            root_class: Some(RootClass::PubliclyTrusted),
+            ..ev
+        };
+        assert!(
+            !diagnose(&kb(), &public)
+                .findings
+                .iter()
+                .any(|d| d.id == "tls.handshake.distrusted-root-entrust")
+        );
+    }
+
+    #[test]
+    fn entrust_pattern_covers_base_g2_and_ec1_roots() {
+        for cn in [
+            "Entrust Root Certification Authority",
+            "Entrust Root Certification Authority - G2",
+            "Entrust Root Certification Authority - EC1",
+        ] {
+            let ev = Evidence {
+                target_host: "www.example.com".to_string(),
+                chain_names: vec![format!("O=Entrust, Inc., CN={cn}")],
+                root_class: Some(RootClass::PrivatePki),
+                ..Default::default()
+            };
+            assert_eq!(primary(&ev).id, "tls.handshake.distrusted-root-entrust", "{cn}");
+        }
+    }
+
+    #[test]
+    fn digicert_g1_anchored_chain_is_explained() {
+        let ev = Evidence {
+            target_host: "www.example.com".to_string(),
+            verify_result: Some("self-signed certificate in certificate chain".to_string()),
+            chain_names: vec![
+                "CN=www.example.com".to_string(),
+                "C=US, O=DigiCert Inc, CN=DigiCert TLS RSA SHA256 2020 CA1".to_string(),
+                "C=US, O=DigiCert Inc, OU=www.digicert.com, CN=DigiCert Global Root CA".to_string(),
+            ],
+            root_class: Some(RootClass::PrivatePki),
+            ..Default::default()
+        };
+        let d = primary(&ev);
+        assert_eq!(d.id, "tls.handshake.distrusted-root-digicert-g1");
+        assert!(d.root_cause.contains("G5"));
+        // G2 and G5 roots are still trusted and must not match.
+        let g2 = Evidence {
+            chain_names: vec!["C=US, O=DigiCert Inc, CN=DigiCert Global Root G2".to_string()],
+            root_class: Some(RootClass::Incomplete),
+            verify_result: Some("unable to get local issuer certificate".to_string()),
+            ..Default::default()
+        };
+        assert!(
+            !diagnose(&kb(), &g2)
+                .findings
+                .iter()
+                .any(|d| d.id == "tls.handshake.distrusted-root-digicert-g1")
+        );
+    }
+
+    #[test]
+    fn chunghwa_and_netlock_roots_are_flagged_for_chrome() {
+        for anchor in [
+            "C=TW, O=Chunghwa Telecom Co., Ltd., CN=HiPKI Root CA - G1",
+            "C=HU, O=NetLock Kft., CN=NetLock Arany (Class Gold) Főtanúsítvány",
+        ] {
+            let ev = Evidence {
+                target_host: "www.example.com.tw".to_string(),
+                chain_names: vec!["CN=www.example.com.tw".to_string(), anchor.to_string()],
+                root_class: Some(RootClass::PubliclyTrusted),
+                ..Default::default()
+            };
+            let d = primary(&ev);
+            assert_eq!(
+                d.id, "tls.handshake.chrome-distrusted-root-chunghwa-netlock",
+                "{anchor}"
+            );
+            assert!(d.root_cause.contains("2025-07-31"));
+        }
+    }
+
     #[test]
     fn every_layer_has_a_label_and_sorts_in_path_order() {
         assert!(Layer::EdgeHttp < Layer::GatewayHttp && Layer::GatewayHttp < Layer::OriginHttp);

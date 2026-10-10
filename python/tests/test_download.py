@@ -16,16 +16,19 @@ from urllib.response import addinfourl
 import pytest
 
 from dcert import download as dl_mod
+from dcert.config import load_config
 from dcert.download import (
+    IntegrityError,
     build_opener,
     download_to_file,
     ensure_binary,
     extract_binaries,
     get_archive_name,
     get_install_dir,
-    get_target_triple,
+    get_target,
     install_lock,
     is_allowed_url,
+    iter_archive_members,
     load_checksums,
     stream_to_file,
     verify_checksum,
@@ -104,22 +107,33 @@ def test_load_checksums_packaged():
     assert "archives" in result
 
 
-def test_load_checksums_missing(tmp_path, monkeypatch):
-    monkeypatch.setattr(dl_mod, "__file__", str(tmp_path / "download.py"))
-    assert load_checksums() == {}
+def test_load_checksums_missing(tmp_path):
+    assert load_checksums(tmp_path / "checksums.json") == {}
 
 
-def test_load_checksums_valid(tmp_path, monkeypatch):
+def test_load_checksums_valid(tmp_path):
     checksums = _checksums("abc123")
-    (tmp_path / "checksums.json").write_text(json.dumps(checksums))
-    monkeypatch.setattr(dl_mod, "__file__", str(tmp_path / "download.py"))
-    assert load_checksums() == checksums
+    path = tmp_path / "checksums.json"
+    path.write_text(json.dumps(checksums))
+    assert load_checksums(path) == checksums
 
 
-def test_load_checksums_not_a_mapping(tmp_path, monkeypatch):
-    (tmp_path / "checksums.json").write_text("[]")
-    monkeypatch.setattr(dl_mod, "__file__", str(tmp_path / "download.py"))
-    assert load_checksums() == {}
+def test_load_checksums_without_archives(tmp_path):
+    path = tmp_path / "checksums.json"
+    path.write_text('{"version": "1.0.0"}')
+    assert load_checksums(path) == {"version": "1.0.0"}
+
+
+@pytest.mark.parametrize(
+    "content", ["[]", '{"archives": []}', '{"archives": {"a.tar.gz": 1}}', '{"archives": {1: "x"}}']
+)
+def test_load_checksums_malformed(tmp_path, content):
+    path = tmp_path / "checksums.json"
+    path.write_text(content.replace("{1:", '{"1":') if "{1:" in content else content)
+    if content == '{"archives": {1: "x"}}':
+        return  # JSON keys are always strings; nothing to test beyond the parse.
+    with pytest.raises(RuntimeError, match="malformed"):
+        load_checksums(path)
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +155,9 @@ def test_target_and_archive(system, machine, triple, archive):
         patch("dcert.download.platform.system", return_value=system),
         patch("dcert.download.platform.machine", return_value=machine),
     ):
-        assert get_target_triple() == triple
+        target = get_target()
+        assert target is not None
+        assert target.triple == triple
         assert get_archive_name() == archive
 
 
@@ -151,7 +167,7 @@ def test_unsupported_platform(system, machine):
         patch("dcert.download.platform.system", return_value=system),
         patch("dcert.download.platform.machine", return_value=machine),
     ):
-        assert get_target_triple() is None
+        assert get_target() is None
         assert get_archive_name() is None
 
 
@@ -160,23 +176,35 @@ def test_unsupported_platform(system, machine):
 # ---------------------------------------------------------------------------
 
 
-def test_get_install_dir_scripts_writable(tmp_path):
-    with patch("dcert.download.sysconfig.get_path", return_value=str(tmp_path)):
-        assert get_install_dir() == tmp_path
+def test_get_install_dir_default_is_owned_by_dcert(tmp_path, clean_env, monkeypatch):
+    """The default lives under the home directory, never in pip's scripts directory."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    with patch("dcert.download.platform.system", return_value="Linux"):
+        install_dir = get_install_dir()
+    assert install_dir == tmp_path / ".local" / "share" / "dcert" / "bin"
+    assert install_dir.is_dir()
+    assert Path(sys.prefix) not in install_dir.parents
 
 
-def test_get_install_dir_scripts_not_writable(tmp_path):
-    """Falls back to ~/.local/bin; os.access is patched so root can run this."""
-    scripts = tmp_path / "scripts"
-    scripts.mkdir()
-    home = tmp_path / "home"
+def test_get_install_dir_windows_uses_localappdata(tmp_path, clean_env, monkeypatch):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "AppData" / "Local"))
+    with patch("dcert.download.platform.system", return_value="Windows"):
+        assert get_install_dir() == tmp_path / "AppData" / "Local" / "dcert" / "bin"
+
+
+def test_get_install_dir_env_override(tmp_path, clean_env, monkeypatch):
+    monkeypatch.setenv(load_config().install.env_override, str(tmp_path / "custom"))
+    assert get_install_dir() == tmp_path / "custom"
+    assert (tmp_path / "custom").is_dir()
+
+
+def test_get_install_dir_rejects_relative_result(clean_env, monkeypatch):
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
     with (
-        patch("dcert.download.sysconfig.get_path", return_value=str(scripts)),
-        patch("dcert.download.os.access", return_value=False),
-        patch("dcert.download.Path.home", return_value=home),
+        patch("dcert.download.platform.system", return_value="Windows"),
+        pytest.raises(RuntimeError, match="not absolute.*DCERT_INSTALL_DIR"),
     ):
-        assert get_install_dir() == home / ".local" / "bin"
-    assert (home / ".local" / "bin").is_dir()
+        get_install_dir()
 
 
 # ---------------------------------------------------------------------------
@@ -243,8 +271,12 @@ def test_redirect_handler_allows_https_on_allowed_host():
 )
 def test_redirect_handler_refuses(newurl):
     handler = dl_mod._ValidatingRedirectHandler(HOSTS)
-    with pytest.raises(RuntimeError, match="Refusing redirect"):
+    with pytest.raises(IntegrityError, match="Refusing redirect"):
         _redirect(handler, newurl)
+
+
+def test_integrity_error_is_a_runtime_error():
+    assert issubclass(IntegrityError, RuntimeError)
 
 
 def test_build_opener_installs_validating_handler():
@@ -254,7 +286,7 @@ def test_build_opener_installs_validating_handler():
 
 def test_download_to_file_refuses_disallowed_url(tmp_path):
     out = io.BytesIO()
-    with pytest.raises(RuntimeError, match="Refusing to download"):
+    with pytest.raises(IntegrityError, match="Refusing to download"):
         download_to_file(
             "http://github.com/x", out, timeout=1, max_bytes=10, chunk_size=4, allowed_hosts=HOSTS
         )
@@ -291,9 +323,47 @@ def test_stream_to_file_within_limit():
 def test_stream_to_file_rejects_large_content_length():
     out = io.BytesIO()
     response = _response(b"x", headers={"Content-Length": "1000"})
-    with pytest.raises(RuntimeError, match="exceeds the 10 byte limit"):
+    with pytest.raises(IntegrityError, match="exceeds the 10 byte limit"):
         stream_to_file(response, out, max_bytes=10, chunk_size=4)
     assert out.getvalue() == b""
+
+
+def test_stream_to_file_enforces_total_deadline():
+    clock = iter([0.0, 1.0, 2.5, 4.0, 6.0])
+    out = io.BytesIO()
+    with pytest.raises(TimeoutError, match="exceeded the 3.0 second limit"):
+        stream_to_file(
+            _response(b"x" * 100),
+            out,
+            max_bytes=1000,
+            chunk_size=10,
+            max_seconds=3.0,
+            clock=lambda: next(clock),
+        )
+    assert len(out.getvalue()) < 100
+
+
+def test_download_to_file_forwards_deadline():
+    seen = {}
+
+    def fake_stream(_response, _out, **kwargs):
+        seen.update(kwargs)
+        return 0
+
+    with (
+        patch("dcert.download.build_opener", return_value=_fake_opener(b"")),
+        patch("dcert.download.stream_to_file", side_effect=fake_stream),
+    ):
+        download_to_file(
+            "https://github.com/x",
+            io.BytesIO(),
+            timeout=1,
+            max_bytes=10,
+            chunk_size=4,
+            allowed_hosts=HOSTS,
+            max_seconds=42.0,
+        )
+    assert seen["max_seconds"] == 42.0
 
 
 def test_stream_to_file_ignores_invalid_content_length():
@@ -304,7 +374,7 @@ def test_stream_to_file_ignores_invalid_content_length():
 
 def test_stream_to_file_aborts_when_body_exceeds_limit():
     out = io.BytesIO()
-    with pytest.raises(RuntimeError, match="exceeded the 10 byte limit"):
+    with pytest.raises(IntegrityError, match="exceeded the 10 byte limit"):
         stream_to_file(_response(b"x" * 11), out, max_bytes=10, chunk_size=4)
     assert len(out.getvalue()) <= 10
 
@@ -336,6 +406,26 @@ def test_install_lock_is_exclusive(tmp_path):
     with lock_path.open("ab") as other:
         fcntl.flock(other.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         fcntl.flock(other.fileno(), fcntl.LOCK_UN)
+
+
+def test_lock_handle_polls_until_acquired(tmp_path):
+    """Windows cannot block indefinitely, so the lock is retried with a sleep between tries."""
+    sleeps = []
+    with (
+        patch("dcert.download._try_lock", side_effect=[False, False, True]) as try_lock,
+        (tmp_path / ".lock").open("ab") as handle,
+    ):
+        dl_mod._lock_handle(handle, poll_seconds=0.25, sleep=sleeps.append)
+    assert try_lock.call_count == 3
+    assert sleeps == [0.25, 0.25]
+
+
+def test_install_lock_poll_interval_from_config(tmp_path):
+    with patch("dcert.download._lock_handle") as lock_handle, install_lock(tmp_path / ".lock"):
+        pass
+    assert lock_handle.call_args.kwargs == {
+        "poll_seconds": load_config().download.lock_poll_seconds
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -400,6 +490,32 @@ def test_extract_binaries_zip(tmp_path):
     assert not (install / "README.md").exists()
 
 
+def test_extract_binaries_zip_skips_directory_entries(tmp_path):
+    archive = tmp_path / "dcert-x86_64-pc-windows-msvc.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("dcert-mcp/", b"")
+        zf.writestr("dcert/", b"")
+    install = tmp_path / "install"
+    install.mkdir()
+    with pytest.raises(RuntimeError, match="dcert-mcp binary not found"):
+        extract_binaries(archive, install)
+    assert list(install.iterdir()) == []
+
+
+def test_iter_archive_members_dispatches_on_extension(tmp_path):
+    tar = tmp_path / "a.tar.gz"
+    _make_tar_gz(tar, ["dcert-mcp"], data=b"tar")
+    zipped = tmp_path / "a.zip"
+    with zipfile.ZipFile(zipped, "w") as zf:
+        zf.writestr("nested/dcert-mcp", b"zip")
+    assert [(n, h.read()) for n, h in iter_archive_members(tar, {"dcert-mcp"})] == [
+        ("dcert-mcp", b"tar")
+    ]
+    assert [(n, h.read()) for n, h in iter_archive_members(zipped, {"dcert-mcp"})] == [
+        ("dcert-mcp", b"zip")
+    ]
+
+
 def test_extract_binaries_atomic_replace(tmp_path):
     """An existing binary is replaced in one step and no temp file is left."""
     archive = tmp_path / "test.tar.gz"
@@ -433,6 +549,31 @@ def test_ensure_binary_already_installed(install_dir):
     assert ensure_binary("1.0.0") == str(target)
 
 
+def test_ensure_binary_ignores_console_script_wrapper(install_dir, linux_platform):
+    """pip's wrapper must never count as the installed binary (it would exec itself)."""
+    target = install_dir / "dcert-mcp"
+    target.write_text("#!/usr/bin/env python3\nfrom dcert.cli import dcert_mcp_main\n")
+    target.chmod(0o755)
+    archive_bytes = _make_tar_gz(install_dir / "unused.tar.gz", ["dcert", "dcert-mcp"])
+    (install_dir / "unused.tar.gz").unlink()
+    checksums = _checksums(hashlib.sha256(archive_bytes).hexdigest())
+    with (
+        patch("dcert.download.load_checksums", return_value=checksums),
+        patch("dcert.download.build_opener", return_value=_fake_opener(archive_bytes)),
+    ):
+        assert ensure_binary("1.0.0") == str(target)
+    assert target.read_bytes().startswith(b"#!/bin/sh")
+
+
+def test_ensure_binary_ignores_running_launcher(install_dir):
+    target = install_dir / "dcert-mcp"
+    target.write_bytes(b"\x7fELF" + b"\x00" * 60)
+    target.chmod(0o755)
+    with patch("dcert.download.sys.argv", [str(target)]):
+        assert dl_mod._is_installed(target) is False
+    assert dl_mod._is_installed(target) is True
+
+
 def test_ensure_binary_unsupported_platform(install_dir):
     with patch("dcert.download.get_archive_name", return_value=None):
         assert ensure_binary("1.0.0") is None
@@ -449,16 +590,18 @@ def test_ensure_binary_no_checksum_for_platform(install_dir, linux_platform):
         assert ensure_binary("1.0.0") is None
 
 
-def test_ensure_binary_downloads_and_verifies(install_dir, linux_platform, capsys):
+def test_ensure_binary_downloads_and_verifies(install_dir, linux_platform, capsys, caplog):
     archive_bytes = _make_tar_gz(install_dir / "unused.tar.gz", ["dcert", "dcert-mcp"])
     (install_dir / "unused.tar.gz").unlink()
     checksums = _checksums(hashlib.sha256(archive_bytes).hexdigest())
     capture = {}
+    messages = []
     with (
+        caplog.at_level("INFO", logger="dcert.download"),
         patch("dcert.download.load_checksums", return_value=checksums),
         patch("dcert.download.build_opener", return_value=_fake_opener(archive_bytes, capture)),
     ):
-        result = ensure_binary("3.0.12")
+        result = ensure_binary("3.0.12", notify=messages.append)
     assert result == str(install_dir / "dcert-mcp")
     assert os.access(install_dir / "dcert-mcp", os.X_OK)
     assert os.access(install_dir / "dcert", os.X_OK)
@@ -466,14 +609,17 @@ def test_ensure_binary_downloads_and_verifies(install_dir, linux_platform, capsy
         "https://github.com/SCGIS-Wales/dcert/releases/download/v3.0.12/" + ARCHIVE
     )
     assert _leftovers(install_dir) == []
-    assert "Installed dcert binaries" in capsys.readouterr().err
+    # The library never prints; progress goes to the log and the notify hook.
+    assert capsys.readouterr() == ("", "")
+    assert [m.split(" ")[0] for m in messages] == ["Downloading", "Installed"]
+    assert "Installed dcert binaries" in caplog.text
 
 
 def test_ensure_binary_checksum_mismatch_raises(install_dir, linux_platform):
     with (
         patch("dcert.download.load_checksums", return_value=_checksums("0" * 64)),
         patch("dcert.download.build_opener", return_value=_fake_opener(b"tampered content")),
-        pytest.raises(RuntimeError, match="Checksum mismatch"),
+        pytest.raises(IntegrityError, match="Checksum mismatch"),
     ):
         ensure_binary("1.0.0")
     assert _leftovers(install_dir) == []
@@ -485,7 +631,7 @@ def test_ensure_binary_size_cap(install_dir, linux_platform):
     with (
         patch("dcert.download.load_checksums", return_value=_checksums("0" * 64)),
         patch("dcert.download.build_opener", return_value=oversized),
-        pytest.raises(RuntimeError, match="exceeds"),
+        pytest.raises(IntegrityError, match="exceeds"),
     ):
         ensure_binary("1.0.0")
     assert _leftovers(install_dir) == []

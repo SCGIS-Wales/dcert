@@ -3,7 +3,7 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::validate::{validate_arg, validate_path};
+use crate::validate::{reject_flag_like, validate_arg, validate_path};
 
 // -- Parameter types --
 
@@ -122,6 +122,21 @@ pub(crate) struct HttpTlsParams {
     /// Colon-separated IANA cipher names for TLS 1.3 (e.g. "TLS_AES_256_GCM_SHA384")
     #[serde(default)]
     pub(crate) cipher_suites: Option<String>,
+    /// Key exchange groups to offer, as an OpenSSL group list
+    /// (e.g. "X25519MLKEM768:X25519:secp384r1"). RFC 10024 post quantum
+    /// hybrids need OpenSSL 3.5 or later on the dcert host.
+    #[serde(default)]
+    pub(crate) groups: Option<String>,
+    /// Named TLS client profile: "modern" (TLS 1.3 only) or "intermediate"
+    /// (TLS 1.2 and 1.3, forward secret AEAD suites), following the Mozilla
+    /// configurator v6. Explicit cipher, suite and group values win.
+    #[serde(default)]
+    pub(crate) tls_profile: Option<String>,
+    /// Run a second handshake offering only the RFC 10024 hybrid post quantum
+    /// groups and report whether the server supports post quantum key
+    /// agreement (`post_quantum_probe` in the connection block).
+    #[serde(default)]
+    pub(crate) pq_probe: Option<bool>,
     /// Override the SNI (Server Name Indication) hostname sent in the TLS
     /// handshake. Most callers do NOT need this. To connect to an IP while
     /// validating a hostname, prefer `connect_to` (keep the hostname in
@@ -184,6 +199,12 @@ pub(crate) struct HttpTlsParams {
     pub(crate) starttls: Option<String>,
 }
 
+/// Upper bound on the request body a tool call may send (1 MiB). The body is
+/// passed to the subprocess as one argv entry, so it has to stay well under
+/// the platform's argument length limit and must not let a client make the
+/// server allocate without bound.
+pub(crate) const MAX_DATA_LEN: usize = 1024 * 1024;
+
 impl HttpTlsParams {
     pub(crate) fn to_args(&self) -> Vec<String> {
         let mut args = Vec::new();
@@ -200,6 +221,17 @@ impl HttpTlsParams {
         if let Some(ref v) = self.cipher_suites {
             args.push("--cipher-suites".to_string());
             args.push(v.clone());
+        }
+        if let Some(ref v) = self.groups {
+            args.push("--groups".to_string());
+            args.push(v.clone());
+        }
+        if let Some(ref v) = self.tls_profile {
+            args.push("--tls-profile".to_string());
+            args.push(v.clone());
+        }
+        if self.pq_probe == Some(true) {
+            args.push("--pq-probe".to_string());
         }
         if let Some(ref v) = self.sni {
             args.push("--sni".to_string());
@@ -267,15 +299,7 @@ impl HttpTlsParams {
             .map(|s| ("connect_to", s))
             .chain(self.resolve.iter().flat_map(OneOrMany::values).map(|s| ("resolve", s)))
         {
-            if spec.trim().is_empty() {
-                return Err(format!("{label} entries must not be empty"));
-            }
-            if spec.starts_with('-') {
-                return Err(format!("{label} value '{spec}' must not start with '-'"));
-            }
-            if spec.contains('\0') {
-                return Err(format!("{label} value must not contain null bytes"));
-            }
+            reject_flag_like(spec, label)?;
         }
         if let Some(ref proxy) = self.proxy
             && !proxy.is_empty()
@@ -293,6 +317,14 @@ impl HttpTlsParams {
                 return Err(format!("headers entry '{h}' must be in Key:Value form"));
             }
         }
+        if let Some(ref groups) = self.groups {
+            dcert::keyex::validate_groups_list(groups).map_err(|e| e.replace("--groups", "groups"))?;
+        }
+        if let Some(ref profile) = self.tls_profile
+            && !matches!(profile.as_str(), "modern" | "intermediate")
+        {
+            return Err(format!("tls_profile '{profile}' must be 'modern' or 'intermediate'"));
+        }
         for (name, value) in [
             ("cipher_list", &self.cipher_list),
             ("cipher_suites", &self.cipher_suites),
@@ -307,9 +339,15 @@ impl HttpTlsParams {
             }
         }
         if let Some(ref data) = self.data
-            && (data.starts_with('-') || data.contains('\0'))
+            && !data.is_empty()
         {
-            return Err("data must not start with '-' or contain null bytes".to_string());
+            reject_flag_like(data, "data")?;
+            if data.len() > MAX_DATA_LEN {
+                return Err(format!(
+                    "data is too large ({} bytes, maximum {MAX_DATA_LEN})",
+                    data.len()
+                ));
+            }
         }
         if let Some(t) = self.timeout
             && !(1..=300).contains(&t)

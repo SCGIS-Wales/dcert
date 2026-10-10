@@ -7,14 +7,8 @@
 //! - Per tool authorization scopes
 //! - Axum middleware for HTTP transport authentication
 
-// These modules expose public APIs for extensibility; not all items are
-// used internally but are available for consumers and downstream integration.
-#[allow(dead_code)]
 pub mod audit;
-#[allow(dead_code)]
 pub mod middleware;
-#[allow(dead_code)]
 pub mod oidc;
 pub mod scope;
-#[allow(dead_code)]
 pub mod session;
