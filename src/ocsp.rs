@@ -83,7 +83,7 @@ const MAX_OCSP_RESPONSE_SIZE: usize = 1024 * 1024;
 const OCSP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Clock skew tolerated when checking `thisUpdate` / `nextUpdate`.
-const OCSP_MAX_SKEW_SECS: i64 = 300;
+const OCSP_MAX_SKEW_SECS: u32 = 300;
 
 /// Check OCSP revocation status for a certificate.
 /// Returns "good", "revoked", "unknown", or an error description.
@@ -275,7 +275,7 @@ pub fn check_ocsp_status(cert_der: &[u8], issuer_der: Option<&[u8]>, ocsp_url: &
             // A signed but stale answer (captured before a revocation and
             // replayed) must not pass as "good": thisUpdate must not be in
             // the future and nextUpdate, when present, must not have passed.
-            if let Err(e) = status.check_validity(OCSP_MAX_SKEW_SECS as u32, None) {
+            if let Err(e) = status.check_validity(OCSP_MAX_SKEW_SECS, None) {
                 return format!(
                     "error: OCSP response is stale or not yet valid (thisUpdate/nextUpdate check failed: {e})"
                 );
@@ -361,7 +361,8 @@ mod tests {
         // plain HTTP and cleartext on port 443 could only ever fail.
         let pem = include_str!("../tests/data/valid.pem");
         let der = ::pem::parse(pem).expect("pem").into_contents();
-        let result = super::check_ocsp_status(&der, None, "https://127.0.0.1:1/ocsp", false);
+        // The fixture is self signed, so it serves as its own issuer.
+        let result = super::check_ocsp_status(&der, Some(&der), "https://127.0.0.1:1/ocsp", false);
         assert!(result.contains("unsupported scheme 'https'"), "{result}");
     }
 

@@ -26,8 +26,12 @@ Both transports are served by the `rmcp` SDK, so the HTTP transport exposes the 
 | Concurrent request limit | 64 | `DCERT_MCP_MAX_CONCURRENT_REQUESTS` |
 | Per-request timeout | 120 seconds | `DCERT_MCP_REQUEST_TIMEOUT` |
 | Request body limit | 1 MiB | `DCERT_MCP_MAX_BODY_BYTES` |
+| Authentication failures allowed per client address | 10 (`0` disables) | `DCERT_MCP_AUTH_FAILURE_LIMIT` |
+| Authentication failure window | 60 seconds | `DCERT_MCP_AUTH_FAILURE_WINDOW` |
 
-`GET /health` sits outside the authentication layer so liveness probes need no credential; every other route is behind it. CORS runs outside authentication, so a preflight is answered rather than rejected with a 401.
+`GET /health` sits outside the authentication layer so liveness probes need no credential; every other route is behind it. CORS runs outside authentication, so a preflight is answered rather than rejected with a 401. A request body over the limit is answered with `413`.
+
+The failure limiter runs ahead of authentication. A client address that is answered `401` more than the limit allows within the window receives `429 Too Many Requests` with a `Retry-After` header until the window closes, whatever token it then presents, so a static token or a signing key cannot be guessed online. The limiter is keyed on the TCP peer address only; `X-Forwarded-For` is client supplied and is never consulted, so clients behind one reverse proxy share an allowance, and an operator who terminates connections at a proxy should raise the limit or rate limit at the proxy instead. The table is capped at 10 000 addresses, the oldest being evicted first, so it cannot be used to exhaust memory. Each refusal is logged as `auth_rate_limited`.
 
 ### Per-Tool Authorization
 
@@ -49,14 +53,14 @@ When running in HTTP mode, authentication is resolved in priority order:
 2. **Static bearer token** — if only `DCERT_MCP_AUTH_TOKEN` is set
 3. **No auth** — if neither is configured (not recommended for production)
 
-When no authentication is configured, `dcert-mcp` refuses to start on a non-loopback bind address (e.g. the default `0.0.0.0:3000`) so an unauthenticated, subprocess-spawning endpoint is never exposed to the network by accident. Bind to `127.0.0.1`, configure authentication, or set `DCERT_MCP_ALLOW_INSECURE=1` to override.
+The HTTP transport binds to `127.0.0.1:3000` by default, so the default invocation is reachable only from the same host. When no authentication is configured, `dcert-mcp` refuses to start on a non-loopback bind address (e.g. `--addr 0.0.0.0:3000`) so an unauthenticated, subprocess-spawning endpoint is never exposed to the network by accident. Keep the loopback bind, configure authentication, or set `DCERT_MCP_ALLOW_INSECURE=1` to override.
 
 The signature algorithm allow-list accepts only RSA (RS256/384/512) and ECDSA (ES256/384); `alg=none` and HMAC algorithms are rejected to prevent algorithm-confusion attacks. The token header is checked against that list before any key is fetched for it.
 
 ### OIDC/OAuth2 Token Validation
 
 JWT tokens are validated against:
-- **Signature** — verified via JWKS (JSON Web Key Sets) with automatic key rotation
+- **Signature** — verified via JWKS (JSON Web Key Sets) with automatic key rotation. A JWKS entry without a `use` member is accepted as a signing key, as RFC 7517 makes `use` optional; entries marked for any other use are skipped. While a JWKS refresh is throttled or the identity provider is not answering, a key the cache already holds is still served past its TTL (logged at warn level once per interval), so a provider outage does not fail every token; a key id the cache has never seen is rejected. Discovery documents and key sets larger than 1 MiB are refused
 - **Issuer** — must match `DCERT_MCP_OIDC_ISSUER`
 - **Audience** — must match `DCERT_MCP_OIDC_AUDIENCE` (prevents token confusion)
 - **Expiry** — expired tokens are rejected
@@ -82,6 +86,7 @@ JWKS keys are cached for `DCERT_MCP_JWKS_TTL` seconds (default 3600). A token be
 All authentication events are logged as structured JSON:
 - `auth_success` — successful authentication with principal, tenant, scopes
 - `auth_failure` — failed attempts with reason and remote address
+- `auth_rate_limited` — a request refused before authentication because its address exceeded the failure limit
 - `authz_denied` — authorization denials with action context
 
 ### Static Token Mode
@@ -151,5 +156,7 @@ Every authentication failure returns the same bare `401 Unauthorized` with a `WW
 | `DCERT_MCP_SESSION_TTL` | Session cache inactivity TTL in seconds (default: 300) |
 | `DCERT_MCP_AUTH_TOKEN` | Static bearer token (lower priority than OIDC) |
 | `DCERT_MCP_ALLOWED_ORIGINS` | Comma-separated CORS allowlist for HTTP mode (default: none; `*` = any origin) |
+| `DCERT_MCP_AUTH_FAILURE_LIMIT` | Failed authentications per client address before 429 (default: 10; `0` disables) |
+| `DCERT_MCP_AUTH_FAILURE_WINDOW` | Window for the failure limit in seconds (default: 60) |
 | `DCERT_PROXY` | Forward proxy URL for the `dcert` binary; overrides `HTTPS_PROXY`/`HTTP_PROXY` |
 | `DCERT_NOPROXY` | Proxy bypass list for the `dcert` binary; overrides `NO_PROXY` |

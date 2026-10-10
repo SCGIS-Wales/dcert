@@ -9,6 +9,73 @@ use crate::exec::format_tool_output;
 use crate::params_vault::*;
 use crate::validate::*;
 
+/// Reply to a Vault tool call with the subprocess output, or with the reason
+/// it could not run.
+fn vault_reply(outcome: Result<(String, String, i32), String>) -> Result<CallToolResult, rmcp::ErrorData> {
+    match outcome {
+        Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "debug/stderr", &[0])),
+        Err(e) => ok_error(e),
+    }
+}
+
+/// Check a Vault KV path parameter with the same rules the CLI applies, so a
+/// path such as `secret/../sys/policies/acl/root` is refused here rather than
+/// reaching an arbitrary Vault endpoint with the server's token.
+fn validate_kv_path_param(path: &str, param_name: &str) -> Result<(), String> {
+    dcert::vault::validate_kv_path(path)
+        .map(|_| ())
+        .map_err(|e| format!("Invalid {param_name}: {e}"))
+}
+
+/// `output` is a base name: dcert appends `.crt`, `.key` or `.pfx` to it. Each
+/// file that can result must lie inside the allowed roots, like every other
+/// file parameter.
+fn validate_output_base(output: &str) -> Result<(), String> {
+    validate_path(output, "output")?;
+    for ext in ["crt", "key", "pfx"] {
+        validate_path(&format!("{output}.{ext}"), "output")?;
+    }
+    Ok(())
+}
+
+/// The PKI issuance flags shared by `vault_issue`, `vault_sign` and
+/// `vault_renew`.
+struct PkiArgs<'a> {
+    role: Option<&'a str>,
+    sans: &'a [String],
+    ip_sans: &'a [String],
+    output: Option<&'a str>,
+    store_path: Option<&'a str>,
+    kv_version: u8,
+}
+
+/// Append `--role`, `--san`, `--ip-san`, `--output` and, when a store path
+/// is given, `--store-path` with its `--kv-version`.
+fn push_pki_args(args: &mut Vec<String>, pki: &PkiArgs<'_>) {
+    if let Some(role) = pki.role {
+        args.push("--role".to_string());
+        args.push(role.to_string());
+    }
+    for san in pki.sans {
+        args.push("--san".to_string());
+        args.push(san.clone());
+    }
+    for ip in pki.ip_sans {
+        args.push("--ip-san".to_string());
+        args.push(ip.clone());
+    }
+    if let Some(output) = pki.output {
+        args.push("--output".to_string());
+        args.push(output.to_string());
+    }
+    if let Some(store_path) = pki.store_path {
+        args.push("--store-path".to_string());
+        args.push(store_path.to_string());
+        args.push("--kv-version".to_string());
+        args.push(pki.kv_version.to_string());
+    }
+}
+
 #[tool_router(router = vault_tool_router, vis = "pub(crate)")]
 impl DcertMcpServer {
     // ===================================================================
@@ -43,14 +110,15 @@ impl DcertMcpServer {
         ])
         .and_then(|()| validate_list(&params.sans, "sans", 100))
         .and_then(|()| validate_list(&params.ip_sans, "ip_sans", 100))
-        {
+        .and_then(|()| validate_kv_version(params.kv_version))
+        .and_then(|()| params.output.as_deref().map_or(Ok(()), validate_output_base))
+        .and_then(|()| {
+            params
+                .store_path
+                .as_deref()
+                .map_or(Ok(()), |p| validate_kv_path_param(p, "store_path"))
+        }) {
             return ok_error(e);
-        }
-        if !(1..=2).contains(&params.kv_version) {
-            return ok_error("kv_version must be 1 or 2".to_string());
-        }
-        if params.common_name.trim().is_empty() {
-            return ok_error("common_name must not be empty".to_string());
         }
 
         let mut args: Vec<String> = vec![
@@ -64,39 +132,25 @@ impl DcertMcpServer {
             "--format".to_string(),
             "json".to_string(),
         ];
-        if let Some(ref role) = params.role {
-            args.push("--role".to_string());
-            args.push(role.clone());
-        }
-        for san in &params.sans {
-            args.push("--san".to_string());
-            args.push(san.clone());
-        }
-        for ip in &params.ip_sans {
-            args.push("--ip-san".to_string());
-            args.push(ip.clone());
-        }
-        if let Some(ref output) = params.output {
-            args.push("--output".to_string());
-            args.push(output.clone());
-        }
+        push_pki_args(
+            &mut args,
+            &PkiArgs {
+                role: params.role.as_deref(),
+                sans: &params.sans,
+                ip_sans: &params.ip_sans,
+                output: params.output.as_deref(),
+                store_path: params.store_path.as_deref(),
+                kv_version: params.kv_version,
+            },
+        );
         // The PFX passphrase travels in the environment, never in argv.
         let mut extra_env: Vec<(&str, &str)> = Vec::new();
         if let Some(ref pfx_pw) = params.pfx_password {
             extra_env.push(("DCERT_CERT_PASSWORD", pfx_pw.as_str()));
         }
-        if let Some(ref store_path) = params.store_path {
-            args.push("--store-path".to_string());
-            args.push(store_path.clone());
-            args.push("--kv-version".to_string());
-            args.push(params.kv_version.to_string());
-        }
 
         let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        match run_dcert_vault(&args_refs, &params.vault, &self.config, &extra_env).await {
-            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "debug/stderr", &[0])),
-            Err(e) => ok_error(e),
-        }
+        vault_reply(run_dcert_vault(&args_refs, &params.vault, &self.config, &extra_env).await)
     }
 
     /// Sign a Certificate Signing Request (CSR) using Vault PKI.
@@ -127,60 +181,47 @@ impl DcertMcpServer {
         ])
         .and_then(|()| validate_list(&params.sans, "sans", 100))
         .and_then(|()| validate_list(&params.ip_sans, "ip_sans", 100))
-        {
-            return ok_error(e);
-        }
-        if !(1..=2).contains(&params.kv_version) {
-            return ok_error("kv_version must be 1 or 2".to_string());
-        }
-        let extra_env: Vec<(&str, &str)> = Vec::new();
-        if let Err(e) = validate_path(&params.csr_file, "csr_file") {
+        .and_then(|()| validate_kv_version(params.kv_version))
+        .and_then(|()| validate_path(&params.csr_file, "csr_file"))
+        .and_then(|()| params.output.as_deref().map_or(Ok(()), validate_output_base))
+        .and_then(|()| {
+            params
+                .store_path
+                .as_deref()
+                .map_or(Ok(()), |p| validate_kv_path_param(p, "store_path"))
+        }) {
             return ok_error(e);
         }
 
         let mut args: Vec<String> = vec![
             "sign".to_string(),
             "--csr-file".to_string(),
-            params.csr_file,
+            params.csr_file.clone(),
             "--mount".to_string(),
-            params.mount,
+            params.mount.clone(),
             "--ttl".to_string(),
-            params.ttl,
+            params.ttl.clone(),
             "--format".to_string(),
             "json".to_string(),
         ];
-        if let Some(ref role) = params.role {
-            args.push("--role".to_string());
-            args.push(role.clone());
-        }
         if let Some(ref cn) = params.common_name {
             args.push("--cn".to_string());
             args.push(cn.clone());
         }
-        for san in &params.sans {
-            args.push("--san".to_string());
-            args.push(san.clone());
-        }
-        for ip in &params.ip_sans {
-            args.push("--ip-san".to_string());
-            args.push(ip.clone());
-        }
-        if let Some(ref output) = params.output {
-            args.push("--output".to_string());
-            args.push(output.clone());
-        }
-        if let Some(ref store_path) = params.store_path {
-            args.push("--store-path".to_string());
-            args.push(store_path.clone());
-            args.push("--kv-version".to_string());
-            args.push(params.kv_version.to_string());
-        }
+        push_pki_args(
+            &mut args,
+            &PkiArgs {
+                role: params.role.as_deref(),
+                sans: &params.sans,
+                ip_sans: &params.ip_sans,
+                output: params.output.as_deref(),
+                store_path: params.store_path.as_deref(),
+                kv_version: params.kv_version,
+            },
+        );
 
         let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        match run_dcert_vault(&args_refs, &params.vault, &self.config, &extra_env).await {
-            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "debug/stderr", &[0])),
-            Err(e) => ok_error(e),
-        }
+        vault_reply(run_dcert_vault(&args_refs, &params.vault, &self.config, &[]).await)
     }
 
     /// Revoke a certificate in Vault PKI by serial number or PEM file.
@@ -207,7 +248,6 @@ impl DcertMcpServer {
         ]) {
             return ok_error(e);
         }
-        let extra_env: Vec<(&str, &str)> = Vec::new();
         if params.serial.is_none() && params.cert_file.is_none() {
             return ok_error("Either serial or cert_file must be provided".to_string());
         }
@@ -226,10 +266,7 @@ impl DcertMcpServer {
         }
 
         let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        match run_dcert_vault(&args_refs, &params.vault, &self.config, &extra_env).await {
-            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "debug/stderr", &[0])),
-            Err(e) => ok_error(e),
-        }
+        vault_reply(run_dcert_vault(&args_refs, &params.vault, &self.config, &[]).await)
     }
 
     /// List all certificates issued by Vault PKI.
@@ -253,7 +290,6 @@ impl DcertMcpServer {
         if let Err(e) = validate_args(&[("mount", Some(params.mount.as_str()))]) {
             return ok_error(e);
         }
-        let extra_env: Vec<(&str, &str)> = Vec::new();
 
         let mut args: Vec<String> = vec![
             "list".to_string(),
@@ -280,10 +316,7 @@ impl DcertMcpServer {
         }
 
         let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        match run_dcert_vault(&args_refs, &params.vault, &self.config, &extra_env).await {
-            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "debug/stderr", &[0])),
-            Err(e) => ok_error(e),
-        }
+        vault_reply(run_dcert_vault(&args_refs, &params.vault, &self.config, &[]).await)
     }
 
     /// Store a local certificate and private key in Vault KV.
@@ -308,17 +341,12 @@ impl DcertMcpServer {
             ("path", Some(params.path.as_str())),
             ("cert_key", Some(params.cert_key.as_str())),
             ("key_key", Some(params.key_key.as_str())),
-        ]) {
-            return ok_error(e);
-        }
-        if !(1..=2).contains(&params.kv_version) {
-            return ok_error("kv_version must be 1 or 2".to_string());
-        }
-        let extra_env: Vec<(&str, &str)> = Vec::new();
-        if let Err(e) = validate_path(&params.cert_file, "cert_file") {
-            return ok_error(e);
-        }
-        if let Err(e) = validate_path(&params.key_file, "key_file") {
+        ])
+        .and_then(|()| validate_kv_path_param(&params.path, "path"))
+        .and_then(|()| validate_kv_version(params.kv_version))
+        .and_then(|()| validate_path(&params.cert_file, "cert_file"))
+        .and_then(|()| validate_path(&params.key_file, "key_file"))
+        {
             return ok_error(e);
         }
 
@@ -338,10 +366,7 @@ impl DcertMcpServer {
             &kv_version_str,
         ];
 
-        match run_dcert_vault(&args, &params.vault, &self.config, &extra_env).await {
-            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "debug/stderr", &[0])),
-            Err(e) => ok_error(e),
-        }
+        vault_reply(run_dcert_vault(&args, &params.vault, &self.config, &[]).await)
     }
 
     /// Read and validate a certificate stored in Vault KV.
@@ -366,13 +391,12 @@ impl DcertMcpServer {
             ("path", Some(params.path.as_str())),
             ("cert_key", Some(params.cert_key.as_str())),
             ("key_key", Some(params.key_key.as_str())),
-        ]) {
+        ])
+        .and_then(|()| validate_kv_path_param(&params.path, "path"))
+        .and_then(|()| validate_kv_version(params.kv_version))
+        {
             return ok_error(e);
         }
-        if !(1..=2).contains(&params.kv_version) {
-            return ok_error("kv_version must be 1 or 2".to_string());
-        }
-        let extra_env: Vec<(&str, &str)> = Vec::new();
 
         let kv_version_str = params.kv_version.to_string();
         let args: Vec<&str> = vec![
@@ -386,10 +410,7 @@ impl DcertMcpServer {
             &kv_version_str,
         ];
 
-        match run_dcert_vault(&args, &params.vault, &self.config, &extra_env).await {
-            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "debug/stderr", &[0])),
-            Err(e) => ok_error(e),
-        }
+        vault_reply(run_dcert_vault(&args, &params.vault, &self.config, &[]).await)
     }
 
     /// Renew an existing certificate in Vault KV by re-issuing from Vault PKI.
@@ -420,46 +441,39 @@ impl DcertMcpServer {
         ])
         .and_then(|()| validate_list(&params.sans, "sans", 100))
         .and_then(|()| validate_list(&params.ip_sans, "ip_sans", 100))
+        .and_then(|()| validate_kv_path_param(&params.path, "path"))
+        .and_then(|()| validate_kv_version(params.kv_version))
         {
             return ok_error(e);
         }
-        if !(1..=2).contains(&params.kv_version) {
-            return ok_error("kv_version must be 1 or 2".to_string());
-        }
-        let extra_env: Vec<(&str, &str)> = Vec::new();
 
-        let kv_version_str = params.kv_version.to_string();
         let mut args: Vec<String> = vec![
             "renew".to_string(),
-            params.path,
+            params.path.clone(),
             "--mount".to_string(),
-            params.mount,
+            params.mount.clone(),
             "--ttl".to_string(),
-            params.ttl,
+            params.ttl.clone(),
             "--cert-key".to_string(),
-            params.cert_key,
+            params.cert_key.clone(),
             "--key-key".to_string(),
-            params.key_key,
+            params.key_key.clone(),
             "--kv-version".to_string(),
-            kv_version_str,
+            params.kv_version.to_string(),
         ];
-        if let Some(ref role) = params.role {
-            args.push("--role".to_string());
-            args.push(role.clone());
-        }
-        for san in &params.sans {
-            args.push("--san".to_string());
-            args.push(san.clone());
-        }
-        for ip in &params.ip_sans {
-            args.push("--ip-san".to_string());
-            args.push(ip.clone());
-        }
+        push_pki_args(
+            &mut args,
+            &PkiArgs {
+                role: params.role.as_deref(),
+                sans: &params.sans,
+                ip_sans: &params.ip_sans,
+                output: None,
+                store_path: None,
+                kv_version: params.kv_version,
+            },
+        );
 
         let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        match run_dcert_vault(&args_refs, &params.vault, &self.config, &extra_env).await {
-            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "debug/stderr", &[0])),
-            Err(e) => ok_error(e),
-        }
+        vault_reply(run_dcert_vault(&args_refs, &params.vault, &self.config, &[]).await)
     }
 }

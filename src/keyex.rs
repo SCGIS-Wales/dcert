@@ -13,7 +13,7 @@
 use serde::Serialize;
 
 /// Minimum `OPENSSL_VERSION_NUMBER` with ML-KEM support (3.5.0).
-const OPENSSL_MLKEM_MIN: i64 = 0x3_05_00_00_0;
+const OPENSSL_MLKEM_MIN: i64 = 0x3050_0000;
 
 /// RFC 10024 hybrid groups, most preferred first, in OpenSSL group list form.
 pub const RFC10024_HYBRID_GROUPS: &[&str] = &["X25519MLKEM768", "SecP256r1MLKEM768", "SecP384r1MLKEM1024"];
@@ -29,7 +29,7 @@ pub const OBSOLETE_PQ_GROUPS: &[(&str, &str)] = &[
 ];
 
 /// Classification of the negotiated key exchange.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum KeyExchangeClass {
     /// Classical plus ML-KEM, as standardised in RFC 10024.
@@ -43,13 +43,8 @@ pub enum KeyExchangeClass {
     Classical,
     /// Group name not available from the linked OpenSSL (older than 3.2) or
     /// not recognised.
+    #[default]
     Unknown,
-}
-
-impl Default for KeyExchangeClass {
-    fn default() -> Self {
-        KeyExchangeClass::Unknown
-    }
 }
 
 impl KeyExchangeClass {
@@ -401,7 +396,7 @@ mod tests {
         assert_eq!(s.min_tls, TlsVersionArg::Tls1_2);
         let list = s.cipher_list.expect("cipher list");
         assert!(list.split(':').all(|c| c.starts_with("ECDHE-")));
-        assert!(!list.contains("DHE-RSA"));
+        assert!(!list.split(':').any(|c| c.starts_with("DHE-")));
         assert!(!list.contains("CBC"));
         assert_eq!(s.groups, "X25519:prime256v1:secp384r1");
     }

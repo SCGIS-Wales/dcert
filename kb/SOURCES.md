@@ -104,3 +104,37 @@ The control plane exception lists were generated from the botocore service
 definitions (`botocore/data/<service>/<version>/service-2.json` on
 https://github.com/boto/botocore): cloudfront 2020-05-31 (152 exceptions),
 apigateway 2015-07-09 (7) and apigatewayv2 2018-11-29 (5).
+
+## Certificate ecosystem changes (compliance engine, root trust, 2025 to 2026)
+
+The validity schedule, revocation rules, SHA-1 sunset, clientAuth EKU
+finding, the distrusted root and retired intermediate entries in
+`kb/diagnostics.yaml` and the embedded root set assertions in `src/trust.rs`
+were written from the pages below, read on 2026-10-10.
+
+| Topic | URL |
+|-------|-----|
+| CA/B Forum ballot SC-081v3, schedule of reducing validity periods (398, 200, 100, 47 days) | https://cabforum.org/2025/04/11/ballot-sc081v3-introduce-schedule-of-reducing-validity-and-data-reuse-periods/ |
+| CA/B Forum ballot SC-063v4, OCSP optional, CRLs required, short lived certificates | https://cabforum.org/2023/07/14/ballot-sc063v4-make-ocsp-optional-require-crls-and-incentivize-automation/ |
+| CA/B Forum ballot SC-097, sunset of all remaining SHA-1 signatures in certificates and CRLs | https://cabforum.org/2026/01/24/ballot-sc097-sunset-all-remaining-use-of-sha-1-signatures-in-certificates-and-crls/ |
+| CA/B Forum Baseline Requirements, current text | https://cabforum.org/working-groups/server/baseline-requirements/requirements/ |
+| Chrome Root Program policy (serverAuth only leaf certificates, root lifecycle) | https://googlechrome.github.io/chromerootprogram/ |
+| Chrome Root Program, Entrust distrust (certificates issued after 2024-11-11) | https://security.googleblog.com/2024/06/sustaining-digital-certificate-security.html |
+| Chrome Root Program, Chunghwa Telecom and NetLock distrust (certificates issued after 2025-07-31) | https://security.googleblog.com/2025/05/sustaining-digital-certificate-security-chrome-root-store-changes.html |
+| Mozilla CA Root CA Lifecycles (websites trust bit removals, 2026-04-15) | https://wiki.mozilla.org/CA/Root_CA_Lifecycles |
+| Mozilla decision on Entrust root CA certificates used for TLS | https://groups.google.com/a/mozilla.org/g/dev-security-policy/c/jCvkhBjg9Yw |
+| DigiCert root strategy, G1 root removal and G5 default issuance | https://knowledge.digicert.com/alerts/digicert-root-strategy-aligning-with-industry-standards |
+| Let's Encrypt chains of trust (R3, R4, E1, E2 expired 2025-09-15; R10 to R14 and E5 to E9 retired; YR1, YR2, YE1, YE2) | https://letsencrypt.org/certificates/ |
+| Let's Encrypt Generation Y hierarchy announcement | https://letsencrypt.org/2025/11/24/gen-y-hierarchy |
+| NIST IR 8547 (draft), transition to post quantum cryptography standards | https://csrc.nist.gov/pubs/ir/8547/ipd |
+| FIPS 204 (ML-DSA), FIPS 205 (SLH-DSA), FIPS 203 (ML-KEM) | https://csrc.nist.gov/projects/post-quantum-cryptography/post-quantum-cryptography-standardization |
+| RFC 9881, ML-DSA in X.509 | https://www.rfc-editor.org/rfc/rfc9881 |
+
+The embedded public root set is the `webpki-root-certs` crate (1.0.9 at the
+time of writing), which packages the Mozilla/CCADB root store. Verified on
+2026-10-10 by iterating the embedded roots: Entrust roots, GTS Root R2 and
+the DigiCert G1 roots are absent; the Chunghwa Telecom HiPKI and NetLock
+roots are still present because Mozilla still includes them, which is why
+the Chrome specific entry explains a chain dcert itself classifies as
+publicly trusted.
+

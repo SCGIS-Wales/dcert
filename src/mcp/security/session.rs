@@ -3,7 +3,8 @@
 //! Design:
 //! - Tokens are never used beyond their exp
 //! - Preferred store: in-memory
-//! - Cache keys include principal ID + session ID (pattern: <principal_id>:<session_id>)
+//! - Keyed by a digest of the bearer token, chosen by the middleware, so the
+//!   token itself is never held as a map key
 //! - Sliding window inactivity TTL
 //! - Background cleanup task
 
@@ -39,12 +40,9 @@ impl Default for SessionConfig {
 struct SessionEntry {
     claims: TokenClaims,
     last_access: Instant,
-    #[allow(dead_code)]
-    created_at: Instant,
 }
 
 /// In-memory cache for validated OIDC tokens.
-/// Cache keys follow the pattern: `<principal_id>:<session_id>`.
 pub struct SessionCache {
     entries: Arc<RwLock<HashMap<String, SessionEntry>>>,
     config: SessionConfig,
@@ -69,13 +67,6 @@ impl SessionCache {
             config,
             stop_tx: Some(stop_tx),
         }
-    }
-
-    /// Generates a cache key from principal ID and session ID.
-    /// Uses length-prefix encoding to prevent collisions when either
-    /// component contains the separator character.
-    pub fn cache_key(principal_id: &str, session_id: &str) -> String {
-        format!("{}|{}|{}", principal_id.len(), principal_id, session_id)
     }
 
     /// Retrieves cached claims if the entry exists, is not expired by inactivity,
@@ -123,13 +114,11 @@ impl SessionCache {
             evict_oldest(&mut entries);
         }
 
-        let now = Instant::now();
         entries.insert(
             key,
             SessionEntry {
                 claims,
-                last_access: now,
-                created_at: now,
+                last_access: Instant::now(),
             },
         );
     }
@@ -141,6 +130,7 @@ impl SessionCache {
     }
 
     /// Returns the number of entries in the cache.
+    #[cfg(test)]
     pub async fn size(&self) -> usize {
         self.entries.read().await.len()
     }
@@ -250,22 +240,6 @@ mod tests {
 
     fn past_expiry() -> i64 {
         now_unix() - 3600
-    }
-
-    #[test]
-    fn test_cache_key() {
-        assert_eq!(
-            SessionCache::cache_key("principal-1", "session-2"),
-            "11|principal-1|session-2"
-        );
-    }
-
-    #[test]
-    fn test_cache_key_no_collision() {
-        // These previously collided when using simple colon separator
-        let key1 = SessionCache::cache_key("a:b", "c");
-        let key2 = SessionCache::cache_key("a", "b:c");
-        assert_ne!(key1, key2);
     }
 
     #[tokio::test]

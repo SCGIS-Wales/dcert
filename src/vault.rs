@@ -3,6 +3,7 @@ use colored::*;
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::IsTerminal;
 
 use crate::cert::{CertProcessOpts, parse_cert_infos_from_pem};
 use crate::convert;
@@ -43,8 +44,11 @@ fn discover_vault_token_from(env_token: Option<String>, home: Option<std::path::
     if let Some(home) = home {
         let token_path = home.join(".vault-token");
         if token_path.exists() {
-            let token =
-                fs::read_to_string(&token_path).with_context(|| format!("Failed to read {}", token_path.display()))?;
+            // Zeroized once trimmed, so the raw file contents (which may carry
+            // a trailing newline) do not linger on the heap.
+            let token = zeroize::Zeroizing::new(
+                fs::read_to_string(&token_path).with_context(|| format!("Failed to read {}", token_path.display()))?,
+            );
             let token = token.trim().to_string();
             if !token.is_empty() {
                 return Ok(token);
@@ -511,8 +515,9 @@ fn vault_connection_error(e: reqwest::Error, base_url: &str, debug: bool) -> any
 ///
 /// Vault/LDAP HTTP error bodies can be large and may include request context
 /// (e.g. submitted field values) we don't want dumped verbatim to the
-/// terminal or logs. Trim whitespace and truncate to a sane bound.
-fn truncate_upstream_error(s: &str) -> String {
+/// terminal or logs. Trim whitespace and truncate to a sane bound. The MCP
+/// server uses the same bound before echoing upstream text to its client.
+pub fn truncate_upstream_error(s: &str) -> String {
     const MAX_CHARS: usize = 512;
     let trimmed = s.trim();
     if trimmed.chars().count() > MAX_CHARS {
@@ -683,7 +688,17 @@ pub fn discover_role_from_token(client: &VaultClient) -> Result<Option<String>> 
         return Ok(Some(roles[0].clone()));
     }
 
-    // Present selection
+    // Several candidates: ask, but only a person at a terminal can answer.
+    // Piped stdin (a script, the MCP server) would hand us whatever bytes
+    // happen to be queued there, so refuse and name the flag instead.
+    if !std::io::stdin().is_terminal() {
+        return Err(anyhow::anyhow!(
+            "Several PKI roles were inferred from the token policies ({}) and stdin is not a terminal, \
+             so one cannot be chosen interactively.\n\
+             Pass --role <name> to select the role explicitly.",
+            roles.join(", ")
+        ));
+    }
     eprintln!("{}", "Available roles (from token policies):".bold());
     for (i, role) in roles.iter().enumerate() {
         eprintln!("  {}. {}", i + 1, role);
@@ -704,14 +719,32 @@ pub fn discover_role_from_token(client: &VaultClient) -> Result<Option<String>> 
 }
 
 /// Resolve the role name: use provided value, or discover from token policies, or prompt.
+///
+/// When no role is given and none can be inferred, the prompt only happens at
+/// a terminal; with piped stdin the call fails and names `--role`, so a
+/// script or the MCP server never has queued input read as a role name.
 pub fn resolve_role(client: &VaultClient, role: Option<String>) -> Result<String> {
     if let Some(role) = role {
         return Ok(role);
     }
 
-    // Try to discover from token policies
-    if let Ok(Some(role)) = discover_role_from_token(client) {
-        return Ok(role);
+    // Try to discover from token policies. An ambiguity error (several
+    // roles, no terminal) is the most useful message, so pass it on; other
+    // failures fall through to the prompt or the --role hint below.
+    match discover_role_from_token(client) {
+        Ok(Some(role)) => return Ok(role),
+        Err(e) if !std::io::stdin().is_terminal() => {
+            return Err(e.context("No PKI role could be resolved; pass --role <name>"));
+        }
+        Ok(None) | Err(_) => {}
+    }
+
+    if !std::io::stdin().is_terminal() {
+        return Err(anyhow::anyhow!(
+            "No PKI role was given and none could be inferred from the token policies; \
+             stdin is not a terminal, so the role cannot be prompted for.\n\
+             Pass --role <name> to select the role explicitly."
+        ));
     }
 
     // Fall back to manual prompt
@@ -877,6 +910,19 @@ pub fn revoke_certificate(
 // List Certificates
 // ---------------------------------------------------------------------------
 
+/// Upper bound on the per certificate detail fetches `list --show-details`
+/// performs. Each one is a sequential GET against Vault, so an unbounded
+/// mount would turn a listing into thousands of requests on a single token.
+pub const MAX_LIST_DETAIL_FETCHES: usize = 500;
+
+/// List the certificates issued by a PKI mount.
+///
+/// Without `show_details` this is a single LIST request and every serial is
+/// returned. With it, each serial is fetched to read its CN, validity and
+/// status, up to [`MAX_LIST_DETAIL_FETCHES`] of them; the remainder are
+/// returned as plain serial entries with status `not fetched`, and a note
+/// of the form `truncated, N more` is written to stderr so the operator
+/// knows the detail pass was capped.
 pub fn list_certificates(
     client: &VaultClient,
     mount: &str,
@@ -911,8 +957,20 @@ pub fn list_certificates(
         return Ok(entries);
     }
 
+    let (detailed, remainder) = serials.split_at(serials.len().min(MAX_LIST_DETAIL_FETCHES));
+    if !remainder.is_empty() {
+        eprintln!(
+            "{} --show-details fetched the first {} of {} certificates (truncated, {} more); \
+             the rest are listed without details",
+            "WARNING:".yellow().bold(),
+            detailed.len(),
+            serials.len(),
+            remainder.len()
+        );
+    }
+
     let mut entries = Vec::new();
-    for serial in &serials {
+    for serial in detailed {
         let cert_path = format!("{}/cert/{}", encode_path_segment(mount), encode_path_segment(serial));
         match client.get(&cert_path) {
             Ok(cert_resp) => {
@@ -959,6 +1017,20 @@ pub fn list_certificates(
                     status: format!("error reading: {}", truncate_upstream_error(&first_line)),
                 });
             }
+        }
+    }
+
+    // Past the cap the filters cannot be applied (status is unknown), so the
+    // remainder is only listed when no status filter was asked for.
+    if !expired_only && !valid_only {
+        for serial in remainder {
+            entries.push(VaultCertListEntry {
+                serial_number: serial.clone(),
+                common_name: None,
+                not_before: String::new(),
+                not_after: String::new(),
+                status: "not fetched".to_string(),
+            });
         }
     }
 
@@ -1103,13 +1175,18 @@ pub fn build_full_chain(client: &VaultClient, leaf_cert: &str, ca_chain: &[Strin
 // ---------------------------------------------------------------------------
 
 /// Write PEM certificate chain and private key to files.
+///
+/// Neither write follows a symlink planted at the destination: the chain goes
+/// through [`convert::write_public_file`] and the key through
+/// [`convert::write_private_file`] (owner only permissions).
 pub fn write_pem_files(
     cert_chain_pem: &str,
     private_key_pem: Option<&str>,
     base_name: &str,
 ) -> Result<(String, Option<String>)> {
     let cert_path = format!("{base_name}.crt");
-    fs::write(&cert_path, cert_chain_pem).with_context(|| format!("Failed to write certificate file: {cert_path}"))?;
+    convert::write_public_file(&cert_path, cert_chain_pem.as_bytes())
+        .with_context(|| format!("Failed to write certificate file: {cert_path}"))?;
 
     let key_path = if let Some(key) = private_key_pem {
         let kp = format!("{base_name}.key");
@@ -1121,6 +1198,87 @@ pub fn write_pem_files(
     };
 
     Ok((cert_path, key_path))
+}
+
+/// Where and how an issued or signed certificate is delivered.
+#[derive(Debug, Clone)]
+pub struct IssuedOutput<'a> {
+    /// PKI mount the certificate came from, for chain completion.
+    pub mount: &'a str,
+    /// Output base name; `.crt`/`.key` or `.pfx` is appended.
+    pub output_base: &'a str,
+    /// When set, a PKCS12 bundle is written instead of PEM files.
+    pub pfx_password: Option<&'a str>,
+    /// When set, the chain and key are also stored in Vault KV at this path.
+    pub store_path: Option<&'a str>,
+    /// KV engine version for `store_path`.
+    pub kv_version: u8,
+}
+
+/// The common tail of `vault issue` and `vault sign`: complete the chain,
+/// display it, write the output files and store in KV when asked.
+///
+/// A PFX needs the private key. `issue` returns one; `sign` never does, so a
+/// PFX request on a key-less result degrades to PEM output with a warning
+/// rather than failing after the certificate has already been issued.
+pub fn finish_issued_cert(client: &VaultClient, data: &VaultPkiIssueData, out: &IssuedOutput<'_>) -> Result<()> {
+    let full_chain = build_full_chain(client, &data.certificate, &data.ca_chain, out.mount);
+    display_certificate(&full_chain);
+
+    let key_pem = data.private_key.as_deref();
+    match (out.pfx_password, key_pem) {
+        (Some(pfx_pw), Some(key_pem)) => {
+            let pfx_path = format!("{}.pfx", out.output_base);
+            write_pfx(&full_chain, key_pem, pfx_pw, &pfx_path)?;
+            println!("{}", format!("PFX written to {pfx_path}").green());
+        }
+        (Some(_), None) => {
+            eprintln!(
+                "{} PFX output requires a private key, but Vault did not return one (the sign operation never does). \
+                 Writing PEM instead.",
+                "WARNING:".yellow().bold()
+            );
+            eprintln!("Use PFX output with 'vault issue' instead, or bundle manually with 'dcert convert pem-to-pfx'.");
+            write_pem_files(&full_chain, None, out.output_base)?;
+        }
+        (None, _) => {
+            write_pem_files(&full_chain, key_pem, out.output_base)?;
+        }
+    }
+
+    if let Some(kv_path) = out.store_path {
+        kv_store(
+            client,
+            kv_path,
+            &full_chain,
+            key_pem.unwrap_or(""),
+            "cert",
+            "key",
+            out.kv_version,
+        )?;
+    }
+    Ok(())
+}
+
+/// Bundle a chain and key into a PKCS12 file by way of a private temporary
+/// directory, since the converter works on paths.
+fn write_pfx(full_chain: &str, key_pem: &str, pfx_password: &str, pfx_path: &str) -> Result<()> {
+    let temp_dir = tempfile::TempDir::new().with_context(|| "Failed to create temporary directory")?;
+    let cert_path = temp_dir.path().join("cert.pem");
+    let key_path = temp_dir.path().join("key.pem");
+    let as_str = |p: &std::path::Path| -> Result<String> {
+        p.to_str()
+            .map(ToString::to_string)
+            .ok_or_else(|| anyhow::anyhow!("Temporary path contains invalid UTF-8: {}", p.display()))
+    };
+    let (cert_str, key_str) = (as_str(&cert_path)?, as_str(&key_path)?);
+    convert::write_public_file(&cert_str, full_chain.as_bytes())
+        .with_context(|| format!("Failed to write temp certificate file: {cert_str}"))?;
+    convert::write_private_file(&key_str, key_pem.as_bytes())
+        .with_context(|| format!("Failed to write temp key file: {key_str}"))?;
+    convert::pem_to_pfx(&cert_str, &key_str, pfx_password, pfx_path, None)
+        .with_context(|| format!("Failed to write PFX file: {pfx_path}"))?;
+    Ok(())
 }
 
 pub use crate::csr::sanitise_cn;
@@ -1156,25 +1314,56 @@ pub fn display_certificate(pem_data: &str) {
 // Vault KV Operations
 // ---------------------------------------------------------------------------
 
-/// Build the Vault KV API path based on the KV version.
-/// KV v1: path as-is. KV v2: insert `/data/` after the mount point.
-fn kv_api_path(user_path: &str, kv_version: u8) -> String {
-    if kv_version >= 2 {
-        // Insert /data/ after the first path segment (mount point)
-        if let Some(idx) = user_path.find('/') {
-            format!("{}/data/{}", &user_path[..idx], &user_path[idx + 1..])
-        } else {
-            format!("{user_path}/data")
-        }
-    } else {
-        user_path.to_string()
+/// Check a user supplied KV path and split it into its segments.
+///
+/// The path is interpolated into a Vault API URL with the caller's token, so
+/// it must not be able to name anything but a KV secret: no empty, `.` or
+/// `..` segments (which would let `secret/../sys/policies/acl/root` reach a
+/// system endpoint), no leading `/`, and no `?` or `#`, which would start a
+/// query string or fragment. Control characters are refused as well. The
+/// segments are returned raw; [`kv_api_path`] percent encodes each one.
+pub fn validate_kv_path(user_path: &str) -> Result<Vec<&str>> {
+    if user_path.trim().is_empty() {
+        anyhow::bail!("KV path must not be empty");
     }
+    if user_path.starts_with('/') {
+        anyhow::bail!("KV path '{user_path}' must not start with '/'");
+    }
+    if let Some(c) = user_path.chars().find(|c| matches!(c, '?' | '#') || c.is_control()) {
+        anyhow::bail!("KV path '{user_path}' must not contain {c:?}");
+    }
+    let segments: Vec<&str> = user_path.split('/').collect();
+    for segment in &segments {
+        match *segment {
+            "" => anyhow::bail!("KV path '{user_path}' must not contain empty segments"),
+            "." | ".." => anyhow::bail!("KV path '{user_path}' must not contain '.' or '..' segments"),
+            _ => {}
+        }
+    }
+    Ok(segments)
+}
+
+/// Build the Vault KV API path based on the KV version, with every segment
+/// percent encoded. KV v1: the path as given. KV v2: `/data/` is inserted
+/// after the mount point. Fails for a path [`validate_kv_path`] refuses or a
+/// version other than 1 or 2.
+fn kv_api_path(user_path: &str, kv_version: u8) -> Result<String> {
+    let mut segments: Vec<String> = validate_kv_path(user_path)?
+        .into_iter()
+        .map(encode_path_segment)
+        .collect();
+    match kv_version {
+        1 => {}
+        2 => segments.insert(1, "data".to_string()),
+        other => anyhow::bail!("Unsupported KV version {other}: must be 1 or 2"),
+    }
+    Ok(segments.join("/"))
 }
 
 /// Extract data from a KV response based on version.
 /// KV v1: `resp["data"]`. KV v2: `resp["data"]["data"]`.
 fn kv_extract_data(resp: &serde_json::Value, kv_version: u8) -> serde_json::Value {
-    if kv_version >= 2 {
+    if kv_version == 2 {
         resp["data"]["data"].clone()
     } else {
         resp["data"].clone()
@@ -1191,7 +1380,7 @@ pub fn kv_write_body(
     key_pem: &str,
 ) -> serde_json::Value {
     let fields = serde_json::json!({ cert_key: cert_pem, key_key: key_pem });
-    if kv_version >= 2 {
+    if kv_version == 2 {
         serde_json::json!({ "data": fields })
     } else {
         fields
@@ -1220,7 +1409,7 @@ pub fn kv_store(
     key_key_name: &str,
     kv_version: u8,
 ) -> Result<()> {
-    let api_path = kv_api_path(kv_path, kv_version);
+    let api_path = kv_api_path(kv_path, kv_version)?;
 
     // Check if secret already exists
     let exists = client.get_optional(&api_path)?.is_some();
@@ -1230,6 +1419,14 @@ pub fn kv_store(
             "WARNING:".yellow().bold(),
             kv_path
         );
+        // Overwriting needs a deliberate answer from a person. With piped
+        // stdin the queued bytes are not that answer, so refuse outright.
+        if !std::io::stdin().is_terminal() {
+            return Err(anyhow::anyhow!(
+                "A secret already exists at '{kv_path}' and stdin is not a terminal, so the overwrite cannot be confirmed. \
+                 Nothing was stored. Run interactively to confirm, or store at a path that is not in use."
+            ));
+        }
         let overwrite = prompt_with_default("Overwrite? [Y/n]", "Y")?;
         if overwrite.to_lowercase().starts_with('n') {
             println!("Skipping storage.");
@@ -1258,7 +1455,7 @@ pub fn kv_read_cert_key(
     key_key_name: &str,
     kv_version: u8,
 ) -> Result<(String, Option<String>)> {
-    let api_path = kv_api_path(kv_path, kv_version);
+    let api_path = kv_api_path(kv_path, kv_version)?;
     let resp = client.get(&api_path)?;
 
     let data = kv_extract_data(&resp, kv_version);
@@ -1463,6 +1660,14 @@ pub fn renew_certificate(client: &VaultClient, req: &RenewRequest<'_>) -> Result
     println!("  The private key will be replaced.");
     println!("  Format: base64 PEM certificate, unencrypted private key.");
 
+    // The overwrite needs a deliberate answer from a person; with piped
+    // stdin the queued bytes are not that answer, so abort instead.
+    if !std::io::stdin().is_terminal() {
+        return Err(anyhow::anyhow!(
+            "Renewal needs confirmation to overwrite '{kv_path}', and stdin is not a terminal. \
+             The new certificate was issued but not stored; run interactively to confirm the overwrite."
+        ));
+    }
     let confirm = prompt_with_default("Continue? [Y/n]", "Y")?;
     if confirm.to_lowercase().starts_with('n') {
         println!("Renewal cancelled.");
@@ -1475,7 +1680,7 @@ pub fn renew_certificate(client: &VaultClient, req: &RenewRequest<'_>) -> Result
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("Vault did not return a private key for the new certificate"))?;
 
-    let api_path = kv_api_path(kv_path, kv_version);
+    let api_path = kv_api_path(kv_path, kv_version)?;
     let body = kv_write_body(kv_version, cert_key_name, &full_chain, key_key_name, key_pem);
 
     client.post(&api_path, &body)?;
@@ -1495,16 +1700,69 @@ pub fn renew_certificate(client: &VaultClient, req: &RenewRequest<'_>) -> Result
 // Interactive Wizards
 // ---------------------------------------------------------------------------
 
+/// Where the token in use came from, for the connectivity summary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenSource {
+    /// `VAULT_TOKEN` in the environment.
+    EnvVar,
+    /// The `~/.vault-token` file the Vault CLI writes.
+    TokenFile,
+    /// A token obtained by logging in with the given method.
+    Login(VaultAuthMethod),
+    /// A token passed explicitly by the caller (a tool parameter).
+    Explicit,
+}
+
+impl TokenSource {
+    /// Work out where `token` came from by comparing it with the discovery
+    /// sources, for callers that only hold the token itself.
+    pub fn infer(token: &str) -> Self {
+        Self::infer_from(token, std::env::var("VAULT_TOKEN").ok(), home_dir())
+    }
+
+    /// Pure form of [`TokenSource::infer`]: `env_token` is `VAULT_TOKEN`,
+    /// `home` the directory holding `.vault-token`. A token that matches
+    /// neither was obtained some other way, which in the CLI means a login.
+    fn infer_from(token: &str, env_token: Option<String>, home: Option<std::path::PathBuf>) -> Self {
+        if env_token.as_deref().map(str::trim) == Some(token) {
+            return Self::EnvVar;
+        }
+        let file_token = home
+            .map(|h| h.join(".vault-token"))
+            .and_then(|p| fs::read_to_string(p).ok());
+        if file_token.as_deref().map(str::trim) == Some(token) {
+            return Self::TokenFile;
+        }
+        Self::Explicit
+    }
+
+    /// Label for display.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::EnvVar => "VAULT_TOKEN env",
+            Self::TokenFile => "~/.vault-token",
+            Self::Login(VaultAuthMethod::Ldap) => "LDAP login",
+            Self::Login(VaultAuthMethod::AppRole) => "AppRole login",
+            Self::Login(VaultAuthMethod::Token) | Self::Explicit => "explicit token",
+        }
+    }
+}
+
 /// Print Vault connectivity info and optionally check server health.
+///
+/// The token source is inferred by comparing the token with `VAULT_TOKEN`
+/// and `~/.vault-token`, so a token obtained by LDAP or AppRole login is no
+/// longer mislabelled as one of those. Callers that know the source should
+/// prefer [`print_vault_connectivity_from`].
 pub fn print_vault_connectivity(client: &VaultClient, addr: &str, token: &str) {
+    print_vault_connectivity_from(client, addr, token, TokenSource::infer(token));
+}
+
+/// Print Vault connectivity info with the token's known source.
+pub fn print_vault_connectivity_from(client: &VaultClient, addr: &str, token: &str, source: TokenSource) {
     eprintln!("{}", "Vault connectivity:".bold());
     eprintln!("  VAULT_ADDR : {addr}");
-    let source = if std::env::var("VAULT_TOKEN").is_ok() {
-        "VAULT_TOKEN env"
-    } else {
-        "~/.vault-token"
-    };
-    eprintln!("  Token      : {} (from {})", mask_token(token), source);
+    eprintln!("  Token      : {} (from {})", mask_token(token), source.label());
 
     // Query Vault health endpoint (unauthenticated) to verify connectivity and show version
     if client.debug {
@@ -1646,8 +1904,6 @@ pub struct SignWizardResult {
 
 /// Interactive wizard for issuing a certificate.
 pub fn interactive_issue(client: &VaultClient) -> Result<IssueWizardResult> {
-    use std::io::IsTerminal;
-
     if !std::io::stdin().is_terminal() {
         return Err(anyhow::anyhow!(
             "Interactive mode requires a terminal. Use --cn, --role, and other flags for non-interactive mode."
@@ -1702,8 +1958,6 @@ pub fn interactive_issue(client: &VaultClient) -> Result<IssueWizardResult> {
 
 /// Interactive wizard for signing a CSR.
 pub fn interactive_sign(client: &VaultClient) -> Result<SignWizardResult> {
-    use std::io::IsTerminal;
-
     if !std::io::stdin().is_terminal() {
         return Err(anyhow::anyhow!(
             "Interactive mode requires a terminal. Use --csr-file, --role, and other flags for non-interactive mode."
@@ -2286,16 +2540,96 @@ mod tests {
 
     #[test]
     fn test_kv_api_path_v1() {
-        assert_eq!(kv_api_path("secret/my-cert", 1), "secret/my-cert");
-        assert_eq!(kv_api_path("secret/team/app/cert", 1), "secret/team/app/cert");
-        assert_eq!(kv_api_path("secret", 1), "secret");
+        assert_eq!(kv_api_path("secret/my-cert", 1).unwrap(), "secret/my%2Dcert");
+        assert_eq!(kv_api_path("secret/team/app/cert", 1).unwrap(), "secret/team/app/cert");
+        assert_eq!(kv_api_path("secret", 1).unwrap(), "secret");
     }
 
     #[test]
     fn test_kv_api_path_v2() {
-        assert_eq!(kv_api_path("secret/my-cert", 2), "secret/data/my-cert");
-        assert_eq!(kv_api_path("secret/team/app/cert", 2), "secret/data/team/app/cert");
-        assert_eq!(kv_api_path("secret", 2), "secret/data");
+        assert_eq!(kv_api_path("secret/my-cert", 2).unwrap(), "secret/data/my%2Dcert");
+        assert_eq!(
+            kv_api_path("secret/team/app/cert", 2).unwrap(),
+            "secret/data/team/app/cert"
+        );
+        assert_eq!(kv_api_path("secret", 2).unwrap(), "secret/data");
+    }
+
+    #[test]
+    fn test_kv_api_path_rejects_unknown_version() {
+        assert!(kv_api_path("secret/x", 0).is_err());
+        assert!(kv_api_path("secret/x", 3).is_err());
+    }
+
+    #[test]
+    fn test_kv_api_path_encodes_each_segment() {
+        // Characters Vault would read as delimiters are encoded, so the path
+        // names exactly one secret rather than a query string or fragment.
+        assert_eq!(kv_api_path("secret/a b/c:d", 2).unwrap(), "secret/data/a%20b/c%3Ad");
+    }
+
+    #[test]
+    fn validate_kv_path_rejects_traversal_and_delimiters() {
+        for bad in [
+            "",
+            "   ",
+            "/secret/x",
+            "secret/",
+            "secret//x",
+            "secret/../sys/policies/acl/root",
+            "secret/./x",
+            "..",
+            "secret/x?version=1",
+            "secret/x#frag",
+            "secret/x\ny",
+        ] {
+            assert!(validate_kv_path(bad).is_err(), "{bad:?} should be refused");
+        }
+        for bad in ["secret/../sys/policies/acl/root", "secret/x?version=1"] {
+            assert!(kv_api_path(bad, 1).is_err(), "{bad:?} must never reach the API");
+        }
+    }
+
+    #[test]
+    fn validate_kv_path_accepts_ordinary_paths() {
+        assert_eq!(
+            validate_kv_path("secret/certs/my-cert").unwrap(),
+            vec!["secret", "certs", "my-cert"]
+        );
+        assert_eq!(validate_kv_path("secret").unwrap(), vec!["secret"]);
+        assert_eq!(validate_kv_path("kv/a.b/c_d").unwrap(), vec!["kv", "a.b", "c_d"]);
+    }
+
+    #[test]
+    fn kv_helpers_treat_only_version_two_as_v2() {
+        let resp = serde_json::json!({ "data": { "data": { "cert": "inner" }, "cert": "outer" } });
+        assert_eq!(kv_extract_data(&resp, 2)["cert"], "inner");
+        assert_eq!(kv_extract_data(&resp, 1)["cert"], "outer");
+        assert_eq!(kv_extract_data(&resp, 3)["cert"], "outer");
+        assert!(kv_write_body(3, "cert", "C", "key", "K").get("data").is_none());
+    }
+
+    #[test]
+    fn token_source_is_inferred_from_where_the_token_matches() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        fs::write(temp_dir.path().join(".vault-token"), "file-token\n").unwrap();
+        let home = Some(temp_dir.path().to_path_buf());
+        assert_eq!(
+            TokenSource::infer_from("env-token", Some("env-token".to_string()), home.clone()),
+            TokenSource::EnvVar
+        );
+        assert_eq!(
+            TokenSource::infer_from("file-token", Some("env-token".to_string()), home.clone()),
+            TokenSource::TokenFile
+        );
+        // A token from an LDAP or AppRole login matches neither source and
+        // must not be labelled as one of them.
+        assert_eq!(
+            TokenSource::infer_from("hvs.login-token", Some("env-token".to_string()), home),
+            TokenSource::Explicit
+        );
+        assert_eq!(TokenSource::Login(VaultAuthMethod::Ldap).label(), "LDAP login");
+        assert_eq!(TokenSource::Login(VaultAuthMethod::AppRole).label(), "AppRole login");
     }
 
     // -- KV v1/v2 response parsing --
@@ -2421,5 +2755,321 @@ mod tests {
         let encoded = encode_path_segment("aa:bb:cc:dd:ee:ff");
         assert!(!encoded.contains(':'), ": must be encoded: got {encoded}");
         assert_eq!(encoded, "aa%3Abb%3Acc%3Add%3Aee%3Aff");
+    }
+
+    // -- Behaviour against a loopback Vault stand in --
+
+    /// A minimal HTTP/1.1 server on the loopback interface that answers each
+    /// request from `handler(method, path)` with `(status, json body)`. It
+    /// serves until the test process exits; connections are closed after each
+    /// reply so the blocking client never waits on keep-alive.
+    fn fake_vault(handler: impl Fn(&str, &str) -> (u16, String) + Send + 'static) -> String {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut request_line = String::new();
+                if reader.read_line(&mut request_line).is_err() {
+                    continue;
+                }
+                let mut parts = request_line.split_whitespace();
+                let method = parts.next().unwrap_or("").to_string();
+                let path = parts.next().unwrap_or("").to_string();
+                let mut content_length = 0usize;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).is_err() || line == "\r\n" || line.is_empty() {
+                        break;
+                    }
+                    if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        content_length = v.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0u8; content_length];
+                let _ = reader.read_exact(&mut body);
+                let (status, reply) = handler(&method, &path);
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                    reply.len()
+                );
+                let _ = stream.flush();
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    fn test_client(addr: &str) -> VaultClient {
+        VaultClient::new(addr, "test-token", &VaultClientConfig::default()).unwrap()
+    }
+
+    fn server_pair() -> (String, String) {
+        (
+            fs::read_to_string("tests/data/verify-key-discovery/server.crt").unwrap(),
+            fs::read_to_string("tests/data/verify-key-discovery/server.key").unwrap(),
+        )
+    }
+
+    #[test]
+    fn kv_store_refuses_to_overwrite_without_a_terminal() {
+        if std::io::stdin().is_terminal() {
+            eprintln!("Skipping: stdin is a terminal, the prompt path would block");
+            return;
+        }
+        let posted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = posted.clone();
+        let addr = fake_vault(move |method, path| {
+            assert_eq!(
+                path, "/v1/secret/data/certs/app",
+                "KV path must be encoded and versioned"
+            );
+            if method == "POST" {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            (200, r#"{"data":{"data":{"cert":"old"}}}"#.to_string())
+        });
+        let client = test_client(&addr);
+        let err = kv_store(&client, "secret/certs/app", "CERT", "KEY", "cert", "key", 2)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("stdin is not a terminal"), "{err}");
+        assert!(err.contains("secret/certs/app"), "{err}");
+        assert_eq!(
+            posted.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "nothing may be written when the overwrite cannot be confirmed"
+        );
+    }
+
+    #[test]
+    fn kv_store_writes_when_the_secret_is_new() {
+        let posted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = posted.clone();
+        let addr = fake_vault(move |method, _path| match method {
+            "GET" => (404, r#"{"errors":[]}"#.to_string()),
+            _ => {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                (200, "{}".to_string())
+            }
+        });
+        let client = test_client(&addr);
+        kv_store(&client, "secret/certs/new", "CERT", "KEY", "cert", "key", 1).unwrap();
+        assert_eq!(posted.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn kv_store_never_sends_a_traversing_path() {
+        let addr = fake_vault(|_, path| panic!("no request should be made, got {path}"));
+        let client = test_client(&addr);
+        let err = kv_store(&client, "secret/../sys/policies/acl/root", "C", "K", "cert", "key", 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("'..'"), "{err}");
+    }
+
+    #[test]
+    fn list_certificates_caps_the_detail_fetches() {
+        let total = MAX_LIST_DETAIL_FETCHES + 7;
+        let fetched = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = fetched.clone();
+        let (cert, _) = server_pair();
+        let addr = fake_vault(move |method, path| {
+            if method == "LIST" {
+                let keys: Vec<String> = (0..total).map(|i| format!("{i:02x}")).collect();
+                return (200, serde_json::json!({ "data": { "keys": keys } }).to_string());
+            }
+            assert!(path.starts_with("/v1/pki/cert/"), "{path}");
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            (200, serde_json::json!({ "data": { "certificate": cert } }).to_string())
+        });
+        let client = test_client(&addr);
+        let entries = list_certificates(&client, "pki", true, false, false).unwrap();
+        assert_eq!(
+            fetched.load(std::sync::atomic::Ordering::SeqCst),
+            MAX_LIST_DETAIL_FETCHES,
+            "exactly the cap may be fetched"
+        );
+        assert_eq!(entries.len(), total, "every serial is still listed");
+        assert_eq!(entries[0].status, "valid");
+        assert_eq!(entries[MAX_LIST_DETAIL_FETCHES].status, "not fetched");
+        assert_eq!(entries.iter().filter(|e| e.status == "not fetched").count(), 7);
+
+        // With a status filter the unfetched remainder cannot be classified
+        // and is left out rather than reported with a guessed status.
+        let valid_only = list_certificates(&client, "pki", true, false, true).unwrap();
+        assert_eq!(valid_only.len(), MAX_LIST_DETAIL_FETCHES);
+    }
+
+    #[test]
+    fn finish_issued_cert_writes_pem_and_stores_in_kv() {
+        let stored = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = stored.clone();
+        let addr = fake_vault(move |method, path| match (method, path) {
+            ("GET", "/v1/vault_root/cert/ca") => (404, "{}".to_string()),
+            ("GET", _) => (404, "{}".to_string()),
+            ("POST", p) => {
+                seen.lock().unwrap().push(p.to_string());
+                (200, "{}".to_string())
+            }
+            _ => (500, "{}".to_string()),
+        });
+        let client = test_client(&addr);
+        let (cert, key) = server_pair();
+        let data = VaultPkiIssueData {
+            certificate: cert.clone(),
+            private_key: Some(key.clone()),
+            private_key_type: Some("rsa".to_string()),
+            ca_chain: vec!["-----BEGIN CERTIFICATE-----\nFAKECA\n-----END CERTIFICATE-----".to_string()],
+            serial_number: Some("01".to_string()),
+            issuing_ca: None,
+            expiration: None,
+        };
+        let dir = tempfile::TempDir::new().unwrap();
+        let base = dir.path().join("app").to_str().unwrap().to_string();
+        finish_issued_cert(
+            &client,
+            &data,
+            &IssuedOutput {
+                mount: "pki",
+                output_base: &base,
+                pfx_password: None,
+                store_path: Some("secret/certs/app"),
+                kv_version: 2,
+            },
+        )
+        .unwrap();
+        let written = fs::read_to_string(format!("{base}.crt")).unwrap();
+        assert!(written.starts_with(cert.trim()), "leaf first");
+        assert!(written.contains("FAKECA"), "CA chain appended");
+        assert_eq!(fs::read_to_string(format!("{base}.key")).unwrap(), key);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(format!("{base}.key")).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "key must be owner only");
+        }
+        assert_eq!(*stored.lock().unwrap(), vec!["/v1/secret/data/certs/app".to_string()]);
+    }
+
+    #[test]
+    fn finish_issued_cert_degrades_pfx_to_pem_without_a_key() {
+        let addr = fake_vault(|_, _| (404, "{}".to_string()));
+        let client = test_client(&addr);
+        let (cert, key) = server_pair();
+        let dir = tempfile::TempDir::new().unwrap();
+
+        // Sign result: no private key, so a PFX request yields PEM output.
+        let signed = VaultPkiIssueData {
+            certificate: cert.clone(),
+            private_key: None,
+            private_key_type: None,
+            ca_chain: Vec::new(),
+            serial_number: None,
+            issuing_ca: None,
+            expiration: None,
+        };
+        let base = dir.path().join("signed").to_str().unwrap().to_string();
+        finish_issued_cert(
+            &client,
+            &signed,
+            &IssuedOutput {
+                mount: "pki",
+                output_base: &base,
+                pfx_password: Some("pw"),
+                store_path: None,
+                kv_version: 1,
+            },
+        )
+        .unwrap();
+        assert!(std::path::Path::new(&format!("{base}.crt")).exists());
+        assert!(!std::path::Path::new(&format!("{base}.key")).exists());
+        assert!(!std::path::Path::new(&format!("{base}.pfx")).exists());
+
+        // Issue result: key present, so the PFX is written and no PEM files.
+        let issued = VaultPkiIssueData {
+            certificate: cert,
+            private_key: Some(key),
+            private_key_type: Some("rsa".to_string()),
+            ca_chain: Vec::new(),
+            serial_number: None,
+            issuing_ca: None,
+            expiration: None,
+        };
+        let base = dir.path().join("issued").to_str().unwrap().to_string();
+        finish_issued_cert(
+            &client,
+            &issued,
+            &IssuedOutput {
+                mount: "pki",
+                output_base: &base,
+                pfx_password: Some("pw"),
+                store_path: None,
+                kv_version: 1,
+            },
+        )
+        .unwrap();
+        assert!(std::path::Path::new(&format!("{base}.pfx")).exists());
+        assert!(!std::path::Path::new(&format!("{base}.crt")).exists());
+    }
+
+    #[test]
+    fn write_pem_files_replaces_a_planted_symlink() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let victim = dir.path().join("victim");
+        fs::write(&victim, "untouched").unwrap();
+        let base = dir.path().join("out").to_str().unwrap().to_string();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&victim, format!("{base}.crt")).unwrap();
+        #[cfg(not(unix))]
+        return;
+
+        write_pem_files("CHAIN", None, &base).unwrap();
+        assert_eq!(
+            fs::read_to_string(&victim).unwrap(),
+            "untouched",
+            "the link target must not be written"
+        );
+        assert_eq!(fs::read_to_string(format!("{base}.crt")).unwrap(), "CHAIN");
+        assert!(
+            !fs::symlink_metadata(format!("{base}.crt"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[test]
+    fn resolve_role_names_the_flag_without_a_terminal() {
+        if std::io::stdin().is_terminal() {
+            eprintln!("Skipping: stdin is a terminal, the prompt path would block");
+            return;
+        }
+        // Explicit role: no lookup at all.
+        let addr = fake_vault(|_, path| panic!("unexpected request {path}"));
+        let client = test_client(&addr);
+        assert_eq!(resolve_role(&client, Some("web".to_string())).unwrap(), "web");
+
+        // No role, none inferable (403 on lookup-self): fail and name --role.
+        let addr = fake_vault(|_, _| (403, r#"{"errors":["permission denied"]}"#.to_string()));
+        let client = test_client(&addr);
+        let err = resolve_role(&client, None).unwrap_err().to_string();
+        assert!(err.contains("--role"), "{err}");
+
+        // Several candidates: refuse to pick one from a pipe.
+        let addr = fake_vault(|_, _| {
+            (
+                200,
+                r#"{"data":{"policies":["pki.web.issue","pki.api.issue","default"]}}"#.to_string(),
+            )
+        });
+        let client = test_client(&addr);
+        let err = format!("{:#}", resolve_role(&client, None).unwrap_err());
+        assert!(
+            err.contains("--role") && err.contains("api") && err.contains("web"),
+            "{err}"
+        );
     }
 }

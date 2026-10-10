@@ -79,20 +79,12 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
     }
 
     // Validate min_tls <= max_tls ordering if both are set
-    if let (Some(min), Some(max)) = (&args.min_tls, &args.max_tls) {
-        let min_ord = match min {
-            cli::TlsVersionArg::Tls1_2 => 0,
-            cli::TlsVersionArg::Tls1_3 => 1,
-        };
-        let max_ord = match max {
-            cli::TlsVersionArg::Tls1_2 => 0,
-            cli::TlsVersionArg::Tls1_3 => 1,
-        };
-        if min_ord > max_ord {
-            return Err(anyhow::anyhow!(
-                "--min-tls ({min}) must not be greater than --max-tls ({max})"
-            ));
-        }
+    if let (Some(min), Some(max)) = (&args.min_tls, &args.max_tls)
+        && min > max
+    {
+        return Err(anyhow::anyhow!(
+            "--min-tls ({min}) must not be greater than --max-tls ({max})"
+        ));
     }
 
     warn_secret_on_argv("--cert-password", "DCERT_CERT_PASSWORD", args.cert_password.is_some());
@@ -932,7 +924,11 @@ fn run_vault(args: cli::VaultArgs) -> Result<i32> {
 
     let client = vault::VaultClient::new(&addr, &token, &config)?;
 
-    vault::print_vault_connectivity(&client, &addr, &token);
+    let token_source = match auth_method {
+        vault::VaultAuthMethod::Token => vault::TokenSource::infer(&token),
+        method => vault::TokenSource::Login(method),
+    };
+    vault::print_vault_connectivity_from(&client, &addr, &token, token_source);
 
     match args.mode {
         cli::VaultMode::Issue(args) => run_vault_issue(&client, *args),
@@ -978,49 +974,17 @@ fn run_vault_issue(client: &vault::VaultClient, args: cli::VaultIssueArgs) -> Re
 
     let data = vault::issue_certificate(client, &mount, &role, &cn, &sans, &ip_sans, &ttl)?;
 
-    // Build full chain
-    let full_chain = vault::build_full_chain(client, &data.certificate, &data.ca_chain, &mount);
-
-    // Display certificate
-    vault::display_certificate(&full_chain);
-
-    // Write output files
-    if let Some(ref pfx_pw) = pfx_password {
-        let key_pem = data
-            .private_key
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("Vault did not return a private key"))?;
-        let pfx_path = format!("{output_base}.pfx");
-        // Write temp files for PFX conversion
-        let temp_dir = tempfile::TempDir::new()?;
-        let cert_path = temp_dir.path().join("cert.pem");
-        let key_path = temp_dir.path().join("key.pem");
-        std::fs::write(&cert_path, &full_chain)
-            .with_context(|| format!("Failed to write temp certificate file: {}", cert_path.display()))?;
-        std::fs::write(&key_path, key_pem)
-            .with_context(|| format!("Failed to write temp key file: {}", key_path.display()))?;
-        convert::pem_to_pfx(
-            cert_path
-                .to_str()
-                .ok_or_else(|| anyhow::anyhow!("Temp cert path contains invalid UTF-8"))?,
-            key_path
-                .to_str()
-                .ok_or_else(|| anyhow::anyhow!("Temp key path contains invalid UTF-8"))?,
-            pfx_pw,
-            &pfx_path,
-            None,
-        )?;
-        println!("{}", format!("PFX written to {pfx_path}").green());
-    } else {
-        let key_pem = data.private_key.as_deref();
-        vault::write_pem_files(&full_chain, key_pem, &output_base)?;
-    }
-
-    // Store in Vault KV if requested
-    if let Some(ref kv_path) = store_path {
-        let key_pem = data.private_key.as_deref().unwrap_or("");
-        vault::kv_store(client, kv_path, &full_chain, key_pem, "cert", "key", kv_version)?;
-    }
+    vault::finish_issued_cert(
+        client,
+        &data,
+        &vault::IssuedOutput {
+            mount: &mount,
+            output_base: &output_base,
+            pfx_password: pfx_password.as_deref(),
+            store_path: store_path.as_deref(),
+            kv_version,
+        },
+    )?;
 
     Ok(exit_code::SUCCESS)
 }
@@ -1074,27 +1038,19 @@ fn run_vault_sign(client: &vault::VaultClient, args: cli::VaultSignArgs) -> Resu
         },
     )?;
 
-    // Build full chain
-    let full_chain = vault::build_full_chain(client, &data.certificate, &data.ca_chain, &mount);
-
-    // Display certificate
-    vault::display_certificate(&full_chain);
-
-    // Write output (no private key from sign operation)
-    if pfx_password.is_some() {
-        eprintln!(
-            "{} PFX output requires a private key. The sign operation does not return a key.",
-            "WARNING:".yellow().bold()
-        );
-        eprintln!("Use PFX output with 'vault issue' instead, or bundle manually with 'dcert convert pem-to-pfx'.");
-    }
-
-    vault::write_pem_files(&full_chain, None, &output_base)?;
-
-    // Store in Vault KV if requested
-    if let Some(ref kv_path) = store_path {
-        vault::kv_store(client, kv_path, &full_chain, "", "cert", "key", kv_version)?;
-    }
+    // Signing never returns a private key, so a PFX request degrades to PEM
+    // output with a warning inside finish_issued_cert.
+    vault::finish_issued_cert(
+        client,
+        &data,
+        &vault::IssuedOutput {
+            mount: &mount,
+            output_base: &output_base,
+            pfx_password: pfx_password.as_deref(),
+            store_path: store_path.as_deref(),
+            kv_version,
+        },
+    )?;
 
     Ok(exit_code::SUCCESS)
 }

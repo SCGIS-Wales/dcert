@@ -10,12 +10,12 @@ use x509_parser::prelude::FromDer;
 
 use crate::cert::{CertInfo, CertProcessOpts, extract_ocsp_url, parse_cert_infos_from_pem};
 use crate::cli::{CheckArgs, CipherNotation, HttpProtocol, OutputFormat, SortOrder};
-use crate::keyex::{self, EffectiveTlsSettings, KeyExchangeClass, PqProbeStatus};
 use crate::compliance::{self, ChainComplianceReport, Severity};
 use crate::connect::ConnectOverrides;
 use crate::convert::{CertRole, ConvertResult, write_public_file};
 use crate::debug::debug_log;
 use crate::diagnose::Diagnosis;
+use crate::keyex::{self, EffectiveTlsSettings, KeyExchangeClass, PqProbeStatus};
 use crate::ocsp::check_ocsp_status;
 use crate::proxy::ProxyConfig;
 use crate::tls::{

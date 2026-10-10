@@ -17,10 +17,10 @@ fn main() {
         return;
     };
     // OPENSSL_VERSION_NUMBER layout: 0xMNN00PP0 (major, minor, patch).
-    if version >= 0x3_02_00_00_0 {
+    if version >= 0x3020_0000 {
         println!("cargo:rustc-cfg=dcert_ossl320");
     }
-    if version >= 0x3_05_00_00_0 {
+    if version >= 0x3050_0000 {
         println!("cargo:rustc-cfg=dcert_ossl350");
     }
 }
