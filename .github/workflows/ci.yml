@@ -62,6 +62,45 @@ jobs:
       - name: Cargo test
         run: cargo test --all-features --verbose
 
+  # The hosted Ubuntu runners still link OpenSSL 3.0, which cannot negotiate
+  # ML-KEM. This job builds with the `vendored` feature (OpenSSL 3.6 from
+  # openssl-src) so the RFC 10024 hybrid key exchange, the --pq-probe path and
+  # the group reporting are exercised on every run, not only on hosts that
+  # happen to have a new enough libssl.
+  test-post-quantum:
+    name: Test (vendored OpenSSL, post quantum)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-vendored-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-vendored-
+
+      - name: Build with vendored OpenSSL
+        run: cargo build --features vendored --bins
+
+      - name: Show linked OpenSSL and post quantum capability
+        run: |
+          ./target/debug/dcert --version
+          ./target/debug/dcert --version | grep -q "post quantum key exchange: available"
+
+      - name: Test with vendored OpenSSL
+        run: cargo test --features vendored
+
   security-audit:
     name: Security audit
     runs-on: ubuntu-latest
@@ -318,7 +357,7 @@ jobs:
   auto-tag:
     name: Auto-tag release
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    needs: [ test, security-audit ]
+    needs: [ test, test-post-quantum, security-audit ]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

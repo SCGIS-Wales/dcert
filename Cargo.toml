@@ -8,6 +8,7 @@ repository = "https://github.com/SCGIS-Wales/dcert"
 description = "TLS certificate analysis, format conversion, and key verification — CLI and MCP server"
 readme = "README.md"
 default-run = "dcert"
+build = "build.rs"
 
 [[bin]]
 name = "dcert"
@@ -30,6 +31,11 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 x509-parser = "0.18"
 openssl = "0.10"
+# Direct dependency so Cargo exposes openssl-sys's `links` metadata
+# (DEP_OPENSSL_VERSION_NUMBER) to build.rs, and for the one FFI call the safe
+# crate does not wrap yet (the negotiated TLS group name).
+openssl-sys = "0.9"
+foreign-types = "0.3"
 pem = "4.0"
 serde_yaml_ng = "0.10"
 ctrlc = "3.5"

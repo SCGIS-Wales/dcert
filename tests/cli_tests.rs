@@ -9,6 +9,24 @@ fn dcert_bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_dcert"))
 }
 
+/// Run dcert with `args`, feed `input` on stdin and wait for it to finish.
+fn run_with_stdin(args: &[&str], input: &[u8]) -> std::process::Output {
+    let mut child = dcert_bin()
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn dcert");
+    child
+        .stdin
+        .take()
+        .expect("stdin handle")
+        .write_all(input)
+        .expect("failed to write stdin");
+    child.wait_with_output().expect("failed to wait")
+}
+
 fn test_data(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -941,20 +959,7 @@ fn test_verify_key_requires_both_or_neither() {
 fn test_stdin_pem_with_dash_arg() {
     // Pipe PEM data via stdin with explicit '-' target
     let pem_data = std::fs::read(test_data("valid.pem")).expect("failed to read valid.pem");
-    let mut child = dcert_bin()
-        .args(["check", "-"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to spawn dcert");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(&pem_data)
-        .expect("failed to write stdin");
-    let output = child.wait_with_output().expect("failed to wait");
+    let output = run_with_stdin(&["check", "-"], &pem_data);
     assert!(output.status.success(), "piped PEM via stdin should succeed");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -967,19 +972,7 @@ fn test_stdin_pem_with_dash_arg() {
 fn test_stdin_pem_no_args() {
     // Pipe PEM data via stdin with no arguments at all (auto-detect)
     let pem_data = std::fs::read(test_data("valid.pem")).expect("failed to read valid.pem");
-    let mut child = dcert_bin()
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to spawn dcert");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(&pem_data)
-        .expect("failed to write stdin");
-    let output = child.wait_with_output().expect("failed to wait");
+    let output = run_with_stdin(&[], &pem_data);
     assert!(
         output.status.success(),
         "piped PEM with no args should succeed, stderr: {}",
@@ -998,20 +991,7 @@ fn test_stdin_base64_decoded_pem() {
     // Read the PEM file, base64-encode it, then decode in the pipeline
     let pem_data = std::fs::read(test_data("valid.pem")).expect("failed to read valid.pem");
     // The pem_data is already in PEM text format, pipe it directly as if it came from base64 --decode
-    let mut child = dcert_bin()
-        .arg("-")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to spawn dcert");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(&pem_data)
-        .expect("failed to write stdin");
-    let output = child.wait_with_output().expect("failed to wait");
+    let output = run_with_stdin(&["-"], &pem_data);
     assert!(output.status.success(), "base64-decoded PEM pipe should succeed");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -1024,20 +1004,7 @@ fn test_stdin_base64_decoded_pem() {
 fn test_stdin_pem_json_format() {
     // Pipe PEM via stdin and request JSON output
     let pem_data = std::fs::read(test_data("valid.pem")).expect("failed to read valid.pem");
-    let mut child = dcert_bin()
-        .args(["check", "-", "--format", "json"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to spawn dcert");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(&pem_data)
-        .expect("failed to write stdin");
-    let output = child.wait_with_output().expect("failed to wait");
+    let output = run_with_stdin(&["check", "-", "--format", "json"], &pem_data);
     assert!(output.status.success(), "stdin PEM with JSON format should succeed");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should produce valid JSON");
@@ -1052,20 +1019,7 @@ fn test_stdin_pem_json_format() {
 fn test_stdin_chain_pem() {
     // Pipe a multi-cert chain via stdin
     let pem_data = std::fs::read(test_data("test.pem")).expect("failed to read test.pem");
-    let mut child = dcert_bin()
-        .args(["check", "-"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to spawn dcert");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(&pem_data)
-        .expect("failed to write stdin");
-    let output = child.wait_with_output().expect("failed to wait");
+    let output = run_with_stdin(&["check", "-"], &pem_data);
     assert!(output.status.success(), "stdin chain PEM should succeed");
     let stdout = String::from_utf8_lossy(&output.stdout);
     // The chain should contain multiple certificates
@@ -1479,8 +1433,16 @@ const UNRESOLVABLE_HOST: &str = "dcert-connection-override.invalid";
 /// Returns the bound port. The listener serves exactly one connection and the
 /// thread then exits, which is all a single dcert invocation needs.
 fn spawn_loopback_tls_server() -> u16 {
+    // dcert only reads the status line, so a minimal response is enough to
+    // complete the exchange it expects.
+    spawn_loopback_tls_server_with(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+}
+
+/// Acceptor builder for the loopback servers, using the test fixture identity.
+/// `groups` restricts the key exchange groups the server accepts (OpenSSL
+/// group list syntax), for the post quantum tests.
+fn loopback_acceptor_builder(groups: Option<&str>) -> openssl::ssl::SslAcceptorBuilder {
     use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
-    use std::net::TcpListener;
 
     let mut builder = SslAcceptor::mozilla_intermediate(SslMethod::tls()).expect("acceptor builder");
     builder
@@ -1489,21 +1451,36 @@ fn spawn_loopback_tls_server() -> u16 {
     builder
         .set_certificate_file(test_data("verify-key-discovery/server.crt"), SslFiletype::PEM)
         .expect("load test cert");
-    let acceptor = builder.build();
+    if let Some(groups) = groups {
+        builder.set_groups_list(groups).expect("set server groups");
+    }
+    builder
+}
 
+/// Serve `connections` TLS connections on loopback; each one gets the request
+/// head read and `respond` called with it to produce the reply.
+fn spawn_loopback_tls_server_serving(
+    connections: usize,
+    groups: Option<&str>,
+    respond: impl Fn(&[u8]) -> Vec<u8> + Send + 'static,
+) -> u16 {
+    use std::io::Read as _;
+    use std::net::TcpListener;
+
+    let acceptor = loopback_acceptor_builder(groups).build();
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
     let port = listener.local_addr().expect("local addr").port();
-
     std::thread::spawn(move || {
-        if let Ok((stream, _)) = listener.accept()
-            && let Ok(mut tls) = acceptor.accept(stream)
-        {
-            // dcert only reads the status line, so a minimal response is enough
-            // to complete the exchange it expects.
-            let _ = tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        for _ in 0..connections {
+            if let Ok((stream, _)) = listener.accept()
+                && let Ok(mut tls) = acceptor.accept(stream)
+            {
+                let mut req = [0u8; 4096];
+                let n = tls.read(&mut req).unwrap_or(0);
+                let _ = tls.write_all(&respond(&req[..n]));
+            }
         }
     });
-
     port
 }
 
@@ -1722,30 +1699,191 @@ fn test_help_documents_connection_overrides() {
 
 /// Serve one TLS connection on loopback and answer with `response` verbatim.
 fn spawn_loopback_tls_server_with(response: &'static [u8]) -> u16 {
-    use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
-    use std::io::Read as _;
-    use std::net::TcpListener;
+    spawn_loopback_tls_server_serving(1, None, move |_| response.to_vec())
+}
 
-    let mut builder = SslAcceptor::mozilla_intermediate(SslMethod::tls()).expect("acceptor builder");
-    builder
-        .set_private_key_file(test_data("verify-key-discovery/server.key"), SslFiletype::PEM)
-        .expect("load test key");
-    builder
-        .set_certificate_file(test_data("verify-key-discovery/server.crt"), SslFiletype::PEM)
-        .expect("load test cert");
-    let acceptor = builder.build();
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
-    let port = listener.local_addr().expect("local addr").port();
-    std::thread::spawn(move || {
-        if let Ok((stream, _)) = listener.accept()
-            && let Ok(mut tls) = acceptor.accept(stream)
-        {
-            let mut req = [0u8; 4096];
-            let _ = tls.read(&mut req);
-            let _ = tls.write_all(response);
-        }
+/// Serve one TLS connection and echo the request head back as the body, so a
+/// test can assert on exactly what dcert put on the wire.
+fn spawn_loopback_tls_echo_server() -> u16 {
+    spawn_loopback_tls_server_serving(1, None, |req| {
+        let mut out = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            req.len()
+        )
+        .into_bytes();
+        out.extend_from_slice(req);
+        out
+    })
+}
+
+/// `OPENSSL_VERSION_NUMBER` of the linked library, as the tests see it.
+fn openssl_number() -> i64 {
+    openssl::version::number()
+}
+
+// ---------------------------------------------------------------
+// HTTP request line and Host header
+// ---------------------------------------------------------------
+
+#[test]
+fn test_request_keeps_query_string_and_non_default_port_in_host() {
+    let port = spawn_loopback_tls_echo_server();
+    let target = format!("https://127.0.0.1:{port}/v1/items?key=1&x=y");
+    let output = dcert_bin()
+        .args([&target, "--no-verify", "--show-body", "--format", "json"])
+        .output()
+        .expect("failed to run dcert");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let parsed: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&output.stdout)).expect("valid JSON");
+    let body = parsed["connection"]["http_body_excerpt"]
+        .as_str()
+        .expect("echoed request body");
+    assert!(
+        body.starts_with("GET /v1/items?key=1&x=y HTTP/1.1\r\n"),
+        "request line must carry the query string: {body:?}"
+    );
+    assert!(
+        body.contains(&format!("\r\nHost: 127.0.0.1:{port}\r\n")),
+        "Host header must carry the non default port: {body:?}"
+    );
+}
+
+// ---------------------------------------------------------------
+// Key exchange group reporting and post quantum probe
+// ---------------------------------------------------------------
+
+#[test]
+fn test_key_exchange_group_is_reported_and_classified() {
+    let port = spawn_loopback_tls_server();
+    let target = format!("https://127.0.0.1:{port}");
+    let output = dcert_bin()
+        .args([&target, "--no-verify", "--format", "json"])
+        .output()
+        .expect("failed to run dcert");
+    assert!(output.status.success());
+    let parsed: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&output.stdout)).expect("valid JSON");
+    let conn = &parsed["connection"];
+    // The mozilla_intermediate server offers classical groups only, so the
+    // handshake is classical whatever the client offered.
+    assert_eq!(conn["key_exchange_class"], "classical", "{conn}");
+    let group = conn["tls_key_exchange_group"].as_str().expect("group name");
+    assert!(!group.is_empty());
+    assert!(conn.get("post_quantum_probe").is_none(), "probe is opt in");
+}
+
+#[test]
+fn test_pq_probe_reports_support_or_not_testable() {
+    if openssl_number() >= 0x3_05_00_00_0 {
+        // OpenSSL 3.5+: the server accepts only X25519MLKEM768, so both the
+        // main handshake and the probe must negotiate it.
+        let port = spawn_loopback_tls_server_serving(2, Some("X25519MLKEM768"), |_| {
+            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()
+        });
+        let target = format!("https://127.0.0.1:{port}");
+        let output = dcert_bin()
+            .args([
+                &target,
+                "--no-verify",
+                "--groups",
+                "X25519MLKEM768:X25519",
+                "--pq-probe",
+                "--format",
+                "json",
+            ])
+            .output()
+            .expect("failed to run dcert");
+        assert!(
+            output.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let parsed: serde_json::Value =
+            serde_json::from_str(&String::from_utf8_lossy(&output.stdout)).expect("valid JSON");
+        let conn = &parsed["connection"];
+        assert_eq!(conn["tls_key_exchange_group"], "X25519MLKEM768", "{conn}");
+        assert_eq!(conn["key_exchange_class"], "hybrid_pq", "{conn}");
+        assert_eq!(conn["post_quantum_probe"]["status"], "supported", "{conn}");
+        assert_eq!(conn["post_quantum_probe"]["group"], "X25519MLKEM768", "{conn}");
+    } else {
+        // Older OpenSSL: the probe must degrade to "not testable" and name
+        // the reason instead of failing the whole check.
+        let port = spawn_loopback_tls_server();
+        let target = format!("https://127.0.0.1:{port}");
+        let output = dcert_bin()
+            .args([&target, "--no-verify", "--pq-probe", "--format", "json"])
+            .output()
+            .expect("failed to run dcert");
+        assert!(output.status.success());
+        let parsed: serde_json::Value =
+            serde_json::from_str(&String::from_utf8_lossy(&output.stdout)).expect("valid JSON");
+        let probe = &parsed["connection"]["post_quantum_probe"];
+        assert_eq!(probe["status"], "not_testable", "{probe}");
+        assert!(
+            probe["detail"].as_str().unwrap_or("").contains("OpenSSL 3.5"),
+            "{probe}"
+        );
+    }
+}
+
+#[test]
+fn test_pq_probe_not_supported_by_classical_only_server() {
+    if openssl_number() < 0x3_05_00_00_0 {
+        return;
+    }
+    let port = spawn_loopback_tls_server_serving(2, Some("X25519:secp384r1"), |_| {
+        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()
     });
-    port
+    let target = format!("https://127.0.0.1:{port}");
+    let output = dcert_bin()
+        .args([&target, "--no-verify", "--pq-probe", "--format", "json"])
+        .output()
+        .expect("failed to run dcert");
+    assert!(output.status.success());
+    let parsed: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&output.stdout)).expect("valid JSON");
+    let conn = &parsed["connection"];
+    assert_eq!(conn["key_exchange_class"], "classical", "{conn}");
+    assert_eq!(conn["post_quantum_probe"]["status"], "not_supported", "{conn}");
+}
+
+#[test]
+fn test_groups_flag_rejects_garbage_before_connecting() {
+    let output = dcert_bin()
+        .args(["https://example.invalid", "--groups", "X25519;rm -rf /"])
+        .output()
+        .expect("failed to run dcert");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--groups"), "{stderr}");
+}
+
+#[test]
+fn test_tls_profile_modern_is_accepted_and_version_names_openssl() {
+    let port = spawn_loopback_tls_server();
+    let target = format!("https://127.0.0.1:{port}");
+    let output = dcert_bin()
+        .args([&target, "--no-verify", "--tls-profile", "modern", "--format", "json"])
+        .output()
+        .expect("failed to run dcert");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let parsed: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&output.stdout)).expect("valid JSON");
+    assert_eq!(parsed["connection"]["tls_version"], "TLSv1.3");
+
+    let version = dcert_bin().arg("--version").output().expect("failed to run dcert");
+    let stdout = String::from_utf8_lossy(&version.stdout);
+    assert!(stdout.contains("OpenSSL") || stdout.contains("LibreSSL"), "{stdout}");
+    assert!(stdout.contains("post quantum key exchange"), "{stdout}");
 }
 
 /// A forward proxy that refuses every CONNECT with `response`.
