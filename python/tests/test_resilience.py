@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import time
 from dataclasses import replace
 from unittest.mock import AsyncMock, patch
 
@@ -15,9 +16,11 @@ from mcp_types import CONNECTION_CLOSED, INVALID_PARAMS
 from dcert.config import load_config
 from dcert.resilience import (
     CircuitBreakerOpen,
+    Guard,
     OTelConfig,
     ResilienceConfig,
     backoff_delays,
+    build_guard,
     create_circuit_breaker,
     create_rate_limiter,
     env_bool,
@@ -30,13 +33,6 @@ from dcert.resilience import (
     setup_otel,
     truncate_response,
 )
-
-
-@pytest.fixture
-def clean_env(monkeypatch):
-    for name in list(__import__("os").environ):
-        if name.startswith("DCERT_MCP_"):
-            monkeypatch.delenv(name)
 
 
 class FakeClock:
@@ -107,7 +103,9 @@ def test_resilience_config_defaults(clean_env):
     assert cfg.cache_enabled is False
     assert cfg.max_response_bytes == 256 * 1024
     assert cfg.tool_timeout == pytest.approx(300.0)
+    assert cfg.connect_timeout == pytest.approx(base.connect_timeout)
     assert cfg.reconnect_max == 3
+    assert cfg.truncation_lookback_chars == base.truncation_lookback_chars
 
 
 def test_resilience_config_env_overrides(clean_env, monkeypatch):
@@ -123,11 +121,13 @@ def test_resilience_config_env_overrides(clean_env, monkeypatch):
         "DCERT_MCP_CACHE_ENABLED": "1",
         "DCERT_MCP_MAX_RESPONSE_BYTES": "1024",
         "DCERT_MCP_TOOL_TIMEOUT": "12",
+        "DCERT_MCP_CONNECT_TIMEOUT": "4",
         "DCERT_MCP_RECONNECT_MAX": "0",
     }
     for key, value in overrides.items():
         monkeypatch.setenv(key, value)
     cfg = resilience_config_from_env()
+    assert cfg.connect_timeout == pytest.approx(4.0)
     assert cfg.retry_enabled is False
     assert cfg.retry_max_attempts == 5
     assert cfg.retry_base_delay == pytest.approx(0.1)
@@ -148,6 +148,39 @@ def test_resilience_config_is_frozen(clean_env):
         cfg.bulkhead_max = 1  # type: ignore[misc]
     assert replace(cfg, bulkhead_max=1).bulkhead_max == 1
     assert isinstance(cfg, ResilienceConfig)
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [
+        ("DCERT_MCP_CB_THRESHOLD", "0"),
+        ("DCERT_MCP_BULKHEAD_MAX", "0"),
+        ("DCERT_MCP_TOOL_TIMEOUT", "0"),
+        ("DCERT_MCP_CONNECT_TIMEOUT", "-1"),
+        ("DCERT_MCP_RETRY_MAX_ATTEMPTS", "0"),
+        ("DCERT_MCP_RETRY_MULTIPLIER", "0"),
+        ("DCERT_MCP_RETRY_BASE_DELAY", "-0.5"),
+        ("DCERT_MCP_RATE_LIMIT_RPS", "0"),
+        ("DCERT_MCP_RATE_LIMIT_BURST", "0"),
+        ("DCERT_MCP_RECONNECT_MAX", "-1"),
+        ("DCERT_MCP_MAX_RESPONSE_BYTES", "-1"),
+        ("DCERT_MCP_CACHE_TOOL_TTL", "-1"),
+    ],
+)
+def test_resilience_config_rejects_out_of_range_values(clean_env, monkeypatch, variable, value):
+    """A bad variable fails fast with its name rather than crashing or hanging later."""
+    monkeypatch.setenv(variable, value)
+    with pytest.raises(ValueError, match=variable):
+        resilience_config_from_env()
+
+
+def test_resilience_config_replace_is_validated(clean_env):
+    cfg = resilience_config_from_env()
+    with pytest.raises(ValueError, match="DCERT_MCP_BULKHEAD_MAX must be at least 1, got 0"):
+        replace(cfg, bulkhead_max=0)
+    with pytest.raises(ValueError, match="DCERT_MCP_TOOL_TIMEOUT must be greater than 0"):
+        replace(cfg, tool_timeout=0.0)
+    assert replace(cfg, reconnect_max=0).reconnect_max == 0
 
 
 def test_otel_config_defaults(clean_env):
@@ -198,6 +231,13 @@ def test_truncation_at_newline_boundary():
 def test_exact_boundary():
     text = "x" * 100
     assert truncate_response(text, max_bytes=100) == text
+
+
+def test_truncation_lookback_is_configurable():
+    text = "\n".join(f"line {i}" for i in range(1000))
+    with_lookback = truncate_response(text, max_bytes=200)
+    without = truncate_response(text, max_bytes=200, lookback=0)
+    assert len(without.split("\n\n[Truncated:")[0]) > len(with_lookback.split("\n\n[Truncated:")[0])
 
 
 # ---------------------------------------------------------------------------
@@ -323,10 +363,10 @@ async def test_rate_limiter_refills_with_time():
 
 async def test_rate_limiter_uses_asyncio_sleep_by_default():
     rl = create_rate_limiter(1000.0, 1)
-    with patch("dcert.resilience.asyncio.sleep", new=AsyncMock()) as sleep:
-        await rl.acquire()
-        await rl.acquire()
-    sleep.assert_awaited_once()
+    started = time.monotonic()
+    await rl.acquire()
+    await rl.acquire()
+    assert time.monotonic() - started >= 0.0005
 
 
 @pytest.mark.parametrize(("rps", "burst"), [(0, 1), (-1.0, 1), (1.0, 0)])
@@ -415,6 +455,24 @@ def test_is_connection_error_handles_cycles():
     assert is_connection_error(exc) is False
 
 
+def test_is_connection_error_ignores_implicit_context():
+    """Only ``raise ... from`` chains count.
+
+    The implicit ``__context__`` is whatever was being handled when the
+    exception was raised; a ``ValueError`` raised while handling a transport
+    error is a bad input, and retrying it would re-run a call for no reason.
+    """
+    try:
+        try:
+            raise ConnectionResetError("gone")
+        except ConnectionResetError:
+            raise ValueError("bad input") from None
+    except ValueError as exc:
+        implicit = exc
+    assert implicit.__context__ is not None
+    assert is_connection_error(implicit) is False
+
+
 # ---------------------------------------------------------------------------
 # run_with_retry
 # ---------------------------------------------------------------------------
@@ -431,17 +489,18 @@ async def test_retry_success_first_attempt():
 async def test_retry_backoff_timing():
     operation = AsyncMock(side_effect=[ConnectionError("a"), ConnectionError("b"), "ok"])
     failures = []
+    sleep = AsyncMock()
 
     async def on_failure(exc, attempt):
         failures.append((str(exc), attempt))
 
-    with patch("dcert.resilience.asyncio.sleep", new=AsyncMock()) as sleep:
-        result = await run_with_retry(
-            operation,
-            delays=[0.25, 0.5, 1.0],
-            is_retryable=is_connection_error,
-            on_failure=on_failure,
-        )
+    result = await run_with_retry(
+        operation,
+        delays=[0.25, 0.5, 1.0],
+        is_retryable=is_connection_error,
+        on_failure=on_failure,
+        sleep=sleep,
+    )
     assert result == "ok"
     assert [call.args[0] for call in sleep.await_args_list] == [0.25, 0.5]
     assert failures == [("a", 0), ("b", 1)]
@@ -480,6 +539,121 @@ async def test_retry_never_swallows_cancellation():
     operation = AsyncMock(side_effect=asyncio.CancelledError())
     with pytest.raises(asyncio.CancelledError):
         await run_with_retry(operation, delays=[0.1], is_retryable=lambda _: True)
+    assert operation.await_count == 1
+
+
+# ---------------------------------------------------------------------------
+# build_guard
+# ---------------------------------------------------------------------------
+
+
+def _guard(config, **overrides):
+    return build_guard(replace(config, **overrides) if overrides else config, sleep=AsyncMock())
+
+
+async def test_guard_passes_result_through(config):
+    guard = _guard(config)
+    assert isinstance(guard, Guard)
+    assert await guard.run(AsyncMock(return_value="ok"), name="t", timeout=1.0) == "ok"
+    assert guard.breaker is not None
+    assert guard.breaker.state() == "closed"
+    assert guard.limiter is None
+
+
+async def test_guard_retries_transport_errors_with_injected_sleep(config):
+    sleep = AsyncMock()
+    guard = build_guard(replace(config, retry_max_attempts=3), sleep=sleep)
+    operation = AsyncMock(side_effect=[ConnectionError("a"), "ok"])
+    assert await guard.run(operation, name="t", timeout=1.0) == "ok"
+    assert [call.args[0] for call in operation.await_args_list] == [0, 1]
+    sleep.assert_awaited_once()
+
+
+async def test_guard_retry_can_be_declined_per_call(config):
+    guard = _guard(config, retry_max_attempts=3)
+    operation = AsyncMock(side_effect=[ConnectionError("a"), "ok"])
+    with pytest.raises(ConnectionError, match="a"):
+        await guard.run(operation, name="t", timeout=1.0, retry=False)
+    assert operation.await_count == 1
+
+
+async def test_guard_retries_parameter_and_retry_enabled(config):
+    guard = build_guard(replace(config, retry_max_attempts=1), retries=2, sleep=AsyncMock())
+    operation = AsyncMock(side_effect=[ConnectionError("a"), ConnectionError("b"), "ok"])
+    assert await guard.run(operation, name="t", timeout=1.0) == "ok"
+    disabled = build_guard(replace(config, retry_enabled=False), retries=2, sleep=AsyncMock())
+    with pytest.raises(ConnectionError):
+        await disabled.run(AsyncMock(side_effect=ConnectionError("x")), name="t", timeout=1.0)
+
+
+async def test_guard_breaker_rejects_with_circuit_breaker_open(config):
+    guard = _guard(config, retry_enabled=False, circuit_breaker_threshold=1)
+    with pytest.raises(ConnectionError):
+        await guard.run(AsyncMock(side_effect=ConnectionError("x")), name="t", timeout=1.0)
+    with pytest.raises(CircuitBreakerOpen, match="Circuit breaker is open; t rejected"):
+        await guard.run(AsyncMock(return_value="ok"), name="t", timeout=1.0)
+
+
+async def test_guard_timeout_counts_against_breaker(config):
+    guard = _guard(config, circuit_breaker_threshold=1)
+
+    async def slow(_attempt):
+        await asyncio.sleep(1)
+
+    with pytest.raises(TimeoutError):
+        await guard.run(slow, name="t", timeout=0.01)
+    assert guard.breaker is not None
+    assert guard.breaker.state() == "open"
+
+
+async def test_guard_on_failure_decides_whether_breaker_counts(config):
+    guard = _guard(config, retry_enabled=False, circuit_breaker_threshold=1)
+    seen = []
+
+    async def ignore(exc, attempt):
+        seen.append((type(exc).__name__, attempt))
+        return False
+
+    with pytest.raises(ConnectionError):
+        await guard.run(
+            AsyncMock(side_effect=ConnectionError("x")), name="t", timeout=1.0, on_failure=ignore
+        )
+    assert guard.breaker is not None
+    assert guard.breaker.state() == "closed"
+    assert seen == [("ConnectionError", 0)]
+
+
+async def test_guard_rate_limiter_uses_injected_sleep(config):
+    sleep = AsyncMock()
+    cfg = replace(config, rate_limit_enabled=True, rate_limit_rps=1000.0, rate_limit_burst=1)
+    guard = build_guard(cfg, sleep=sleep)
+    assert guard.limiter is not None
+    for _ in range(2):
+        await guard.run(AsyncMock(return_value="ok"), name="t", timeout=1.0)
+    sleep.assert_awaited_once()
+
+
+async def test_guard_bulkhead_limits_concurrency(config):
+    guard = _guard(config, bulkhead_max=2)
+    active = 0
+    peak = 0
+
+    async def slow(_attempt):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+
+    await asyncio.gather(*(guard.run(slow, name="t", timeout=1.0) for _ in range(6)))
+    assert peak == 2
+
+
+async def test_guard_does_not_retry_other_errors(config):
+    guard = _guard(config, retry_max_attempts=3)
+    operation = AsyncMock(side_effect=ValueError("bad"))
+    with pytest.raises(ValueError, match="bad"):
+        await guard.run(operation, name="t", timeout=1.0)
     assert operation.await_count == 1
 
 

@@ -64,16 +64,33 @@ def test_release_and_download_sections():
     assert "github.com" in cfg.release.allowed_hosts
     assert cfg.download.max_bytes > 0
     assert cfg.download.timeout_seconds > 0
-    assert cfg.binaries == {"dcert": "DCERT_PATH", "dcert-mcp": "DCERT_MCP_BINARY"}
+    assert cfg.download.total_timeout_seconds >= cfg.download.timeout_seconds
+    assert cfg.download.lock_poll_seconds > 0
+    assert cfg.binaries.env == {"dcert": "DCERT_PATH", "dcert-mcp": "DCERT_MCP_BINARY"}
+    assert cfg.binaries.fallback_env == "DCERT_MCP_BINARY"
+    assert cfg.binaries.wrapper_probe_bytes == 128
+
+
+def test_install_section():
+    cfg = load_config()
+    assert cfg.install.env_override == "DCERT_INSTALL_DIR"
+    assert "default" in cfg.install.directories
+    assert "LOCALAPPDATA" in cfg.install.directories["windows"]
+    assert all(value.endswith("dcert/bin") for value in cfg.install.directories.values())
 
 
 def test_resilience_and_tools_defaults():
     cfg = load_config()
     assert cfg.resilience.bulkhead_max == 10
     assert cfg.resilience.max_response_bytes == 256 * 1024
+    assert cfg.resilience.connect_timeout > 0
+    assert cfg.resilience.truncation_lookback_chars == 200
     assert cfg.tools.truststore_password
     assert cfg.tools.expiry_days == 30
+    assert cfg.tools.output_dir == "."
     assert cfg.server.port == 8080
+    assert cfg.server.default_transport in cfg.server.transports
+    assert cfg.otel.exporter in cfg.otel.exporters
 
 
 def _raw() -> dict:
@@ -110,6 +127,31 @@ def test_parse_config_bad_string_list():
     raw = _raw()
     raw["release"]["allowed_hosts"] = "github.com"
     with pytest.raises(ValueError, match="allowed_hosts"):
+        parse_config(raw)
+
+
+def test_parse_config_bad_string_mapping():
+    raw = _raw()
+    raw["binaries"]["env"] = ["DCERT_PATH"]
+    with pytest.raises(ValueError, match="'env' must be a mapping of strings"):
+        parse_config(raw)
+
+
+def test_parse_config_install_needs_default():
+    raw = _raw()
+    del raw["install"]["directories"]["default"]
+    with pytest.raises(ValueError, match="'default' entry"):
+        parse_config(raw)
+
+
+@pytest.mark.parametrize(
+    ("section", "key", "match"),
+    [("server", "default_transport", "default_transport"), ("otel", "exporter", "'exporter'")],
+)
+def test_parse_config_choice_must_be_listed(section, key, match):
+    raw = _raw()
+    raw[section][key] = "carrier-pigeon"
+    with pytest.raises(ValueError, match=match):
         parse_config(raw)
 
 

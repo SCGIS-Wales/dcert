@@ -6,11 +6,15 @@ Supply chain safeguards:
 - Only ``https`` URLs on the configured hosts are opened, and every redirect
   is validated against the same rule before it is followed.
 - The archive is capped at the configured size, checked against the
-  ``Content-Length`` header and again while streaming.
+  ``Content-Length`` header and again while streaming, and the whole
+  transfer must finish within a configured deadline.
 - The archive is verified against its SHA256 digest before extraction.
 - Archive member names are flattened to their basename so an entry can never
   escape the install directory, and each binary is written to a temporary
   file that is moved into place atomically.
+- Binaries are installed into a directory owned by dcert (see
+  :func:`get_install_dir`), never into pip's scripts directory, so a
+  download can never replace a console script wrapper.
 - Concurrent installs are serialised with a lock file.
 """
 
@@ -23,12 +27,12 @@ import os
 import platform
 import shutil
 import sys
-import sysconfig
 import tarfile
 import tempfile
+import time
 import urllib.request
 import zipfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from email.message import Message
 from http.client import HTTPMessage
@@ -36,38 +40,66 @@ from pathlib import Path
 from typing import IO, Any, Protocol
 from urllib.parse import urlsplit
 
-from dcert.binary import binary_filename, ensure_executable
+from dcert.binary import Notify, binary_filename, ensure_executable, is_wrapper
 from dcert.config import PlatformTarget, archive_name_for, find_platform, load_config
 
-if sys.platform == "win32":
+if sys.platform == "win32":  # pragma: no cover (Windows only)
     import msvcrt
+
+    def _try_lock(fd: int) -> bool:
+        """Try once to lock the first byte; Windows cannot wait indefinitely."""
+        try:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        except OSError:
+            return False
+        return True
+
+    def _unlock(fd: int) -> None:
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+
 else:
     import fcntl
+
+    def _try_lock(fd: int) -> bool:
+        """Block until the exclusive lock is held; always succeeds."""
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        return True
+
+    def _unlock(fd: int) -> None:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+
 
 logger = logging.getLogger(__name__)
 
 CHECKSUMS_PATH = Path(__file__).with_name("checksums.json")
 
 
-def load_checksums() -> dict[str, Any]:
-    """Return the checksums embedded in the package, or an empty mapping."""
-    path = Path(__file__).with_name("checksums.json")
+class IntegrityError(RuntimeError):
+    """A download failed a supply chain check: URL, redirect, size or checksum."""
+
+
+def load_checksums(path: Path = CHECKSUMS_PATH) -> dict[str, Any]:
+    """Return the checksums embedded in the package, or an empty mapping.
+
+    Raises:
+        RuntimeError: If the file exists but is not a mapping whose
+            ``archives`` entry maps archive names to digests.
+    """
     if not path.exists():
         return {}
     with path.open("rb") as handle:
         data = json.load(handle)
-    return dict(data) if isinstance(data, dict) else {}
+    archives = data.get("archives", {}) if isinstance(data, dict) else None
+    if not isinstance(archives, dict) or not all(
+        isinstance(name, str) and isinstance(digest, str) for name, digest in archives.items()
+    ):
+        raise RuntimeError(f"{path} is malformed: 'archives' must map archive names to digests")
+    return dict(data)
 
 
 def get_target() -> PlatformTarget | None:
     """Return the platform row for the running machine, if supported."""
     return find_platform(platform.system(), platform.machine())
-
-
-def get_target_triple() -> str | None:
-    """Return the Rust target triple for the running machine, if supported."""
-    target = get_target()
-    return target.triple if target else None
 
 
 def get_archive_name() -> str | None:
@@ -77,17 +109,30 @@ def get_archive_name() -> str | None:
 
 
 def get_install_dir() -> Path:
-    """Return a writable directory that is normally on ``PATH``.
+    """Return the directory downloaded binaries are installed to, creating it.
 
-    Prefers the interpreter's scripts directory (where pip installs console
-    scripts) and falls back to ``~/.local/bin``.
+    The directory belongs to dcert, never to pip, so a download cannot
+    replace a console script wrapper. It comes from the configured
+    ``install.env_override`` variable when set, otherwise from the
+    ``install.directories`` entry for ``platform.system()`` (``default``
+    for any other system). ``~`` and environment variables are expanded.
+
+    Raises:
+        RuntimeError: If the path is not absolute after expansion, for
+            example when a referenced environment variable is unset.
     """
-    scripts_dir = Path(sysconfig.get_path("scripts"))
-    if os.access(scripts_dir, os.W_OK):
-        return scripts_dir
-    local_bin = Path.home() / ".local" / "bin"
-    local_bin.mkdir(parents=True, exist_ok=True)
-    return local_bin
+    cfg = load_config().install
+    value = os.environ.get(cfg.env_override) or cfg.directories.get(
+        platform.system().lower(), cfg.directories["default"]
+    )
+    path = Path(os.path.expandvars(os.path.expanduser(value)))
+    if not path.is_absolute():
+        raise RuntimeError(
+            f"Install directory {value!r} is not absolute after expansion; "
+            f"set {cfg.env_override} to an absolute path"
+        )
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def verify_checksum(file_path: Path, expected_sha256: str) -> bool:
@@ -123,7 +168,7 @@ class _ValidatingRedirectHandler(urllib.request.HTTPRedirectHandler):
         newurl: str,
     ) -> urllib.request.Request | None:
         if not is_allowed_url(newurl, self._allowed_hosts):
-            raise RuntimeError(f"Refusing redirect to {newurl}: only https on allowed hosts")
+            raise IntegrityError(f"Refusing redirect to {newurl}: only https on allowed hosts")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
@@ -150,16 +195,32 @@ def _content_length(headers: Message) -> int | None:
         return None
 
 
-def stream_to_file(response: _Response, out: IO[bytes], *, max_bytes: int, chunk_size: int) -> int:
-    """Copy *response* into *out*, aborting once *max_bytes* is exceeded."""
+def stream_to_file(
+    response: _Response,
+    out: IO[bytes],
+    *,
+    max_bytes: int,
+    chunk_size: int,
+    max_seconds: float | None = None,
+    clock: Callable[[], float] = time.monotonic,
+) -> int:
+    """Copy *response* into *out*, aborting once *max_bytes* or *max_seconds* is exceeded.
+
+    Raises:
+        IntegrityError: If the body exceeds *max_bytes*.
+        TimeoutError: If the transfer takes longer than *max_seconds*.
+    """
     declared = _content_length(response.headers)
     if declared is not None and declared > max_bytes:
-        raise RuntimeError(f"Download of {declared} bytes exceeds the {max_bytes} byte limit")
+        raise IntegrityError(f"Download of {declared} bytes exceeds the {max_bytes} byte limit")
+    started = clock()
     total = 0
     while chunk := response.read(chunk_size):
         total += len(chunk)
         if total > max_bytes:
-            raise RuntimeError(f"Download exceeded the {max_bytes} byte limit")
+            raise IntegrityError(f"Download exceeded the {max_bytes} byte limit")
+        if max_seconds is not None and clock() - started > max_seconds:
+            raise TimeoutError(f"Download exceeded the {max_seconds} second limit")
         out.write(chunk)
     return total
 
@@ -172,48 +233,50 @@ def download_to_file(
     max_bytes: int,
     chunk_size: int,
     allowed_hosts: tuple[str, ...],
+    max_seconds: float | None = None,
 ) -> int:
-    """Download *url* into *out* with scheme, host and size validation.
+    """Download *url* into *out* with scheme, host, size and time validation.
 
     Returns:
         The number of bytes written.
 
     Raises:
-        RuntimeError: If the URL or a redirect is not allowed, or the
+        IntegrityError: If the URL or a redirect is not allowed, or the
             download exceeds *max_bytes*.
+        TimeoutError: If a read stalls for *timeout* seconds or the whole
+            transfer takes longer than *max_seconds*.
     """
     if not is_allowed_url(url, allowed_hosts):
-        raise RuntimeError(f"Refusing to download {url}: only https on allowed hosts")
+        raise IntegrityError(f"Refusing to download {url}: only https on allowed hosts")
     opener = build_opener(allowed_hosts)
     with opener.open(url, timeout=timeout) as response:
-        return stream_to_file(response, out, max_bytes=max_bytes, chunk_size=chunk_size)
+        return stream_to_file(
+            response, out, max_bytes=max_bytes, chunk_size=chunk_size, max_seconds=max_seconds
+        )
 
 
-def _lock_handle(handle: IO[bytes]) -> None:
-    """Take an exclusive lock on *handle*, blocking until it is available."""
-    if sys.platform == "win32":
-        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
-    else:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+def _lock_handle(
+    handle: IO[bytes], *, poll_seconds: float, sleep: Callable[[float], None] = time.sleep
+) -> None:
+    """Take an exclusive lock on *handle*, blocking until it is available.
 
-
-def _unlock_handle(handle: IO[bytes]) -> None:
-    """Release the lock taken by :func:`_lock_handle`."""
-    if sys.platform == "win32":
-        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-    else:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    POSIX ``flock`` waits in the kernel; Windows byte range locks only offer
+    a bounded wait, so there the lock is polled every *poll_seconds*.
+    """
+    while not _try_lock(handle.fileno()):
+        sleep(poll_seconds)
 
 
 @contextmanager
-def install_lock(lock_path: Path) -> Iterator[None]:
+def install_lock(lock_path: Path, poll_seconds: float | None = None) -> Iterator[None]:
     """Serialise installs across processes with an exclusive lock file."""
+    interval = load_config().download.lock_poll_seconds if poll_seconds is None else poll_seconds
     with lock_path.open("ab") as handle:
-        _lock_handle(handle)
+        _lock_handle(handle, poll_seconds=interval)
         try:
             yield
         finally:
-            _unlock_handle(handle)
+            _unlock(handle.fileno())
 
 
 def _install_member(name: str, source: IO[bytes], install_dir: Path) -> Path:
@@ -233,17 +296,18 @@ def _install_member(name: str, source: IO[bytes], install_dir: Path) -> Path:
 
 
 def _iter_zip_members(archive_path: Path, wanted: set[str]) -> Iterator[tuple[str, IO[bytes]]]:
-    """Yield ``(basename, file object)`` for each wanted member of a zip archive."""
+    """Yield ``(basename, file object)`` for each wanted file member of a zip archive."""
     with zipfile.ZipFile(archive_path) as archive:
         for member in archive.infolist():
             name = Path(member.filename).name
-            if name in wanted:
-                with archive.open(member) as handle:
-                    yield name, handle
+            if name not in wanted or member.is_dir():
+                continue
+            with archive.open(member) as handle:
+                yield name, handle
 
 
 def _iter_tar_members(archive_path: Path, wanted: set[str]) -> Iterator[tuple[str, IO[bytes]]]:
-    """Yield ``(basename, file object)`` for each wanted member of a tar.gz archive."""
+    """Yield ``(basename, file object)`` for each wanted file member of a tar.gz archive."""
     with tarfile.open(archive_path, "r:gz") as archive:
         for member in archive.getmembers():
             name = Path(member.name).name
@@ -253,6 +317,18 @@ def _iter_tar_members(archive_path: Path, wanted: set[str]) -> Iterator[tuple[st
             if handle is not None:
                 with handle:
                     yield name, handle
+
+
+def iter_archive_members(archive_path: Path, wanted: set[str]) -> Iterator[tuple[str, IO[bytes]]]:
+    """Yield ``(basename, file object)`` for each wanted regular file in an archive.
+
+    The format is chosen by extension: ``.zip`` or a gzipped tar. Member
+    names are reduced to their basename and directory entries are skipped.
+    """
+    if archive_path.suffix == ".zip":
+        yield from _iter_zip_members(archive_path, wanted)
+    else:
+        yield from _iter_tar_members(archive_path, wanted)
 
 
 def extract_binaries(archive_path: Path, install_dir: Path) -> Path:
@@ -269,20 +345,18 @@ def extract_binaries(archive_path: Path, install_dir: Path) -> Path:
     """
     mcp_name = binary_filename("dcert-mcp")
     wanted = {binary_filename("dcert"), mcp_name}
-    members = (
-        _iter_zip_members(archive_path, wanted)
-        if archive_path.suffix == ".zip"
-        else _iter_tar_members(archive_path, wanted)
-    )
-    installed = {name: _install_member(name, handle, install_dir) for name, handle in members}
+    installed = {
+        name: _install_member(name, handle, install_dir)
+        for name, handle in iter_archive_members(archive_path, wanted)
+    }
     if mcp_name not in installed:
         raise RuntimeError("dcert-mcp binary not found in archive")
     return installed[mcp_name]
 
 
 def _is_installed(path: Path) -> bool:
-    """Return ``True`` when *path* is an executable file."""
-    return path.is_file() and os.access(path, os.X_OK)
+    """Return ``True`` when *path* is an executable compiled binary, not a wrapper."""
+    return path.is_file() and os.access(path, os.X_OK) and not is_wrapper(str(path))
 
 
 def _download_and_install(url: str, archive_name: str, expected: str, install_dir: Path) -> Path:
@@ -299,9 +373,10 @@ def _download_and_install(url: str, archive_name: str, expected: str, install_di
                 max_bytes=cfg.download.max_bytes,
                 chunk_size=cfg.download.chunk_size,
                 allowed_hosts=cfg.release.allowed_hosts,
+                max_seconds=cfg.download.total_timeout_seconds,
             )
         if not verify_checksum(tmp_path, expected):
-            raise RuntimeError(
+            raise IntegrityError(
                 f"Checksum mismatch for {archive_name}. The downloaded archive does not "
                 "match the expected hash. This could indicate a tampered download."
             )
@@ -310,18 +385,21 @@ def _download_and_install(url: str, archive_name: str, expected: str, install_di
         tmp_path.unlink(missing_ok=True)
 
 
-def ensure_binary(version: str) -> str | None:
+def ensure_binary(version: str, notify: Notify | None = None) -> str | None:
     """Ensure the ``dcert-mcp`` binary is installed, downloading it if needed.
 
     Args:
         version: Package version used to build the release URL.
+        notify: Receives progress messages meant for a person; the library
+            itself only logs.
 
     Returns:
         Absolute path to ``dcert-mcp``, or ``None`` when no download is
         possible for this platform (unsupported, or no embedded checksum).
 
     Raises:
-        RuntimeError: If the archive fails size, redirect or checksum checks.
+        IntegrityError: If the archive fails size, redirect or checksum checks.
+        RuntimeError: If the embedded checksums or the archive are malformed.
         OSError: If the download or the file system operations fail.
     """
     cfg = load_config()
@@ -339,13 +417,16 @@ def ensure_binary(version: str) -> str | None:
         logger.debug("No checksum for %s, skipping automatic download", archive_name)
         return None
 
+    def report(message: str) -> None:
+        logger.info(message)
+        if notify is not None:
+            notify(message)
+
     url = cfg.release.url_template.format(version=version, archive_name=archive_name)
     with install_lock(install_dir / cfg.download.lock_file_name):
         if _is_installed(target):
             return str(target)
-        logger.info("Downloading dcert binaries from %s", url)
-        print(f"Downloading dcert binaries from {url}", file=sys.stderr)
+        report(f"Downloading dcert binaries from {url}")
         mcp_path = _download_and_install(url, archive_name, expected, install_dir)
-        print(f"Installed dcert binaries to {install_dir}", file=sys.stderr)
-        logger.info("Installed dcert binaries to %s", install_dir)
+        report(f"Installed dcert binaries to {install_dir}")
         return str(mcp_path)

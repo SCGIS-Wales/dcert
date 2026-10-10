@@ -27,13 +27,16 @@ __version__ = "3.0.49"
 
 from dcert.client import create_client
 from dcert.config import Config, load_config
+from dcert.download import IntegrityError
 from dcert.resilience import (
     CircuitBreaker,
     CircuitBreakerOpen,
+    Guard,
     OTelConfig,
     RateLimiter,
     ResilienceConfig,
     backoff_delays,
+    build_guard,
     create_circuit_breaker,
     create_rate_limiter,
     otel_config_from_env,
@@ -80,6 +83,7 @@ __all__ = [
     "DcertTimeoutError",
     "DcertConnectionError",
     "DcertToolError",
+    "IntegrityError",
     # Resilience
     "ResilienceConfig",
     "resilience_config_from_env",
@@ -88,6 +92,8 @@ __all__ = [
     "CircuitBreaker",
     "CircuitBreakerOpen",
     "create_circuit_breaker",
+    "Guard",
+    "build_guard",
     "RateLimiter",
     "create_rate_limiter",
     "backoff_delays",

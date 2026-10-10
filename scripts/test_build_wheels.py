@@ -15,10 +15,8 @@ from build_wheels import (
     build_all,
     build_platform_wheel,
     extract_binaries_from_archive,
-    load_platform_rows,
     main,
     parse_wheel_filename,
-    platform_map,
     record_entry,
     resolve_wheel,
 )
@@ -116,21 +114,19 @@ def test_platform_map_from_config():
         "dcert-aarch64-apple-darwin.tar.gz": "macosx_11_0_arm64",
         "dcert-x86_64-pc-windows-msvc.zip": "win_amd64",
     }
-    assert platform_map(load_platform_rows()) == PLATFORM_MAP
 
 
 def test_archive_name_for_host():
-    rows = load_platform_rows()
-    assert archive_name_for_host("Linux", "x86_64", rows) == "dcert-x86_64-unknown-linux-gnu.tar.gz"
-    assert archive_name_for_host("Windows", "AMD64", rows) == "dcert-x86_64-pc-windows-msvc.zip"
-    assert archive_name_for_host("Linux", "aarch64", rows) is None
+    assert archive_name_for_host("Linux", "x86_64") == "dcert-x86_64-unknown-linux-gnu.tar.gz"
+    assert archive_name_for_host("Windows", "AMD64") == "dcert-x86_64-pc-windows-msvc.zip"
+    assert archive_name_for_host("Linux", "aarch64") is None
 
 
-def test_load_platform_rows_rejects_bad_file(tmp_path: Path):
-    bad = tmp_path / "config.yaml"
-    bad.write_text("platforms: {}\n")
-    with pytest.raises(ValueError, match="platforms"):
-        load_platform_rows(bad)
+def test_package_init_is_not_executed():
+    """The wheel builder must not need FastMCP, which the CI job does not install."""
+    import dcert
+
+    assert not hasattr(dcert, "create_server")
 
 
 def test_binary_names():
@@ -155,6 +151,15 @@ def test_extract_with_directory_prefix(tmp_path: Path):
 def test_extract_windows_zip(tmp_path: Path):
     archive = make_zip_archive(tmp_path / "dcert-x86_64-pc-windows-msvc.zip")
     assert extract_binaries_from_archive(archive) == ZIP_BINARIES
+
+
+def test_extract_skips_directory_entries(tmp_path: Path):
+    """A directory entry named like a binary is not a binary."""
+    archive = tmp_path / "dirs.zip"
+    with ZipFile(archive, "w") as zf:
+        zf.writestr("dcert-mcp/", b"")
+        zf.writestr("bin/dcert-mcp.exe", b"MZ")
+    assert extract_binaries_from_archive(archive) == {"dcert-mcp.exe": b"MZ"}
 
 
 # -- build_platform_wheel ----------------------------------------------------

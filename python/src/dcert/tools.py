@@ -2,8 +2,9 @@
 
 A session is an async context manager yielding an immutable
 :class:`Session` record whose ``call`` closure adds a per call timeout,
-reconnection with exponential backoff, a bulkhead, an optional rate limiter
-and a circuit breaker on top of the FastMCP client::
+reconnection with exponential backoff (for tools annotated as safe to
+re-run), a bulkhead, an optional rate limiter and a circuit breaker on top
+of the FastMCP client::
 
     from dcert.tools import analyze_certificate, create_session
 
@@ -11,7 +12,9 @@ and a circuit breaker on top of the FastMCP client::
         result = await analyze_certificate(target="example.com", session=session)
 
 Every tool function also works without a session, in which case a shared
-default session is created on first use and reused afterwards.
+default session is created on first use and reused afterwards. The shared
+session belongs to the event loop that created it; a later ``asyncio.run()``
+gets a fresh one.
 """
 
 from __future__ import annotations
@@ -26,16 +29,16 @@ from typing import Any, Protocol, TypedDict, Unpack
 from fastmcp import Client
 from fastmcp.client.client import CallToolResult
 from fastmcp.client.transports import StdioTransport
+from mcp_types import ToolAnnotations
 
 from dcert.config import load_config
 from dcert.resilience import (
+    CircuitBreakerOpen,
     ResilienceConfig,
-    backoff_delays,
-    create_circuit_breaker,
-    create_rate_limiter,
+    build_guard,
     is_connection_error,
+    is_retry_safe,
     resilience_config_from_env,
-    run_with_retry,
     truncate_response,
 )
 from dcert.server import create_transport
@@ -154,6 +157,7 @@ class Session:
 
 
 ClientFactory = Callable[[], Client[StdioTransport]]
+Sleep = Callable[[float], Awaitable[None]]
 
 
 @asynccontextmanager
@@ -164,8 +168,13 @@ async def create_session(
     max_reconnects: int | None = None,
     resilience: ResilienceConfig | None = None,
     client_factory: ClientFactory | None = None,
+    sleep: Sleep | None = None,
 ) -> AsyncIterator[Session]:
     """Connect to ``dcert-mcp`` and yield a :class:`Session`.
+
+    Reconnection after a transport failure is attempted only for tools whose
+    annotations mark them read-only or idempotent (read once from the
+    backend's tool list), and never when ``DCERT_MCP_NO_RETRY`` is set.
 
     Args:
         binary_path: Explicit path to ``dcert-mcp``; auto detected when ``None``.
@@ -174,91 +183,113 @@ async def create_session(
         max_reconnects: Reconnection attempts per call (configured default when ``None``).
         resilience: Resilience settings; read from the environment when ``None``.
         client_factory: Builds the FastMCP client; mainly for tests.
+        sleep: Replaces :func:`asyncio.sleep` for backoff; mainly for tests.
+
+    Raises:
+        ConnectionError: If the subprocess does not complete the MCP handshake
+            within the configured connect timeout.
     """
     config = resilience or resilience_config_from_env()
     default_timeout = config.tool_timeout if timeout is None else timeout
     reconnects = config.reconnect_max if max_reconnects is None else max_reconnects
     transport = create_transport(binary_path, env)
     make_client: ClientFactory = client_factory or (lambda: Client(transport))
+    guard = build_guard(config, retries=reconnects, sleep=sleep)
 
     client: Client[StdioTransport] | None = None
     client_stack = AsyncExitStack()
-    semaphore = asyncio.Semaphore(config.bulkhead_max)
-    breaker = (
-        create_circuit_breaker(
-            config.circuit_breaker_threshold, config.circuit_breaker_reset_timeout
-        )
-        if config.circuit_breaker_enabled
-        else None
-    )
-    limiter = (
-        create_rate_limiter(config.rate_limit_rps, config.rate_limit_burst)
-        if config.rate_limit_enabled
-        else None
-    )
-    delays = list(
-        backoff_delays(
-            reconnects, config.retry_base_delay, config.retry_max_delay, config.retry_multiplier
-        )
-    )
+    client_lock = asyncio.Lock()
+    annotations: dict[str, ToolAnnotations | None] | None = None
 
     async def connect() -> Client[StdioTransport]:
-        nonlocal client
-        candidate = make_client()
-        await client_stack.enter_async_context(candidate)
-        client = candidate
-        logger.debug("Connected to dcert-mcp subprocess: %s", transport.command)
-        return candidate
+        """Return the connected client, connecting under the lock when needed.
 
-    async def disconnect() -> None:
+        Concurrent callers that find the transport gone share one new
+        subprocess instead of each starting their own.
+        """
         nonlocal client
-        if client is None:
-            return
-        client = None
-        try:
-            await client_stack.aclose()
-        except Exception:
-            logger.debug("Error while disconnecting", exc_info=True)
+        async with client_lock:
+            if client is not None:
+                return client
+            candidate = make_client()
+            try:
+                async with asyncio.timeout(config.connect_timeout):
+                    await client_stack.enter_async_context(candidate)
+            except TimeoutError:
+                raise ConnectionError(
+                    f"Connecting to dcert-mcp timed out after {config.connect_timeout}s"
+                ) from None
+            client = candidate
+            logger.debug("Connected to dcert-mcp subprocess: %s", transport.command)
+            return candidate
 
-    async def on_failure(exc: BaseException, attempt: int) -> None:
-        logger.warning("Tool call failed on attempt %d: %s", attempt + 1, exc)
-        await disconnect()
-        if breaker is not None:
-            await breaker.record_failure()
+    async def disconnect(expected: Client[StdioTransport] | None = None) -> bool:
+        """Close the current client and return whether this call closed it.
+
+        With *expected*, only that client is closed: a caller that observed a
+        transport failure must not tear down the replacement another caller
+        has already connected.
+        """
+        nonlocal client
+        async with client_lock:
+            if client is None or (expected is not None and client is not expected):
+                return False
+            client = None
+            try:
+                await client_stack.aclose()
+            except Exception:
+                logger.debug("Error while disconnecting", exc_info=True)
+            return True
+
+    async def retry_safe(tool: str) -> bool:
+        """Whether *tool* may be re-run, from the backend's annotations (read once)."""
+        nonlocal annotations
+        if annotations is None:
+            active = await connect()
+            try:
+                async with asyncio.timeout(config.connect_timeout):
+                    listed = await active.list_tools()
+            except Exception as exc:
+                logger.warning("Cannot list tools (%s); %s will not be retried", exc, tool)
+                return False
+            annotations = {entry.name: entry.annotations for entry in listed}
+        return is_retry_safe(annotations.get(tool))
 
     async def call(
         tool: str, params: Mapping[str, Any], *, timeout: float | None = None
     ) -> ToolResponse:
         deadline = default_timeout if timeout is None else timeout
+        used: Client[StdioTransport] | None = None
 
-        async def attempt(_attempt: int) -> CallToolResult:
-            active = client if client is not None else await connect()
-            async with asyncio.timeout(deadline):
-                return await active.call_tool(tool, dict(params), raise_on_error=False)
+        async def operation(_attempt: int) -> CallToolResult:
+            nonlocal used
+            used = None
+            used = await connect()
+            return await used.call_tool(tool, dict(params), raise_on_error=False)
 
-        async with semaphore:
-            if limiter is not None:
-                await limiter.acquire()
-            if breaker is not None and not await breaker.allow():
-                raise DcertConnectionError(
-                    f"Circuit breaker is open; {tool} call rejected. "
-                    "The subprocess has failed repeatedly and will be probed again shortly."
-                )
-            try:
-                result = await run_with_retry(
-                    attempt,
-                    delays=delays,
-                    is_retryable=is_connection_error,
-                    on_failure=on_failure,
-                )
-            except TimeoutError:
-                raise DcertTimeoutError(f"{tool} timed out after {deadline}s") from None
-            except Exception as exc:
-                if is_connection_error(exc):
-                    raise DcertConnectionError(str(exc)) from exc
-                raise
-            if breaker is not None:
-                await breaker.record_success()
+        async def on_failure(exc: BaseException, attempt: int) -> bool:
+            logger.warning("%s failed on attempt %d: %s", tool, attempt + 1, exc)
+            if used is None:
+                # Connecting failed: nothing to close, and the failure counts.
+                return True
+            closed = await disconnect(used)
+            # A timeout always counts against the breaker; a transport loss
+            # counts once, for the call that closed the shared client.
+            return closed or isinstance(exc, TimeoutError)
+
+        retry = await retry_safe(tool)
+        try:
+            result = await guard.run(
+                operation, name=tool, timeout=deadline, retry=retry, on_failure=on_failure
+            )
+        except CircuitBreakerOpen as exc:
+            raise DcertConnectionError(str(exc)) from None
+        except TimeoutError:
+            raise DcertTimeoutError(f"{tool} timed out after {deadline}s") from None
+        except Exception as exc:
+            if is_connection_error(exc):
+                raise DcertConnectionError(str(exc)) from exc
+            raise
         message = error_message(result)
         if message is not None:
             raise DcertToolError(message, tool=tool, error_content=result)
@@ -278,59 +309,75 @@ async def create_session(
 # Shared default session
 # ---------------------------------------------------------------------------
 
-_default_stack: AsyncExitStack | None = None
-_default_session: Session | None = None
 
+def _make_default_session_provider() -> tuple[
+    Callable[[], Awaitable[Session]], Callable[[], Awaitable[None]]
+]:
+    """Build the ``(get, close)`` accessors of the shared session.
 
-def _make_loop_lock_provider() -> Callable[[], asyncio.Lock]:
-    """Build the per-loop guard accessor, closing over its own state.
+    An :class:`asyncio.Lock` binds to the loop that first awaits it and a
+    session's transport belongs to the loop that started the subprocess, so
+    the loop, its lock, the session and the exit stack owning it are kept
+    together and replaced as one unit whenever a different loop is running.
+    A session left over from an earlier ``asyncio.run()`` holds a dead
+    transport and its loop is closed, so it cannot be awaited; it is dropped
+    with a warning. Calling :func:`close_default_session` before the loop
+    ends releases the subprocess cleanly.
 
-    An :class:`asyncio.Lock` binds to the loop that first awaits it, so a lock
-    cached across loops would guard nothing. The loop and its lock are kept
-    together as one value and rebound as a pair, so the two can never disagree
-    about which loop the guard belongs to.
-
-    The pair lives in this closure rather than in a module global: it is
+    The state lives in this closure rather than in module globals: it is
     written and read in one place, and nothing outside should reach it.
     """
-    guard: tuple[asyncio.AbstractEventLoop, asyncio.Lock] | None = None
+    loop: asyncio.AbstractEventLoop | None = None
+    lock: asyncio.Lock | None = None
+    stack: AsyncExitStack | None = None
+    session: Session | None = None
 
     def lock_for_current_loop() -> asyncio.Lock:
-        nonlocal guard
-        loop = asyncio.get_running_loop()
-        if guard is None or guard[0] is not loop:
-            guard = (loop, asyncio.Lock())
-        return guard[1]
+        nonlocal loop, lock, stack, session
+        running = asyncio.get_running_loop()
+        if lock is None or loop is not running:
+            if session is not None:
+                logger.warning(
+                    "Dropping the default session of a previous event loop; call "
+                    "close_default_session() before the loop ends to release it"
+                )
+            loop, lock, stack, session = running, asyncio.Lock(), None, None
+        return lock
 
-    return lock_for_current_loop
+    async def close_unlocked() -> None:
+        nonlocal stack, session
+        closing, stack, session = stack, None, None
+        if closing is not None:
+            await closing.aclose()
+
+    async def get() -> Session:
+        nonlocal stack, session
+        async with lock_for_current_loop():
+            if session is None or not session.connected():
+                await close_unlocked()
+                opened = AsyncExitStack()
+                session = await opened.enter_async_context(create_session())
+                stack = opened
+            return session
+
+    async def close() -> None:
+        async with lock_for_current_loop():
+            await close_unlocked()
+
+    return get, close
 
 
-_lock_for_current_loop = _make_loop_lock_provider()
-
-
-async def _close_default_unlocked() -> None:
-    global _default_stack, _default_session
-    stack, _default_stack, _default_session = _default_stack, None, None
-    if stack is not None:
-        await stack.aclose()
+_get_default_session, _close_default_session = _make_default_session_provider()
 
 
 async def default_session() -> Session:
-    """Return the shared session, connecting (or reconnecting) when needed."""
-    global _default_stack, _default_session
-    async with _lock_for_current_loop():
-        if _default_session is None or not _default_session.connected():
-            await _close_default_unlocked()
-            stack = AsyncExitStack()
-            _default_session = await stack.enter_async_context(create_session())
-            _default_stack = stack
-        return _default_session
+    """Return the shared session for the running loop, connecting when needed."""
+    return await _get_default_session()
 
 
 async def close_default_session() -> None:
-    """Disconnect the shared session, if any."""
-    async with _lock_for_current_loop():
-        await _close_default_unlocked()
+    """Disconnect the shared session of the running loop, if any."""
+    await _close_default_session()
 
 
 async def call_tool(
@@ -555,7 +602,7 @@ async def convert_pfx_to_pem(
     *,
     pkcs12_path: str,
     password: str,
-    output_dir: str = ".",
+    output_dir: str | None = None,
     session: Session | None = None,
     timeout: float | None = None,
 ) -> ToolResponse:
@@ -564,14 +611,14 @@ async def convert_pfx_to_pem(
     Args:
         pkcs12_path: Input PKCS12/PFX file path.
         password: Password for the PKCS12 file.
-        output_dir: Output directory for the PEM files.
+        output_dir: Output directory for the PEM files (configured default when ``None``).
         session: Session to use; the shared default when ``None``.
         timeout: Per call timeout in seconds.
     """
     arguments = build_arguments(
         "convert_pfx_to_pem",
         {"pkcs12_path": pkcs12_path, "password": password},
-        defaulted={"output_dir": (output_dir, ".")},
+        defaulted={"output_dir": (output_dir, load_config().tools.output_dir)},
     )
     return await call_tool("convert_pfx_to_pem", arguments, session=session, timeout=timeout)
 
