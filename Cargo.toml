@@ -34,7 +34,7 @@ pem = "4.0"
 serde_yaml_ng = "0.10"
 ctrlc = "3.5"
 openssl-probe = "0.2"
-rmcp = { version = "3.4", features = [
+rmcp = { version = "3.5", features = [
     "server",
     "transport-io",
     "transport-streamable-http-server",
@@ -81,6 +81,14 @@ tokio-util = "0.7.19"
 # The vendored build requires Perl and NASM on the build machine (CI installs them).
 [target.'cfg(windows)'.dependencies]
 openssl = { version = "0.10", features = ["vendored"] }
+
+[features]
+default = []
+# Build and statically link OpenSSL from source (openssl-src) instead of the
+# system library. Useful on hosts whose OpenSSL predates 3.5 (no ML-KEM) or
+# where no development headers are installed. Requires Perl (and NASM on
+# Windows). Enabled on Windows automatically through the target dependency.
+vendored = ["openssl/vendored"]
 
 [dev-dependencies]
 wiremock = "0.6"
