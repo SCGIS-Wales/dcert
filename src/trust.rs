@@ -428,6 +428,9 @@ fn parse_issuer_cert(bytes: &[u8]) -> Option<X509> {
     None
 }
 
+/// Redirects followed when fetching an AIA issuer certificate.
+const ISSUER_MAX_REDIRECTS: usize = 2;
+
 /// Build a blocking HTTP client whose proxy behaviour mirrors dcert's
 /// [`ProxyConfig`] and whose connect and read timeout is the short issuer
 /// timeout.
@@ -435,6 +438,10 @@ fn http_client(proxy: &ProxyConfig, timeout: Duration) -> Result<reqwest::blocki
     crate::http::blocking_client(&crate::http::HttpClientOptions {
         timeout: Some(timeout),
         proxy: Some(proxy),
+        // AIA endpoints occasionally redirect http to https; anything longer
+        // is not a CA repository, and an unbounded chain would let a hostile
+        // issuer URL walk the client around arbitrary hosts.
+        max_redirects: Some(ISSUER_MAX_REDIRECTS),
         ..Default::default()
     })
 }
