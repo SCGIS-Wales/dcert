@@ -42,6 +42,15 @@ pub struct CertInfo {
     pub basic_constraints: Option<BasicConstraintsInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub authority_info_access: Option<Vec<String>>,
+    /// OCSP responder URLs from the AIA extension. `None` when extensions were
+    /// not extracted; `Some(empty)` when they were and the certificate carries
+    /// no OCSP URL, so compliance checks can tell "not parsed" from "absent".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ocsp_urls: Option<Vec<String>>,
+    /// URIs from the CRL Distribution Points extension (RFC 5280 4.2.1.13).
+    /// Same `None` / `Some(empty)` convention as `ocsp_urls`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub crl_distribution_points: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revocation_status: Option<String>,
     /// Set when this certificate is itself present in the chain and is (or is
@@ -183,18 +192,13 @@ pub fn process_certificate(
     let (public_key_algorithm, public_key_size_bits) = if opts.extensions {
         let spki = cert.public_key();
         let alg_oid = spki.algorithm.algorithm.to_id_string();
-        let alg_name = match alg_oid.as_str() {
-            "1.2.840.113549.1.1.1" => "RSA".to_string(),
-            "1.2.840.10045.2.1" => "EC".to_string(),
-            "1.3.101.110" => "X25519".to_string(),
-            "1.3.101.112" => "Ed25519".to_string(),
-            "1.3.101.113" => "Ed448".to_string(),
-            other => other.to_string(),
-        };
+        let alg_name = public_key_algorithm_name(&alg_oid);
         // Compute key size correctly based on algorithm type:
         // - RSA: parse the DER-encoded RSAPublicKey to get the modulus bit length
         // - EC: derive from the curve parameters OID or uncompressed point size
         // - Ed25519/Ed448/X25519: fixed key sizes
+        // - ML-DSA, ML-KEM, SLH-DSA and anything else: the encoded public key
+        //   length in bits (there is no modulus or curve to measure)
         let key_bits = match alg_oid.as_str() {
             "1.2.840.113549.1.1.1" => {
                 // RSA: SubjectPublicKey contains DER-encoded RSAPublicKey (SEQUENCE { modulus, exponent })
@@ -310,6 +314,17 @@ pub fn process_certificate(
         (None, None, None, None)
     };
 
+    // Revocation pointers, kept apart from the AIA listing so compliance can
+    // distinguish "extensions not parsed" from "no OCSP / CRL URL present".
+    let (ocsp_urls, crl_distribution_points) = if opts.extensions {
+        (
+            Some(aia_uris(&cert, AiaMethod::Ocsp)),
+            Some(crl_distribution_point_uris(&cert)),
+        )
+    } else {
+        (None, None)
+    };
+
     Ok(Some(CertInfo {
         index: idx,
         subject,
@@ -330,9 +345,80 @@ pub fn process_certificate(
         extended_key_usage,
         basic_constraints,
         authority_info_access,
+        ocsp_urls,
+        crl_distribution_points,
         revocation_status: None,
         is_public_root: None,
     }))
+}
+
+/// Human readable name for a SubjectPublicKeyInfo algorithm OID.
+///
+/// Covers the classical algorithms, the EdDSA and X25519/X448 curves and the
+/// NIST post quantum algorithms (ML-DSA, FIPS 204; ML-KEM, FIPS 203; SLH-DSA,
+/// FIPS 205) by their CSOR OIDs, so a post quantum key is reported by name
+/// rather than as a bare OID. Unknown OIDs are returned unchanged.
+pub fn public_key_algorithm_name(oid: &str) -> String {
+    match oid {
+        "1.2.840.113549.1.1.1" => "RSA",
+        "1.2.840.113549.1.1.10" => "RSA-PSS",
+        "1.2.840.10045.2.1" => "EC",
+        "1.2.840.10040.4.1" => "DSA",
+        "1.3.101.110" => "X25519",
+        "1.3.101.111" => "X448",
+        "1.3.101.112" => "Ed25519",
+        "1.3.101.113" => "Ed448",
+        "2.16.840.1.101.3.4.3.17" => "ML-DSA-44",
+        "2.16.840.1.101.3.4.3.18" => "ML-DSA-65",
+        "2.16.840.1.101.3.4.3.19" => "ML-DSA-87",
+        "2.16.840.1.101.3.4.4.1" => "ML-KEM-512",
+        "2.16.840.1.101.3.4.4.2" => "ML-KEM-768",
+        "2.16.840.1.101.3.4.4.3" => "ML-KEM-1024",
+        other => return slh_dsa_name(other).map_or_else(|| other.to_string(), ToString::to_string),
+    }
+    .to_string()
+}
+
+/// Name of an SLH-DSA (FIPS 205) parameter set by its CSOR OID
+/// (2.16.840.1.101.3.4.3.20 through .31), or `None`.
+pub fn slh_dsa_name(oid: &str) -> Option<&'static str> {
+    Some(match oid {
+        "2.16.840.1.101.3.4.3.20" => "SLH-DSA-SHA2-128s",
+        "2.16.840.1.101.3.4.3.21" => "SLH-DSA-SHA2-128f",
+        "2.16.840.1.101.3.4.3.22" => "SLH-DSA-SHA2-192s",
+        "2.16.840.1.101.3.4.3.23" => "SLH-DSA-SHA2-192f",
+        "2.16.840.1.101.3.4.3.24" => "SLH-DSA-SHA2-256s",
+        "2.16.840.1.101.3.4.3.25" => "SLH-DSA-SHA2-256f",
+        "2.16.840.1.101.3.4.3.26" => "SLH-DSA-SHAKE-128s",
+        "2.16.840.1.101.3.4.3.27" => "SLH-DSA-SHAKE-128f",
+        "2.16.840.1.101.3.4.3.28" => "SLH-DSA-SHAKE-192s",
+        "2.16.840.1.101.3.4.3.29" => "SLH-DSA-SHAKE-192f",
+        "2.16.840.1.101.3.4.3.30" => "SLH-DSA-SHAKE-256s",
+        "2.16.840.1.101.3.4.3.31" => "SLH-DSA-SHAKE-256f",
+        _ => return None,
+    })
+}
+
+/// Every URI named by the CRL Distribution Points extension, in certificate
+/// order. Only `fullName` URIs are returned; `nameRelativeToCRLIssuer` and
+/// non-URI general names cannot be fetched and are skipped.
+pub fn crl_distribution_point_uris(cert: &X509Certificate<'_>) -> Vec<String> {
+    use x509_parser::extensions::DistributionPointName;
+    let mut urls = Vec::new();
+    for ext in cert.extensions() {
+        if let ParsedExtension::CRLDistributionPoints(points) = ext.parsed_extension() {
+            for point in points.iter() {
+                if let Some(DistributionPointName::FullName(names)) = &point.distribution_point {
+                    for name in names {
+                        if let GeneralName::URI(uri) = name {
+                            urls.push(uri.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    urls
 }
 
 /// Parse all PEM certificate blocks from `pem_data` and return owned `CertInfo`
@@ -462,8 +548,10 @@ pub fn verify_key_matches_cert(key_path: &str, target: &str, debug: bool) -> Res
 
     // Load private key
     debug_log!(debug, "Loading private key from: {}", key_path);
-    let key_data =
-        std::fs::read(key_path).map_err(|e| anyhow::anyhow!("Failed to read private key '{key_path}': {e}"))?;
+    // Zeroizing: the PEM bytes hold the private key and are wiped on drop.
+    let key_data = std::fs::read(key_path)
+        .map(zeroize::Zeroizing::new)
+        .map_err(|e| anyhow::anyhow!("Failed to read private key '{key_path}': {e}"))?;
     let private_key = PKey::private_key_from_pem(&key_data)
         .map_err(|e| anyhow::anyhow!("Failed to parse private key '{key_path}': {e}"))?;
 
@@ -478,27 +566,27 @@ pub fn verify_key_matches_cert(key_path: &str, target: &str, debug: bool) -> Res
         let proxy_config = crate::proxy::ProxyConfig::from_env();
         let connect_overrides = crate::connect::ConnectOverrides::default();
         let conn = crate::tls::fetch_tls_chain_openssl(&crate::tls::TlsFetchOptions {
+            probe: crate::tls::TlsProbeOptions {
+                no_verify: false,
+                timeout_secs: crate::tls::CONNECTION_TIMEOUT_SECS,
+                read_timeout_secs: crate::tls::READ_TIMEOUT_SECS,
+                sni_override: None,
+                connect_overrides: &connect_overrides,
+                min_tls: None,
+                max_tls: None,
+                cipher_list: None,
+                cipher_suites: None,
+                groups: None,
+                ca_cert_path: None,
+                debug,
+            },
             endpoint: target,
             method: "GET",
             headers: &[],
             body: None,
             http_protocol: crate::cli::HttpProtocol::Http1_1,
-            no_verify: false,
-            timeout_secs: 10,
-            read_timeout_secs: 5,
-            sni_override: None,
-            connect_overrides: &connect_overrides,
             proxy_config: &proxy_config,
-            min_tls: None,
-            max_tls: None,
-            cipher_list: None,
-            cipher_suites: None,
-            debug,
-            client_cert_path: None,
-            client_key_path: None,
-            pkcs12_path: None,
-            cert_password: None,
-            ca_cert_path: None,
+            identity: crate::tls::ClientIdentity::default(),
             body_limit: 0,
         })?;
         conn.pem_data
@@ -729,9 +817,129 @@ pub mod tests {
             extended_key_usage: None,
             basic_constraints: None,
             authority_info_access: None,
+            ocsp_urls: None,
+            crl_distribution_points: None,
             revocation_status: None,
             is_public_root: None,
         }
+    }
+
+    // ---------------------------------------------------------------
+    // Public key algorithm naming (classical and post quantum OIDs)
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn public_key_algorithm_name_covers_classical_and_post_quantum_oids() {
+        assert_eq!(public_key_algorithm_name("1.2.840.113549.1.1.1"), "RSA");
+        assert_eq!(public_key_algorithm_name("1.2.840.10045.2.1"), "EC");
+        assert_eq!(public_key_algorithm_name("1.3.101.112"), "Ed25519");
+        assert_eq!(public_key_algorithm_name("1.3.101.113"), "Ed448");
+        assert_eq!(public_key_algorithm_name("2.16.840.1.101.3.4.3.17"), "ML-DSA-44");
+        assert_eq!(public_key_algorithm_name("2.16.840.1.101.3.4.3.18"), "ML-DSA-65");
+        assert_eq!(public_key_algorithm_name("2.16.840.1.101.3.4.3.19"), "ML-DSA-87");
+        assert_eq!(public_key_algorithm_name("2.16.840.1.101.3.4.4.2"), "ML-KEM-768");
+        assert_eq!(
+            public_key_algorithm_name("2.16.840.1.101.3.4.3.20"),
+            "SLH-DSA-SHA2-128s"
+        );
+        assert_eq!(
+            public_key_algorithm_name("2.16.840.1.101.3.4.3.31"),
+            "SLH-DSA-SHAKE-256f"
+        );
+        // Unknown OIDs pass through unchanged rather than becoming "unknown".
+        assert_eq!(public_key_algorithm_name("1.2.3.4.5"), "1.2.3.4.5");
+        assert_eq!(slh_dsa_name("2.16.840.1.101.3.4.3.32"), None);
+    }
+
+    // ---------------------------------------------------------------
+    // Revocation pointers
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn revocation_pointers_are_none_without_extensions() {
+        let infos = parse_cert_infos_from_pem(CHAIN_PEM, &default_opts()).unwrap();
+        assert!(infos[0].ocsp_urls.is_none());
+        assert!(infos[0].crl_distribution_points.is_none());
+    }
+
+    /// Minimal DER TLV encoder for the hand built extensions below.
+    fn der(tag: u8, contents: &[u8]) -> Vec<u8> {
+        let mut out = vec![tag];
+        let len = contents.len();
+        if len < 0x80 {
+            out.push(u8::try_from(len).unwrap());
+        } else {
+            out.push(0x82);
+            out.extend_from_slice(&u16::try_from(len).unwrap().to_be_bytes());
+        }
+        out.extend_from_slice(contents);
+        out
+    }
+
+    /// A self-signed certificate carrying a CRL distribution point and an
+    /// OCSP responder URL, built with raw DER extensions because the
+    /// shipped test fixtures carry neither.
+    fn cert_with_revocation_pointers() -> String {
+        use openssl::asn1::{Asn1Object, Asn1OctetString, Asn1Time};
+        use openssl::hash::MessageDigest;
+        use openssl::pkey::PKey;
+        use openssl::x509::{X509, X509Extension, X509NameBuilder};
+
+        let key = PKey::from_rsa(openssl::rsa::Rsa::generate(2048).unwrap()).unwrap();
+        let mut name = X509NameBuilder::new().unwrap();
+        name.append_entry_by_text("CN", "revocation.example.com").unwrap();
+        let name = name.build();
+
+        // CRLDistributionPoints ::= SEQUENCE OF DistributionPoint
+        //   DistributionPoint ::= SEQUENCE { distributionPoint [0] EXPLICIT
+        //   DistributionPointName } where fullName is [0] IMPLICIT GeneralNames
+        //   and the URI is GeneralName [6] IMPLICIT IA5String.
+        let uri = der(0x86, b"http://crl.example.com/ca.crl");
+        let crl_dp = der(0x30, &der(0x30, &der(0xA0, &der(0xA0, &uri))));
+        // AuthorityInfoAccess ::= SEQUENCE OF AccessDescription { OID, GeneralName }
+        let ocsp_oid = der(0x06, &[0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x30, 0x01]);
+        let mut access = ocsp_oid;
+        access.extend(der(0x86, b"http://ocsp.example.com"));
+        let aia = der(0x30, &der(0x30, &access));
+
+        let mut builder = X509::builder().unwrap();
+        builder.set_version(2).unwrap();
+        builder.set_subject_name(&name).unwrap();
+        builder.set_issuer_name(&name).unwrap();
+        builder.set_pubkey(&key).unwrap();
+        builder.set_not_before(&Asn1Time::days_from_now(0).unwrap()).unwrap();
+        builder.set_not_after(&Asn1Time::days_from_now(30).unwrap()).unwrap();
+        for (oid, value) in [("2.5.29.31", crl_dp), ("1.3.6.1.5.5.7.1.1", aia)] {
+            let ext = X509Extension::new_from_der(
+                &Asn1Object::from_str(oid).unwrap(),
+                false,
+                &Asn1OctetString::new_from_bytes(&value).unwrap(),
+            )
+            .unwrap();
+            builder.append_extension(ext).unwrap();
+        }
+        builder.sign(&key, MessageDigest::sha256()).unwrap();
+        String::from_utf8(builder.build().to_pem().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn revocation_pointers_are_extracted_with_extensions() {
+        let pem = cert_with_revocation_pointers();
+        let infos = parse_cert_infos_from_pem(&pem, &opts_with_extensions()).unwrap();
+        let leaf = &infos[0];
+        assert_eq!(
+            leaf.crl_distribution_points.as_deref(),
+            Some(&["http://crl.example.com/ca.crl".to_string()][..])
+        );
+        assert_eq!(
+            leaf.ocsp_urls.as_deref(),
+            Some(&["http://ocsp.example.com".to_string()][..])
+        );
+        // Parsed but absent: Some(empty) rather than None, so compliance can
+        // tell "not extracted" from "the certificate has no pointer".
+        let plain = parse_cert_infos_from_pem(VALID_PEM, &opts_with_extensions()).unwrap();
+        assert_eq!(plain[0].ocsp_urls.as_deref(), Some(&[][..]));
+        assert_eq!(plain[0].crl_distribution_points.as_deref(), Some(&[][..]));
     }
 
     // ---------------------------------------------------------------

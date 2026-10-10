@@ -428,6 +428,9 @@ fn parse_issuer_cert(bytes: &[u8]) -> Option<X509> {
     None
 }
 
+/// Redirects followed when fetching an AIA issuer certificate.
+const ISSUER_MAX_REDIRECTS: usize = 2;
+
 /// Build a blocking HTTP client whose proxy behaviour mirrors dcert's
 /// [`ProxyConfig`] and whose connect and read timeout is the short issuer
 /// timeout.
@@ -435,6 +438,10 @@ fn http_client(proxy: &ProxyConfig, timeout: Duration) -> Result<reqwest::blocki
     crate::http::blocking_client(&crate::http::HttpClientOptions {
         timeout: Some(timeout),
         proxy: Some(proxy),
+        // AIA endpoints occasionally redirect http to https; anything longer
+        // is not a CA repository, and an unbounded chain would let a hostile
+        // issuer URL walk the client around arbitrary hosts.
+        max_redirects: Some(ISSUER_MAX_REDIRECTS),
         ..Default::default()
     })
 }
@@ -495,20 +502,39 @@ fn refresh_public_roots(proxy: &ProxyConfig, timeout: Duration, debug: bool) -> 
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if std::fs::write(&path, &pem).is_ok() {
-            debug_log!(debug, "Cached refreshed public roots to {}", path.display());
+        // `write_public_file` removes whatever sits at the path and creates
+        // the file fresh, so a symlink planted there is replaced rather than
+        // followed; the bundle is public data, so the umask mode is fine.
+        match crate::convert::write_public_file(&path.to_string_lossy(), &pem) {
+            Ok(()) => debug_log!(debug, "Cached refreshed public roots to {}", path.display()),
+            Err(e) => debug_log!(debug, "Could not cache public roots at {}: {}", path.display(), e),
         }
     }
 
     Ok(certs)
 }
 
-/// Best-effort on-disk cache location for the refreshed bundle.
+/// Best-effort on-disk cache location for the refreshed bundle:
+/// `$XDG_CACHE_HOME/dcert/public-roots.pem`, else
+/// `$HOME/.cache/dcert/public-roots.pem`. `None` when neither variable is
+/// set: the cache is then simply not used. There is deliberately no fallback
+/// to the system temporary directory, which is shared between users and
+/// would let anyone on the host plant a bundle that this user's chains are
+/// then classified against.
 fn cache_path() -> Option<std::path::PathBuf> {
-    let base = std::env::var_os("XDG_CACHE_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))
-        .unwrap_or_else(std::env::temp_dir);
+    cache_path_from(
+        std::env::var_os("XDG_CACHE_HOME").as_deref(),
+        std::env::var_os("HOME").as_deref(),
+    )
+}
+
+/// [`cache_path`] with the environment passed in, for tests.
+fn cache_path_from(
+    xdg_cache_home: Option<&std::ffi::OsStr>,
+    home: Option<&std::ffi::OsStr>,
+) -> Option<std::path::PathBuf> {
+    let non_empty = |v: Option<&std::ffi::OsStr>| v.filter(|v| !v.is_empty()).map(std::path::PathBuf::from);
+    let base = non_empty(xdg_cache_home).or_else(|| non_empty(home).map(|h| h.join(".cache")))?;
     Some(base.join("dcert").join("public-roots.pem"))
 }
 
@@ -516,18 +542,68 @@ fn cache_path() -> Option<std::path::PathBuf> {
 /// the cache file. Used when a refresh fails so an outage does not silently
 /// downgrade trust classification to the embedded set.
 fn read_cached_roots() -> Option<(Vec<X509>, Duration)> {
-    let path = cache_path()?;
-    let meta = std::fs::metadata(&path).ok()?;
-    if meta.len() > MAX_BUNDLE_BYTES as u64 {
+    read_cached_roots_at(&cache_path()?)
+}
+
+/// [`read_cached_roots`] for an explicit path.
+///
+/// The file feeds the trust store, so it is only accepted when it could not
+/// have been written by another local user: it must be a regular file, not a
+/// symlink, and on Unix it must be owned by the current user and not be
+/// writable by group or others. On other platforms the ownership and mode
+/// checks are not available and the file is accepted as found.
+fn read_cached_roots_at(path: &std::path::Path) -> Option<(Vec<X509>, Duration)> {
+    let link_meta = std::fs::symlink_metadata(path).ok()?;
+    if link_meta.file_type().is_symlink() {
+        return None;
+    }
+    let file = std::fs::File::open(path).ok()?;
+    // Inspect the handle we actually read from, so a swap between the
+    // metadata check and the read cannot slip a different file in.
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() || meta.len() > MAX_BUNDLE_BYTES as u64 || !cache_file_is_trusted(&meta) {
         return None;
     }
     let age = meta.modified().ok().and_then(|m| m.elapsed().ok()).unwrap_or_default();
-    let pem = std::fs::read(&path).ok()?;
+    let mut pem = Vec::with_capacity(usize::try_from(meta.len()).unwrap_or(0));
+    {
+        use std::io::Read;
+        file.take(MAX_BUNDLE_BYTES as u64 + 1).read_to_end(&mut pem).ok()?;
+    }
+    if pem.len() > MAX_BUNDLE_BYTES {
+        return None;
+    }
     let certs = X509::stack_from_pem(&pem).ok()?;
     if certs.is_empty() {
         return None;
     }
     Some((certs, age))
+}
+
+/// Unix: the cache file must belong to the current user and must not be
+/// writable by group or others (mode bits 0o022 clear).
+#[cfg(unix)]
+fn cache_file_is_trusted(meta: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Some(uid) = current_uid() else {
+        return false;
+    };
+    meta.uid() == uid && meta.mode() & 0o022 == 0
+}
+
+/// Windows and other platforms: no portable ownership or mode check, accept.
+#[cfg(not(unix))]
+fn cache_file_is_trusted(_meta: &std::fs::Metadata) -> bool {
+    true
+}
+
+/// Effective uid of this process, read from the ownership of a file the
+/// process creates itself: the standard library exposes no `geteuid`, and a
+/// freshly created file is always owned by the creator's effective uid.
+#[cfg(unix)]
+fn current_uid() -> Option<u32> {
+    use std::os::unix::fs::MetadataExt;
+    tempfile::tempfile().ok()?.metadata().ok().map(|m| m.uid())
 }
 
 // --- small helpers ---------------------------------------------------------
@@ -646,5 +722,162 @@ mod tests {
         let info = assess_root_trust(&roots(), &ders, &offline_opts(), &no_proxy());
         assert!(!info.chain_completed_via_aia);
         assert_eq!(info.private_backend_reachable, None);
+    }
+
+    // --- public root cache (M9) ---------------------------------------
+
+    #[test]
+    fn cache_path_has_no_temp_dir_fallback() {
+        use std::ffi::OsStr;
+        let xdg = OsStr::new("/xdg-cache");
+        let home = OsStr::new("/home/alice");
+        assert_eq!(
+            cache_path_from(Some(xdg), Some(home)),
+            Some(std::path::PathBuf::from("/xdg-cache/dcert/public-roots.pem"))
+        );
+        assert_eq!(
+            cache_path_from(None, Some(home)),
+            Some(std::path::PathBuf::from("/home/alice/.cache/dcert/public-roots.pem"))
+        );
+        // An empty variable counts as unset.
+        assert_eq!(
+            cache_path_from(Some(OsStr::new("")), Some(home)),
+            Some(std::path::PathBuf::from("/home/alice/.cache/dcert/public-roots.pem"))
+        );
+        // Neither set: no cache at all, never the shared temp dir.
+        assert_eq!(cache_path_from(None, None), None);
+        assert_eq!(cache_path_from(Some(OsStr::new("")), Some(OsStr::new(""))), None);
+    }
+
+    /// PEM of the first embedded root, a valid bundle for cache tests.
+    fn one_root_pem() -> Vec<u8> {
+        embedded_roots()[0].to_pem().unwrap()
+    }
+
+    #[test]
+    fn cached_roots_are_read_from_an_owner_only_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("public-roots.pem");
+        std::fs::write(&path, one_root_pem()).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let (certs, _age) = read_cached_roots_at(&path).expect("owner only cache file is accepted");
+        assert_eq!(certs.len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cached_roots_ignore_a_world_writable_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("public-roots.pem");
+        std::fs::write(&path, one_root_pem()).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666)).unwrap();
+        assert!(
+            read_cached_roots_at(&path).is_none(),
+            "a cache file writable by group or others must be ignored"
+        );
+        // Group writable alone is enough to reject it.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o620)).unwrap();
+        assert!(read_cached_roots_at(&path).is_none());
+        // Readable by others but writable only by the owner is fine.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(read_cached_roots_at(&path).is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cached_roots_ignore_a_symlink() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("planted.pem");
+        std::fs::write(&target, one_root_pem()).unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let link = dir.path().join("public-roots.pem");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(
+            read_cached_roots_at(&link).is_none(),
+            "a symlinked cache file must be ignored"
+        );
+    }
+
+    #[test]
+    fn cached_roots_ignore_missing_empty_and_garbage_files() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(read_cached_roots_at(&dir.path().join("missing.pem")).is_none());
+        let empty = dir.path().join("empty.pem");
+        std::fs::write(&empty, b"").unwrap();
+        assert!(read_cached_roots_at(&empty).is_none());
+        let garbage = dir.path().join("garbage.pem");
+        std::fs::write(&garbage, b"not a certificate").unwrap();
+        assert!(read_cached_roots_at(&garbage).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn current_uid_is_known() {
+        assert!(current_uid().is_some());
+    }
+
+    // --- embedded root set (webpki-root-certs 1.0.9) ---------------------
+
+    fn embedded_root_subjects() -> Vec<String> {
+        embedded_roots().iter().map(|c| format_name(c.subject_name())).collect()
+    }
+
+    fn has_root_cn(subjects: &[String], cn: &str) -> bool {
+        let needle = format!("CN={cn}");
+        subjects.iter().any(|s| s.split(", ").any(|part| part == needle))
+    }
+
+    #[test]
+    fn embedded_root_set_contains_current_public_roots() {
+        let subjects = embedded_root_subjects();
+        for cn in [
+            "ISRG Root X1",
+            "ISRG Root X2",
+            "GTS Root R1",
+            "GTS Root R4",
+            "DigiCert TLS RSA4096 Root G5",
+            "DigiCert TLS ECC P384 Root G5",
+            "Amazon Root CA 1",
+            "USERTrust RSA Certification Authority",
+            // Still trusted by Mozilla, hence embedded, although Chrome
+            // distrusts certificates they issued after 2025-07-31. The
+            // knowledge base entry tls.handshake.chrome-distrusted-root
+            // relies on these being present.
+            "HiPKI Root CA - G1",
+            "NetLock Arany (Class Gold) Főtanúsítvány",
+        ] {
+            assert!(has_root_cn(&subjects, cn), "expected embedded root with CN={cn}");
+        }
+    }
+
+    #[test]
+    fn embedded_root_set_excludes_distrusted_roots() {
+        let subjects = embedded_root_subjects();
+        for cn in [
+            // Removed from the Mozilla root store (distrusted for TLS) and so
+            // from webpki-root-certs; the knowledge base explains chains that
+            // still anchor on them.
+            "Entrust Root Certification Authority - G2",
+            "Entrust Root Certification Authority",
+            "Entrust Root Certification Authority - EC1",
+            // Retired by Google Trust Services.
+            "GTS Root R2",
+            // DigiCert G1 generation, removed by the root programs in 2026.
+            "DigiCert Global Root CA",
+            "DigiCert High Assurance EV Root CA",
+            "DigiCert Assured ID Root CA",
+        ] {
+            assert!(!has_root_cn(&subjects, cn), "did not expect embedded root with CN={cn}");
+        }
+        assert!(
+            !subjects.iter().any(|s| s.contains("O=Entrust")),
+            "no Entrust root should remain in the embedded set"
+        );
     }
 }

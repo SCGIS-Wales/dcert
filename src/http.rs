@@ -32,6 +32,9 @@ pub struct HttpClientOptions<'a> {
     pub ca_file: Option<&'a str>,
     /// Directory of `.pem`, `.crt` or `.cer` files to add as roots.
     pub ca_dir: Option<&'a str>,
+    /// Maximum redirects to follow. `None` keeps reqwest's default (10);
+    /// `Some(0)` refuses to follow any redirect.
+    pub max_redirects: Option<usize>,
 }
 
 /// Number of CA certificates loaded from a directory by [`blocking_client`].
@@ -57,6 +60,9 @@ pub fn blocking_client_with_summary(opts: &HttpClientOptions<'_>) -> Result<(req
         builder = builder.timeout(t).connect_timeout(opts.connect_timeout.unwrap_or(t));
     } else if let Some(c) = opts.connect_timeout {
         builder = builder.connect_timeout(c);
+    }
+    if let Some(n) = opts.max_redirects {
+        builder = builder.redirect(reqwest::redirect::Policy::limited(n));
     }
 
     match opts.proxy {
@@ -146,6 +152,40 @@ mod tests {
             ..Default::default()
         };
         assert!(blocking_client(&opts).is_ok());
+    }
+
+    #[test]
+    fn redirect_limit_is_enforced() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            // Answer two requests with a redirect back to ourselves so a
+            // client that follows redirects would loop until its own limit.
+            for _ in 0..2 {
+                if let Ok((mut stream, _)) = listener.accept() {
+                    let mut buf = [0u8; 2048];
+                    let _ = stream.read(&mut buf);
+                    let _ = stream.write_all(
+                        format!(
+                            "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{port}/next\r\nContent-Length: 0\r\n\r\n"
+                        )
+                        .as_bytes(),
+                    );
+                }
+            }
+        });
+        let opts = HttpClientOptions {
+            timeout: Some(Duration::from_secs(5)),
+            max_redirects: Some(0),
+            ..Default::default()
+        };
+        let client = blocking_client(&opts).unwrap();
+        let err = client
+            .get(format!("http://127.0.0.1:{port}/"))
+            .send()
+            .expect_err("a redirect must be refused when the limit is zero");
+        assert!(err.is_redirect(), "{err}");
     }
 
     #[test]

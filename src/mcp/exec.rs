@@ -42,9 +42,58 @@ fn decode_capped(buf: &[u8], dropped: bool) -> String {
     text
 }
 
+/// Whether `DCERT_MCP_DEBUG` asks for `--debug` on every subprocess.
+///
+/// Only the usual truthy spellings count (`1`, `true`, `yes`, `on`, in any
+/// case); `0`, `false` or an empty value leave debugging off, so an operator
+/// who sets the variable to disable it gets what they asked for.
+pub(crate) fn debug_enabled() -> bool {
+    debug_enabled_from(std::env::var("DCERT_MCP_DEBUG").ok().as_deref())
+}
+
+/// Pure form of [`debug_enabled`], for tests.
+pub(crate) fn debug_enabled_from(value: Option<&str>) -> bool {
+    value
+        .map(str::trim)
+        .is_some_and(|v| ["1", "true", "yes", "on"].iter().any(|t| v.eq_ignore_ascii_case(t)))
+}
+
+/// Build and spawn the dcert child process the one way every tool uses.
+///
+/// Every spawn site goes through here so the safety properties hold for all
+/// of them:
+///
+/// - stdin is `/dev/null`. The MCP server's own stdin carries the JSON-RPC
+///   stream, and a child that inherited it (and then prompted, as the Vault
+///   subcommands can) would swallow protocol frames and read them as answers.
+/// - `kill_on_drop` is set, so a tool future that is cancelled (client
+///   disconnect, server shutdown) takes the child with it rather than leaving
+///   an orphan running against a remote host.
+/// - stdout and stderr are piped and drained by [`run_child_with_timeout`].
+///
+/// The child inherits the parent environment (proxy variables, CA bundle
+/// paths); `env_vars` adds per call secrets that must not travel in argv.
+pub(crate) fn spawn_dcert(
+    config: &McpConfig,
+    args: &[&str],
+    env_vars: &[(&str, &str)],
+) -> Result<tokio::process::Child, String> {
+    let mut cmd = Command::new(&config.dcert_binary);
+    cmd.args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    for (key, value) in env_vars {
+        cmd.env(key, value);
+    }
+    cmd.spawn()
+        .map_err(|e| format!("Failed to run dcert at {}: {}", config.dcert_binary.display(), e))
+}
+
 /// Run dcert with given arguments and return (stdout, stderr, exit_code).
 ///
-/// Always passes `--debug` so MCP tool responses include diagnostic info.
+/// Passes `--debug` when `DCERT_MCP_DEBUG` is truthy so MCP tool responses include diagnostic info.
 /// Passes `--timeout` and `--read-timeout` from the MCP config to the subprocess.
 /// Enforces a subprocess timeout to prevent indefinite hangs from slow or unreachable targets.
 /// Acquires a semaphore permit to limit concurrent subprocess invocations.
@@ -70,10 +119,9 @@ pub(crate) async fn run_dcert_with_env(
         .await
         .map_err(|_| "Subprocess semaphore closed".to_string())?;
 
-    // Only include --debug when explicitly enabled via DCERT_MCP_DEBUG env var
     let mut full_args: Vec<&str> = Vec::with_capacity(args.len() + 5);
     full_args.extend_from_slice(args);
-    if std::env::var("DCERT_MCP_DEBUG").is_ok() && !full_args.contains(&"--debug") {
+    if debug_enabled() && !full_args.contains(&"--debug") {
         full_args.push("--debug");
     }
 
@@ -89,22 +137,7 @@ pub(crate) async fn run_dcert_with_env(
         full_args.push(&read_timeout_str);
     }
 
-    let mut cmd = Command::new(&config.dcert_binary);
-    cmd.args(&full_args)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-
-    // Set additional env vars (e.g., DCERT_CERT_PASSWORD for mTLS)
-    if let Some(vars) = env_vars {
-        for (key, value) in vars {
-            cmd.env(key, value);
-        }
-    }
-
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("Failed to run dcert at {}: {}", config.dcert_binary.display(), e))?;
-
+    let mut child = spawn_dcert(config, &full_args, env_vars.unwrap_or(&[]))?;
     run_child_with_timeout(&mut child, config).await
 }
 
@@ -131,21 +164,7 @@ pub(crate) async fn run_dcert_raw(
         .await
         .map_err(|_| "Subprocess semaphore closed".to_string())?;
 
-    let mut cmd = Command::new(&config.dcert_binary);
-    cmd.args(args)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-
-    if let Some(vars) = env_vars {
-        for (key, value) in vars {
-            cmd.env(key, value);
-        }
-    }
-
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("Failed to run dcert at {}: {}", config.dcert_binary.display(), e))?;
-
+    let mut child = spawn_dcert(config, args, env_vars.unwrap_or(&[]))?;
     run_child_with_timeout(&mut child, config).await
 }
 

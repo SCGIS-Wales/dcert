@@ -312,6 +312,15 @@ dcert --cipher-list "ECDHE+AESGCM:CHACHA20" --max-tls 1.2 https://example.com
 # TLS 1.3 cipher suites
 dcert --cipher-suites "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256" https://example.com
 
+# Post quantum key exchange (RFC 10024 hybrids, OpenSSL 3.5+ on the dcert host).
+# Every check reports the negotiated group and classifies it; --pq-probe adds a
+# second handshake that offers only the hybrids to answer "does the server
+# support post quantum key agreement?" whatever the default handshake chose.
+dcert https://example.com --pq-probe
+dcert https://example.com --groups "X25519MLKEM768:X25519"
+dcert https://example.com --tls-profile modern        # TLS 1.3 only, X25519MLKEM768 first
+dcert --version                                       # names the linked OpenSSL and its PQ capability
+
 # HTTP/2 ALPN negotiation
 dcert --http-protocol http2 https://example.com
 
@@ -426,6 +435,11 @@ Options:
       --cipher-list <STRING>           Allowed TLS 1.2 ciphers (OpenSSL format)
       --cipher-suites <SUITES>         Allowed TLS 1.3 cipher suites (colon-separated)
       --ciphers <NOTATION>             Show the negotiated cipher suite in [iana, openssl] notation
+      --groups <GROUPS>                Key exchange groups to offer (OpenSSL group list, e.g.
+                                       X25519MLKEM768:X25519; ML-KEM needs OpenSSL 3.5+)
+      --tls-profile <PROFILE>          Mozilla client profile [modern, intermediate]
+      --pq-probe                       Second handshake offering only the RFC 10024 hybrid
+                                       post quantum groups; reports supported / not supported
       --starttls <PROTOCOL>            Upgrade a plaintext connection before TLS
                                        [smtp, imap, pop3, ftp]
       --no-verify                      Disable TLS verification (insecure)
@@ -1092,7 +1106,7 @@ It implements the current MCP specification revision (**2025-11-25**) via the `r
 | `validate_csr` | Validate a CSR for compliance with CA/B Forum Baseline Requirements, DigiCert, and X9 standards. Returns findings with severity levels. |
 | `diagnose_endpoint` | Diagnose why an endpoint fails: CloudFront edge and origin errors, API Gateway gateway responses, viewer and origin mTLS, forward proxy failures and TLS interception. Returns findings ordered earliest layer first with confidence, evidence and remediation, plus context notes explaining the status, headers and body. |
 | `explain_edge_term` | Look up what a CloudFront or API Gateway status code, header, error name, gateway response type or topic (viewer mTLS modes, origin mTLS, truststores, security policies, limits) means, from the built-in reference knowledge base. No network access. |
-| `validate_certificate` | Run compliance checks on a certificate (PEM file or HTTPS endpoint). Checks key size, signature algorithm, validity period, SANs, CT, EKU, and Basic Constraints against CA/B Forum standards. |
+| `validate_certificate` | Run compliance checks on a certificate (PEM file or HTTPS endpoint). Checks key size, signature algorithm, validity period (SC-081v3 schedule), revocation pointers (SC-063v4), SANs, CT, EKU, and Basic Constraints against CA/B Forum standards. |
 | `verify_key_match` | Verify that a private key matches a certificate (PEM file or HTTPS endpoint). |
 | `verify_key_auto_discover` | Auto-discover and verify all matching cert/key pairs in a directory. |
 | `convert_pfx_to_pem` | Convert PKCS12/PFX to separate PEM files (cert, key, CA chain). |
@@ -1231,6 +1245,9 @@ a single tool call, the certificate-analysis tools (`analyze_certificate`,
 | `noproxy` | Comma-separated bypass list, overriding `NO_PROXY`. `"*"` bypasses the proxy entirely. |
 | `connect_to` | Redirect the connection: a bare IP, or `"HOST1:PORT1:HOST2:PORT2"` to redirect to another hostname/port. A single string or a list. |
 | `resolve` | Pin `"HOST:PORT:ADDRESS"` to specific IP addresses instead of using DNS. IPs only — use `connect_to` for a hostname. A single string or a list. |
+| `groups` | Key exchange groups to offer as an OpenSSL group list, e.g. `"X25519MLKEM768:X25519"` (ML-KEM needs OpenSSL 3.5+ on the dcert host). |
+| `tls_profile` | `"modern"` (TLS 1.3 only) or `"intermediate"` (TLS 1.2 and 1.3), the Mozilla configurator v6 client profiles. |
+| `pq_probe` | `true` runs a second handshake offering only the RFC 10024 hybrid groups; the verdict is returned as `post_quantum_probe`. |
 
 The hostname in `target` still drives SNI, the `Host` header and certificate
 validation, so `connect_to`/`resolve` probe a specific backend without weakening
@@ -1361,7 +1378,7 @@ The HTTP server exposes:
 - `GET /health` — health check endpoint, deliberately outside authentication so probes need no token
 - `/mcp` — the MCP streamable HTTP endpoint (every tool, same schemas as stdio)
 
-> **Security:** the HTTP transport exposes cert tooling that spawns subprocesses. If no authentication is configured (neither `DCERT_MCP_OIDC_ISSUER` nor `DCERT_MCP_AUTH_TOKEN`), `dcert-mcp` **refuses to start when binding to a non-loopback address** (e.g. the default `0.0.0.0:3000`). Either configure authentication, bind to `127.0.0.1`, or set `DCERT_MCP_ALLOW_INSECURE=1` to explicitly opt in to an unauthenticated public bind (not recommended). Unauthenticated binds to loopback are always allowed.
+> **Security:** the HTTP transport exposes cert tooling that spawns subprocesses. If no authentication is configured (neither `DCERT_MCP_OIDC_ISSUER` nor `DCERT_MCP_AUTH_TOKEN`), `dcert-mcp` **refuses to start when binding to a non-loopback address** (e.g. `0.0.0.0:3000`; the default is `127.0.0.1:3000`). Either configure authentication, bind to `127.0.0.1`, or set `DCERT_MCP_ALLOW_INSECURE=1` to explicitly opt in to an unauthenticated public bind (not recommended). Unauthenticated binds to loopback are always allowed.
 
 The transport also validates the `Host` header against an allowlist (loopback names and the bind address by default) to defeat DNS rebinding, rejects cross-origin requests unless `DCERT_MCP_ALLOWED_ORIGINS` names the origin, and bounds every request with a timeout and a body size limit, and the `/mcp` endpoint with a concurrency limit (`/health` is exempt, so a liveness probe still answers while the tool API is saturated). Both transports shut down gracefully on `SIGINT` and `SIGTERM`.
 
@@ -1416,6 +1433,8 @@ OIDC tokens are validated against JWKS (JSON Web Key Sets) with automatic key ro
 | `DCERT_MCP_MAX_CONCURRENT_REQUESTS` | Concurrent in-flight HTTP requests (default: 64) |
 | `DCERT_MCP_REQUEST_TIMEOUT` | Per-request timeout in seconds (default: 120) |
 | `DCERT_MCP_MAX_BODY_BYTES` | Maximum request body size (default: 1048576) |
+| `DCERT_MCP_AUTH_FAILURE_LIMIT` | Failed authentications per client address before a 429 is answered (default: 10; `0` disables) |
+| `DCERT_MCP_AUTH_FAILURE_WINDOW` | Window for that limit in seconds (default: 60) |
 | `DCERT_MCP_FILE_ROOT` | Comma-separated directories that tool file parameters are confined to (default: the working directory and the system temp directory) |
 | `DCERT_MCP_VAULT_ADDR_ALLOWLIST` | Comma-separated Vault addresses a tool call may target |
 | `DCERT_MCP_VAULT_ALLOW_SKIP_VERIFY` | Set to `1` to let a tool call disable Vault TLS verification (refused by default) |
@@ -1438,7 +1457,11 @@ SHA-256 fingerprints (`--fingerprint`), key usage, extended key usage, basic con
 
 ### TLS Debugging
 
-Protocol version, cipher suite, ALPN negotiation, certificate transparency, verification result, and per-certificate chain validation detail. Network latency measurements for DNS resolution, TCP connect (Layer 4), and TLS+HTTP (Layer 7). Enable `--debug` for full OSI-layer diagnostics.
+Protocol version, cipher suite, key exchange group, ALPN negotiation, certificate transparency, verification result, and per-certificate chain validation detail. Network latency measurements for DNS resolution, TCP connect (Layer 4), and TLS+HTTP (Layer 7). Enable `--debug` for full OSI-layer diagnostics.
+
+### Post Quantum Key Exchange
+
+Every connection reports the negotiated key exchange group (`tls_key_exchange_group`, for example `X25519MLKEM768` or `X25519`) and classifies it (`key_exchange_class`: `hybrid_pq`, `pure_pq`, `obsolete_pq`, `classical` or `unknown`). Hybrid key agreement is standardised in RFC 10024 (`X25519MLKEM768`, `SecP256r1MLKEM768`, `SecP384r1MLKEM1024`); the pre standard `X25519Kyber768Draft00` is flagged as obsolete. `--pq-probe` runs a second handshake offering only the RFC 10024 hybrids and reports `supported`, `not_supported` or `not_testable`. `--groups` sets the offered group list and `--tls-profile modern|intermediate` applies the Mozilla configurator v6 client profiles with `X25519MLKEM768` first. Negotiating ML-KEM needs OpenSSL 3.5 or later on the dcert host (Ubuntu 26.04, Debian trixie, Homebrew, the Windows build and the Docker image all qualify; build with `cargo build --features vendored` elsewhere). `dcert --version` names the linked OpenSSL and whether post quantum key exchange is available. The compliance report recognises ML-DSA and SLH-DSA certificates and notes the NIST IR 8547 timeline for RSA and ECDSA.
 
 ### Mutual TLS (mTLS)
 
@@ -1450,7 +1473,13 @@ Create PKCS#10 Certificate Signing Requests with guided interactive mode or CLI 
 
 ### Certificate Compliance
 
-Run compliance checks against CA/B Forum Baseline Requirements, DigiCert, and X9 standards (`--compliance`). Checks key size, signature algorithm (SHA-256+ required), validity period (398-day maximum), Subject Alternative Names, Certificate Transparency (SCTs), Extended Key Usage, and Basic Constraints. Returns findings with severity levels (Error, Warning, Info) and an overall COMPLIANT/NON-COMPLIANT status. Available in pretty, JSON, and YAML formats.
+Run compliance checks against the CA/B Forum Baseline Requirements, DigiCert, and X9 standards (`--compliance`). Checks key size, signature algorithm, validity period, revocation pointers, Subject Alternative Names, Certificate Transparency (SCTs), Extended Key Usage, and Basic Constraints. Returns findings with severity levels (Error, Warning, Info) and an overall COMPLIANT/NON-COMPLIANT status. Available in pretty, JSON, and YAML formats. Each finding names the ballot or policy it comes from so it can be looked up.
+
+- **Validity period** (ballot SC-081v3). The maximum validity of a subscriber (leaf) certificate depends on its notBefore date: 398 days when issued before 2026-03-15, 200 days from 2026-03-15, 100 days from 2027-03-15 and 47 days from 2029-03-15. Exceeding the limit is an Error for leaf certificates from publicly trusted CAs. CA certificates are exempt. When the chain looks privately issued (a self signed leaf, or a chain ending in a self signed root that is not in the public root set) the finding is downgraded to a Warning, because the limit binds public CAs and dcert cannot see the root trust verdict from inside the compliance engine; when the server omits its root, the chain is treated as public.
+- **Revocation** (ballot SC-063v4). Short lived certificates (at most 10 days if issued before 2026-03-15, at most 7 days from that date) are exempt from revocation checking and get an Info finding. Any other leaf must carry a CRL distribution point (mandatory since 2024-03-15), so a missing one is a Warning; a missing OCSP URL is only Info when a CRL is present, because OCSP became optional on the same date. Requires `--extensions`.
+- **Signature algorithm**. SHA-1 with RSA, ECDSA or DSA, MD5 and MD2 are Errors (ballot SC-097 sunsets every remaining use of SHA-1 in certificates and CRLs in 2026). SHA-2 families, RSA-PSS, Ed25519 and Ed448 are compliant. ML-DSA-44/65/87 (FIPS 204, RFC 9881) and the SLH-DSA parameter sets (FIPS 205) are reported as post quantum signatures.
+- **Public key**. RSA below 2048 bits and EC below 256 bits are Errors; RSA 2048 is a Warning. ML-DSA, ML-KEM, SLH-DSA and EdDSA keys are named (an ML-DSA key is reported as `ML-DSA-65`, not as an OID). A leaf with an RSA or ECDSA key gets one Info note that NIST IR 8547 (draft) deprecates these after 2030 and disallows them after 2035.
+- **Extended Key Usage**. serverAuth is required. clientAuth alongside serverAuth on a leaf is a Warning: the Chrome Root Program policy requires serverAuth only leaf certificates from publicly trusted CAs (Google Trust Services stopped issuing clientAuth in April 2026, Let's Encrypt removed it in February 2026 and retired the tlsclient profile in July 2026); mTLS client identities should come from a private CA.
 
 ### Key-Certificate Matching
 

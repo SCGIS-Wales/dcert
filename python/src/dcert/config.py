@@ -31,9 +31,28 @@ class DownloadConfig:
     """Limits applied while downloading a release archive."""
 
     timeout_seconds: float
+    total_timeout_seconds: float
     max_bytes: int
     chunk_size: int
     lock_file_name: str
+    lock_poll_seconds: float
+
+
+@dataclass(frozen=True)
+class InstallConfig:
+    """Where downloaded binaries are installed."""
+
+    env_override: str
+    directories: Mapping[str, str]
+
+
+@dataclass(frozen=True)
+class BinariesConfig:
+    """How the Rust binaries are located."""
+
+    env: Mapping[str, str]
+    fallback_env: str
+    wrapper_probe_bytes: int
 
 
 @dataclass(frozen=True)
@@ -54,6 +73,8 @@ class ServerConfig:
     name: str
     host: str
     port: int
+    transports: tuple[str, ...]
+    default_transport: str
 
 
 @dataclass(frozen=True)
@@ -61,6 +82,7 @@ class ResilienceDefaults:
     """Baseline resilience values before environment overrides."""
 
     tool_timeout: float
+    connect_timeout: float
     reconnect_max: int
     retry_max_attempts: int
     retry_base_delay: float
@@ -74,6 +96,7 @@ class ResilienceDefaults:
     cache_tool_ttl: int
     cache_list_ttl: int
     max_response_bytes: int
+    truncation_lookback_chars: int
 
 
 @dataclass(frozen=True)
@@ -82,6 +105,7 @@ class OTelDefaults:
 
     service_name: str
     exporter: str
+    exporters: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -91,6 +115,7 @@ class ToolsConfig:
     truststore_password: str
     keystore_alias: str
     expiry_days: int
+    output_dir: str
 
 
 @dataclass(frozen=True)
@@ -99,7 +124,8 @@ class Config:
 
     release: ReleaseConfig
     download: DownloadConfig
-    binaries: Mapping[str, str]
+    install: InstallConfig
+    binaries: BinariesConfig
     platforms: tuple[PlatformTarget, ...]
     passthrough_env: tuple[str, ...]
     server: ServerConfig
@@ -122,6 +148,23 @@ def _string_tuple(raw: Mapping[str, Any], name: str) -> tuple[str, ...]:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise ValueError(f"config.yaml: '{name}' must be a list of strings")
     return tuple(value)
+
+
+def _string_mapping(raw: Mapping[str, Any], name: str) -> dict[str, str]:
+    """Return the mapping of strings stored under *name*."""
+    value = raw.get(name)
+    if not isinstance(value, Mapping) or not all(
+        isinstance(key, str) and isinstance(item, str) for key, item in value.items()
+    ):
+        raise ValueError(f"config.yaml: '{name}' must be a mapping of strings")
+    return dict(value)
+
+
+def _member(value: str, choices: tuple[str, ...], name: str) -> str:
+    """Return *value* after checking it is one of *choices*."""
+    if value not in choices:
+        raise ValueError(f"config.yaml: '{name}' must be one of {', '.join(choices)}")
+    return value
 
 
 def _platforms(raw: object) -> tuple[PlatformTarget, ...]:
@@ -148,11 +191,17 @@ def parse_config(raw: Mapping[str, Any]) -> Config:
     """
     release = _section(raw, "release")
     download = _section(raw, "download")
+    install = _section(raw, "install")
     server = _section(raw, "server")
     resilience = _section(raw, "resilience")
     otel = _section(raw, "otel")
     tools = _section(raw, "tools")
     binaries = _section(raw, "binaries")
+    install_dirs = _string_mapping(install, "directories")
+    if "default" not in install_dirs:
+        raise ValueError("config.yaml: 'install.directories' needs a 'default' entry")
+    transports = _string_tuple(server, "transports")
+    exporters = _string_tuple(otel, "exporters")
     try:
         return Config(
             release=ReleaseConfig(
@@ -161,20 +210,34 @@ def parse_config(raw: Mapping[str, Any]) -> Config:
             ),
             download=DownloadConfig(
                 timeout_seconds=float(download["timeout_seconds"]),
+                total_timeout_seconds=float(download["total_timeout_seconds"]),
                 max_bytes=int(download["max_bytes"]),
                 chunk_size=int(download["chunk_size"]),
                 lock_file_name=str(download["lock_file_name"]),
+                lock_poll_seconds=float(download["lock_poll_seconds"]),
             ),
-            binaries={str(key): str(value) for key, value in binaries.items()},
+            install=InstallConfig(
+                env_override=str(install["env_override"]), directories=install_dirs
+            ),
+            binaries=BinariesConfig(
+                env=_string_mapping(binaries, "env"),
+                fallback_env=str(binaries["fallback_env"]),
+                wrapper_probe_bytes=int(binaries["wrapper_probe_bytes"]),
+            ),
             platforms=_platforms(raw.get("platforms")),
             passthrough_env=_string_tuple(_section(raw, "subprocess"), "passthrough_env"),
             server=ServerConfig(
                 name=str(server["name"]),
                 host=str(server["host"]),
                 port=int(server["port"]),
+                transports=transports,
+                default_transport=_member(
+                    str(server["default_transport"]), transports, "default_transport"
+                ),
             ),
             resilience=ResilienceDefaults(
                 tool_timeout=float(resilience["tool_timeout"]),
+                connect_timeout=float(resilience["connect_timeout"]),
                 reconnect_max=int(resilience["reconnect_max"]),
                 retry_max_attempts=int(resilience["retry_max_attempts"]),
                 retry_base_delay=float(resilience["retry_base_delay"]),
@@ -188,15 +251,18 @@ def parse_config(raw: Mapping[str, Any]) -> Config:
                 cache_tool_ttl=int(resilience["cache_tool_ttl"]),
                 cache_list_ttl=int(resilience["cache_list_ttl"]),
                 max_response_bytes=int(resilience["max_response_bytes"]),
+                truncation_lookback_chars=int(resilience["truncation_lookback_chars"]),
             ),
             otel=OTelDefaults(
                 service_name=str(otel["service_name"]),
-                exporter=str(otel["exporter"]),
+                exporter=_member(str(otel["exporter"]), exporters, "exporter"),
+                exporters=exporters,
             ),
             tools=ToolsConfig(
                 truststore_password=str(tools["truststore_password"]),
                 keystore_alias=str(tools["keystore_alias"]),
                 expiry_days=int(tools["expiry_days"]),
+                output_dir=str(tools["output_dir"]),
             ),
         )
     except KeyError as exc:

@@ -46,6 +46,91 @@ pub(crate) const DEFAULT_CONNECTION_TIMEOUT: u64 = 10;
 /// Default read timeout (seconds) passed to the dcert subprocess via --read-timeout.
 pub(crate) const DEFAULT_READ_TIMEOUT: u64 = 5;
 
+/// Default number of failed authentication attempts one client address may
+/// make within the failure window before it is answered with `429`.
+pub(crate) const DEFAULT_AUTH_FAILURE_LIMIT: u32 = 10;
+
+/// Default length of the authentication failure window, in seconds.
+pub(crate) const DEFAULT_AUTH_FAILURE_WINDOW_SECS: u64 = 60;
+
+/// Longest failure window accepted: a day. Beyond that a typo would lock a
+/// client out for longer than any operator intends.
+const MAX_AUTH_FAILURE_WINDOW_SECS: u64 = 86_400;
+
+/// How many authentication failures a client address may make, and over what
+/// window, before the HTTP transport refuses it. Read from
+/// `DCERT_MCP_AUTH_FAILURE_LIMIT` and `DCERT_MCP_AUTH_FAILURE_WINDOW`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AuthFailureLimitConfig {
+    /// Failures allowed per window; zero disables the limiter.
+    pub(crate) limit: u32,
+    /// Length of the window.
+    pub(crate) window: Duration,
+}
+
+impl Default for AuthFailureLimitConfig {
+    fn default() -> Self {
+        Self {
+            limit: DEFAULT_AUTH_FAILURE_LIMIT,
+            window: Duration::from_secs(DEFAULT_AUTH_FAILURE_WINDOW_SECS),
+        }
+    }
+}
+
+impl AuthFailureLimitConfig {
+    /// Read the configuration from the environment. A value that cannot be
+    /// used is an error, so a misconfigured limiter stops the server from
+    /// starting rather than silently running with a different setting.
+    pub(crate) fn from_env() -> Result<Self, String> {
+        Self::from_values(
+            std::env::var("DCERT_MCP_AUTH_FAILURE_LIMIT").ok().as_deref(),
+            std::env::var("DCERT_MCP_AUTH_FAILURE_WINDOW").ok().as_deref(),
+        )
+    }
+
+    /// Build the configuration from the raw variable values, so validation
+    /// can be unit tested without touching the process environment.
+    pub(crate) fn from_values(limit: Option<&str>, window: Option<&str>) -> Result<Self, String> {
+        let defaults = Self::default();
+
+        let limit = match limit.map(str::trim).filter(|v| !v.is_empty()) {
+            None => defaults.limit,
+            Some(raw) => raw.parse::<u32>().map_err(|_| {
+                format!(
+                    "DCERT_MCP_AUTH_FAILURE_LIMIT must be a whole number of attempts \
+                     (0 disables the limiter), got {raw:?}"
+                )
+            })?,
+        };
+
+        let window_secs = match window.map(str::trim).filter(|v| !v.is_empty()) {
+            None => defaults.window.as_secs(),
+            Some(raw) => {
+                let secs = raw.parse::<u64>().map_err(|_| {
+                    format!("DCERT_MCP_AUTH_FAILURE_WINDOW must be a whole number of seconds, got {raw:?}")
+                })?;
+                if !(1..=MAX_AUTH_FAILURE_WINDOW_SECS).contains(&secs) {
+                    return Err(format!(
+                        "DCERT_MCP_AUTH_FAILURE_WINDOW must be between 1 and \
+                         {MAX_AUTH_FAILURE_WINDOW_SECS} seconds, got {secs}"
+                    ));
+                }
+                secs
+            }
+        };
+
+        Ok(Self {
+            limit,
+            window: Duration::from_secs(window_secs),
+        })
+    }
+
+    /// `true` when failures are counted at all.
+    pub(crate) fn is_enabled(&self) -> bool {
+        self.limit > 0
+    }
+}
+
 /// Proxy environment info detected at MCP startup (for diagnostic logging).
 #[derive(Debug)]
 pub(crate) struct McpProxyInfo {
@@ -188,4 +273,49 @@ pub(crate) fn find_dcert_binary() -> PathBuf {
     }
 
     PathBuf::from("dcert")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auth_failure_limit_defaults_when_unset_or_blank() {
+        let cfg = AuthFailureLimitConfig::from_values(None, None).expect("defaults");
+        assert_eq!(cfg, AuthFailureLimitConfig::default());
+        assert_eq!(cfg.limit, 10);
+        assert_eq!(cfg.window, Duration::from_secs(60));
+        assert!(cfg.is_enabled());
+
+        let blank = AuthFailureLimitConfig::from_values(Some("  "), Some("")).expect("blank is unset");
+        assert_eq!(blank, cfg);
+    }
+
+    #[test]
+    fn auth_failure_limit_reads_both_values() {
+        let cfg = AuthFailureLimitConfig::from_values(Some(" 3 "), Some("120")).expect("valid");
+        assert_eq!(cfg.limit, 3);
+        assert_eq!(cfg.window, Duration::from_secs(120));
+    }
+
+    #[test]
+    fn auth_failure_limit_zero_disables() {
+        let cfg = AuthFailureLimitConfig::from_values(Some("0"), None).expect("valid");
+        assert!(!cfg.is_enabled());
+    }
+
+    #[test]
+    fn auth_failure_limit_rejects_bad_values() {
+        let err = AuthFailureLimitConfig::from_values(Some("ten"), None).unwrap_err();
+        assert!(err.contains("DCERT_MCP_AUTH_FAILURE_LIMIT"), "{err}");
+        let err = AuthFailureLimitConfig::from_values(Some("-1"), None).unwrap_err();
+        assert!(err.contains("DCERT_MCP_AUTH_FAILURE_LIMIT"), "{err}");
+
+        let err = AuthFailureLimitConfig::from_values(None, Some("0")).unwrap_err();
+        assert!(err.contains("DCERT_MCP_AUTH_FAILURE_WINDOW"), "{err}");
+        let err = AuthFailureLimitConfig::from_values(None, Some("90000")).unwrap_err();
+        assert!(err.contains("DCERT_MCP_AUTH_FAILURE_WINDOW"), "{err}");
+        let err = AuthFailureLimitConfig::from_values(None, Some("1m")).unwrap_err();
+        assert!(err.contains("DCERT_MCP_AUTH_FAILURE_WINDOW"), "{err}");
+    }
 }

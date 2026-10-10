@@ -8,6 +8,9 @@ Everything here is a plain function or an immutable record of closures:
   the exact time until a token is available instead of polling.
 - :func:`backoff_delays` yields exponential delays with full jitter.
 - :func:`run_with_retry` drives an operation through those delays.
+- :func:`build_guard` stacks bulkhead, rate limiter, circuit breaker, retry
+  and per call timeout into one closure shared by the proxy middleware and
+  the typed client.
 - :func:`truncate_response` caps large text payloads.
 
 Baseline values come from ``config.yaml``; each can be overridden with an
@@ -33,11 +36,15 @@ Variable                        Effect
 ``DCERT_MCP_CACHE_LIST_TTL``    listing cache TTL (seconds)
 ``DCERT_MCP_MAX_RESPONSE_BYTES`` truncation limit, 0 disables
 ``DCERT_MCP_TOOL_TIMEOUT``      per call timeout (seconds)
+``DCERT_MCP_CONNECT_TIMEOUT``   subprocess start and lookup timeout (seconds)
 ``DCERT_MCP_RECONNECT_MAX``     reconnect attempts per call
 ``DCERT_MCP_OTEL_ENABLED``      enable OpenTelemetry tracing
 ``DCERT_MCP_OTEL_SERVICE_NAME`` service name for traces
 ``DCERT_MCP_OTEL_EXPORTER``     ``console`` or ``otlp``
 =============================== =================================
+
+A value outside its valid range raises :class:`ValueError` naming the
+variable when the configuration is built.
 """
 
 from __future__ import annotations
@@ -48,12 +55,12 @@ import os
 import random
 import time
 from collections.abc import Awaitable, Callable, Iterator, Sequence
-from dataclasses import dataclass
-from typing import Literal, TypeVar
+from dataclasses import dataclass, fields
+from typing import Literal, Protocol, TypeVar
 
 import anyio
 from mcp import MCPError
-from mcp_types import CONNECTION_CLOSED
+from mcp_types import CONNECTION_CLOSED, ToolAnnotations
 
 from dcert.config import OTelDefaults, ResilienceDefaults, load_config
 
@@ -74,7 +81,7 @@ CONNECTION_ERRORS: tuple[type[BaseException], ...] = (
 
 
 class CircuitBreakerOpen(Exception):
-    """Raised when a call is rejected because the circuit breaker is open."""
+    """Raised by a guard when a call is rejected because the breaker is open."""
 
 
 # ---------------------------------------------------------------------------
@@ -114,10 +121,37 @@ def env_float(name: str, default: float) -> float:
 # Configuration records
 # ---------------------------------------------------------------------------
 
+#: Environment variable, lower bound and whether the bound itself is allowed,
+#: for every numeric field of :class:`ResilienceConfig`.
+_LIMITS: dict[str, tuple[str, float, bool]] = {
+    "retry_max_attempts": ("DCERT_MCP_RETRY_MAX_ATTEMPTS", 1, True),
+    "retry_base_delay": ("DCERT_MCP_RETRY_BASE_DELAY", 0, True),
+    "retry_max_delay": ("DCERT_MCP_RETRY_MAX_DELAY", 0, True),
+    "retry_multiplier": ("DCERT_MCP_RETRY_MULTIPLIER", 0, False),
+    "circuit_breaker_threshold": ("DCERT_MCP_CB_THRESHOLD", 1, True),
+    "circuit_breaker_reset_timeout": ("DCERT_MCP_CB_RESET_TIMEOUT", 0, True),
+    "bulkhead_max": ("DCERT_MCP_BULKHEAD_MAX", 1, True),
+    "rate_limit_rps": ("DCERT_MCP_RATE_LIMIT_RPS", 0, False),
+    "rate_limit_burst": ("DCERT_MCP_RATE_LIMIT_BURST", 1, True),
+    "cache_tool_ttl": ("DCERT_MCP_CACHE_TOOL_TTL", 0, True),
+    "cache_list_ttl": ("DCERT_MCP_CACHE_LIST_TTL", 0, True),
+    "max_response_bytes": ("DCERT_MCP_MAX_RESPONSE_BYTES", 0, True),
+    "tool_timeout": ("DCERT_MCP_TOOL_TIMEOUT", 0, False),
+    "connect_timeout": ("DCERT_MCP_CONNECT_TIMEOUT", 0, False),
+    "reconnect_max": ("DCERT_MCP_RECONNECT_MAX", 0, True),
+    "truncation_lookback_chars": ("truncation_lookback_chars", 0, True),
+}
+
 
 @dataclass(frozen=True)
 class ResilienceConfig:
-    """Every resilience knob, resolved from the config file and environment."""
+    """Every resilience knob, resolved from the config file and environment.
+
+    Raises:
+        ValueError: On construction (including :func:`dataclasses.replace`)
+            when a value is outside its valid range; the message names the
+            environment variable that sets it.
+    """
 
     retry_enabled: bool
     retry_max_attempts: int
@@ -136,11 +170,27 @@ class ResilienceConfig:
     cache_list_ttl: int
     max_response_bytes: int
     tool_timeout: float
+    connect_timeout: float
     reconnect_max: int
+    truncation_lookback_chars: int
+
+    def __post_init__(self) -> None:
+        for field in fields(self):
+            if field.name not in _LIMITS:
+                continue
+            variable, bound, inclusive = _LIMITS[field.name]
+            value = getattr(self, field.name)
+            if value < bound or (not inclusive and value == bound):
+                relation = "at least" if inclusive else "greater than"
+                raise ValueError(f"{variable} must be {relation} {bound}, got {value}")
 
 
 def resilience_config_from_env(defaults: ResilienceDefaults | None = None) -> ResilienceConfig:
-    """Build a :class:`ResilienceConfig` from *defaults* and ``DCERT_MCP_*`` variables."""
+    """Build a :class:`ResilienceConfig` from *defaults* and ``DCERT_MCP_*`` variables.
+
+    Raises:
+        ValueError: If a variable sets a value outside its valid range.
+    """
     base = defaults or load_config().resilience
     return ResilienceConfig(
         retry_enabled=not env_bool("DCERT_MCP_NO_RETRY"),
@@ -162,7 +212,9 @@ def resilience_config_from_env(defaults: ResilienceDefaults | None = None) -> Re
         cache_list_ttl=env_int("DCERT_MCP_CACHE_LIST_TTL", base.cache_list_ttl),
         max_response_bytes=env_int("DCERT_MCP_MAX_RESPONSE_BYTES", base.max_response_bytes),
         tool_timeout=env_float("DCERT_MCP_TOOL_TIMEOUT", base.tool_timeout),
+        connect_timeout=env_float("DCERT_MCP_CONNECT_TIMEOUT", base.connect_timeout),
         reconnect_max=env_int("DCERT_MCP_RECONNECT_MAX", base.reconnect_max),
+        truncation_lookback_chars=base.truncation_lookback_chars,
     )
 
 
@@ -186,23 +238,46 @@ def otel_config_from_env(defaults: OTelDefaults | None = None) -> OTelConfig:
 
 
 # ---------------------------------------------------------------------------
+# Tool annotation gates
+# ---------------------------------------------------------------------------
+
+
+def is_cacheable(annotations: ToolAnnotations | None) -> bool:
+    """Whether a result may be replayed: only read-only, idempotent tools."""
+    return (
+        annotations is not None
+        and annotations.read_only_hint is True
+        and annotations.idempotent_hint is True
+    )
+
+
+def is_retry_safe(annotations: ToolAnnotations | None) -> bool:
+    """Whether a failed call may be re-run: read-only or idempotent tools."""
+    return annotations is not None and (
+        annotations.read_only_hint is True or annotations.idempotent_hint is True
+    )
+
+
+# ---------------------------------------------------------------------------
 # Response payload management
 # ---------------------------------------------------------------------------
 
 
-def truncate_response(text: str, max_bytes: int | None = None) -> str:
+def truncate_response(text: str, max_bytes: int | None = None, lookback: int | None = None) -> str:
     """Truncate *text* when its UTF-8 encoding exceeds *max_bytes*.
 
-    The cut is moved back to the last newline within 200 characters so
+    The cut is moved back to the last newline within *lookback* characters so
     output is not broken mid line, and a notice explains what was removed.
-    ``0`` disables truncation; ``None`` uses the configured default.
+    ``0`` disables truncation; ``None`` uses the configured defaults.
     """
-    limit = load_config().resilience.max_response_bytes if max_bytes is None else max_bytes
+    defaults = load_config().resilience
+    limit = defaults.max_response_bytes if max_bytes is None else max_bytes
+    window = defaults.truncation_lookback_chars if lookback is None else lookback
     encoded = text.encode("utf-8", errors="replace")
     if limit <= 0 or len(encoded) <= limit:
         return text
     truncated = encoded[:limit].decode("utf-8", errors="ignore")
-    last_newline = truncated.rfind("\n", max(0, len(truncated) - 200))
+    last_newline = truncated.rfind("\n", max(0, len(truncated) - window))
     if last_newline > 0:
         truncated = truncated[:last_newline]
     shown = len(truncated.encode("utf-8", errors="replace"))
@@ -385,7 +460,14 @@ def backoff_delays(
 
 
 def is_connection_error(exc: BaseException) -> bool:
-    """Return ``True`` when *exc* (or its cause chain) is a transport failure."""
+    """Return ``True`` when *exc* or an explicit cause of it is a transport failure.
+
+    Only the ``raise ... from`` chain (``__cause__``) is followed. The implicit
+    ``__context__`` is whatever happened to be in flight when *exc* was raised,
+    for example a transport error inside an ``except`` block that then raised
+    a ``ValueError``, and following it would retry calls that did not fail
+    because of the transport.
+    """
     seen: set[int] = set()
     current: BaseException | None = exc
     while current is not None and id(current) not in seen:
@@ -394,7 +476,7 @@ def is_connection_error(exc: BaseException) -> bool:
             return True
         if isinstance(current, MCPError) and current.code == CONNECTION_CLOSED:
             return True
-        current = current.__cause__ or current.__context__
+        current = current.__cause__
     return False
 
 
@@ -428,6 +510,142 @@ async def run_with_retry(
             logger.warning("Attempt %d failed (%s); retrying", attempt + 1, exc)
             await (sleep or asyncio.sleep)(delays[attempt])
             attempt += 1
+
+
+# ---------------------------------------------------------------------------
+# Guard: the whole stack as one closure
+# ---------------------------------------------------------------------------
+
+#: Awaited with the exception and the zero based attempt number for every
+#: retryable failure and for a timeout; returns whether the circuit breaker
+#: should count the failure.
+FailureHook = Callable[[BaseException, int], Awaitable[bool]]
+
+
+class GuardedCall(Protocol):
+    """Signature of :attr:`Guard.run`."""
+
+    def __call__(
+        self,
+        operation: Callable[[int], Awaitable[T]],
+        *,
+        name: str,
+        timeout: float,
+        retry: bool = True,
+        on_failure: FailureHook | None = None,
+    ) -> Awaitable[T]: ...
+
+
+@dataclass(frozen=True)
+class Guard:
+    """Handle returned by :func:`build_guard`."""
+
+    run: GuardedCall
+    breaker: CircuitBreaker | None
+    limiter: RateLimiter | None
+
+
+def build_guard(
+    config: ResilienceConfig,
+    *,
+    retries: int | None = None,
+    sleep: Callable[[float], Awaitable[None]] | None = None,
+) -> Guard:
+    """Build the guard applying *config* to every call passed to ``run``.
+
+    Layers, outermost first: bulkhead, rate limiter, circuit breaker, retry
+    with backoff, per call timeout. ``run(operation, name=..., timeout=...)``
+    awaits *operation* with the zero based attempt number and returns its
+    result, or raises:
+
+    - :class:`CircuitBreakerOpen` when the breaker rejects the call;
+    - :class:`TimeoutError` when an attempt exceeds *timeout* seconds (the
+      breaker counts it);
+    - the operation's own exception otherwise. Transport failures (see
+      :func:`is_connection_error`) are retried while ``retry`` is true and
+      delays remain; nothing else is retried.
+
+    *retries* is the number of retries after the first attempt and defaults
+    to ``retry_max_attempts - 1``; ``retry_enabled`` turns retries off
+    either way. *sleep* replaces :func:`asyncio.sleep` for backoff and rate
+    limiting, mainly for tests.
+
+    ``on_failure`` of ``run`` is awaited for every counted failure and
+    decides whether the breaker records it, so a caller that tears down a
+    shared transport can count one loss once rather than once per in flight
+    call. Without it every failure is recorded.
+    """
+    semaphore = asyncio.Semaphore(config.bulkhead_max)
+    breaker = (
+        create_circuit_breaker(
+            config.circuit_breaker_threshold, config.circuit_breaker_reset_timeout
+        )
+        if config.circuit_breaker_enabled
+        else None
+    )
+    limiter = (
+        create_rate_limiter(config.rate_limit_rps, config.rate_limit_burst, sleep=sleep)
+        if config.rate_limit_enabled
+        else None
+    )
+    count = max(0, config.retry_max_attempts - 1) if retries is None else retries
+    delays = list(
+        backoff_delays(
+            count if config.retry_enabled else 0,
+            config.retry_base_delay,
+            config.retry_max_delay,
+            config.retry_multiplier,
+        )
+    )
+
+    async def record(exc: BaseException, attempt: int, hook: FailureHook | None) -> None:
+        counts = True if hook is None else await hook(exc, attempt)
+        if counts and breaker is not None:
+            await breaker.record_failure()
+
+    async def run(
+        operation: Callable[[int], Awaitable[T]],
+        *,
+        name: str,
+        timeout: float,
+        retry: bool = True,
+        on_failure: FailureHook | None = None,
+    ) -> T:
+        attempts = 0
+
+        async def attempt(number: int) -> T:
+            nonlocal attempts
+            attempts = number
+            async with asyncio.timeout(timeout):
+                return await operation(number)
+
+        async def failed(exc: BaseException, number: int) -> None:
+            await record(exc, number, on_failure)
+
+        async with semaphore:
+            if limiter is not None:
+                await limiter.acquire()
+            if breaker is not None and not await breaker.allow():
+                raise CircuitBreakerOpen(
+                    f"Circuit breaker is open; {name} rejected. "
+                    "The backend has failed repeatedly and will be probed again shortly."
+                )
+            try:
+                result = await run_with_retry(
+                    attempt,
+                    delays=delays if retry else [],
+                    is_retryable=is_connection_error,
+                    on_failure=failed,
+                    sleep=sleep,
+                )
+            except TimeoutError as exc:
+                await record(exc, attempts, on_failure)
+                raise
+            if breaker is not None:
+                await breaker.record_success()
+            return result
+
+    return Guard(run=run, breaker=breaker, limiter=limiter)
 
 
 # ---------------------------------------------------------------------------

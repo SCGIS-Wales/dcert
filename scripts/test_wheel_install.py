@@ -15,12 +15,7 @@ import textwrap
 from pathlib import Path
 
 import pytest
-from build_wheels import (
-    PLATFORM_MAP,
-    archive_name_for_host,
-    build_platform_wheel,
-    load_platform_rows,
-)
+from build_wheels import PLATFORM_MAP, archive_name_for_host, build_platform_wheel
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PYTHON_DIR = PROJECT_ROOT / "python"
@@ -53,9 +48,7 @@ def run(args: list[str], timeout: int = SUBPROCESS_TIMEOUT) -> subprocess.Comple
 def platform_wheel(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Build the universal wheel from source, then a platform wheel with fake binaries."""
     pytest.importorskip("build")
-    archive_name = archive_name_for_host(
-        platform.system(), platform.machine(), load_platform_rows()
-    )
+    archive_name = archive_name_for_host(platform.system(), platform.machine())
     if archive_name is None or archive_name.endswith(".zip"):
         pytest.skip(f"Unsupported platform: {platform.system()}/{platform.machine()}")
 

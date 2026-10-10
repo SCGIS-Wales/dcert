@@ -26,15 +26,6 @@ from dcert.middleware import (
     is_retry_safe,
     truncate_tool_result,
 )
-from dcert.resilience import resilience_config_from_env
-
-
-@pytest.fixture
-def config(monkeypatch):
-    for name in list(__import__("os").environ):
-        if name.startswith("DCERT_MCP_"):
-            monkeypatch.delenv(name)
-    return replace(resilience_config_from_env(), retry_base_delay=0.0, retry_max_delay=0.0)
 
 
 def _context(tool: str = "echo") -> MiddlewareContext:
@@ -115,21 +106,36 @@ async def test_handler_timeout(config):
         await handle(_context(), slow)
 
 
+async def test_handler_timeout_counts_against_breaker(config):
+    cfg = replace(config, tool_timeout=0.01, circuit_breaker_threshold=1)
+    handle = build_call_tool_handler(cfg)
+
+    async def slow(_context):
+        await asyncio.sleep(1)
+        return _result()
+
+    with pytest.raises(ToolError, match="timed out"):
+        await handle(_context(), slow)
+    with pytest.raises(ToolError, match="Circuit breaker is open; echo rejected"):
+        await handle(_context(), slow)
+
+
 async def test_handler_retries_connection_errors(config):
-    handle = build_call_tool_handler(replace(config, retry_max_attempts=3), _annotated(READ_ONLY))
+    sleep = AsyncMock()
+    handle = build_call_tool_handler(
+        replace(config, retry_max_attempts=3), _annotated(READ_ONLY), sleep=sleep
+    )
     call_next = AsyncMock(side_effect=[ConnectionResetError("gone"), _result("back")])
-    with patch("dcert.resilience.asyncio.sleep", new=AsyncMock()) as sleep:
-        result = await handle(_context(), call_next)
+    result = await handle(_context(), call_next)
     assert result.content[0].text == "back"
     assert call_next.await_count == 2
     sleep.assert_awaited_once()
 
 
 async def test_handler_retries_idempotent_writes(config):
-    handle = build_call_tool_handler(config, _annotated(IDEMPOTENT_WRITE))
+    handle = build_call_tool_handler(config, _annotated(IDEMPOTENT_WRITE), sleep=AsyncMock())
     call_next = AsyncMock(side_effect=[ConnectionResetError("gone"), _result("back")])
-    with patch("dcert.resilience.asyncio.sleep", new=AsyncMock()):
-        assert (await handle(_context(), call_next)).content[0].text == "back"
+    assert (await handle(_context(), call_next)).content[0].text == "back"
     assert call_next.await_count == 2
 
 
@@ -182,11 +188,11 @@ async def test_handler_circuit_breaker_disabled(config):
 
 async def test_handler_rate_limiter(config):
     cfg = replace(config, rate_limit_enabled=True, rate_limit_rps=1000.0, rate_limit_burst=1)
-    handle = build_call_tool_handler(cfg)
+    sleep = AsyncMock()
+    handle = build_call_tool_handler(cfg, sleep=sleep)
     call_next = AsyncMock(return_value=_result())
-    with patch("dcert.resilience.asyncio.sleep", new=AsyncMock()) as sleep:
-        await handle(_context(), call_next)
-        await handle(_context(), call_next)
+    await handle(_context(), call_next)
+    await handle(_context(), call_next)
     sleep.assert_awaited_once()
 
 
@@ -288,6 +294,31 @@ async def test_annotation_lookup_memoises_known_tools():
     assert resolved == [1, 0]
 
 
+async def test_annotation_lookup_times_out():
+    server = FastMCP("test")
+    lookup = build_annotation_lookup(timeout=0.01)
+    seen = []
+
+    async def slow_get_tool(_self, _name, version=None):
+        await asyncio.sleep(1)
+
+    class Probe(Middleware):
+        async def on_call_tool(self, context, call_next):
+            with patch.object(FastMCP, "get_tool", slow_get_tool):
+                try:
+                    await lookup(context)
+                except ToolError as exc:
+                    seen.append(str(exc))
+                    raise
+            return await call_next(context)
+
+    server.add_middleware(Probe())
+    async with Client(server) as client:
+        with pytest.raises(ToolError, match="Looking up missing timed out after 0.01s"):
+            await client.call_tool("missing", {})
+    assert seen == ["Looking up missing timed out after 0.01s"]
+
+
 async def test_annotation_lookup_unknown_tool():
     server = FastMCP("test")
     lookup = build_annotation_lookup()
@@ -336,9 +367,8 @@ async def test_middleware_in_fastmcp_server(config):
     for middleware in build_middleware(replace(config, max_response_bytes=50)):
         server.add_middleware(middleware)
 
-    with patch("dcert.resilience.asyncio.sleep", new=AsyncMock()):
-        async with Client(server) as client:
-            result = await client.call_tool("echo", {"text": "abc"})
+    async with Client(server) as client:
+        result = await client.call_tool("echo", {"text": "abc"})
     assert calls == 2
     assert "[Truncated:" in result.content[0].text
 

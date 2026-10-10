@@ -65,13 +65,16 @@ fn test_parse_allowed_origins_list_is_trimmed() {
 
 #[test]
 fn test_truncate_upstream_error_short_passthrough() {
-    assert_eq!(truncate_upstream_error("  permission denied  "), "permission denied");
+    assert_eq!(
+        dcert::vault::truncate_upstream_error("  permission denied  "),
+        "permission denied"
+    );
 }
 
 #[test]
 fn test_truncate_upstream_error_caps_long_body() {
     let long = "x".repeat(1000);
-    let out = truncate_upstream_error(&long);
+    let out = dcert::vault::truncate_upstream_error(&long);
     assert!(out.ends_with("… (truncated)"));
     assert!(out.chars().count() < 1000);
 }
@@ -297,6 +300,45 @@ impl Drop for EnvGuard {
         match self.previous.take() {
             Some(v) => unsafe { std::env::set_var(self.name, v) },
             None => unsafe { std::env::remove_var(self.name) },
+        }
+    }
+}
+
+/// Several variables under the one `ENV_LOCK`, restored in reverse order.
+struct EnvGuards {
+    saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+impl EnvGuard {
+    fn unset_all(names: &[&'static str]) -> EnvGuards {
+        let lock = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guards = EnvGuards {
+            saved: Vec::new(),
+            _lock: lock,
+        };
+        for name in names {
+            guards.saved.push((name, std::env::var_os(name)));
+            unsafe { std::env::remove_var(name) };
+        }
+        guards
+    }
+}
+
+impl EnvGuards {
+    fn set(&mut self, name: &'static str, value: &str) {
+        self.saved.push((name, std::env::var_os(name)));
+        unsafe { std::env::set_var(name, value) };
+    }
+}
+
+impl Drop for EnvGuards {
+    fn drop(&mut self) {
+        while let Some((name, previous)) = self.saved.pop() {
+            match previous {
+                Some(v) => unsafe { std::env::set_var(name, v) },
+                None => unsafe { std::env::remove_var(name) },
+            }
         }
     }
 }
@@ -564,43 +606,23 @@ fn test_validate_tls_version_rejects_invalid() {
 // find_dcert_binary unit tests
 // ---------------------------------------------------------------
 
-/// Mutex to serialize tests that modify environment variables.
-/// SAFETY: `set_var`/`remove_var` are unsafe because they are not
-/// thread-safe. This mutex ensures only one test mutates env vars
-/// at a time, and `--test-threads=1` (or the mutex) prevents
-/// concurrent reads from other tests. Tests always restore the
-/// original value before releasing the lock.
-static DCERT_PATH_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+// Every environment mutation in this file goes through `EnvGuard`, which
+// holds the single `ENV_LOCK`; a second lock would let two tests race on
+// the process environment.
 
 #[test]
 fn test_find_dcert_binary_respects_env() {
-    let _guard = DCERT_PATH_MUTEX.lock().unwrap();
-    // Save and restore existing env
-    let original = std::env::var("DCERT_PATH").ok();
-    unsafe { std::env::set_var("DCERT_PATH", "/custom/path/dcert") };
+    let _guard = EnvGuard::set("DCERT_PATH", "/custom/path/dcert");
     let path = find_dcert_binary();
     assert_eq!(path, PathBuf::from("/custom/path/dcert"));
-    // Restore
-    if let Some(orig) = original {
-        unsafe { std::env::set_var("DCERT_PATH", orig) };
-    } else {
-        unsafe { std::env::remove_var("DCERT_PATH") };
-    }
 }
 
 #[test]
 fn test_find_dcert_binary_fallback() {
-    let _guard = DCERT_PATH_MUTEX.lock().unwrap();
-    // Save and restore existing env
-    let original = std::env::var("DCERT_PATH").ok();
-    unsafe { std::env::remove_var("DCERT_PATH") };
+    let _guard = EnvGuard::unset("DCERT_PATH");
     let path = find_dcert_binary();
     // Should either find a sibling binary or fall back to "dcert"
     assert!(path.file_name().unwrap().to_str().unwrap().starts_with("dcert"));
-    // Restore
-    if let Some(orig) = original {
-        unsafe { std::env::set_var("DCERT_PATH", orig) };
-    }
 }
 
 // ---------------------------------------------------------------
@@ -1216,20 +1238,19 @@ async fn test_mcp_check_expiry_rejects_excessive_days() {
 // McpConfig and McpProxyInfo tests
 // ---------------------------------------------------------------
 
+/// The proxy variables, in both spellings `McpProxyInfo::from_env` reads.
+const PROXY_VARS: [&str; 6] = [
+    "HTTPS_PROXY",
+    "https_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+    "NO_PROXY",
+    "no_proxy",
+];
+
 #[test]
 fn test_mcp_proxy_info_from_env_empty() {
-    let _guard = DCERT_PATH_MUTEX.lock().unwrap();
-    // Clear all proxy env vars
-    for var in &[
-        "HTTPS_PROXY",
-        "https_proxy",
-        "HTTP_PROXY",
-        "http_proxy",
-        "NO_PROXY",
-        "no_proxy",
-    ] {
-        unsafe { std::env::remove_var(var) };
-    }
+    let _guards = EnvGuard::unset_all(&PROXY_VARS);
     let info = McpProxyInfo::from_env();
     assert!(info.https_proxy.is_none());
     assert!(info.http_proxy.is_none());
@@ -1238,30 +1259,12 @@ fn test_mcp_proxy_info_from_env_empty() {
 
 #[test]
 fn test_mcp_proxy_info_from_env_with_proxy() {
-    let _guard = DCERT_PATH_MUTEX.lock().unwrap();
-    // Clear then set
-    for var in &[
-        "HTTPS_PROXY",
-        "https_proxy",
-        "HTTP_PROXY",
-        "http_proxy",
-        "NO_PROXY",
-        "no_proxy",
-    ] {
-        unsafe { std::env::remove_var(var) };
-    }
-    unsafe {
-        std::env::set_var("HTTPS_PROXY", "http://proxy.corp:8080");
-        std::env::set_var("NO_PROXY", "localhost,127.0.0.1");
-    }
+    let mut guards = EnvGuard::unset_all(&PROXY_VARS);
+    guards.set("HTTPS_PROXY", "http://proxy.corp:8080");
+    guards.set("NO_PROXY", "localhost,127.0.0.1");
     let info = McpProxyInfo::from_env();
     assert_eq!(info.https_proxy.as_deref(), Some("http://proxy.corp:8080"));
     assert_eq!(info.no_proxy.as_deref(), Some("localhost,127.0.0.1"));
-    // Restore
-    unsafe {
-        std::env::remove_var("HTTPS_PROXY");
-        std::env::remove_var("NO_PROXY");
-    }
 }
 
 // ---------------------------------------------------------------
@@ -1824,4 +1827,258 @@ fn allowed_hosts_honours_the_operator_override() {
     let _guard = EnvGuard::set("DCERT_MCP_ALLOWED_HOSTS", "mcp.example.com, MCP.EXAMPLE.COM:8443");
     let hosts = allowed_hosts("0.0.0.0:3000");
     assert_eq!(hosts, vec!["mcp.example.com", "mcp.example.com:8443"]);
+}
+
+// ---------------------------------------------------------------
+// Subprocess spawning: stdin, kill_on_drop, debug flag parsing
+// ---------------------------------------------------------------
+
+#[test]
+fn debug_flag_only_honours_truthy_values() {
+    for on in ["1", "true", "TRUE", "yes", "On", " 1 "] {
+        assert!(debug_enabled_from(Some(on)), "{on:?} should enable debug");
+    }
+    for off in ["0", "false", "no", "off", "", "maybe"] {
+        assert!(!debug_enabled_from(Some(off)), "{off:?} must not enable debug");
+    }
+    assert!(!debug_enabled_from(None));
+}
+
+/// A child that reads stdin must see EOF at once: the server's own stdin is
+/// the JSON-RPC stream and must never be inherited.
+#[cfg(unix)]
+#[tokio::test]
+async fn spawned_child_does_not_inherit_stdin() {
+    let cat = PathBuf::from("/bin/cat");
+    if !cat.exists() {
+        eprintln!("Skipping test: /bin/cat not found");
+        return;
+    }
+    let mut config = test_config(cat);
+    config.subprocess_timeout = Duration::from_secs(5);
+    let mut child = spawn_dcert(&config, &[], &[]).expect("spawn cat");
+    let (stdout, _stderr, code) = run_child_with_timeout(&mut child, &config)
+        .await
+        .expect("cat must exit on its own rather than wait for stdin");
+    assert_eq!(code, 0);
+    assert!(stdout.is_empty(), "nothing should reach the child on stdin: {stdout:?}");
+}
+
+/// Dropping the child (a cancelled tool future) must take the process with it.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn spawned_child_is_killed_when_dropped() {
+    let sleep = PathBuf::from("/bin/sleep");
+    if !sleep.exists() {
+        eprintln!("Skipping test: /bin/sleep not found");
+        return;
+    }
+    let config = test_config(sleep);
+    let child = spawn_dcert(&config, &["30"], &[]).expect("spawn sleep");
+    let pid = child.id().expect("child pid");
+    drop(child);
+    // The kill is immediate; reaping happens on tokio's reaper, so accept a
+    // vanished process or a zombie, and give it a moment either way.
+    let status_path = format!("/proc/{pid}/status");
+    let mut gone = false;
+    for _ in 0..50 {
+        match std::fs::read_to_string(&status_path) {
+            Err(_) => {
+                gone = true;
+                break;
+            }
+            Ok(status) if status.lines().any(|l| l.starts_with("State:") && l.contains('Z')) => {
+                gone = true;
+                break;
+            }
+            Ok(_) => tokio::time::sleep(Duration::from_millis(20)).await,
+        }
+    }
+    assert!(gone, "child {pid} is still running after its handle was dropped");
+}
+
+// ---------------------------------------------------------------
+// reject_flag_like and typed validators
+// ---------------------------------------------------------------
+
+#[test]
+fn reject_flag_like_covers_empty_dash_and_nul() {
+    assert!(reject_flag_like("", "x").unwrap_err().contains("must not be empty"));
+    assert!(reject_flag_like("   ", "x").unwrap_err().contains("must not be empty"));
+    assert!(
+        reject_flag_like("--flag", "x")
+            .unwrap_err()
+            .contains("must not start with '-'")
+    );
+    assert!(reject_flag_like("a\0b", "x").unwrap_err().contains("null bytes"));
+    assert!(reject_flag_like("fine", "x").is_ok());
+}
+
+#[test]
+fn validate_tls_version_parses_into_the_cli_enum_and_orders() {
+    let v12 = validate_tls_version("1.2").unwrap();
+    let v13 = validate_tls_version("1.3").unwrap();
+    assert!(v12 < v13);
+    assert!(validate_tls_version("1.1").is_err());
+    assert!(validate_tls_version("TLS1.2").is_err());
+}
+
+#[test]
+fn validate_kv_version_accepts_only_one_and_two() {
+    assert!(validate_kv_version(1).is_ok());
+    assert!(validate_kv_version(2).is_ok());
+    assert!(validate_kv_version(0).is_err());
+    assert!(validate_kv_version(3).is_err());
+}
+
+#[test]
+fn http_tls_params_bound_the_request_body() {
+    let mut params = HttpTlsParams::default();
+    params.data = Some("x".repeat(MAX_DATA_LEN + 1));
+    assert!(params.validate().unwrap_err().contains("too large"));
+    params.data = Some("x".repeat(MAX_DATA_LEN));
+    assert!(params.validate().is_ok());
+    params.data = Some(String::new());
+    assert!(params.validate().is_ok(), "an empty body stays permitted");
+    params.data = Some("--data-binary".to_string());
+    assert!(params.validate().unwrap_err().contains("must not start with '-'"));
+}
+
+// ---------------------------------------------------------------
+// MCP tools: argv and path hardening
+// ---------------------------------------------------------------
+
+/// Call one tool on an in-process server and return the error text, or
+/// `None` when the call was not an error.
+async fn call_tool_error(tool: &str, arguments: serde_json::Value) -> Option<String> {
+    use rmcp::model::CallToolRequestParams;
+    use rmcp::{ClientHandler, ServiceExt};
+
+    let (server_transport, client_transport) = tokio::io::duplex(65536);
+    let server = DcertMcpServer::default();
+    let server_handle = tokio::spawn(async move {
+        let svc = server.serve(server_transport).await.unwrap();
+        svc.waiting().await.unwrap();
+    });
+
+    #[derive(Clone, Default)]
+    struct TestClient;
+    impl ClientHandler for TestClient {}
+
+    let client = TestClient.serve(client_transport).await.unwrap();
+    let response = client
+        .call_tool(CallToolRequestParams::new(tool.to_string()).with_arguments(arguments.as_object().unwrap().clone()))
+        .await
+        .expect("tool call should return a result");
+    let text = response
+        .content
+        .first()
+        .and_then(|c| c.as_text())
+        .map(|t| t.text.clone())
+        .unwrap_or_default();
+    client.cancel().await.unwrap();
+    server_handle.abort();
+    response.is_error.unwrap_or(false).then_some(text)
+}
+
+#[tokio::test]
+async fn create_csr_rejects_flag_like_subject_fields() {
+    let err = call_tool_error(
+        "create_csr",
+        serde_json::json!({
+            "common_name": "api.example.com",
+            "organization": "--key-out",
+            "csr_output_path": "out.csr",
+            "key_output_path": "out.key"
+        }),
+    )
+    .await
+    .expect("flag-like organization must be refused");
+    assert!(
+        err.contains("organization") && err.contains("must not start with '-'"),
+        "{err}"
+    );
+
+    let err = call_tool_error(
+        "create_csr",
+        serde_json::json!({
+            "common_name": "api.example.com",
+            "subject_alternative_names": ["DNS:ok.example.com", "--san"],
+            "csr_output_path": "out.csr",
+            "key_output_path": "out.key"
+        }),
+    )
+    .await
+    .expect("flag-like SAN must be refused");
+    assert!(err.contains("subject_alternative_names"), "{err}");
+}
+
+#[tokio::test]
+async fn vault_issue_confines_output_to_the_allowed_roots() {
+    let err = call_tool_error(
+        "vault_issue",
+        serde_json::json!({
+            "common_name": "api.example.com",
+            "output": "/etc/cron.d/dcert"
+        }),
+    )
+    .await
+    .expect("an output base outside the roots must be refused");
+    assert!(
+        err.contains("output") && err.contains("outside the allowed roots"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+async fn vault_sign_confines_output_to_the_allowed_roots() {
+    let err = call_tool_error(
+        "vault_sign",
+        serde_json::json!({
+            "csr_file": "tests/data/valid.pem",
+            "output": "/etc/cron.d/dcert"
+        }),
+    )
+    .await
+    .expect("an output base outside the roots must be refused");
+    assert!(
+        err.contains("output") && err.contains("outside the allowed roots"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+async fn vault_kv_paths_cannot_traverse_out_of_the_kv_mount() {
+    for (tool, args) in [
+        (
+            "vault_store",
+            serde_json::json!({
+                "cert_file": "tests/data/valid.pem",
+                "key_file": "tests/data/valid.pem",
+                "path": "secret/../sys/policies/acl/root"
+            }),
+        ),
+        ("vault_validate", serde_json::json!({ "path": "secret/x?version=1" })),
+        ("vault_renew", serde_json::json!({ "path": "/secret/x" })),
+        (
+            "vault_issue",
+            serde_json::json!({ "common_name": "a.example.com", "store_path": "secret//x" }),
+        ),
+    ] {
+        let err = call_tool_error(tool, args)
+            .await
+            .unwrap_or_else(|| panic!("{tool}: a traversing KV path must be refused"));
+        assert!(err.contains("KV path"), "{tool}: {err}");
+    }
+}
+
+#[tokio::test]
+async fn vault_tools_reject_kv_version_outside_one_and_two() {
+    let err = call_tool_error(
+        "vault_validate",
+        serde_json::json!({ "path": "secret/x", "kv_version": 3 }),
+    )
+    .await
+    .expect("kv_version 3 must be refused");
+    assert!(err.contains("kv_version must be 1 or 2"), "{err}");
 }

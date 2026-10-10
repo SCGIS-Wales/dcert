@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::config::{McpConfig, log_startup_diagnostics};
+use crate::config::{AuthFailureLimitConfig, McpConfig, log_startup_diagnostics};
 use crate::security;
 use crate::tools::DcertMcpServer;
 
@@ -153,8 +153,15 @@ pub(crate) fn allowed_hosts(addr: &str) -> Vec<String> {
 /// Return true when `addr` binds to a loopback interface (safe to run without
 /// authentication). Unparseable or non-loopback addresses are treated as
 /// non-loopback so the insecure-bind guard fails closed.
+///
+/// A literal IP address is decided without touching the resolver. A host
+/// name is resolved with a blocking lookup, so callers on an async runtime
+/// go through [`addr_is_loopback_async`].
 pub(crate) fn addr_is_loopback(addr: &str) -> bool {
-    use std::net::ToSocketAddrs;
+    use std::net::{SocketAddr, ToSocketAddrs};
+    if let Ok(sa) = addr.parse::<SocketAddr>() {
+        return sa.ip().is_loopback();
+    }
     match addr.to_socket_addrs() {
         Ok(iter) => {
             let resolved: Vec<_> = iter.collect();
@@ -162,6 +169,16 @@ pub(crate) fn addr_is_loopback(addr: &str) -> bool {
         }
         Err(_) => false,
     }
+}
+
+/// [`addr_is_loopback`] for async callers: a host name lookup runs on the
+/// blocking pool rather than stalling the runtime. A lookup that cannot be
+/// run at all counts as non-loopback, so the guard still fails closed.
+pub(crate) async fn addr_is_loopback_async(addr: &str) -> bool {
+    let addr = addr.to_string();
+    tokio::task::spawn_blocking(move || addr_is_loopback(&addr))
+        .await
+        .unwrap_or(false)
 }
 
 /// Build OIDC validator from environment variables (if configured).
@@ -222,19 +239,22 @@ pub(crate) async fn run_http_mode(config: McpConfig, addr: &str) -> Result<(), B
         StreamableHttpService, session::local::LocalSessionManager, tower::StreamableHttpServerConfig,
     };
     use security::audit::AuditLogger;
-    use security::middleware::{AuthState, auth_middleware};
+    use security::middleware::{
+        AuthFailureLimitState, AuthFailureLimiter, AuthState, auth_failure_limit_middleware, auth_middleware,
+    };
     use security::scope::ToolScopePolicy;
     use security::session::{SessionCache, SessionConfig};
 
-    // Initialize structured logging for HTTP mode.
-    tracing_subscriber::fmt()
+    // Initialize structured logging for HTTP mode. A subscriber that is
+    // already installed is kept rather than treated as fatal.
+    let _ = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .with_target(false)
         .json()
-        .init();
+        .try_init();
 
     log_startup_diagnostics(&config);
 
@@ -254,7 +274,7 @@ pub(crate) async fn run_http_mode(config: McpConfig, addr: &str) -> Result<(), B
     // Refuse to expose an unauthenticated endpoint on a non-loopback interface.
     // Binding to a public or LAN address with no OIDC issuer and no static
     // token lets any host on the network drive an API that spawns subprocesses.
-    if !auth_configured && !addr_is_loopback(addr) {
+    if !auth_configured && !addr_is_loopback_async(addr).await {
         let allow_insecure = std::env::var("DCERT_MCP_ALLOW_INSECURE")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
@@ -273,10 +293,13 @@ pub(crate) async fn run_http_mode(config: McpConfig, addr: &str) -> Result<(), B
         );
     }
 
-    // Session cache for validated tokens.
+    // Session cache for validated tokens. A zero TTL would expire every entry
+    // on its first read, so it falls back to the default like any other
+    // unusable value.
     let session_ttl = std::env::var("DCERT_MCP_SESSION_TTL")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
+        .filter(|v| *v > 0)
         .unwrap_or(300);
     let session_cache = Arc::new(SessionCache::new(SessionConfig {
         inactivity_ttl: Duration::from_secs(session_ttl),
@@ -310,13 +333,36 @@ pub(crate) async fn run_http_mode(config: McpConfig, addr: &str) -> Result<(), B
     // that peeks at the tool name, so the two cannot disagree.
     let max_body_bytes = env_usize("DCERT_MCP_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES);
 
+    let audit_logger = Arc::new(AuditLogger::new());
     let auth_state = Arc::new(AuthState {
         oidc_validator: oidc_validator.map(Arc::new),
         static_token,
         session_cache: Some(session_cache),
-        audit_logger: Some(Arc::new(AuditLogger::new())),
+        audit_logger: Some(audit_logger.clone()),
         tool_scopes,
         max_body_bytes,
+    });
+
+    // Failed authentication attempts are limited per client address ahead of
+    // authentication, so a bearer token cannot be guessed online at line
+    // rate. With no authentication there are no failures to count, and a
+    // limit of zero makes the layer a no-op, so it is always installed.
+    let failure_limit = AuthFailureLimitConfig::from_env().map_err(|e| format!("refusing to start: {e}"))?;
+    if !auth_configured {
+        tracing::info!("authentication failure limiter: idle (no authentication configured)");
+    } else if failure_limit.is_enabled() {
+        tracing::info!(
+            limit = failure_limit.limit,
+            window_secs = failure_limit.window.as_secs(),
+            "authentication failure limiter: enabled per client address (requests from behind a shared \
+             proxy address count together)"
+        );
+    } else {
+        tracing::warn!("authentication failure limiter: DISABLED (DCERT_MCP_AUTH_FAILURE_LIMIT=0)");
+    }
+    let failure_limit_state = Arc::new(AuthFailureLimitState {
+        limiter: AuthFailureLimiter::new(failure_limit.limit, failure_limit.window),
+        audit_logger: Some(audit_logger),
     });
 
     // One cancellation token drives both the transport's session teardown and
@@ -360,10 +406,11 @@ pub(crate) async fn run_http_mode(config: McpConfig, addr: &str) -> Result<(), B
 
     // Layer order matters, and the two wrappers order in opposite directions.
     //
-    // `ServiceBuilder::layer` wraps outermost-FIRST, so on the MCP route
-    // authentication runs before a concurrency permit is taken: a request with
-    // a bad token is rejected without occupying a slot, which is what stops an
-    // unauthenticated flood from filling the limit. The limit is scoped to
+    // `ServiceBuilder::layer` wraps outermost-FIRST, so on the MCP route the
+    // failure limiter runs first, then authentication, and only then is a
+    // concurrency permit taken: a request from a locked out address or with
+    // a bad token is rejected without occupying a slot, which is what stops
+    // an unauthenticated flood from filling the limit. The limit is scoped to
     // `/mcp` so `/health` still answers a liveness probe while the tool API is
     // saturated.
     //
@@ -380,6 +427,10 @@ pub(crate) async fn run_http_mode(config: McpConfig, addr: &str) -> Result<(), B
             "/mcp",
             axum::routing::any_service(
                 tower::ServiceBuilder::new()
+                    .layer(axum::middleware::from_fn_with_state(
+                        failure_limit_state,
+                        auth_failure_limit_middleware,
+                    ))
                     .layer(axum::middleware::from_fn_with_state(auth_state, auth_middleware))
                     .layer(tower::limit::GlobalConcurrencyLimitLayer::new(max_concurrent))
                     .service(mcp_service),
@@ -400,7 +451,6 @@ pub(crate) async fn run_http_mode(config: McpConfig, addr: &str) -> Result<(), B
         "dcert-mcp HTTP server listening"
     );
 
-    // Wire ConnectInfo so the auth middleware records the real client IP.
     let shutdown_signal = {
         let shutdown = shutdown.clone();
         async move {
@@ -410,6 +460,8 @@ pub(crate) async fn run_http_mode(config: McpConfig, addr: &str) -> Result<(), B
         }
     };
 
+    // ConnectInfo gives the middleware the TCP peer address, which keys the
+    // failure limiter and is what the audit log records as the client.
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),

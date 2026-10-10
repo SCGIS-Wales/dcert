@@ -9,6 +9,48 @@ use crate::exec::{format_tool_output, run_dcert, run_dcert_raw, run_dcert_with_e
 use crate::params::*;
 use crate::validate::*;
 
+/// What a dcert run produced: stdout, stderr and the exit code, or why it
+/// could not run at all.
+type RunOutcome = Result<(String, String, i32), String>;
+
+/// Turn a run outcome into the tool reply: the formatted output on success,
+/// an error result when the subprocess could not be run.
+fn tool_reply(outcome: RunOutcome, banner: &str, ok_codes: &[i32]) -> Result<CallToolResult, rmcp::ErrorData> {
+    match outcome {
+        Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, banner, ok_codes)),
+        Err(e) => ok_error(e),
+    }
+}
+
+impl DcertMcpServer {
+    /// The prologue every network probe shares: validate the target and the
+    /// mTLS and HTTP/TLS options, append their argv and environment to the
+    /// tool specific `args`, and run dcert.
+    ///
+    /// Tools with no HTTP/TLS options (`validate_certificate`) pass `None`.
+    async fn run_probe(
+        &self,
+        target: &str,
+        mut args: Vec<String>,
+        mtls: &MtlsParams,
+        http_tls: Option<&HttpTlsParams>,
+    ) -> RunOutcome {
+        validate_target(target)?;
+        mtls.validate()?;
+        if let Some(http_tls) = http_tls {
+            http_tls.validate()?;
+        }
+        args.extend(mtls.to_args());
+        let mut env_refs = mtls.env_vars();
+        if let Some(http_tls) = http_tls {
+            args.extend(http_tls.to_args());
+            env_refs.extend(http_tls.env_vars());
+        }
+        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        run_dcert_with_env(&args_refs, &self.config, Some(&env_refs)).await
+    }
+}
+
 #[tool_router(router = cert_tool_router, vis = "pub(crate)")]
 impl DcertMcpServer {
     /// Decode and analyze TLS certificates from an HTTPS endpoint or PEM file.
@@ -26,13 +68,6 @@ impl DcertMcpServer {
         &self,
         Parameters(params): Parameters<AnalyzeCertificateParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        if let Err(e) = validate_target(&params.target) {
-            return ok_error(e);
-        }
-        if let Err(e) = params.mtls.validate() {
-            return ok_error(e);
-        }
-
         let mut args = vec![params.target.clone(), "--format".to_string(), "json".to_string()];
         if params.fingerprint {
             args.push("--fingerprint".to_string());
@@ -56,19 +91,10 @@ impl DcertMcpServer {
         if params.refresh_public_roots {
             args.push("--refresh-public-roots".to_string());
         }
-        if let Err(e) = params.http_tls.validate() {
-            return ok_error(e);
-        }
-        args.extend(params.mtls.to_args());
-        args.extend(params.http_tls.to_args());
-        let mut env_refs = params.mtls.env_vars();
-        env_refs.extend(params.http_tls.env_vars());
-
-        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        match run_dcert_with_env(&args_refs, &self.config, Some(&env_refs)).await {
-            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "debug/stderr", &[0])),
-            Err(e) => ok_error(e),
-        }
+        let outcome = self
+            .run_probe(&params.target, args, &params.mtls, Some(&params.http_tls))
+            .await;
+        tool_reply(outcome, "debug/stderr", &[0])
     }
 
     /// Check if TLS certificates for a target expire within a specified number of days.
@@ -86,47 +112,31 @@ impl DcertMcpServer {
         &self,
         Parameters(params): Parameters<CheckExpiryParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        if let Err(e) = validate_target(&params.target) {
-            return ok_error(e);
-        }
-        if let Err(e) = params.mtls.validate() {
-            return ok_error(e);
-        }
         if params.days > 3650 {
             return ok_error(format!("days must be at most 3650 (10 years), got {}", params.days));
         }
 
-        let days_str = params.days.to_string();
-        let mut args = vec![
+        let args = vec![
             params.target.clone(),
             "--format".to_string(),
             "json".to_string(),
             "--fingerprint".to_string(),
             "--expiry-warn".to_string(),
-            days_str,
+            params.days.to_string(),
         ];
-        if let Err(e) = params.http_tls.validate() {
-            return ok_error(e);
-        }
-        args.extend(params.mtls.to_args());
-        args.extend(params.http_tls.to_args());
-        let mut env_refs = params.mtls.env_vars();
-        env_refs.extend(params.http_tls.env_vars());
-
-        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        match run_dcert_with_env(&args_refs, &self.config, Some(&env_refs)).await {
-            Ok((stdout, stderr, code)) => {
+        let outcome = self
+            .run_probe(&params.target, args, &params.mtls, Some(&params.http_tls))
+            .await
+            .map(|(stdout, stderr, code)| {
                 let status = match code {
                     0 => "ALL_VALID",
                     1 => "EXPIRING_SOON",
                     4 => "ALREADY_EXPIRED",
                     _ => "ERROR",
                 };
-                let prefixed = format!("expiry_status: {status}\n\n{stdout}");
-                ok_text(format_tool_output(prefixed, &stderr, code, "warnings", &[0, 1, 4]))
-            }
-            Err(e) => ok_error(e),
-        }
+                (format!("expiry_status: {status}\n\n{stdout}"), stderr, code)
+            });
+        tool_reply(outcome, "warnings", &[0, 1, 4])
     }
 
     /// Check the OCSP revocation status of TLS certificates.
@@ -144,40 +154,25 @@ impl DcertMcpServer {
         &self,
         Parameters(params): Parameters<CheckRevocationParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        if let Err(e) = validate_target(&params.target) {
-            return ok_error(e);
-        }
-        if let Err(e) = params.mtls.validate() {
-            return ok_error(e);
-        }
-
-        let mut args = vec![
+        let args = vec![
             params.target.clone(),
             "--format".to_string(),
             "json".to_string(),
             "--check-revocation".to_string(),
             "--extensions".to_string(),
         ];
-        if let Err(e) = params.http_tls.validate() {
-            return ok_error(e);
-        }
-        args.extend(params.mtls.to_args());
-        args.extend(params.http_tls.to_args());
-        let mut env_refs = params.mtls.env_vars();
-        env_refs.extend(params.http_tls.env_vars());
-
-        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        match run_dcert_with_env(&args_refs, &self.config, Some(&env_refs)).await {
-            Ok((stdout, stderr, code)) => {
+        let outcome = self
+            .run_probe(&params.target, args, &params.mtls, Some(&params.http_tls))
+            .await
+            .map(|(stdout, stderr, code)| {
                 let prefixed = match code {
                     5 => format!("revocation_status: REVOKED\n\n{stdout}"),
                     8 => format!("revocation_status: CHECK_FAILED\n\n{stdout}"),
                     _ => stdout,
                 };
-                ok_text(format_tool_output(prefixed, &stderr, code, "stderr", &[0, 5, 8]))
-            }
-            Err(e) => ok_error(e),
-        }
+                (prefixed, stderr, code)
+            });
+        tool_reply(outcome, "stderr", &[0, 5, 8])
     }
 
     /// Compare TLS certificates between two targets and show differences.
@@ -254,13 +249,6 @@ impl DcertMcpServer {
         &self,
         Parameters(params): Parameters<TlsConnectionInfoParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        if let Err(e) = validate_target(&params.target) {
-            return ok_error(e);
-        }
-        if let Err(e) = params.mtls.validate() {
-            return ok_error(e);
-        }
-
         let mut args = vec![
             params.target.clone(),
             "--format".to_string(),
@@ -269,40 +257,31 @@ impl DcertMcpServer {
             "--extensions".to_string(),
         ];
 
-        if let Some(ref min) = params.min_tls {
-            if let Err(e) = validate_tls_version(min) {
-                return ok_error(e);
+        // Parse both bounds into the CLI's own enum so the ordering check
+        // compares versions, not strings.
+        let mut bounds = (None, None);
+        for (flag, value, slot) in [
+            ("--min-tls", &params.min_tls, &mut bounds.0),
+            ("--max-tls", &params.max_tls, &mut bounds.1),
+        ] {
+            if let Some(v) = value {
+                match validate_tls_version(v) {
+                    Ok(parsed) => *slot = Some(parsed),
+                    Err(e) => return ok_error(e),
+                }
+                args.push(flag.to_string());
+                args.push(v.clone());
             }
-            args.push("--min-tls".to_string());
-            args.push(min.clone());
         }
-        if let Some(ref max) = params.max_tls {
-            if let Err(e) = validate_tls_version(max) {
-                return ok_error(e);
-            }
-            args.push("--max-tls".to_string());
-            args.push(max.clone());
-        }
-        // Validate min_tls <= max_tls ordering
-        if let (Some(min), Some(max)) = (&params.min_tls, &params.max_tls)
-            && min == "1.3"
-            && max == "1.2"
+        if let (Some(min), Some(max)) = bounds
+            && min > max
         {
-            return ok_error("min_tls (1.3) must not be greater than max_tls (1.2)".to_string());
+            return ok_error(format!("min_tls ({min}) must not be greater than max_tls ({max})"));
         }
-        if let Err(e) = params.http_tls.validate() {
-            return ok_error(e);
-        }
-        args.extend(params.mtls.to_args());
-        args.extend(params.http_tls.to_args());
-        let mut env_refs = params.mtls.env_vars();
-        env_refs.extend(params.http_tls.env_vars());
-
-        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        match run_dcert_with_env(&args_refs, &self.config, Some(&env_refs)).await {
-            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "debug/stderr", &[0])),
-            Err(e) => ok_error(e),
-        }
+        let outcome = self
+            .run_probe(&params.target, args, &params.mtls, Some(&params.http_tls))
+            .await;
+        tool_reply(outcome, "debug/stderr", &[0])
     }
 
     /// Export the PEM certificate chain from an HTTPS endpoint.
@@ -320,12 +299,6 @@ impl DcertMcpServer {
         &self,
         Parameters(params): Parameters<ExportPemParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        if let Err(e) = validate_target(&params.target) {
-            return ok_error(e);
-        }
-        if let Err(e) = params.mtls.validate() {
-            return ok_error(e);
-        }
         if let Some(ref p) = params.output_path
             && let Err(e) = validate_path(p, "output_path")
         {
@@ -340,25 +313,17 @@ impl DcertMcpServer {
         if params.exclude_expired {
             args.push("--exclude-expired".to_string());
         }
-        if let Err(e) = params.http_tls.validate() {
-            return ok_error(e);
-        }
-        args.extend(params.mtls.to_args());
-        args.extend(params.http_tls.to_args());
-        let mut env_refs = params.mtls.env_vars();
-        env_refs.extend(params.http_tls.env_vars());
-
-        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        match run_dcert_with_env(&args_refs, &self.config, Some(&env_refs)).await {
-            Ok((stdout, stderr, code)) => {
+        let outcome = self
+            .run_probe(&params.target, args, &params.mtls, Some(&params.http_tls))
+            .await
+            .map(|(stdout, stderr, code)| {
                 let prefixed = match &params.output_path {
                     Some(path) => format!("PEM chain exported to: {path}\n\n{stdout}"),
                     None => stdout,
                 };
-                ok_text(format_tool_output(prefixed, &stderr, code, "debug/stderr", &[0]))
-            }
-            Err(e) => ok_error(e),
-        }
+                (prefixed, stderr, code)
+            });
+        tool_reply(outcome, "debug/stderr", &[0])
     }
 
     /// Verify that a private key matches a certificate.
@@ -627,8 +592,20 @@ impl DcertMcpServer {
                 "country must be a 2-letter ISO 3166-1 alpha-2 code (e.g., 'GB', 'US'), got '{country}'"
             ));
         }
-        if params.subject_alternative_names.len() > 100 {
-            return ok_error("subject_alternative_names must not exceed 100 entries".to_string());
+        // Every subject field and SAN lands in argv, so each one gets the
+        // same flag, control character and length checks as any other
+        // free form argument.
+        if let Err(e) = validate_args(&[
+            ("common_name", Some(params.common_name.as_str())),
+            ("organization", params.organization.as_deref()),
+            ("state", params.state.as_deref()),
+            ("locality", params.locality.as_deref()),
+            ("email", params.email.as_deref()),
+        ])
+        .and_then(|()| validate_list(&params.organizational_units, "organizational_units", 100))
+        .and_then(|()| validate_list(&params.subject_alternative_names, "subject_alternative_names", 100))
+        {
+            return ok_error(e);
         }
 
         let mut args: Vec<String> = vec![
@@ -741,16 +718,6 @@ impl DcertMcpServer {
         &self,
         Parameters(params): Parameters<DiagnoseEndpointParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        if let Err(e) = validate_target(&params.target) {
-            return ok_error(e);
-        }
-        if let Err(e) = params.mtls.validate() {
-            return ok_error(e);
-        }
-        if let Err(e) = params.http_tls.validate() {
-            return ok_error(e);
-        }
-
         let mut args = vec![
             "diagnose".to_string(),
             params.target.clone(),
@@ -763,18 +730,12 @@ impl DcertMcpServer {
         if params.no_verify {
             args.push("--no-verify".to_string());
         }
-        args.extend(params.mtls.to_args());
-        args.extend(params.http_tls.to_args());
-        let mut env_refs = params.mtls.env_vars();
-        env_refs.extend(params.http_tls.env_vars());
-
-        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        match run_dcert_with_env(&args_refs, &self.config, Some(&env_refs)).await {
-            // A failed probe is the expected input for a diagnosis, so exit
-            // codes are reported inline rather than treated as tool errors.
-            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "stderr", &[0])),
-            Err(e) => ok_error(e),
-        }
+        // A failed probe is the expected input for a diagnosis, so exit
+        // codes are reported inline rather than treated as tool errors.
+        let outcome = self
+            .run_probe(&params.target, args, &params.mtls, Some(&params.http_tls))
+            .await;
+        tool_reply(outcome, "stderr", &[0])
     }
 
     /// Explain a CloudFront or API Gateway status code, header, error name or topic.
@@ -827,28 +788,14 @@ impl DcertMcpServer {
         &self,
         Parameters(params): Parameters<ValidateCertificateParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        if let Err(e) = validate_target(&params.target) {
-            return ok_error(e);
-        }
-        if let Err(e) = params.mtls.validate() {
-            return ok_error(e);
-        }
-
-        let mut args = vec![
+        let args = vec![
             params.target.clone(),
             "--format".to_string(),
             "json".to_string(),
             "--compliance".to_string(),
         ];
-        args.extend(params.mtls.to_args());
-        let mtls_env = params.mtls.env_vars();
-        let env_refs = mtls_env.to_vec();
-
-        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        match run_dcert_with_env(&args_refs, &self.config, Some(&env_refs)).await {
-            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "debug/stderr", &[0])),
-            Err(e) => ok_error(e),
-        }
+        let outcome = self.run_probe(&params.target, args, &params.mtls, None).await;
+        tool_reply(outcome, "debug/stderr", &[0])
     }
 
     /// Create a PKCS12 truststore from CA certificates.

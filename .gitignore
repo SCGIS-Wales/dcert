@@ -85,3 +85,6 @@ python/*.egg-info
 # Generated SBOM files
 *.cdx.json
 python/.coverage
+
+# Separate target directory for `cargo build --features vendored` runs
+target-vendored/
