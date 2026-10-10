@@ -79,7 +79,15 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 timeout = 120
 addopts = "--strict-markers --cov=dcert --cov-report=term-missing --cov-fail-under=85"
-filterwarnings = ["error::DeprecationWarning"]
+filterwarnings = [
+    "error::DeprecationWarning",
+    # Python 3.15 warns when isinstance() meets a typing.Protocol that is not
+    # @runtime_checkable. The check comes from beartype inside fastmcp's
+    # key-value cache wrappers (third party code this package does not call
+    # directly); with warnings as errors it would fail every cached server
+    # test on 3.15 until those packages are updated. Tracked upstream.
+    "ignore:.*isn't explicitly decorated with @runtime_checkable.*:DeprecationWarning",
+]
 
 [tool.mypy]
 python_version = "3.12"
