@@ -2015,6 +2015,14 @@ pub fn interactive_sign(client: &VaultClient) -> Result<SignWizardResult> {
 mod tests {
     use super::*;
 
+    /// A fresh random passphrase for PFX fixtures, so no test carries a
+    /// hard coded secret.
+    fn test_password() -> String {
+        let mut raw = [0u8; 12];
+        openssl::rand::rand_bytes(&mut raw).expect("random bytes");
+        raw.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
     /// Serializes tests that mutate process-global environment variables.
     /// Env access is process-wide and not thread-safe, so the `unsafe`
     /// `set_var`/`remove_var` calls below must not run concurrently. Tests hold
@@ -2956,6 +2964,7 @@ mod tests {
 
     #[test]
     fn finish_issued_cert_degrades_pfx_to_pem_without_a_key() {
+        let pfx_password = test_password();
         let addr = fake_vault(|_, _| (404, "{}".to_string()));
         let client = test_client(&addr);
         let (cert, key) = server_pair();
@@ -2978,7 +2987,7 @@ mod tests {
             &IssuedOutput {
                 mount: "pki",
                 output_base: &base,
-                pfx_password: Some("pw"),
+                pfx_password: Some(&pfx_password),
                 store_path: None,
                 kv_version: 1,
             },
@@ -3005,7 +3014,7 @@ mod tests {
             &IssuedOutput {
                 mount: "pki",
                 output_base: &base,
-                pfx_password: Some("pw"),
+                pfx_password: Some(&pfx_password),
                 store_path: None,
                 kv_version: 1,
             },

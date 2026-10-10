@@ -1066,7 +1066,7 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
         return Err(anyhow::anyhow!("Invalid port number: {port}"));
     }
 
-    debug_log!(debug, "Target URL: {}", opts.endpoint);
+    debug_log!(debug, "Target URL: {}", sanitize_url(opts.endpoint));
     debug_log!(debug, "Host: {}, Port: {}", host, port);
     if let Some(sni) = probe.sni_override {
         debug_log!(debug, "SNI override: {}", sni);

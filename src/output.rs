@@ -64,7 +64,7 @@ fn print_key_exchange(conn: &TlsConnectionInfo) {
             PqProbeStatus::NotTestable => "not testable".yellow(),
         };
         println!("  Post quantum key exchange (RFC 10024 hybrids): {status}");
-        println!("    {}", pq.detail);
+        println!("    {}", crate::debug::redact_key_material(&pq.detail));
     }
 }
 
