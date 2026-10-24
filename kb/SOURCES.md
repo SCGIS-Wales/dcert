@@ -138,3 +138,46 @@ roots are still present because Mozilla still includes them, which is why
 the Chrome specific entry explains a chain dcert itself classifies as
 publicly trusted.
 
+
+## mTLS, Apigee, Envoy and nginx (read on 2026-10-24)
+
+The vendor neutral `mtls.server.*` entries, the `tls.handshake.*` entries
+rewritten without AWS specifics, and the `mtls.nginx.*`, `envoy.*` and
+`apigee.*` entries were written from:
+
+- RFC 8446 (TLS 1.3): https://www.rfc-editor.org/rfc/rfc8446 — section
+  4.3.2 (CertificateRequest), 4.4.2 (Certificate, chain order), 6.2 (alerts,
+  including `certificate_required`, 116).
+- RFC 8996 (deprecating TLS 1.0 and 1.1): https://www.rfc-editor.org/rfc/rfc8996
+- RFC 6066 section 3 (Server Name Indication): https://www.rfc-editor.org/rfc/rfc6066
+- OpenSSL `SSL_CTX_set_cert_cb(3)` ("called before a certificate will be
+  used by a client or server ... always called even if a certificate is
+  already set") and `SSL_get_client_CA_list(3)` ("In client mode ...
+  returns the list of client CAs sent from the server"). A client only
+  prepares a certificate after a CertificateRequest (OpenSSL's client state
+  machine, `tls_prepare_client_certificate`), which is what `src/mtls.rs`
+  relies on; the loopback tests in `tests/cli_tests.rs` confirm it on TLS
+  1.2 and 1.3.
+- Apigee hybrid, "Configuring TLS and mTLS on the ingress gateway":
+  https://docs.cloud.google.com/apigee/docs/hybrid/v1.16/ingress-tls —
+  `virtualhosts[].tlsMode: MUTUAL` with `caCertPath` (or a CA secret);
+  `SIMPLE` is the one way TLS default. The configuration property reference
+  (https://docs.cloud.google.com/apigee/docs/hybrid/v1.16/config-prop-ref)
+  documents `minTLSProtocolVersion` and `cipherSuites`.
+- Apigee runtime error catalog:
+  https://cloud.google.com/apigee/docs/api-platform/errorcatalog/mp-runtime-errorcatalog
+  — the `{"fault": {"faultstring", "detail": {"errorcode"}}}` response
+  format, `messaging.adaptors.http.flow.SslHandshakeFailed` (503),
+  `ServiceUnavailable` and `NoActiveTargets` (503), `GatewayTimeout` (504),
+  `UnexpectedEOFAtTarget` (502) and `flow.APITimedOut` (504).
+- nginx `ngx_http_ssl_module`, "Error Processing":
+  https://nginx.org/en/docs/http/ngx_http_ssl_module.html#errors — the
+  non standard 495 (certificate verification error) and 496 (required
+  certificate not presented) codes, which nginx answers as 400 with the
+  "The SSL certificate error" and "No required SSL certificate was sent"
+  pages.
+- Envoy `DownstreamTlsContext.require_client_certificate` and
+  `UpstreamTlsContext`:
+  https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/transport_sockets/tls/v3/tls.proto
+  and response code details:
+  https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_conn_man/response_code_details

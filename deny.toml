@@ -12,6 +12,15 @@ ignore = [
     # decryption timing oracle is not reachable from our code paths.
     # Re-check when jsonwebtoken moves off the rsa 0.9 line.
     "RUSTSEC-2023-0071",
+    # RUSTSEC-2026-0387: crypto-bigint 0.5 — timing variability in operations
+    # meant to be constant time. Reaches us as crypto-bigint 0.5.5 through
+    # p256/p384 0.13 (elliptic-curve 0.13), pulled in by jsonwebtoken 11.1
+    # (rust_crypto feature), the latest release; the fix is on the 0.7 line,
+    # which elliptic-curve 0.13 cannot use. We only *verify* ES256/ES384 JWT
+    # signatures against public JWKS keys and never sign, so no secret value
+    # flows through the affected arithmetic.
+    # Re-check when jsonwebtoken moves to elliptic-curve 0.14.
+    "RUSTSEC-2026-0387",
 ]
 
 [licenses]

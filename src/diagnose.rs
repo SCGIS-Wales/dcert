@@ -53,10 +53,10 @@ impl Layer {
             Layer::LocalProxyEnv => "local proxy environment",
             Layer::ProxyConnect => "proxy CONNECT",
             Layer::TlsHandshake => "TLS handshake",
-            Layer::ViewerMtls => "viewer mTLS",
+            Layer::ViewerMtls => "client certificate (mTLS)",
             Layer::Interception => "TLS interception",
-            Layer::EdgeHttp => "CloudFront edge",
-            Layer::GatewayHttp => "API Gateway",
+            Layer::EdgeHttp => "edge / CDN",
+            Layer::GatewayHttp => "API gateway",
             Layer::OriginHttp => "origin",
         }
     }
@@ -72,6 +72,55 @@ pub enum Category {
     Tls,
     Mtls,
     Interception,
+    Apigee,
+    Envoy,
+    Nginx,
+}
+
+/// Products dcert can fingerprint from a probe. Vendor specific knowledge
+/// base entries require one with a `platform` signal, so an mTLS refusal from
+/// Apigee or nginx is never explained with CloudFront or API Gateway advice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Platform {
+    /// Amazon CloudFront (Via, X-Cache, X-Amz-Cf-* headers, *.cloudfront.net).
+    AwsCloudfront,
+    /// Amazon API Gateway (x-amzn-RequestId, x-amz-apigw-id, x-amzn-ErrorType,
+    /// *.execute-api.*.amazonaws.com).
+    AwsApiGateway,
+    /// Any AWS service: implied by the two above, or an Amazon issued (ACM)
+    /// certificate or an amazonaws.com host. Weak on its own: an ACM
+    /// certificate can front CloudFront, an ALB, API Gateway and more.
+    Aws,
+    /// Google Apigee (X, hybrid or Edge): its `{"fault": ...}` error body.
+    Apigee,
+    /// Envoy or Istio (server: envoy / istio-envoy, x-envoy-* headers).
+    Envoy,
+    /// nginx (server header or its default error pages).
+    Nginx,
+    /// Google Cloud front ends (Via: 1.1 google, Google Frontend).
+    GoogleCloud,
+}
+
+impl Platform {
+    pub fn label(self) -> &'static str {
+        match self {
+            Platform::AwsCloudfront => "Amazon CloudFront",
+            Platform::AwsApiGateway => "Amazon API Gateway",
+            Platform::Aws => "AWS",
+            Platform::Apigee => "Apigee",
+            Platform::Envoy => "Envoy / Istio",
+            Platform::Nginx => "nginx",
+            Platform::GoogleCloud => "Google Cloud",
+        }
+    }
+}
+
+/// One identified platform and the first piece of evidence that named it.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct PlatformHint {
+    pub platform: Platform,
+    pub reason: String,
 }
 
 /// Root trust classes a signal can test for; mirrors [`RootTrustClass`].
@@ -132,8 +181,13 @@ pub enum SignalKind {
     TlsVersion { pattern: String },
     /// Negotiated ALPN protocol matches `pattern`.
     Alpn { pattern: String },
-    /// The server asked for a client certificate and the handshake aborted.
+    /// The server asked for a client certificate and refused the connection
+    /// without one (during the handshake or, on TLS 1.3, right after it).
     ClientAuthRequired,
+    /// The server sent a CertificateRequest, whatever happened next.
+    ClientCertRequested,
+    /// The probe fingerprinted one of `any_of` (see [`Platform`]).
+    Platform { any_of: Vec<Platform> },
     /// A client certificate was supplied on the command line.
     ClientCertSupplied,
     /// `--sni` overrode the server name.
@@ -208,7 +262,7 @@ impl KnowledgeBase {
 
     /// Parse and validate a YAML document.
     pub fn parse(yaml: &str) -> Result<Self> {
-        let kb: Self = serde_yaml_ng::from_str(yaml).context("failed to parse diagnostics YAML")?;
+        let kb: Self = serde_norway::from_str(yaml).context("failed to parse diagnostics YAML")?;
         kb.validate()?;
         Ok(kb)
     }
@@ -270,6 +324,11 @@ impl KnowledgeBase {
                     && codes.is_empty()
                 {
                     anyhow::bail!("entry '{}': status signal needs at least one code", entry.id);
+                }
+                if let SignalKind::Platform { any_of } = &signal.kind
+                    && any_of.is_empty()
+                {
+                    anyhow::bail!("entry '{}': platform signal needs at least one platform", entry.id);
                 }
             }
         }
@@ -333,6 +392,8 @@ pub struct Evidence {
     pub verify_result: Option<String>,
     pub chain_errors: Vec<String>,
     pub client_auth_required: bool,
+    /// The server sent a CertificateRequest (from the OpenSSL callback).
+    pub client_cert_requested: bool,
     pub client_cert_supplied: bool,
     pub sni_overridden: bool,
     pub verification_disabled: bool,
@@ -376,6 +437,7 @@ impl Evidence {
             ev.verify_result = c.verify_result.clone();
             ev.chain_errors = c.chain_validation_errors.clone();
             ev.client_auth_required = c.client_auth_required;
+            ev.client_cert_requested = c.client_auth != crate::mtls::ClientAuthStatus::NotRequested;
             ev.verification_disabled = c.verification_disabled;
         }
         for info in infos {
@@ -401,7 +463,103 @@ impl Evidence {
         }
         let text = ev.error.as_deref().unwrap_or("");
         ev.client_auth_required = crate::tls::is_client_auth_required(text);
+        ev.client_cert_requested =
+            ev.client_auth_required || err.downcast_ref::<crate::mtls::CertRequestedError>().is_some();
         ev
+    }
+
+    /// Fingerprint the products on the request path from headers, body,
+    /// target host and chain names. Evidence that names no vendor yields an
+    /// empty list, and vendor specific entries then stay silent.
+    pub fn platforms(&self) -> Vec<PlatformHint> {
+        let mut hints: Vec<PlatformHint> = Vec::new();
+        let header_matches = |name: &str, pattern: &str| {
+            self.header(name)
+                .filter(|v| matches_pattern(pattern, Some(v)))
+                .map(|v| format!("header {name}: {}", short(v)))
+        };
+        let header_present = |name: &str| self.header(name).map(|v| format!("header {name}: {}", short(v)));
+        let header_prefix = |prefix: &str| {
+            self.http_headers
+                .iter()
+                .find(|h| h.name.to_ascii_lowercase().starts_with(prefix))
+                .map(|h| format!("header {}", h.name))
+        };
+        let body_matches = |pattern: &str, what: &str| {
+            matches_pattern(pattern, self.http_body.as_deref()).then(|| format!("body is {what}"))
+        };
+        let host_matches = |pattern: &str| {
+            matches_pattern(pattern, Some(&self.target_host)).then(|| format!("target host {}", self.target_host))
+        };
+        let chain_matches = |pattern: &str| {
+            self.chain_names
+                .iter()
+                .find(|n| matches_pattern(pattern, Some(n)))
+                .map(|n| format!("chain name: {}", short(n)))
+        };
+
+        if let Some(r) = header_matches("via", "(?i)cloudfront")
+            .or_else(|| header_matches("server", "(?i)^cloudfront$"))
+            .or_else(|| header_present("x-amz-cf-id"))
+            .or_else(|| header_present("x-amz-cf-pop"))
+            .or_else(|| header_matches("x-cache", "(?i)cloudfront"))
+            .or_else(|| host_matches(r"(?i)\.cloudfront\.net$"))
+            .or_else(|| chain_matches(r"(?i)\*\.cloudfront\.net"))
+        {
+            add_hint(&mut hints, Platform::AwsCloudfront, r);
+        }
+        if let Some(r) = header_present("x-amz-apigw-id")
+            .or_else(|| header_present("x-amzn-errortype"))
+            .or_else(|| header_present("x-amzn-requestid"))
+            .or_else(|| host_matches(r"(?i)\.execute-api\.[a-z0-9-]+\.(vpce\.)?amazonaws\.com$"))
+            .or_else(|| chain_matches(r"(?i)\.execute-api\.[a-z0-9-]+\.amazonaws\.com"))
+        {
+            add_hint(&mut hints, Platform::AwsApiGateway, r);
+        }
+        if let Some(r) = hints
+            .iter()
+            .find(|h| matches!(h.platform, Platform::AwsCloudfront | Platform::AwsApiGateway))
+            .map(|h| h.reason.clone())
+            .or_else(|| host_matches(r"(?i)\.amazonaws\.com$"))
+            .or_else(|| chain_matches(r"(?i)\bO=Amazon\b|\bAmazon (RSA|ECDSA) |\bAmazon Root CA\b"))
+        {
+            add_hint(&mut hints, Platform::Aws, r);
+        }
+        if let Some(r) = body_matches(
+            r#"(?i)"fault"\s*:\s*\{\s*"faultstring"|"errorcode"\s*:\s*"(messaging|steps|policies|keymanagement|oauth|protocol|security|classification|flow|distribution|entities|jwt|accesscontrol)\."#,
+            "an Apigee fault response",
+        )
+        .or_else(|| header_prefix("x-apigee-"))
+        .or_else(|| host_matches(r"(?i)\.apigee\.net$"))
+        {
+            add_hint(&mut hints, Platform::Apigee, r);
+        }
+        if let Some(r) = header_matches("server", "(?i)^(istio-)?envoy$")
+            .or_else(|| header_prefix("x-envoy-"))
+            .or_else(|| {
+                body_matches(
+                    "(?i)upstream connect error or disconnect/reset before headers|no healthy upstream",
+                    "an Envoy upstream error",
+                )
+            })
+        {
+            add_hint(&mut hints, Platform::Envoy, r);
+        }
+        if let Some(r) = header_matches("server", "(?i)^nginx").or_else(|| {
+            body_matches(
+                "(?i)<center>nginx|no required ssl certificate was sent|the ssl certificate error",
+                "an nginx error page",
+            )
+        }) {
+            add_hint(&mut hints, Platform::Nginx, r);
+        }
+        if let Some(r) = header_matches("via", r"(?i)\bgoogle\b")
+            .or_else(|| header_matches("server", "(?i)^(google frontend|gfe|esf)"))
+        {
+            add_hint(&mut hints, Platform::GoogleCloud, r);
+        }
+        hints.sort_by_key(|h| h.platform);
+        hints
     }
 
     fn header(&self, name: &str) -> Option<&str> {
@@ -456,6 +614,12 @@ pub fn is_public_hostname(host: &str) -> bool {
     !PRIVATE_SUFFIXES.iter().any(|s| host.ends_with(s))
 }
 
+fn add_hint(hints: &mut Vec<PlatformHint>, platform: Platform, reason: String) {
+    if !hints.iter().any(|h| h.platform == platform) {
+        hints.push(PlatformHint { platform, reason });
+    }
+}
+
 fn https_proxy_missing_http_set() -> bool {
     let set = |n: &str| std::env::var(n).map(|v| !v.is_empty()).unwrap_or(false);
     (set("HTTP_PROXY") || set("http_proxy"))
@@ -487,6 +651,8 @@ pub struct Diagnosis {
 pub struct DiagnosisReport {
     /// Findings ordered earliest layer first, then by confidence.
     pub findings: Vec<Diagnosis>,
+    /// Products identified on the request path; empty when none was.
+    pub platforms: Vec<PlatformHint>,
     /// `true` when at least one finding matched on the body excerpt, so the
     /// excerpt is worth showing.
     pub body_matched: bool,
@@ -494,7 +660,11 @@ pub struct DiagnosisReport {
 
 /// Score every entry against the evidence.
 pub fn diagnose(kb: &KnowledgeBase, ev: &Evidence) -> DiagnosisReport {
-    let mut report = DiagnosisReport::default();
+    let mut report = DiagnosisReport {
+        platforms: ev.platforms(),
+        ..Default::default()
+    };
+    let platforms = &report.platforms;
     let mut fallbacks: Vec<bool> = Vec::new();
     let mut body_hits: Vec<bool> = Vec::new();
     for entry in &kb.entries {
@@ -505,7 +675,7 @@ pub fn diagnose(kb: &KnowledgeBase, ev: &Evidence) -> DiagnosisReport {
         let mut body_hit = false;
         for signal in &entry.signals {
             total_weight += signal.weight;
-            let (hit, description) = evaluate(&signal.kind, ev);
+            let (hit, description) = evaluate(&signal.kind, ev, platforms);
             let hit = hit != signal.negate;
             if hit {
                 matched_weight += signal.weight;
@@ -529,12 +699,22 @@ pub fn diagnose(kb: &KnowledgeBase, ev: &Evidence) -> DiagnosisReport {
         if confidence < MIN_CONFIDENCE {
             continue;
         }
+        // Apigee in front of an AWS backend passes the backend's x-amzn-*
+        // headers through: the API Gateway answer came from the origin.
+        let mut layer = entry.layer;
+        if entry.layer == Layer::GatewayHttp
+            && entry.category == Category::ApiGateway
+            && platforms.iter().any(|h| h.platform == Platform::Apigee)
+        {
+            layer = Layer::OriginHttp;
+            evidence.push("API Gateway headers relayed by Apigee: attributed to the origin".to_string());
+        }
         fallbacks.push(entry.fallback);
         body_hits.push(body_hit);
         report.findings.push(Diagnosis {
             id: entry.id.clone(),
             title: entry.title.clone(),
-            layer: entry.layer,
+            layer,
             category: entry.category,
             confidence: (confidence * 100.0).round() / 100.0,
             root_cause: entry.root_cause.trim().to_string(),
@@ -604,7 +784,7 @@ fn short(value: &str) -> String {
 }
 
 /// Evaluate one signal. Returns whether it holds and, if so, a description.
-fn evaluate(kind: &SignalKind, ev: &Evidence) -> (bool, Option<String>) {
+fn evaluate(kind: &SignalKind, ev: &Evidence, platforms: &[PlatformHint]) -> (bool, Option<String>) {
     match kind {
         SignalKind::Status { codes } => match ev.http_status {
             Some(s) if codes.contains(&s) => (true, Some(format!("HTTP status {s}"))),
@@ -688,8 +868,20 @@ fn evaluate(kind: &SignalKind, ev: &Evidence) -> (bool, Option<String>) {
         SignalKind::ClientAuthRequired => (
             ev.client_auth_required,
             ev.client_auth_required
-                .then(|| "server requested a client certificate".to_string()),
+                .then(|| "server refused the connection without a client certificate".to_string()),
         ),
+        SignalKind::ClientCertRequested => (
+            ev.client_cert_requested,
+            ev.client_cert_requested
+                .then(|| "server sent a CertificateRequest".to_string()),
+        ),
+        SignalKind::Platform { any_of } => {
+            let hit = platforms.iter().find(|h| any_of.contains(&h.platform));
+            (
+                hit.is_some(),
+                hit.map(|h| format!("platform {} ({})", h.platform.label(), h.reason)),
+            )
+        }
         SignalKind::ClientCertSupplied => (
             ev.client_cert_supplied,
             ev.client_cert_supplied
@@ -993,15 +1185,58 @@ mod tests {
         assert_eq!(d.layer, Layer::LocalProxyEnv);
     }
 
-    #[test]
-    fn viewer_mtls_required_without_cert() {
-        let ev = Evidence {
-            target_host: "api.example.com".to_string(),
-            error: Some("TLS handshake failed: tlsv13 alert certificate required".to_string()),
+    fn mtls_required(host: &str, chain: &[&str]) -> Evidence {
+        Evidence {
+            target_host: host.to_string(),
             client_auth_required: true,
-            chain_names: vec!["CN=api.example.com".to_string(), "CN=Amazon RSA 2048 M02".to_string()],
+            client_cert_requested: true,
+            chain_names: chain.iter().map(ToString::to_string).collect(),
             ..Default::default()
-        };
+        }
+    }
+
+    fn mentions_aws(d: &Diagnosis) -> bool {
+        let text = format!("{} {} {:?} {:?}", d.title, d.root_cause, d.remediation, d.references).to_lowercase();
+        ["cloudfront", "api gateway", "amazon", "aws"]
+            .iter()
+            .any(|w| text.contains(w))
+    }
+
+    #[test]
+    fn mtls_required_is_vendor_neutral_without_aws_evidence() {
+        // An Apigee hybrid style endpoint: Google issued chain, no headers
+        // (the TLS 1.3 refusal arrives before any HTTP response).
+        let ev = mtls_required(
+            "api.payments.example.co.uk",
+            &["CN=api.payments.example.co.uk", "C=US, O=Google Trust Services, CN=WR2"],
+        );
+        let report = diagnose(&kb(), &ev);
+        assert_eq!(report.findings[0].id, "mtls.server.certificate-required");
+        assert!(report.platforms.is_empty(), "{:?}", report.platforms);
+        for d in &report.findings {
+            assert!(!mentions_aws(d), "{} mentions AWS on a non AWS endpoint", d.id);
+        }
+    }
+
+    #[test]
+    fn mtls_required_on_an_acm_certificate_adds_cloudfront_as_secondary() {
+        let ev = mtls_required(
+            "api.example.com",
+            &["CN=api.example.com", "C=US, O=Amazon, CN=Amazon RSA 2048 M02"],
+        );
+        let report = diagnose(&kb(), &ev);
+        assert_eq!(report.findings[0].id, "mtls.server.certificate-required");
+        let cf = report
+            .findings
+            .iter()
+            .find(|d| d.id == "mtls.viewer.certificate-required")
+            .expect("CloudFront variant as a secondary finding");
+        assert!(cf.confidence < report.findings[0].confidence);
+    }
+
+    #[test]
+    fn mtls_required_on_cloudfront_is_attributed_to_cloudfront() {
+        let ev = mtls_required("d111111abcdef8.cloudfront.net", &["CN=*.cloudfront.net"]);
         let d = primary(&ev);
         assert_eq!(d.id, "mtls.viewer.certificate-required");
         assert!(d.confidence > 0.9);
@@ -1013,10 +1248,12 @@ mod tests {
             target_host: "api.example.com".to_string(),
             error: Some("TLS handshake failed: tlsv1 alert unknown ca".to_string()),
             client_cert_supplied: true,
+            client_cert_requested: true,
             ..Default::default()
         };
-        let d = primary(&ev);
-        assert_eq!(d.id, "mtls.viewer.unknown-ca");
+        let report = diagnose(&kb(), &ev);
+        assert_eq!(report.findings[0].id, "mtls.server.unknown-ca");
+        assert!(report.findings.iter().all(|d| !mentions_aws(d)));
     }
 
     #[test]
@@ -1027,7 +1264,189 @@ mod tests {
             client_cert_supplied: true,
             ..Default::default()
         };
-        assert_eq!(primary(&ev).id, "mtls.viewer.certificate-expired");
+        assert_eq!(primary(&ev).id, "mtls.server.certificate-expired");
+    }
+
+    #[test]
+    fn handshake_failure_after_a_certificate_request_is_not_a_cipher_problem() {
+        let ev = Evidence {
+            target_host: "api.example.com".to_string(),
+            error: Some("TLS handshake failed: sslv3 alert handshake failure".to_string()),
+            client_cert_supplied: true,
+            client_cert_requested: true,
+            ..Default::default()
+        };
+        let ids: Vec<String> = diagnose(&kb(), &ev).findings.into_iter().map(|d| d.id).collect();
+        assert!(
+            !ids.iter()
+                .any(|i| i == "tls.handshake.no-shared-cipher" || i == "tls.handshake.sni-required"),
+            "{ids:?}"
+        );
+    }
+
+    #[test]
+    fn optional_mtls_refused_at_http_is_explained() {
+        let ev = Evidence {
+            target_host: "api.example.com".to_string(),
+            http_status: Some(403),
+            client_cert_requested: true,
+            ..Default::default()
+        };
+        assert_eq!(primary(&ev).id, "mtls.server.certificate-requested-optional");
+        // A 200 with an optional request is reported by the banner only.
+        let ok = Evidence {
+            http_status: Some(200),
+            ..ev
+        };
+        assert!(diagnose(&kb(), &ok).findings.is_empty());
+    }
+
+    #[test]
+    fn supplied_certificate_that_was_never_requested_is_flagged() {
+        let ev = Evidence {
+            target_host: "api.example.com".to_string(),
+            http_status: Some(403),
+            client_cert_supplied: true,
+            ..Default::default()
+        };
+        assert_eq!(primary(&ev).id, "mtls.server.certificate-not-requested");
+    }
+
+    #[test]
+    fn nginx_mtls_pages_are_identified() {
+        let page = |sentence: &str| Evidence {
+            target_host: "api.example.com".to_string(),
+            http_status: Some(400),
+            http_headers: vec![header("server", "nginx")],
+            http_body: Some(format!(
+                "<html><head><title>400 {sentence}</title></head><body><center><h1>400 Bad Request</h1></center>\
+                 <center>{sentence}</center><hr><center>nginx</center></body></html>"
+            )),
+            ..Default::default()
+        };
+        assert_eq!(
+            primary(&page("No required SSL certificate was sent")).id,
+            "mtls.nginx.no-required-certificate"
+        );
+        assert_eq!(
+            primary(&page("The SSL certificate error")).id,
+            "mtls.nginx.certificate-error"
+        );
+    }
+
+    #[test]
+    fn generic_error_pages_no_longer_trigger_aws_entries() {
+        let cases = [
+            (
+                504,
+                "<html><head><title>504 Gateway Time-out</title></head><body><center><h1>504 Gateway Time-out</h1></center><hr><center>nginx</center></body></html>",
+            ),
+            (
+                413,
+                "<html><head><title>413 Request Entity Too Large</title></head><body><center><h1>413 Request Entity Too Large</h1></center><hr><center>nginx</center></body></html>",
+            ),
+            (421, "Misdirected Request"),
+            (401, r#"{"message":"Unauthorized"}"#),
+        ];
+        for (status, body) in cases {
+            let ev = Evidence {
+                target_host: "api.example.com".to_string(),
+                http_status: Some(status),
+                http_headers: vec![header("server", "nginx")],
+                http_body: Some(body.to_string()),
+                ..Default::default()
+            };
+            for d in diagnose(&kb(), &ev).findings {
+                assert!(!mentions_aws(&d), "HTTP {status} produced AWS entry {}", d.id);
+            }
+        }
+    }
+
+    #[test]
+    fn platforms_are_fingerprinted() {
+        let names = |ev: &Evidence| ev.platforms().into_iter().map(|h| h.platform).collect::<Vec<_>>();
+        let apigee = Evidence {
+            http_status: Some(401),
+            http_body: Some(
+                r#"{"fault":{"faultstring":"Invalid ApiKey","detail":{"errorcode":"oauth.v2.InvalidApiKey"}}}"#
+                    .to_string(),
+            ),
+            http_headers: vec![header("via", "1.1 google")],
+            ..Default::default()
+        };
+        assert_eq!(names(&apigee), vec![Platform::Apigee, Platform::GoogleCloud]);
+        let envoy = Evidence {
+            http_headers: vec![
+                header("server", "istio-envoy"),
+                header("x-envoy-upstream-service-time", "3"),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(names(&envoy), vec![Platform::Envoy]);
+        assert_eq!(
+            names(&cloudfront_page(403, "Request blocked.")),
+            vec![Platform::AwsCloudfront, Platform::Aws]
+        );
+        assert_eq!(
+            names(&apigw(200, None, "{}")),
+            vec![Platform::AwsApiGateway, Platform::Aws]
+        );
+        let acm = Evidence {
+            chain_names: vec!["C=US, O=Amazon, CN=Amazon RSA 2048 M03".to_string()],
+            ..Default::default()
+        };
+        assert_eq!(names(&acm), vec![Platform::Aws]);
+        assert!(Evidence::default().platforms().is_empty());
+    }
+
+    #[test]
+    fn api_gateway_answers_relayed_by_apigee_are_attributed_to_the_origin() {
+        let mut ev = apigw(403, Some("ForbiddenException"), r#"{"message":"Forbidden"}"#);
+        ev.target_host = "api.example.com".to_string();
+        ev.http_headers.push(header("x-apigee-message-id", "abc"));
+        let report = diagnose(&kb(), &ev);
+        let gw = report
+            .findings
+            .iter()
+            .find(|d| d.id == "apigateway.gateway.forbidden")
+            .expect("API Gateway finding");
+        assert_eq!(gw.layer, Layer::OriginHttp);
+    }
+
+    #[test]
+    fn envoy_and_apigee_target_failures_are_identified() {
+        let envoy = Evidence {
+            http_status: Some(503),
+            http_headers: vec![header("server", "envoy")],
+            http_body: Some(
+                "upstream connect error or disconnect/reset before headers. retried and the latest reset reason: \
+                 remote connection failure, transport failure reason: TLS_error:|268435581:SSL routines:\
+                 OPENSSL_internal:CERTIFICATE_VERIFY_FAILED"
+                    .to_string(),
+            ),
+            ..Default::default()
+        };
+        assert_eq!(primary(&envoy).id, "envoy.upstream.tls-failure");
+        let apigee = Evidence {
+            http_status: Some(503),
+            http_body: Some(
+                r#"{"fault":{"faultstring":"SSL Handshake failed sun.security.validator.ValidatorException","detail":{"errorcode":"messaging.adaptors.http.flow.SslHandshakeFailed"}}}"#
+                    .to_string(),
+            ),
+            ..Default::default()
+        };
+        assert_eq!(primary(&apigee).id, "apigee.target.ssl-handshake-failed");
+        let generic = Evidence {
+            http_status: Some(401),
+            http_body: Some(
+                r#"{"fault":{"faultstring":"Invalid ApiKey","detail":{"errorcode":"oauth.v2.InvalidApiKey"}}}"#
+                    .to_string(),
+            ),
+            ..Default::default()
+        };
+        let d = primary(&generic);
+        assert_eq!(d.id, "apigee.fault.generic");
+        assert!(!mentions_aws(&d));
     }
 
     #[test]
@@ -1214,6 +1633,7 @@ mod tests {
         let mut ev = apigw(403, Some("ForbiddenException"), r#"{"message":"Forbidden"}"#);
         assert_eq!(primary(&ev).id, "apigateway.gateway.forbidden");
         ev.client_cert_supplied = true;
+        ev.client_cert_requested = true;
         let d = primary(&ev);
         assert_eq!(d.id, "apigateway.gateway.forbidden-mtls");
         assert_eq!(d.category, Category::Mtls);
@@ -1512,7 +1932,7 @@ mod tests {
     #[test]
     fn every_layer_has_a_label_and_sorts_in_path_order() {
         assert!(Layer::EdgeHttp < Layer::GatewayHttp && Layer::GatewayHttp < Layer::OriginHttp);
-        assert_eq!(Layer::GatewayHttp.label(), "API Gateway");
+        assert_eq!(Layer::GatewayHttp.label(), "API gateway");
     }
 
     #[test]

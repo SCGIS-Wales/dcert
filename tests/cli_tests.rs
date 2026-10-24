@@ -2302,3 +2302,135 @@ fn test_help_lists_diagnose_and_kb() {
     assert!(stdout.contains("diagnose"));
     assert!(stdout.contains("kb"));
 }
+
+// ---------------------------------------------------------------
+// mTLS detection (CertificateRequest callback, TLS 1.2 and 1.3)
+// ---------------------------------------------------------------
+
+/// How the loopback mTLS server treats client certificates.
+#[derive(Clone, Copy)]
+enum ClientAuthMode {
+    Required,
+    Optional,
+}
+
+/// Serve one TLS connection that sends a CertificateRequest naming the
+/// fixture identity as the acceptable CA, pinned to `version`. Required mode
+/// fails the handshake without a certificate (TLS 1.2 aborts it, TLS 1.3
+/// sends certificate_required after the client's Finished).
+fn spawn_loopback_mtls_server(mode: ClientAuthMode, version: openssl::ssl::SslVersion) -> u16 {
+    use openssl::ssl::SslVerifyMode;
+    use std::io::Read as _;
+    use std::net::TcpListener;
+
+    let mut builder = loopback_acceptor_builder(None);
+    builder.set_min_proto_version(Some(version)).expect("min version");
+    builder.set_max_proto_version(Some(version)).expect("max version");
+    let verify = match mode {
+        ClientAuthMode::Required => SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT,
+        ClientAuthMode::Optional => SslVerifyMode::PEER,
+    };
+    // Accept any presented certificate: these tests are about the request.
+    builder.set_verify_callback(verify, |_, _| true);
+    let ca = openssl::x509::X509::from_pem(
+        &std::fs::read(test_data("verify-key-discovery/server.crt")).expect("read fixture cert"),
+    )
+    .expect("parse fixture cert");
+    let mut names = openssl::stack::Stack::new().expect("name stack");
+    names
+        .push(ca.subject_name().to_owned().expect("copy name"))
+        .expect("push name");
+    builder.set_client_ca_list(names);
+    let acceptor = builder.build();
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let port = listener.local_addr().expect("local addr").port();
+    std::thread::spawn(move || {
+        if let Ok((stream, _)) = listener.accept()
+            && let Ok(mut tls) = acceptor.accept(stream)
+        {
+            let mut req = [0u8; 4096];
+            let _ = tls.read(&mut req);
+            let _ = tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        }
+    });
+    port
+}
+
+fn probe_loopback(port: u16) -> (serde_json::Value, Option<i32>) {
+    let output = dcert_bin()
+        .args([&format!("https://127.0.0.1:{port}"), "--no-verify", "--format", "json"])
+        .output()
+        .expect("failed to run dcert");
+    (json_output(&output), output.status.code())
+}
+
+fn assert_no_aws_advice(parsed: &serde_json::Value) {
+    let diagnosis = parsed["diagnosis"].to_string().to_lowercase();
+    for word in ["cloudfront", "amazon", "aws", "api gateway"] {
+        assert!(
+            !diagnosis.contains(word),
+            "non AWS endpoint got {word} advice: {diagnosis}"
+        );
+    }
+}
+
+#[test]
+fn test_mtls_required_is_detected_on_tls13_after_the_handshake() {
+    let port = spawn_loopback_mtls_server(ClientAuthMode::Required, openssl::ssl::SslVersion::TLS1_3);
+    let (parsed, code) = probe_loopback(port);
+    let conn = &parsed["connection"];
+    assert_eq!(conn["client_auth"], "required", "{parsed}");
+    assert_eq!(conn["client_auth_required"], true);
+    assert_eq!(conn["tls_version"], "TLSv1.3", "the handshake itself completed");
+    assert!(
+        conn["acceptable_client_cas"][0]
+            .as_str()
+            .is_some_and(|n| n.contains("test-server")),
+        "CA names from the CertificateRequest: {conn}"
+    );
+    assert_eq!(code, Some(6), "CLIENT_CERT_ERROR exit code");
+    assert_eq!(parsed["diagnosis"][0]["id"], "mtls.server.certificate-required");
+    assert_no_aws_advice(&parsed);
+}
+
+#[test]
+fn test_mtls_required_is_detected_on_tls12_handshake_failure() {
+    let port = spawn_loopback_mtls_server(ClientAuthMode::Required, openssl::ssl::SslVersion::TLS1_2);
+    let (parsed, code) = probe_loopback(port);
+    assert_eq!(parsed["connection"]["client_auth"], "required", "{parsed}");
+    assert_eq!(code, Some(6));
+    assert_eq!(parsed["diagnosis"][0]["id"], "mtls.server.certificate-required");
+    assert_no_aws_advice(&parsed);
+}
+
+#[test]
+fn test_mtls_optional_request_is_reported() {
+    let port = spawn_loopback_mtls_server(ClientAuthMode::Optional, openssl::ssl::SslVersion::TLS1_3);
+    let (parsed, _) = probe_loopback(port);
+    let conn = &parsed["connection"];
+    assert_eq!(conn["client_auth"], "optional", "{parsed}");
+    assert_eq!(conn["http_response_code"], 200);
+    assert!(conn.get("client_auth_required").is_none());
+}
+
+#[test]
+fn test_plain_tls_server_reports_no_client_auth() {
+    let port = spawn_loopback_tls_server();
+    let (parsed, _) = probe_loopback(port);
+    assert_eq!(parsed["connection"]["client_auth"], "not_requested", "{parsed}");
+    assert!(parsed["connection"].get("acceptable_client_cas").is_none());
+}
+
+#[test]
+fn test_mtls_required_banner_in_pretty_output() {
+    let port = spawn_loopback_mtls_server(ClientAuthMode::Required, openssl::ssl::SslVersion::TLS1_3);
+    let output = dcert_bin()
+        .args([&format!("https://127.0.0.1:{port}"), "--no-verify"])
+        .output()
+        .expect("failed to run dcert");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("[mTLS REQUIRED]"), "{stdout}");
+    assert!(stdout.contains("Platform: not identified"), "{stdout}");
+    assert!(!stdout.to_lowercase().contains("cloudfront"), "{stdout}");
+}

@@ -366,7 +366,7 @@ impl HttpTlsParams {
 /// Parameters for the diagnose_endpoint tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct DiagnoseEndpointParams {
-    /// HTTPS URL or hostname to probe (the CloudFront distribution, the origin, or any TLS endpoint)
+    /// HTTPS URL or hostname to probe (a gateway, CDN, origin or any TLS endpoint)
     pub(crate) target: String,
     /// Include the captured response body excerpt in the output even when no finding cites it (default: false)
     #[serde(default)]

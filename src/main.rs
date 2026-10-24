@@ -302,6 +302,7 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
                     let report = diagnose::diagnose(kb, &evidence);
                     keep_body |= report.body_matched;
                     result.diagnosis = report.findings;
+                    result.platforms = report.platforms.clone();
                     if let Some(rb) = &reference {
                         result.context = kbref::annotate(rb, &evidence);
                     }
@@ -322,6 +323,7 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
                             .map(|c| c.http_response_code)
                             .filter(|c| *c > 0),
                         diagnosis: result.diagnosis.clone(),
+                        platforms: result.platforms.clone(),
                         context: result.context.clone(),
                         body_excerpt: result.conn_info.as_ref().and_then(|c| c.http_body_excerpt.clone()),
                         body_truncated: result.conn_info.as_ref().is_some_and(|c| c.http_body_truncated),
@@ -357,6 +359,7 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
                             error: Some(format!("{e:#}")),
                             http_status: None,
                             diagnosis: report.findings,
+                            platforms: report.platforms,
                             context: Vec::new(),
                             // A probe that failed outright never read a body.
                             body_excerpt: None,
@@ -365,7 +368,9 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
                     } else if !report.findings.is_empty() && matches!(args.format, OutputFormat::Pretty) {
                         // Failed probes have no stdout record; keep the
                         // diagnosis next to the error on stderr.
-                        let _ = output::write_diagnosis(&mut std::io::stderr().lock(), &report.findings);
+                        let mut err = std::io::stderr().lock();
+                        let _ = output::write_platforms(&mut err, &report.platforms);
+                        let _ = output::write_diagnosis(&mut err, &report.findings);
                     }
                 }
             }
@@ -410,7 +415,7 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
             .iter()
             .map(|r| (r.target.as_str(), StructuredOutput::from(r)))
             .collect();
-        println!("{}", serde_yaml_ng::to_string(&map)?);
+        println!("{}", serde_norway::to_string(&map)?);
     } else {
         for result in &all_results {
             output_results(result, args.format, &args.http_protocol, multi_target, &args)?;
@@ -1187,6 +1192,9 @@ struct DiagnoseOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     http_status: Option<u16>,
     diagnosis: Vec<diagnose::Diagnosis>,
+    /// Products identified on the request path; scopes the vendor advice.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    platforms: Vec<diagnose::PlatformHint>,
     /// What the status, headers and body sentences mean, from the reference base.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     context: Vec<kbref::Note>,
@@ -1213,6 +1221,7 @@ fn print_diagnose_output_pretty(items: &[DiagnoseOutput]) {
             println!("No knowledge base entry matched. Re-run with --debug for the raw exchange.");
             println!();
         } else {
+            let _ = output::write_platforms(&mut std::io::stdout().lock(), &item.platforms);
             output::print_diagnosis_pretty(&item.diagnosis);
         }
         if !item.context.is_empty() {
@@ -1268,7 +1277,7 @@ fn run_kb(args: cli::KbArgs) -> Result<i32> {
                 .get(&id)
                 .ok_or_else(|| anyhow::anyhow!("no knowledge base entry with id '{id}'"))?;
             print_structured(format, entry, || {
-                println!("{}", serde_yaml_ng::to_string(entry).unwrap_or_default());
+                println!("{}", serde_norway::to_string(entry).unwrap_or_default());
             })?;
             Ok(exit_code::SUCCESS)
         }
