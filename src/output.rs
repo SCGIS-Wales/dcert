@@ -14,8 +14,9 @@ use crate::compliance::{self, ChainComplianceReport, Severity};
 use crate::connect::ConnectOverrides;
 use crate::convert::{CertRole, ConvertResult, write_public_file};
 use crate::debug::debug_log;
-use crate::diagnose::Diagnosis;
+use crate::diagnose::{Diagnosis, PlatformHint};
 use crate::keyex::{self, EffectiveTlsSettings, KeyExchangeClass, PqProbeStatus};
+use crate::mtls::ClientAuthStatus;
 use crate::ocsp::check_ocsp_status;
 use crate::proxy::ProxyConfig;
 use crate::tls::{
@@ -68,6 +69,18 @@ fn print_key_exchange(conn: &TlsConnectionInfo) {
     }
 }
 
+/// CA names from the server's CertificateRequest, if it sent any.
+fn print_acceptable_cas(conn: &TlsConnectionInfo) {
+    if conn.acceptable_client_cas.is_empty() {
+        println!("  The server did not list which CAs it accepts.");
+    } else {
+        println!("  Client certificates must be issued by one of:");
+        for ca in &conn.acceptable_client_cas {
+            println!("    - {ca}");
+        }
+    }
+}
+
 pub fn print_pretty(infos: &[CertInfo], debug: &PrettyDebugInfo<'_>) {
     // mTLS-required servers: print a high-visibility banner before anything
     // else, then fall through to render the captured chain. The chain was
@@ -83,12 +96,34 @@ pub fn print_pretty(infos: &[CertInfo], debug: &PrettyDebugInfo<'_>) {
             "[mTLS REQUIRED]".red().bold(),
             "This server requires client certificate authentication.".bold()
         );
+        if !conn.tls_version.starts_with("unknown") {
+            println!(
+                "  The {} handshake completed, then the server refused the connection because no client certificate was sent.",
+                conn.tls_version
+            );
+        }
+        print_acceptable_cas(conn);
         println!(
             "  Re-run with {} or {} to authenticate.",
             "--client-cert <pem> --client-key <pem>".cyan(),
             "--pkcs12 <p12> --cert-password ...".cyan()
         );
         println!("  The server's certificate chain is shown below for reference.");
+        println!();
+    } else if let Some(conn) = debug.conn
+        && conn.client_auth == ClientAuthStatus::Optional
+    {
+        println!();
+        println!(
+            "{} {}",
+            "[mTLS OPTIONAL]".yellow().bold(),
+            "The server asked for a client certificate but accepted the connection without one.".bold()
+        );
+        print_acceptable_cas(conn);
+        println!(
+            "  The application behind it may still require one; re-run with {} to authenticate.",
+            "--client-cert <pem> --client-key <pem>".cyan()
+        );
         println!();
     }
 
@@ -150,6 +185,7 @@ pub fn print_pretty(infos: &[CertInfo], debug: &PrettyDebugInfo<'_>) {
             }
         }
         print_key_exchange(conn);
+        println!("  Client certificate (mTLS): {}", conn.client_auth.label());
         let ct_str = if leaf.ct_present { "true".green() } else { "false".red() };
         println!("  Certificate transparency: {ct_str}");
 
@@ -356,8 +392,11 @@ pub struct TargetResult {
     pub pem_data: String,
     pub compliance_report: Option<ChainComplianceReport>,
     pub root_trust: Option<RootTrustInfo>,
-    /// CloudFront, mTLS and proxy findings, earliest layer first.
+    /// Proxy, TLS, mTLS and platform findings, earliest layer first.
     pub diagnosis: Vec<Diagnosis>,
+    /// Products identified on the request path (CloudFront, Apigee, Envoy,
+    /// ...). Empty when nothing named a vendor.
+    pub platforms: Vec<PlatformHint>,
     /// Context notes from the reference knowledge base (what the status,
     /// headers and body sentences of the response mean).
     pub context: Vec<crate::kbref::Note>,
@@ -376,6 +415,8 @@ pub struct StructuredOutput {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub diagnosis: Vec<Diagnosis>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub platforms: Vec<PlatformHint>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub context: Vec<crate::kbref::Note>,
 }
 
@@ -387,6 +428,7 @@ impl From<&TargetResult> for StructuredOutput {
             compliance: result.compliance_report.clone(),
             root_trust: result.root_trust.clone(),
             diagnosis: result.diagnosis.clone(),
+            platforms: result.platforms.clone(),
             context: result.context.clone(),
         }
     }
@@ -601,6 +643,7 @@ pub fn process_target(
         compliance_report,
         root_trust,
         diagnosis: Vec::new(),
+        platforms: Vec::new(),
         context: Vec::new(),
     })
 }
@@ -842,6 +885,9 @@ pub fn output_results(
         }
 
         if !result.diagnosis.is_empty() {
+            let mut out = std::io::stdout().lock();
+            let _ = write_platforms(&mut out, &result.platforms);
+            drop(out);
             print_diagnosis_pretty(&result.diagnosis);
         }
         if !result.context.is_empty() {
@@ -899,6 +945,25 @@ pub fn write_diagnosis(w: &mut impl std::io::Write, findings: &[Diagnosis]) -> s
         writeln!(w)?;
     }
     Ok(())
+}
+
+/// One line naming the platforms the diagnosis is scoped to. Printed with
+/// every diagnosis so a reader can see why vendor specific advice is (or is
+/// not) included.
+pub fn write_platforms(w: &mut impl std::io::Write, platforms: &[PlatformHint]) -> std::io::Result<()> {
+    if platforms.is_empty() {
+        writeln!(
+            w,
+            "{} not identified (no vendor fingerprint in headers, body, host or chain); vendor specific advice is omitted",
+            "Platform:".bold()
+        )
+    } else {
+        let list: Vec<String> = platforms
+            .iter()
+            .map(|h| format!("{} ({})", h.platform.label(), h.reason))
+            .collect();
+        writeln!(w, "{} {}", "Platform:".bold(), list.join("; "))
+    }
 }
 
 /// Render reference notes: what the status, body sentences and headers of the

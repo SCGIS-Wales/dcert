@@ -14,8 +14,13 @@ pub(crate) const MCP_DESCRIPTION: &str =
 /// rather than repeating the per-tool descriptions.
 pub(crate) const MCP_INSTRUCTIONS: &str = "dcert inspects and manages TLS certificates.\n\
 - Start with `analyze_certificate` for a certificate or endpoint, `check_expiry` for a quick expiry check, \
-and `diagnose_endpoint` when an HTTPS endpoint (especially Amazon CloudFront or API Gateway) fails or misbehaves. \
-Use `explain_edge_term` to look up an edge error, header or status without contacting the network.\n\
+and `diagnose_endpoint` when an HTTPS endpoint fails or misbehaves (any server: Apigee, Envoy/Istio, nginx, \
+CloudFront, API Gateway and others). Its `platforms` field names the products it fingerprinted; vendor specific \
+findings appear only for those, so do not suggest AWS fixes when `platforms` lists no AWS service.\n\
+- mTLS: the `client_auth` connection field says whether the server sent a CertificateRequest (`not_requested`, \
+`optional`, `required`, `presented`) and `acceptable_client_cas` lists the CAs it accepts. `required` with no \
+HTTP status means supply `client_cert`/`client_key` (or `pkcs12`) and probe again.\n\
+- Use `explain_edge_term` only for Amazon CloudFront or API Gateway terms, without contacting the network.\n\
 - `target` accepts an HTTPS URL, a hostname, or a local PEM file path. To test a specific backend IP while \
 validating the hostname, keep the hostname in `target` and set `connect_to` or `resolve`.\n\
 - Tools marked openWorld contact remote hosts (the target, OCSP responders, or HashiCorp Vault); the others work \

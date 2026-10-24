@@ -272,6 +272,16 @@ pub struct TlsConnectionInfo {
     /// handshake aborted, so the user can still inspect the server identity.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub client_auth_required: bool,
+    /// Whether the server sent a CertificateRequest and how the exchange
+    /// ended: `not_requested`, `optional`, `required` or `presented`. Read
+    /// from an OpenSSL callback, so it does not depend on alert wording and
+    /// covers TLS 1.3 servers that reject the connection after the handshake.
+    #[serde(default)]
+    pub client_auth: crate::mtls::ClientAuthStatus,
+    /// CA names the server listed in its CertificateRequest. Empty when it
+    /// sent none, which many gateways do.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub acceptable_client_cas: Vec<String>,
     /// `true` when `--no-verify` was set: the chain was accepted without
     /// validation and `verify_result` must not be read as a pass.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -461,6 +471,8 @@ impl<'a> ConnectorOptions<'a> {
 struct VerifyCapture {
     errors: Arc<std::sync::Mutex<Vec<String>>>,
     chain: Arc<std::sync::Mutex<Vec<openssl::x509::X509>>>,
+    /// Filled when the server sends a CertificateRequest.
+    cert_request: crate::mtls::CertRequestCapture,
 }
 
 impl VerifyCapture {
@@ -479,13 +491,30 @@ impl VerifyCapture {
     }
 
     /// Turn a failed `connect()` into the user facing error, enriching
-    /// verification failures with the captured per-depth detail.
+    /// verification failures with the captured per-depth detail. When the
+    /// server had asked for a client certificate the error carries that
+    /// request, so diagnostics can attribute the failure to mTLS.
     fn handshake_error(&self, e: &dyn std::fmt::Display, custom_ca: bool) -> anyhow::Error {
         let err_str = e.to_string();
-        if err_str.contains("certificate verify failed") || err_str.contains("unable to get local issuer") {
+        let err = if err_str.contains("certificate verify failed") || err_str.contains("unable to get local issuer") {
             handshake_verify_error(&err_str, &self.errors(), custom_ca)
         } else {
             anyhow::anyhow!("TLS handshake failed: {e}")
+        };
+        self.with_cert_request(err)
+    }
+
+    /// Wrap `err` in [`crate::mtls::CertRequestedError`] when the server had
+    /// sent a CertificateRequest; otherwise return it unchanged.
+    fn with_cert_request(&self, err: anyhow::Error) -> anyhow::Error {
+        let request = self.cert_request.get();
+        if request.requested {
+            anyhow::Error::new(crate::mtls::CertRequestedError {
+                message: format!("{err:#}"),
+                acceptable_cas: request.acceptable_cas,
+            })
+        } else {
+            err
         }
     }
 }
@@ -600,10 +629,13 @@ fn build_connector(opts: &ConnectorOptions<'_>) -> Result<(SslConnector, VerifyC
     }
 
     // Capture the chain and per-depth errors. The callback fires once per
-    // certificate as the server's Certificate flight is processed, before any
-    // CertificateRequest, so the chain is available even when the handshake
-    // later aborts because the server requires mTLS.
-    let capture = VerifyCapture::default();
+    // certificate as the server's Certificate flight is processed, before the
+    // client answers any CertificateRequest, so the chain is available even
+    // when the handshake later aborts because the server requires mTLS.
+    let capture = VerifyCapture {
+        cert_request: crate::mtls::install(&mut builder),
+        ..VerifyCapture::default()
+    };
     let cb = capture.clone();
     let force_accept = opts.no_verify;
     builder.set_verify_callback(SslVerifyMode::PEER, move |preverify, ctx| {
@@ -796,6 +828,25 @@ fn peer_chain_pem(ssl: &openssl::ssl::SslRef) -> Result<String> {
 /// CONNECT exchange and the OCSP client so every HTTP read has one deadline
 /// and one size cap.
 pub(crate) fn read_http_response<R: Read>(stream: &mut R, read_timeout_secs: u64, body_limit: usize) -> Vec<u8> {
+    let (buf, err) = read_http_response_checked(stream, read_timeout_secs, body_limit);
+    if let Some(e) = err
+        && buf.is_empty()
+    {
+        eprintln!("Warning: Error reading HTTP response: {e}");
+    }
+    buf
+}
+
+/// [`read_http_response`] that hands back the read error instead of
+/// printing it. A TLS 1.3 server that requires a client certificate sends
+/// its `certificate_required` alert here, after the handshake, so the HTTPS
+/// probe needs the error to tell an mTLS refusal from an empty reply.
+/// Timeouts are not reported as errors: they end the read like EOF does.
+pub(crate) fn read_http_response_checked<R: Read>(
+    stream: &mut R,
+    read_timeout_secs: u64,
+    body_limit: usize,
+) -> (Vec<u8>, Option<std::io::Error>) {
     const MAX_HEAD_SIZE: usize = 64 * 1024;
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
@@ -834,15 +885,10 @@ pub(crate) fn read_http_response<R: Read>(stream: &mut R, read_timeout_secs: u64
             Err(ref e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
                 break;
             }
-            Err(e) => {
-                if buf.is_empty() {
-                    eprintln!("Warning: Error reading HTTP response: {e}");
-                }
-                break;
-            }
+            Err(e) => return (buf, Some(e)),
         }
     }
-    buf
+    (buf, None)
 }
 
 /// Settings shared by every TLS probe (HTTPS and STARTTLS): verification,
@@ -986,9 +1032,45 @@ fn connection_info(
         verify_result: session.verify_result,
         chain_validation_errors: session.chain_validation_errors,
         client_auth_required: false,
+        client_auth: crate::mtls::ClientAuthStatus::NotRequested,
+        acceptable_client_cas: Vec::new(),
         verification_disabled: no_verify,
         peer_address: dialled.peer_address.clone(),
         connect_override: dialled.connect_override.clone(),
+    }
+}
+
+/// Record what the server's CertificateRequest (if any) means for a probe
+/// whose request went through: optional mTLS without an identity, or a
+/// certificate that was presented.
+fn apply_cert_request(info: &mut TlsConnectionInfo, request: crate::mtls::CertRequest, identity_configured: bool) {
+    use crate::mtls::ClientAuthStatus;
+    if !request.requested {
+        return;
+    }
+    info.client_auth = if identity_configured {
+        ClientAuthStatus::Presented
+    } else {
+        ClientAuthStatus::Optional
+    };
+    info.acceptable_client_cas = request.acceptable_cas;
+}
+
+/// Mark `info` as an mTLS required refusal: the server asked for a client
+/// certificate and closed the connection without one.
+fn mark_client_auth_required(info: &mut TlsConnectionInfo, request: crate::mtls::CertRequest) {
+    info.client_auth_required = true;
+    info.client_auth = crate::mtls::ClientAuthStatus::Required;
+    info.acceptable_client_cas = request.acceptable_cas;
+    if info.verify_result.is_none() {
+        info.verify_result = Some("client certificate required (mTLS)".to_string());
+    }
+}
+
+impl ClientIdentity<'_> {
+    /// `true` when a certificate (PEM or PKCS12) is configured.
+    pub fn is_configured(&self) -> bool {
+        self.client_cert_path.is_some() || self.pkcs12_path.is_some()
     }
 }
 
@@ -1093,33 +1175,39 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
     ))?;
 
     let sni_host = probe.sni_override.unwrap_or(host);
+    let identity_configured = opts.identity.is_configured();
     let mut ssl_stream = match connector.connect(sni_host, stream) {
         Ok(s) => s,
         Err(e) => {
             let err_str = e.to_string();
+            let request = verify.cert_request.get();
             // Surface mTLS-required failures to the caller with the chain we
             // captured during verification, so the user gets the server
-            // identity even though the handshake aborted.
-            if is_client_auth_required(&err_str) {
+            // identity even though the handshake aborted. A server that sent
+            // a CertificateRequest and then failed a handshake we entered
+            // without a certificate is refusing us for that reason: the
+            // CertificateRequest is only answered after the server's own
+            // certificate has been verified, so nothing else is left to fail.
+            if is_client_auth_required(&err_str) || (request.requested && !identity_configured) {
                 let chain = verify.chain();
                 if !chain.is_empty() {
                     let pem = chain_to_pem(&chain)?;
                     let l7_latency = l7_start.elapsed().as_millis();
-                    return Ok(TlsConnectionInfo {
+                    let mut info = TlsConnectionInfo {
                         pem_data: pem,
                         dns_latency: dialled.dns_latency,
                         l4_latency: dialled.l4_latency,
                         l7_latency,
                         tls_version: "unknown (handshake aborted)".to_string(),
                         tls_cipher: "unknown".to_string(),
-                        verify_result: Some("client certificate required (mTLS)".to_string()),
                         chain_validation_errors: verify.errors(),
-                        client_auth_required: true,
                         verification_disabled: probe.no_verify,
                         peer_address: dialled.peer_address,
                         connect_override: dialled.connect_override,
                         ..Default::default()
-                    });
+                    };
+                    mark_client_auth_required(&mut info, request);
+                    return Ok(info);
                 }
                 // Fall through to the regular error path if no chain was captured.
             }
@@ -1160,28 +1248,54 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
         debug_log!(true, "> Connection: close");
     }
 
-    // Send HTTP headers
-    ssl_stream
+    // Send the request head, then the body, then flush. A TLS 1.3 server
+    // that requires a client certificate may already have sent its alert and
+    // closed, so a write failure is classified rather than returned blindly.
+    let sent = ssl_stream
         .write_all(req.as_bytes())
-        .map_err(|e| anyhow::anyhow!("Failed to send HTTP request: {e}"))?;
-
-    // Send body after headers if present
-    if let Some(body_bytes) = opts.body {
-        ssl_stream
-            .write_all(body_bytes)
-            .map_err(|e| anyhow::anyhow!("Failed to send request body: {e}"))?;
-    }
-
-    // Flush the stream to ensure the request is sent
-    ssl_stream
-        .flush()
-        .map_err(|e| anyhow::anyhow!("Failed to flush stream: {e}"))?;
+        .and_then(|()| opts.body.map_or(Ok(()), |b| ssl_stream.write_all(b)))
+        .and_then(|()| ssl_stream.flush());
 
     // Read the HTTP response: the whole header block, then up to
     // `body_limit` bytes of body (plus one so truncation is detectable). Each
     // socket read is bounded by `--read-timeout` and the loop as a whole never
     // exceeds that deadline either, so a silent server costs one timeout.
-    let response_buffer = read_http_response(&mut ssl_stream, probe.read_timeout_secs, opts.body_limit);
+    let write_failed = sent.is_err();
+    let (response_buffer, io_error) = match sent {
+        Ok(()) => read_http_response_checked(&mut ssl_stream, probe.read_timeout_secs, opts.body_limit),
+        Err(e) => (Vec::new(), Some(e)),
+    };
+    let request = verify.cert_request.get();
+    let l7_latency = l7_start.elapsed().as_millis();
+
+    // TLS 1.3 mTLS refusals arrive here, after the handshake completed: the
+    // server read our empty Certificate message and answered with an alert
+    // (or simply closed) instead of an HTTP response.
+    if response_buffer.is_empty()
+        && let Some(e) = &io_error
+    {
+        let text = e.to_string();
+        if is_client_auth_required(&text) || (request.requested && !identity_configured) {
+            debug_log!(debug, "Server refused the connection after the handshake: {}", text);
+            let pem = peer_chain_pem(ssl_stream.ssl())?;
+            let session = session_summary(ssl_stream.ssl(), &verify, debug);
+            let mut info = connection_info(session, &dialled, l7_latency, probe.no_verify, pem, None);
+            mark_client_auth_required(&mut info, request);
+            return Ok(info);
+        }
+        if request.requested {
+            // A certificate was sent and the server rejected it with an alert
+            // after the handshake (unknown CA, expired, revoked, ...).
+            return Err(verify.with_cert_request(anyhow::anyhow!(
+                "TLS alert after the handshake (client certificate rejected?): {text}"
+            )));
+        }
+        if write_failed {
+            return Err(anyhow::anyhow!("Failed to send HTTP request: {text}"));
+        }
+        eprintln!("Warning: Error reading HTTP response: {e}");
+    }
+
     let capture = HttpResponseCapture::parse(&response_buffer, opts.body_limit);
     if response_buffer.is_empty() {
         eprintln!("Warning: No response data received");
@@ -1192,22 +1306,15 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
         );
     }
 
-    let l7_latency = l7_start.elapsed().as_millis();
-
     debug_log!(debug, "< HTTP response: {}", capture.status);
     debug_log!(debug, "Layer 7 complete ({} ms)", l7_latency);
 
     let pem = peer_chain_pem(ssl_stream.ssl())?;
     let session = session_summary(ssl_stream.ssl(), &verify, debug);
 
-    Ok(connection_info(
-        session,
-        &dialled,
-        l7_latency,
-        probe.no_verify,
-        pem,
-        Some(&capture),
-    ))
+    let mut info = connection_info(session, &dialled, l7_latency, probe.no_verify, pem, Some(&capture));
+    apply_cert_request(&mut info, request, identity_configured);
+    Ok(info)
 }
 
 /// Options for STARTTLS connections.
@@ -1369,14 +1476,9 @@ pub fn fetch_tls_chain_starttls(opts: &StarttlsFetchOptions<'_>) -> Result<TlsCo
     let pem = peer_chain_pem(ssl_stream.ssl())?;
     let session = session_summary(ssl_stream.ssl(), &capture, debug);
 
-    Ok(connection_info(
-        session,
-        &dialled,
-        l7_latency,
-        probe.no_verify,
-        pem,
-        None,
-    ))
+    let mut info = connection_info(session, &dialled, l7_latency, probe.no_verify, pem, None);
+    apply_cert_request(&mut info, capture.cert_request.get(), false);
+    Ok(info)
 }
 
 /// How the post quantum probe reaches the TLS layer.

@@ -222,16 +222,16 @@ entries:
         pattern: '(?i)protocol version|no protocols available|unsupported protocol'
         required: true
     root_cause: >
-      The server and client share no TLS protocol version. CloudFront viewer
-      security policies TLSv1.2_2018 and later refuse TLS 1.0 and 1.1; a
-      client pinned to an old version, or a server still limited to TLS 1.0,
-      cannot negotiate.
+      The server and client share no TLS protocol version. TLS 1.0 and 1.1
+      are deprecated (RFC 8996) and refused by current CDNs, API gateways
+      and ingress controllers; a client pinned to an old version, or a
+      server still limited to TLS 1.0, cannot negotiate.
     remediation:
       - Retry with --min-tls 1.2 (the default) and no --max-tls override.
       - If the server only offers TLS 1.0 or 1.1, that is the finding; it must be upgraded.
-      - On CloudFront, check the distribution security policy.
+      - Check the TLS policy of whatever terminates TLS (CDN security policy, gateway or ingress minimum version, for example Apigee hybrid virtualhosts minTLSProtocolVersion).
     references:
-      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/secure-connections-supported-viewer-protocols-ciphers.html
+      - https://www.rfc-editor.org/rfc/rfc8996
 
   - id: tls.handshake.no-shared-cipher
     title: No cipher suite in common
@@ -244,18 +244,22 @@ entries:
         required: true
       - type: client_auth_required
         negate: true
+        required: true
+      - type: client_cert_requested
+        negate: true
+        required: true
     root_cause: >
-      The handshake was aborted with a generic handshake failure and no
-      client certificate was requested, which usually means no cipher suite
-      or signature algorithm was acceptable to both sides. Restrictive
-      --ciphers values, a legacy origin, or a CloudFront security policy
-      that dropped CBC suites are common causes.
+      The handshake was aborted with a generic handshake failure before the
+      server asked for a client certificate, which usually means no cipher
+      suite, key exchange group or signature algorithm was acceptable to
+      both sides. Restrictive --ciphers, --cipher-suites or --groups values,
+      a legacy server, or a strict server policy that dropped CBC suites are
+      common causes.
     remediation:
-      - Retry without --ciphers or --cipher-list to use the defaults.
-      - Compare the server's cipher list against the CloudFront security policy table.
-      - For an origin behind CloudFront, ensure it offers at least one CloudFront supported ECDHE cipher.
+      - Retry without --ciphers, --cipher-suites or --groups to use the defaults.
+      - Compare the server's cipher and group configuration with what the client offers (re-run with --debug).
     references:
-      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/secure-connections-supported-viewer-protocols-ciphers.html
+      - https://www.rfc-editor.org/rfc/rfc8446#section-4.1.1
 
   - id: tls.handshake.sni-required
     title: Hostname not served on this connection
@@ -266,17 +270,20 @@ entries:
       - type: error
         pattern: '(?i)unrecognized name|tlsv1 alert internal error|handshake failure'
         required: true
+      - type: client_cert_requested
+        negate: true
+        required: true
       - type: sni_overridden
     root_cause: >
-      The server could not select a certificate for the requested name.
-      CloudFront distributions on shared addresses require SNI, and a
-      hostname that is not an alternate domain name of any distribution is
-      refused at the handshake.
+      The server could not select a certificate or virtual host for the
+      requested name. Shared front ends (CDNs, API gateways and Kubernetes
+      ingress gateways, which route by SNI and host alias) refuse names they
+      are not configured to serve.
     remediation:
-      - Check the SNI value (see --sni) matches an alternate domain configured on the distribution.
-      - Add the hostname as a CNAME on the distribution and attach a certificate that covers it.
+      - Check the SNI value (see --sni) is a hostname the server or gateway is configured for.
+      - Add the hostname to the front end's host list (CDN alternate domain, gateway custom domain, ingress virtual host or Apigee environment group host alias) with a certificate that covers it.
     references:
-      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/cnames-and-https-requirements.html
+      - https://www.rfc-editor.org/rfc/rfc6066#section-3
 
   - id: tls.handshake.default-cloudfront-cert
     title: CloudFront served its default certificate
@@ -284,6 +291,9 @@ entries:
     category: cloudfront
     weight: 0.9
     signals:
+      - type: platform
+        any_of: [aws_cloudfront]
+        required: true
       - type: chain_name
         pattern: '(?i)\*\.cloudfront\.net'
         required: true
@@ -314,18 +324,16 @@ entries:
       - type: error
         pattern: '(?i)unable to get local issuer|unable to get issuer'
         required: true
-      - type: chain_name
-        pattern: '(?i)cloudfront|amazon'
-        negate: true
     root_cause: >
       The leaf certificate's issuer was not in the presented chain and is not
-      a root in the local trust store, so verification stops. Origins that
-      install only the leaf certificate cause the same 502 from CloudFront.
+      a root in the local trust store, so verification stops. Servers that
+      install only the leaf certificate cause this, and a gateway or CDN in
+      front of such a server reports the same problem as a 502 or 503.
     remediation:
       - Install the intermediate CA certificate(s) on the server alongside the leaf.
       - Re-run with --resolve-issuers to fetch the missing issuer via AIA and confirm the chain.
     references:
-      - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/http-502-bad-gateway.html
+      - https://www.rfc-editor.org/rfc/rfc8446#section-4.4.2
 
   # ---------------------------------------------------------------------
   # Retired or expired intermediates and distrusted roots (2025 to 2026)
@@ -504,20 +512,224 @@ entries:
   # ---------------------------------------------------------------------
   # Viewer mTLS
   # ---------------------------------------------------------------------
-  - id: mtls.viewer.certificate-required
-    title: Server requires a client certificate
+  - id: mtls.server.certificate-required
+    title: Server requires a client certificate (mTLS)
     layer: viewer_mtls
     category: mtls
-    weight: 0.95
+    weight: 0.9
     signals:
       - type: client_auth_required
         required: true
       - type: client_cert_supplied
         negate: true
         required: true
-      - type: chain_name
-        pattern: '(?i)cloudfront|amazon'
+      - type: client_cert_requested
+    root_cause: >
+      The server sent a CertificateRequest during the handshake and refused
+      the connection when no client certificate came back, so this endpoint
+      enforces mutual TLS. TLS 1.2 servers abort the handshake (often with a
+      generic handshake_failure alert); TLS 1.3 servers complete it and then
+      send a certificate_required alert instead of an HTTP response. Either
+      way no HTTP status is returned, so nothing at the HTTP layer (headers,
+      body, gateway error) can be diagnosed until a certificate is supplied.
+    remediation:
+      - Retry with --client-cert and --client-key (or --pkcs12) holding a certificate issued by a CA the server trusts.
+      - "Check the CA names dcert printed (acceptable_client_cas in JSON): the certificate must chain to one of them. An empty list means the server did not say."
+      - "If anonymous access must keep working, the server needs optional client auth: nginx ssl_verify_client optional, Envoy require_client_certificate: false, Apigee hybrid virtualhosts tlsMode SIMPLE instead of MUTUAL."
+    references:
+      - https://www.rfc-editor.org/rfc/rfc8446#section-4.3.2
+      - https://www.rfc-editor.org/rfc/rfc8446#section-6.2
+
+  - id: mtls.server.certificate-requested-optional
+    title: Server asked for a client certificate but did not enforce it at TLS
+    layer: viewer_mtls
+    category: mtls
+    weight: 0.7
+    signals:
+      - type: client_cert_requested
+        required: true
+      - type: client_cert_supplied
+        negate: true
+        required: true
+      - type: client_auth_required
+        negate: true
+        required: true
+      - type: status
+        codes: [400, 401, 403, 495, 496]
         weight: 2
+    root_cause: >
+      The server sent a CertificateRequest, the handshake completed without
+      a client certificate, and the request was then refused at HTTP. The
+      TLS layer runs client authentication in optional mode and the
+      application or gateway behind it decides on the result, so the
+      refusal is most likely the missing certificate.
+    remediation:
+      - Retry with --client-cert and --client-key (or --pkcs12) and compare the status.
+      - Check the CA names dcert printed for the CertificateRequest; the certificate must chain to one of them.
+    references:
+      - https://www.rfc-editor.org/rfc/rfc8446#section-4.3.2
+
+  - id: mtls.server.certificate-not-requested
+    title: Client certificate configured but never requested
+    layer: viewer_mtls
+    category: mtls
+    weight: 0.7
+    signals:
+      - type: client_cert_supplied
+        required: true
+      - type: client_cert_requested
+        negate: true
+        required: true
+      - type: status
+        codes: [400, 401, 403]
+        required: true
+    root_cause: >
+      A client certificate was configured, but the server never sent a
+      CertificateRequest, so the certificate was not sent at all, and the
+      request was refused. Typical causes are a load balancer or CDN that
+      terminates TLS in front of the component that expects the
+      certificate, mTLS being enabled on a different hostname (SNI) or port
+      than the one probed, or a gateway expecting the certificate in a
+      forwarded header instead of the TLS handshake.
+    remediation:
+      - Confirm the hostname and port probed are the ones configured for mTLS (try --sni or --connect-to to reach the mTLS listener directly).
+      - Check whether a proxy or load balancer in front terminates TLS without requesting client certificates.
+    references:
+      - https://www.rfc-editor.org/rfc/rfc8446#section-4.3.2
+
+  - id: mtls.server.unknown-ca
+    title: Server does not trust the client certificate's issuer
+    layer: viewer_mtls
+    category: mtls
+    weight: 0.9
+    signals:
+      - type: client_cert_supplied
+        required: true
+      - type: error
+        pattern: '(?i)unknown ca|unknown_ca|certificate unknown'
+        required: true
+      - type: client_cert_requested
+    root_cause: >
+      A client certificate was presented and the server rejected it with an
+      unknown CA alert: the certificate does not chain to any CA in the
+      server's client trust store, or the chain is missing an intermediate
+      the server does not have.
+    remediation:
+      - Compare the certificate's issuer with the CA names the server lists in its CertificateRequest (dcert prints them when present).
+      - Send the intermediate along with the leaf (the --client-cert file may contain both).
+      - Add the issuing CA chain to the server's client trust store (for example Apigee hybrid virtualhosts caCertPath, nginx ssl_client_certificate, Envoy validation_context trusted_ca).
+    references:
+      - https://www.rfc-editor.org/rfc/rfc8446#section-6.2
+
+  - id: mtls.server.certificate-expired
+    title: Server rejected an expired client certificate
+    layer: viewer_mtls
+    category: mtls
+    weight: 0.9
+    signals:
+      - type: client_cert_supplied
+        required: true
+      - type: error
+        pattern: '(?i)certificate expired|certificate_expired'
+        required: true
+      - type: client_cert_requested
+    root_cause: >
+      The server rejected the client certificate because its validity period
+      has ended (or has not started yet: check the client clock too).
+    remediation:
+      - Renew the client certificate from the issuing CA and retry.
+      - Inspect the certificate dates with dcert check <client.pem>.
+    references:
+      - https://www.rfc-editor.org/rfc/rfc8446#section-6.2
+
+  - id: mtls.server.bad-certificate
+    title: Server rejected the client certificate
+    layer: viewer_mtls
+    category: mtls
+    weight: 0.8
+    signals:
+      - type: client_cert_supplied
+        required: true
+      - type: error
+        pattern: '(?i)bad certificate|certificate revoked|unsupported certificate|access denied|decrypt error'
+        required: true
+      - type: client_cert_requested
+    root_cause: >
+      The client certificate was received but refused after validation:
+      revoked, missing the TLS client authentication extended key usage,
+      using an unsupported key or signature algorithm, failing a custom
+      check (subject or SAN allow list, chain depth), or not matching the
+      private key that signed the handshake.
+    remediation:
+      - Check the certificate has the clientAuth extended key usage and an RSA 2048+ or P-256/P-384 key.
+      - Verify the key matches the certificate with dcert verify-key.
+      - Read the server or gateway log for the exact rejection reason.
+    references:
+      - https://www.rfc-editor.org/rfc/rfc8446#section-6.2
+
+  - id: mtls.nginx.no-required-certificate
+    title: nginx requires a client certificate (400 No required SSL certificate was sent)
+    layer: viewer_mtls
+    category: nginx
+    weight: 0.95
+    signals:
+      - type: status
+        codes: [400]
+        required: true
+      - type: body
+        pattern: '(?i)no required ssl certificate was sent'
+        required: true
+        weight: 3
+    root_cause: >
+      nginx with ssl_verify_client on completes the TLS handshake without a
+      client certificate and then answers every request with 400 (internally
+      status 496) instead of aborting the handshake.
+    remediation:
+      - Retry with --client-cert and --client-key (or --pkcs12) issued by a CA in nginx's ssl_client_certificate bundle.
+    references:
+      - https://nginx.org/en/docs/http/ngx_http_ssl_module.html#errors
+
+  - id: mtls.nginx.certificate-error
+    title: nginx rejected the client certificate (400 The SSL certificate error)
+    layer: viewer_mtls
+    category: nginx
+    weight: 0.95
+    signals:
+      - type: status
+        codes: [400]
+        required: true
+      - type: body
+        pattern: '(?i)the ssl certificate error'
+        required: true
+        weight: 3
+    root_cause: >
+      nginx received a client certificate that failed verification
+      (internally status 495): it does not chain to ssl_client_certificate,
+      the chain is deeper than ssl_verify_depth, or it is expired or revoked
+      (ssl_crl).
+    remediation:
+      - Check the issuer against nginx's ssl_client_certificate bundle and the chain depth against ssl_verify_depth.
+      - Look for "client SSL certificate verify error" in the nginx error log for the exact reason.
+    references:
+      - https://nginx.org/en/docs/http/ngx_http_ssl_module.html#errors
+
+  - id: mtls.viewer.certificate-required
+    title: CloudFront viewer mTLS requires a client certificate
+    layer: viewer_mtls
+    category: mtls
+    weight: 0.95
+    signals:
+      - type: platform
+        any_of: [aws_cloudfront, aws]
+        required: true
+      - type: platform
+        any_of: [aws_cloudfront]
+        weight: 2
+      - type: client_auth_required
+        required: true
+      - type: client_cert_supplied
+        negate: true
+        required: true
     root_cause: >
       The handshake was aborted because the server demanded a client
       certificate and none was offered. A CloudFront distribution with viewer
@@ -531,11 +743,17 @@ entries:
       - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/mtls-authentication.html
 
   - id: mtls.viewer.unknown-ca
-    title: Client certificate not trusted by the server
+    title: CloudFront viewer mTLS did not trust the client certificate
     layer: viewer_mtls
     category: mtls
     weight: 0.95
     signals:
+      - type: platform
+        any_of: [aws_cloudfront, aws]
+        required: true
+      - type: platform
+        any_of: [aws_cloudfront]
+        weight: 2
       - type: client_cert_supplied
         required: true
       - type: error
@@ -554,11 +772,17 @@ entries:
       - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/trust-stores-certificate-management.html
 
   - id: mtls.viewer.certificate-expired
-    title: Client certificate expired
+    title: CloudFront viewer mTLS rejected an expired client certificate
     layer: viewer_mtls
     category: mtls
     weight: 0.95
     signals:
+      - type: platform
+        any_of: [aws_cloudfront, aws]
+        required: true
+      - type: platform
+        any_of: [aws_cloudfront]
+        weight: 2
       - type: client_cert_supplied
         required: true
       - type: error
@@ -575,11 +799,17 @@ entries:
       - https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/mtls-validation-modes.html
 
   - id: mtls.viewer.bad-certificate
-    title: Client certificate rejected
+    title: CloudFront viewer mTLS rejected the client certificate
     layer: viewer_mtls
     category: mtls
     weight: 0.85
     signals:
+      - type: platform
+        any_of: [aws_cloudfront, aws]
+        required: true
+      - type: platform
+        any_of: [aws_cloudfront]
+        weight: 2
       - type: client_cert_supplied
         required: true
       - type: error
@@ -697,6 +927,9 @@ entries:
     category: cloudfront
     weight: 0.95
     signals:
+      - type: platform
+        any_of: [aws_cloudfront]
+        required: true
       - type: status
         codes: [403, 400]
         required: true
@@ -729,6 +962,9 @@ entries:
     category: cloudfront
     weight: 0.95
     signals:
+      - type: platform
+        any_of: [aws_cloudfront]
+        required: true
       - type: status
         codes: [403]
         required: true
@@ -761,6 +997,9 @@ entries:
     category: cloudfront
     weight: 0.98
     signals:
+      - type: platform
+        any_of: [aws_cloudfront]
+        required: true
       - type: status
         codes: [403]
         required: true
@@ -787,6 +1026,9 @@ entries:
     category: cloudfront
     weight: 0.98
     signals:
+      - type: platform
+        any_of: [aws_cloudfront]
+        required: true
       - type: status
         codes: [403]
         required: true
@@ -809,6 +1051,9 @@ entries:
     category: cloudfront
     weight: 0.9
     signals:
+      - type: platform
+        any_of: [aws_cloudfront]
+        required: true
       - type: status
         codes: [403]
         required: true
@@ -839,6 +1084,9 @@ entries:
     category: cloudfront
     weight: 0.98
     signals:
+      - type: platform
+        any_of: [aws_cloudfront]
+        required: true
       - type: status
         codes: [502]
         required: true
@@ -862,6 +1110,9 @@ entries:
     category: cloudfront
     weight: 0.95
     signals:
+      - type: platform
+        any_of: [aws_cloudfront]
+        required: true
       - type: status
         codes: [502]
         required: true
@@ -895,6 +1146,9 @@ entries:
     category: cloudfront
     weight: 0.95
     signals:
+      - type: platform
+        any_of: [aws_cloudfront]
+        required: true
       - type: status
         codes: [504]
         required: true
@@ -923,6 +1177,9 @@ entries:
     category: cloudfront
     weight: 0.98
     signals:
+      - type: platform
+        any_of: [aws_cloudfront]
+        required: true
       - type: status
         codes: [502, 503]
         required: true
@@ -947,6 +1204,9 @@ entries:
     category: cloudfront
     weight: 0.98
     signals:
+      - type: platform
+        any_of: [aws_cloudfront]
+        required: true
       - type: status
         codes: [503, 502]
         required: true
@@ -969,6 +1229,9 @@ entries:
     category: cloudfront
     weight: 0.9
     signals:
+      - type: platform
+        any_of: [aws_cloudfront]
+        required: true
       - type: status
         codes: [503]
         required: true
@@ -992,6 +1255,9 @@ entries:
     weight: 0.6
     fallback: true
     signals:
+      - type: platform
+        any_of: [aws_cloudfront]
+        required: true
       - type: header
         name: x-cache
         pattern: '(?i)error from cloudfront'
@@ -1018,6 +1284,9 @@ entries:
     category: cloudfront
     weight: 0.9
     signals:
+      - type: platform
+        any_of: [aws_cloudfront]
+        required: true
       - type: status
         codes: [421]
         required: true
@@ -1043,6 +1312,9 @@ entries:
     category: cloudfront
     weight: 0.95
     signals:
+      - type: platform
+        any_of: [aws_cloudfront]
+        required: true
       - type: status
         codes: [403]
         required: true
@@ -1071,6 +1343,9 @@ entries:
     category: cloudfront
     weight: 0.95
     signals:
+      - type: platform
+        any_of: [aws_cloudfront]
+        required: true
       - type: status
         codes: [404]
         required: true
@@ -1095,6 +1370,9 @@ entries:
     weight: 0.7
     fallback: true
     signals:
+      - type: platform
+        any_of: [aws_api_gateway, aws_cloudfront]
+        required: true
       - type: header
         name: x-amzn-errortype
         pattern: '.+'
@@ -1123,6 +1401,9 @@ entries:
     weight: 0.6
     fallback: true
     signals:
+      - type: platform
+        any_of: [aws_cloudfront]
+        required: true
       - type: header
         name: via
         pattern: '(?i)cloudfront'
@@ -1150,6 +1431,9 @@ entries:
     category: mtls
     weight: 0.8
     signals:
+      - type: platform
+        any_of: [aws_cloudfront]
+        required: true
       - type: status
         codes: [502]
         required: true
@@ -1182,6 +1466,9 @@ entries:
     category: cloudfront
     weight: 0.5
     signals:
+      - type: platform
+        any_of: [aws_cloudfront]
+        required: true
       - type: header
         name: via
         pattern: '(?i)cloudfront'
@@ -1213,6 +1500,9 @@ entries:
     category: cloudfront
     weight: 0.95
     signals:
+      - type: platform
+        any_of: [aws_cloudfront]
+        required: true
       - type: status
         codes: [403]
         required: true
@@ -1236,6 +1526,9 @@ entries:
     category: cloudfront
     weight: 0.95
     signals:
+      - type: platform
+        any_of: [aws_cloudfront]
+        required: true
       - type: status
         codes: [414]
         required: true
@@ -1262,6 +1555,9 @@ entries:
     category: cloudfront
     weight: 0.95
     signals:
+      - type: platform
+        any_of: [aws_cloudfront]
+        required: true
       - type: status
         codes: [494]
         required: true
@@ -1281,6 +1577,9 @@ entries:
     category: cloudfront
     weight: 0.75
     signals:
+      - type: platform
+        any_of: [aws_cloudfront]
+        required: true
       - type: status
         codes: [503]
         required: true
@@ -1318,6 +1617,9 @@ entries:
     category: cloudfront
     weight: 0.8
     signals:
+      - type: platform
+        any_of: [aws_cloudfront, aws]
+        required: true
       - type: chain_name
         pattern: '(?i)amazon|cloudfront'
         required: true
@@ -1348,6 +1650,9 @@ entries:
     category: tls
     weight: 0.97
     signals:
+      - type: platform
+        any_of: [aws_cloudfront]
+        required: true
       - type: error
         pattern: '(?i)protocol version|handshake failure|no protocols available|unsupported protocol'
         required: true
@@ -1380,6 +1685,9 @@ entries:
     category: api_gateway
     weight: 0.98
     signals:
+      - type: platform
+        any_of: [aws_api_gateway]
+        required: true
       - type: status
         codes: [403]
         required: true
@@ -1413,6 +1721,9 @@ entries:
     category: mtls
     weight: 0.9
     signals:
+      - type: platform
+        any_of: [aws_api_gateway]
+        required: true
       - type: status
         codes: [403]
         required: true
@@ -1450,6 +1761,9 @@ entries:
     category: api_gateway
     weight: 0.85
     signals:
+      - type: platform
+        any_of: [aws_api_gateway]
+        required: true
       - type: status
         codes: [403]
         required: true
@@ -1488,6 +1802,9 @@ entries:
     category: api_gateway
     weight: 0.95
     signals:
+      - type: platform
+        any_of: [aws_api_gateway]
+        required: true
       - type: status
         codes: [403]
         required: true
@@ -1524,6 +1841,9 @@ entries:
     category: api_gateway
     weight: 0.95
     signals:
+      - type: platform
+        any_of: [aws_api_gateway]
+        required: true
       - type: status
         codes: [403]
         required: true
@@ -1555,6 +1875,9 @@ entries:
     category: api_gateway
     weight: 0.95
     signals:
+      - type: platform
+        any_of: [aws_api_gateway]
+        required: true
       - type: status
         codes: [401]
         required: true
@@ -1589,6 +1912,9 @@ entries:
     category: api_gateway
     weight: 0.95
     signals:
+      - type: platform
+        any_of: [aws_api_gateway]
+        required: true
       - type: status
         codes: [429]
         required: true
@@ -1621,6 +1947,9 @@ entries:
     category: api_gateway
     weight: 0.95
     signals:
+      - type: platform
+        any_of: [aws_api_gateway]
+        required: true
       - type: status
         codes: [413]
         required: true
@@ -1645,6 +1974,9 @@ entries:
     category: api_gateway
     weight: 0.9
     signals:
+      - type: platform
+        any_of: [aws_api_gateway]
+        required: true
       - type: status
         codes: [415]
         required: true
@@ -1667,6 +1999,9 @@ entries:
     category: api_gateway
     weight: 0.85
     signals:
+      - type: platform
+        any_of: [aws_api_gateway]
+        required: true
       - type: status
         codes: [400]
         required: true
@@ -1697,6 +2032,9 @@ entries:
     category: api_gateway
     weight: 0.8
     signals:
+      - type: platform
+        any_of: [aws_api_gateway]
+        required: true
       - type: status
         codes: [404]
         required: true
@@ -1728,6 +2066,9 @@ entries:
     category: api_gateway
     weight: 0.9
     signals:
+      - type: platform
+        any_of: [aws_api_gateway]
+        required: true
       - type: status
         codes: [500]
         required: true
@@ -1767,6 +2108,9 @@ entries:
     category: api_gateway
     weight: 0.85
     signals:
+      - type: platform
+        any_of: [aws_api_gateway]
+        required: true
       - type: status
         codes: [502]
         required: true
@@ -1800,6 +2144,9 @@ entries:
     category: api_gateway
     weight: 0.95
     signals:
+      - type: platform
+        any_of: [aws_api_gateway]
+        required: true
       - type: status
         codes: [504]
         required: true
@@ -1832,6 +2179,9 @@ entries:
     category: api_gateway
     weight: 0.8
     signals:
+      - type: platform
+        any_of: [aws_api_gateway]
+        required: true
       - type: status
         codes: [503]
         required: true
@@ -1860,6 +2210,9 @@ entries:
     category: tls
     weight: 0.97
     signals:
+      - type: platform
+        any_of: [aws_api_gateway]
+        required: true
       - type: error
         pattern: '(?i)protocol version|handshake failure|no protocols available|unsupported protocol'
         required: true
@@ -1887,6 +2240,9 @@ entries:
     category: api_gateway
     weight: 0.75
     signals:
+      - type: platform
+        any_of: [aws_api_gateway, aws]
+        required: true
       - type: verify_result
         pattern: '(?i)hostname|host name|alternative|mismatch'
         required: true
@@ -1919,6 +2275,9 @@ entries:
     category: api_gateway
     weight: 0.5
     signals:
+      - type: platform
+        any_of: [aws_api_gateway]
+        required: true
       - type: header
         name: x-amzn-requestid
         pattern: '.+'
@@ -1940,3 +2299,212 @@ entries:
       - Nothing to fix; keep x-amzn-RequestId and x-amz-apigw-id when correlating with execution and access logs.
     references:
       - https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-api-endpoint-types.html
+
+  # ---------------------------------------------------------------------
+  # Envoy and Istio
+  # ---------------------------------------------------------------------
+  - id: envoy.upstream.tls-failure
+    title: Envoy could not establish TLS to the upstream service
+    layer: gateway_http
+    category: envoy
+    weight: 0.95
+    signals:
+      - type: status
+        codes: [503]
+        required: true
+      - type: body
+        pattern: '(?i)upstream connect error or disconnect/reset before headers.*(tls_error|certificate_verify_failed|ssl routines|handshake)'
+        required: true
+        weight: 3
+    root_cause: >
+      The client's request reached Envoy, but Envoy's own TLS connection to
+      the upstream (backend) failed: the upstream certificate did not verify
+      against the cluster's trusted CA, its name did not match, the upstream
+      requires a client certificate Envoy does not present, or the TLS
+      versions or ciphers do not overlap. The client side TLS is fine.
+    remediation:
+      - Read the transport failure reason in the body; CERTIFICATE_VERIFY_FAILED points at the upstream CA or SAN, an alert points at upstream mTLS.
+      - Check the cluster's UpstreamTlsContext (or the Istio DestinationRule tls settings) for the trusted CA, SNI and client certificate.
+    references:
+      - https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/transport_sockets/tls/v3/tls.proto
+
+  - id: envoy.upstream.connect-error
+    title: Envoy could not get a response from the upstream service
+    layer: gateway_http
+    category: envoy
+    weight: 0.85
+    signals:
+      - type: status
+        codes: [503]
+        required: true
+      - type: body
+        pattern: '(?i)upstream connect error or disconnect/reset before headers'
+        required: true
+        weight: 3
+    root_cause: >
+      Envoy accepted the request but the upstream connection was refused,
+      reset or timed out before response headers arrived. The body's reset
+      reason (connection failure, connection termination, overflow) names
+      which.
+    remediation:
+      - Check the upstream pods or hosts are running and listening on the port the cluster targets.
+      - Compare the upstream protocol (HTTP/1.1, HTTP/2, TLS or plain) with the cluster configuration.
+    references:
+      - https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_conn_man/response_code_details
+
+  - id: envoy.upstream.no-healthy-upstream
+    title: Envoy has no healthy upstream host
+    layer: gateway_http
+    category: envoy
+    weight: 0.9
+    signals:
+      - type: status
+        codes: [503]
+        required: true
+      - type: body
+        pattern: '(?i)^\s*no healthy upstream'
+        required: true
+        weight: 3
+    root_cause: >
+      Every host in the upstream cluster is failing health checks or the
+      cluster has no endpoints at all, so Envoy answered without trying.
+    remediation:
+      - Check the backing service has ready endpoints and that health checks pass.
+    references:
+      - https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_conn_man/response_code_details
+
+  # ---------------------------------------------------------------------
+  # Apigee (X, hybrid and Edge): runtime faults
+  # ---------------------------------------------------------------------
+  - id: apigee.target.ssl-handshake-failed
+    title: Apigee could not complete TLS to the target (backend)
+    layer: gateway_http
+    category: apigee
+    weight: 0.97
+    signals:
+      - type: platform
+        any_of: [apigee]
+        required: true
+      - type: status
+        codes: [503]
+        required: true
+      - type: body
+        pattern: '(?i)messaging\.adaptors\.http\.flow\.SslHandshakeFailed|ssl handshake failed'
+        required: true
+        weight: 3
+    root_cause: >
+      Apigee accepted the client's request, but its TLS handshake with the
+      target server failed: the target's certificate does not chain to the
+      truststore referenced by the TargetEndpoint or TargetServer SSLInfo,
+      its name does not match, the TLS versions do not overlap, or the target
+      requires mutual TLS and SSLInfo does not present a client key and
+      certificate (ClientAuthEnabled, KeyStore, KeyAlias). The connection
+      from the client to Apigee is not the problem.
+    remediation:
+      - Check the SSLInfo block of the TargetEndpoint or TargetServer (Enabled, TrustStore, Protocols, and for backend mTLS ClientAuthEnabled, KeyStore and KeyAlias).
+      - Run dcert check against the target URL from inside the cluster to see its chain and whether it requests a client certificate.
+    references:
+      - https://cloud.google.com/apigee/docs/api-platform/errorcatalog/mp-runtime-errorcatalog
+
+  - id: apigee.target.unavailable
+    title: Apigee could not reach the target (backend)
+    layer: gateway_http
+    category: apigee
+    weight: 0.9
+    signals:
+      - type: platform
+        any_of: [apigee]
+        required: true
+      - type: status
+        codes: [503]
+        required: true
+      - type: body
+        pattern: '(?i)messaging\.adaptors\.http\.flow\.(ServiceUnavailable|NoActiveTargets)'
+        required: true
+        weight: 3
+    root_cause: >
+      Apigee could not connect to the target: connection refused or timed
+      out, the target reset the connection, or (NoActiveTargets) every
+      TargetServer failed its health check. The reason field in the fault
+      detail names which.
+    remediation:
+      - Check the target host and port from the Apigee runtime network, and the TargetServer health check status.
+    references:
+      - https://cloud.google.com/apigee/docs/api-platform/errorcatalog/mp-runtime-errorcatalog
+
+  - id: apigee.target.gateway-timeout
+    title: Apigee timed out waiting for the target
+    layer: gateway_http
+    category: apigee
+    weight: 0.9
+    signals:
+      - type: platform
+        any_of: [apigee]
+        required: true
+      - type: status
+        codes: [504]
+        required: true
+      - type: body
+        pattern: '(?i)messaging\.adaptors\.http\.flow\.GatewayTimeout|flow\.APITimedOut'
+        required: true
+        weight: 3
+    root_cause: >
+      The target did not answer within the TargetEndpoint I/O timeout
+      (TARGET_READ_TIMEOUT), or the proxy exceeded its overall API timeout.
+    remediation:
+      - Measure the target's latency directly, and compare it with io.timeout.millis on the TargetEndpoint.
+    references:
+      - https://cloud.google.com/apigee/docs/api-platform/errorcatalog/mp-runtime-errorcatalog
+
+  - id: apigee.target.unexpected-eof
+    title: The target closed the connection on Apigee
+    layer: gateway_http
+    category: apigee
+    weight: 0.9
+    signals:
+      - type: platform
+        any_of: [apigee]
+        required: true
+      - type: status
+        codes: [502]
+        required: true
+      - type: body
+        pattern: '(?i)messaging\.adaptors\.http\.flow\.UnexpectedEOFAtTarget'
+        required: true
+        weight: 3
+    root_cause: >
+      The target closed the connection before sending a complete response:
+      it crashed, hit its own timeout, or speaks plain HTTP on a port Apigee
+      reaches over TLS (or the reverse).
+    remediation:
+      - Check the target logs for the request and confirm the scheme (http or https) in the target URL matches the port.
+    references:
+      - https://cloud.google.com/apigee/docs/api-platform/errorcatalog/mp-runtime-errorcatalog
+
+  - id: apigee.fault.generic
+    title: Apigee returned a fault
+    layer: gateway_http
+    category: apigee
+    weight: 0.6
+    fallback: true
+    signals:
+      - type: platform
+        any_of: [apigee]
+        required: true
+      - type: body
+        pattern: '(?i)"faultstring"'
+        required: true
+      - type: status
+        codes: [400, 401, 403, 404, 405, 408, 413, 415, 429, 500, 502, 503, 504]
+    root_cause: >
+      The response is an Apigee fault: a policy in the API proxy (API key or
+      OAuth verification, quota, spike arrest, threat protection, a
+      RaiseFault) or the runtime itself refused the request. The faultstring
+      says what failed and detail.errorcode names the policy or runtime
+      error; a missing client certificate is never reported this way,
+      because the ingress refuses those during the TLS handshake.
+    remediation:
+      - Look up detail.errorcode in the Apigee error catalog, or trace the request in the Apigee debug tool.
+      - Re-run with --show-body to print the full fault.
+    references:
+      - https://cloud.google.com/apigee/docs/api-platform/errorcatalog/mp-runtime-errorcatalog

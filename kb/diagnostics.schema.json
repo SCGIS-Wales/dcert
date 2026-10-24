@@ -8,7 +8,10 @@
         "proxy",
         "tls",
         "mtls",
-        "interception"
+        "interception",
+        "apigee",
+        "envoy",
+        "nginx"
       ],
       "type": "string"
     },
@@ -87,6 +90,46 @@
         "origin_http"
       ],
       "type": "string"
+    },
+    "Platform": {
+      "description": "Products dcert can fingerprint from a probe. Vendor specific knowledge\nbase entries require one with a `platform` signal, so an mTLS refusal from\nApigee or nginx is never explained with CloudFront or API Gateway advice.",
+      "oneOf": [
+        {
+          "const": "aws_cloudfront",
+          "description": "Amazon CloudFront (Via, X-Cache, X-Amz-Cf-* headers, *.cloudfront.net).",
+          "type": "string"
+        },
+        {
+          "const": "aws_api_gateway",
+          "description": "Amazon API Gateway (x-amzn-RequestId, x-amz-apigw-id, x-amzn-ErrorType,\n*.execute-api.*.amazonaws.com).",
+          "type": "string"
+        },
+        {
+          "const": "aws",
+          "description": "Any AWS service: implied by the two above, or an Amazon issued (ACM)\ncertificate or an amazonaws.com host. Weak on its own: an ACM\ncertificate can front CloudFront, an ALB, API Gateway and more.",
+          "type": "string"
+        },
+        {
+          "const": "apigee",
+          "description": "Google Apigee (X, hybrid or Edge): its `{\"fault\": ...}` error body.",
+          "type": "string"
+        },
+        {
+          "const": "envoy",
+          "description": "Envoy or Istio (server: envoy / istio-envoy, x-envoy-* headers).",
+          "type": "string"
+        },
+        {
+          "const": "nginx",
+          "description": "nginx (server header or its default error pages).",
+          "type": "string"
+        },
+        {
+          "const": "google_cloud",
+          "description": "Google Cloud front ends (Via: 1.1 google, Google Frontend).",
+          "type": "string"
+        }
+      ]
     },
     "RootClass": {
       "description": "Root trust classes a signal can test for; mirrors [`RootTrustClass`].",
@@ -370,7 +413,7 @@
           "type": "object"
         },
         {
-          "description": "The server asked for a client certificate and the handshake aborted.",
+          "description": "The server asked for a client certificate and refused the connection\nwithout one (during the handshake or, on TLS 1.3, right after it).",
           "properties": {
             "type": {
               "const": "client_auth_required",
@@ -379,6 +422,39 @@
           },
           "required": [
             "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The server sent a CertificateRequest, whatever happened next.",
+          "properties": {
+            "type": {
+              "const": "client_cert_requested",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The probe fingerprinted one of `any_of` (see [`Platform`]).",
+          "properties": {
+            "any_of": {
+              "items": {
+                "$ref": "#/$defs/Platform"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "platform",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "any_of"
           ],
           "type": "object"
         },

@@ -25,7 +25,7 @@
   - [dcert convert -- Format Conversion](#dcert-convert--format-conversion)
   - [dcert verify-key -- Key Matching](#dcert-verify-key--key-matching)
   - [dcert vault -- HashiCorp Vault PKI](#dcert-vault--hashicorp-vault-pki)
-  - [dcert diagnose -- CloudFront, API Gateway, mTLS and Proxy Diagnostics](#dcert-diagnose--cloudfront-api-gateway-mtls-and-proxy-diagnostics)
+  - [dcert diagnose -- TLS, mTLS, Gateway, CDN and Proxy Diagnostics](#dcert-diagnose--tls-mtls-gateway-cdn-and-proxy-diagnostics)
   - [dcert kb -- Diagnostics and Reference Knowledge Bases](#dcert-kb--diagnostics-and-reference-knowledge-bases)
 - [MCP Server (AI IDE Integration)](#mcp-server-ai-ide-integration)
   - [Proxy and Timeout Configuration](#proxy-and-timeout-configuration)
@@ -75,7 +75,7 @@ dcert vault issue --cn www.example.com --role my-role
 # Renew a certificate stored in Vault KV
 dcert vault renew secret/certs/www-example-com --role my-role
 
-# Diagnose why a CloudFront endpoint, mTLS handshake or proxy is failing
+# Diagnose why an endpoint, mTLS handshake, gateway or proxy is failing
 dcert diagnose https://api.example.com
 ```
 
@@ -153,7 +153,7 @@ dcert csr create [OPTIONS]             # Create a CSR and private key
 dcert csr validate <CSR_FILE>          # Validate a CSR for compliance
 dcert convert <MODE> [OPTIONS]         # Format conversion (PFX/PEM/keystore/truststore)
 dcert verify-key <target> --key <KEY>  # Key-certificate matching (single pair)
-dcert diagnose <target> [OPTIONS]      # CloudFront, mTLS and forward proxy diagnostics
+dcert diagnose <target> [OPTIONS]      # TLS, mTLS, gateway, CDN and forward proxy diagnostics
 dcert kb <list|show|validate|schema>   # Inspect the diagnostics knowledge base
 dcert verify-key [--dir <DIR>]         # Auto-discover and verify all cert/key pairs
 dcert vault issue [OPTIONS]            # Issue a TLS certificate from Vault PKI
@@ -960,7 +960,7 @@ dcert vault renew [OPTIONS] <PATH>
 
 ---
 
-### dcert diagnose -- CloudFront, API Gateway, mTLS and Proxy Diagnostics
+### dcert diagnose -- TLS, mTLS, Gateway, CDN and Proxy Diagnostics
 
 `dcert diagnose` probes a target the way `dcert check` does, then explains **why** it failed and **what** the response means. It captures the TLS handshake, the certificate chain and its trust anchor, the HTTP status, response headers and a bounded body excerpt, plus the forward-proxy `CONNECT` reply and the local proxy environment, and scores that evidence against a knowledge base of failure signatures.
 
@@ -984,12 +984,31 @@ Findings are reported earliest layer first, so the primary attribution names the
 |-------|----------------|
 | Local proxy environment | `HTTP_PROXY` set without `HTTPS_PROXY`, unreachable proxy, TLS spoken to a plain proxy port |
 | Proxy `CONNECT` | 407 authentication, 403 policy denial, 5xx upstream failure (including `X-Squid-Error`), `CONNECT` not supported, captive portal |
-| TLS handshake | No common protocol version or cipher, SNI not served, CloudFront's default `*.cloudfront.net` certificate, incomplete chain, a CloudFront or API Gateway security policy refusing the offered TLS version, an expired certificate still served by an edge after an ACM renewal |
-| Viewer mTLS | Client certificate required but absent, unknown CA, expired, or rejected after validation (OCSP, Connection Function, chain depth, key usage) |
+| TLS handshake | No common protocol version or cipher, SNI not served, incomplete chain, retired intermediates and distrusted roots; on AWS: CloudFront's default `*.cloudfront.net` certificate, incomplete chain, a CloudFront or API Gateway security policy refusing the offered TLS version, an expired certificate still served by an edge after an ACM renewal |
+| Client certificate (mTLS) | Any server: client certificate required but absent (TLS 1.2 and 1.3), requested optionally and then refused at HTTP, configured but never requested, unknown CA, expired, or rejected after validation; nginx `400 No required SSL certificate was sent` and `The SSL certificate error`; CloudFront viewer mTLS specifics (OCSP, Connection Function, chain depth) when the endpoint is on AWS |
 | TLS interception | Chain re-signed by a known inspection product (Zscaler, Netskope, Umbrella, FortiGate, Palo Alto, Blue Coat, Forcepoint and others), or a public hostname anchored to a private root |
 | CloudFront edge | Alternate domain not configured, AWS WAF block, geo restriction, HTTP method not allowed, URL or header size limits (414, 494), missing or invalid signed URL, origin DNS failure, origin TLS failure, origin timeout, Lambda@Edge and CloudFront Functions errors, capacity, edge 503 from an edge function or the origin mTLS pause |
-| API Gateway | Gateway responses told apart by `x-amzn-ErrorType` and the message: Missing Authentication Token (no matching resource, stage or mapping), Forbidden (API key, WAF, private DNS, base path mapping, disabled default endpoint), Forbidden on a mutual TLS custom domain when a client certificate was sent, AccessDenied (IAM, resource policy, Lambda authorizer), SigV4 signature errors, Unauthorized, throttling and quota (429), request too large (413), unsupported media type (415), request validation (400), internal server error and configuration errors (500), bad gateway (502), integration timeout (504), backend unavailable (503) |
+| API gateway | Apigee runtime faults (target TLS handshake failure, unreachable target, target timeout, unexpected EOF, policy faults), Envoy and Istio upstream errors (upstream TLS failure, connect error, no healthy upstream), and Amazon API Gateway responses told apart by `x-amzn-ErrorType` and the message: Missing Authentication Token (no matching resource, stage or mapping), Forbidden (API key, WAF, private DNS, base path mapping, disabled default endpoint), Forbidden on a mutual TLS custom domain when a client certificate was sent, AccessDenied (IAM, resource policy, Lambda authorizer), SigV4 signature errors, Unauthorized, throttling and quota (429), request too large (413), unsupported media type (415), request validation (400), internal server error and configuration errors (500), bad gateway (502), integration timeout (504), backend unavailable (503) |
 | Origin | S3 access denied or missing key, any origin status forwarded by the edge, origin mTLS not enabled on the distribution |
+
+#### mTLS detection and platform scoping
+
+dcert registers an OpenSSL certificate callback, so it knows whenever the server sends a CertificateRequest, independently of alert wording and TLS version. That matters for TLS 1.3, where a server that requires a client certificate completes the handshake and only then sends `certificate_required`: dcert reports it as **mTLS required** (exit code 6, `[mTLS REQUIRED]` banner, captured server chain) instead of an empty HTTP response. The `connection` object in JSON (and the MCP tools) carries:
+
+| Field | Meaning |
+|-------|---------|
+| `client_auth` | `not_requested`, `optional` (asked, connection accepted without one), `required` (refused without one) or `presented` (asked, and the configured certificate was sent) |
+| `acceptable_client_cas` | CA names the server listed in its CertificateRequest; empty when it sent none |
+| `client_auth_required` | `true` for `required`, kept for existing callers |
+
+Vendor specific advice is scoped by **platform**. Before scoring, dcert fingerprints the products on the path from headers, body, host and chain (`aws_cloudfront`, `aws_api_gateway`, `aws`, `apigee`, `envoy`, `nginx`, `google_cloud`) and prints them as a `Platform:` line (`platforms` in JSON). CloudFront and API Gateway entries require their platform, so an mTLS refusal from Apigee hybrid, Envoy or nginx gets vendor neutral advice and no AWS links. When Apigee relays an AWS backend's `x-amzn-*` headers, the API Gateway finding is attributed to the origin. Knowledge base entries can use the same gate with a `platform` signal:
+
+```yaml
+signals:
+  - type: platform
+    any_of: [apigee]
+    required: true
+```
 
 Each finding carries a confidence figure, the evidence that matched, remediation steps and a link to the authoritative documentation:
 
@@ -1104,7 +1123,7 @@ It implements the current MCP specification revision (**2025-11-25**) via the `r
 | `export_pem` | Export TLS certificate chain from an HTTPS endpoint as PEM. Optionally saves to file and can exclude expired certs. Supports mTLS. |
 | `create_csr` | Create a PKCS#10 CSR and private key. Supports RSA/ECDSA, OU metadata, and encrypted keys. Compliant with CA/B Forum, DigiCert, and X9 standards. |
 | `validate_csr` | Validate a CSR for compliance with CA/B Forum Baseline Requirements, DigiCert, and X9 standards. Returns findings with severity levels. |
-| `diagnose_endpoint` | Diagnose why an endpoint fails: CloudFront edge and origin errors, API Gateway gateway responses, viewer and origin mTLS, forward proxy failures and TLS interception. Returns findings ordered earliest layer first with confidence, evidence and remediation, plus context notes explaining the status, headers and body. |
+| `diagnose_endpoint` | Diagnose why an endpoint fails: TLS and mTLS on any server, Apigee, Envoy/Istio and nginx errors, CloudFront edge and origin errors, API Gateway gateway responses, forward proxy failures and TLS interception. Returns findings ordered earliest layer first with confidence, evidence and remediation, the `platforms` the probe fingerprinted, and context notes explaining CloudFront and API Gateway responses. |
 | `explain_edge_term` | Look up what a CloudFront or API Gateway status code, header, error name, gateway response type or topic (viewer mTLS modes, origin mTLS, truststores, security policies, limits) means, from the built-in reference knowledge base. No network access. |
 | `validate_certificate` | Run compliance checks on a certificate (PEM file or HTTPS endpoint). Checks key size, signature algorithm, validity period (SC-081v3 schedule), revocation pointers (SC-063v4), SANs, CT, EKU, and Basic Constraints against CA/B Forum standards. |
 | `verify_key_match` | Verify that a private key matches a certificate (PEM file or HTTPS endpoint). |
