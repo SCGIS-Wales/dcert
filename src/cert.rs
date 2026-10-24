@@ -1212,7 +1212,7 @@ pub mod tests {
     #[test]
     fn test_cert_info_yaml_serialization() {
         let info = make_test_cert(Some("test"), vec!["DNS:test.com"]);
-        let yaml = serde_yaml_ng::to_string(&info).unwrap();
+        let yaml = serde_norway::to_string(&info).unwrap();
         assert!(yaml.contains("common_name"), "YAML should contain common_name");
         assert!(yaml.contains("test"), "YAML should contain the CN value");
     }

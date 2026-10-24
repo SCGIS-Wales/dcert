@@ -803,7 +803,7 @@ pub fn export_pem_chain(pem_data: &str, export_path: &str, exclude_expired: bool
 pub fn print_structured<T: serde::Serialize>(format: OutputFormat, value: &T, pretty: impl FnOnce()) -> Result<()> {
     match format {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(value)?),
-        OutputFormat::Yaml => println!("{}", serde_yaml_ng::to_string(value)?),
+        OutputFormat::Yaml => println!("{}", serde_norway::to_string(value)?),
         OutputFormat::Pretty => pretty(),
     }
     Ok(())

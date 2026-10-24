@@ -415,7 +415,7 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
             .iter()
             .map(|r| (r.target.as_str(), StructuredOutput::from(r)))
             .collect();
-        println!("{}", serde_yaml_ng::to_string(&map)?);
+        println!("{}", serde_norway::to_string(&map)?);
     } else {
         for result in &all_results {
             output_results(result, args.format, &args.http_protocol, multi_target, &args)?;
@@ -1277,7 +1277,7 @@ fn run_kb(args: cli::KbArgs) -> Result<i32> {
                 .get(&id)
                 .ok_or_else(|| anyhow::anyhow!("no knowledge base entry with id '{id}'"))?;
             print_structured(format, entry, || {
-                println!("{}", serde_yaml_ng::to_string(entry).unwrap_or_default());
+                println!("{}", serde_norway::to_string(entry).unwrap_or_default());
             })?;
             Ok(exit_code::SUCCESS)
         }

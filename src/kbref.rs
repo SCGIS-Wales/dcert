@@ -169,7 +169,7 @@ impl ReferenceBase {
 
     /// Parse and validate a YAML document.
     pub fn parse(yaml: &str) -> Result<Self> {
-        let rb: Self = serde_yaml_ng::from_str(yaml).context("failed to parse reference YAML")?;
+        let rb: Self = serde_norway::from_str(yaml).context("failed to parse reference YAML")?;
         rb.validate()?;
         Ok(rb)
     }

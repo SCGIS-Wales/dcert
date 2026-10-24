@@ -262,7 +262,7 @@ impl KnowledgeBase {
 
     /// Parse and validate a YAML document.
     pub fn parse(yaml: &str) -> Result<Self> {
-        let kb: Self = serde_yaml_ng::from_str(yaml).context("failed to parse diagnostics YAML")?;
+        let kb: Self = serde_norway::from_str(yaml).context("failed to parse diagnostics YAML")?;
         kb.validate()?;
         Ok(kb)
     }
