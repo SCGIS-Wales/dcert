@@ -268,9 +268,22 @@ summary is written.
   the ubuntu 22.04 built binary probing an ML-KEM loopback server inside
   `debian:trixie` (allowed to fail until plan PR 2.6).
 - Every GitHub Action is pinned to a commit SHA.
+- `terraform-fixture` job: `terraform fmt -check`, `init -backend=false` and
+  `validate` on `infra/test-alb`. Manual workflow `Live ALB policy tests`
+  (`live-alb.yml`) assumes an AWS role through GitHub OIDC, applies the
+  fixture, runs the live tests and always destroys it; Terraform is
+  downloaded at a pinned version and checked against its SHA256SUMS.
 
 ### Testing
 
+- Opt in live tests against real ALBs (`tests/policy_alb_live.rs`, skipped
+  unless `DCERT_LIVE_ALB_TLS13_1_3_PQ_URL` and
+  `DCERT_LIVE_ALB_TLS13_1_2_RES_PQ_URL` are set), with a Terraform fixture
+  in `infra/test-alb` (one ALB, listeners 443 and 8443 on the two PQ
+  policies, RSA and ECDSA certificates, fixed response, cleanup tags) and
+  `make live-alb` (apply, test, always destroy). Guide in
+  `docs/testing/aws-alb-policy-fixtures.md`; README section "Testing
+  against AWS security policies".
 - Hermetic conformance tests for `ELBSecurityPolicy-TLS13-1-3-PQ-2025-09`
   and `ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09` (`tests/policy_alb_pq.rs`)
   against loopback servers configured from the catalogue: conformant

@@ -1,0 +1,87 @@
+# Live conformance tests against real AWS Application Load Balancers.
+# Manual only: it creates billable resources for the length of one run and
+# destroys them afterwards. AWS access uses GitHub OIDC to assume a role; no
+# AWS keys are stored in the repository. Set the repository variables
+# DCERT_LIVE_ALB_REGION and DCERT_LIVE_ALB_ROLE_ARN first
+# (docs/testing/aws-alb-policy-fixtures.md).
+name: Live ALB policy tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep:
+        description: Keep the load balancer after the run (destroy it yourself with make live-alb-down)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: live-alb
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  TERRAFORM_VERSION: "1.9.8"
+  AWS_REGION: ${{ vars.DCERT_LIVE_ALB_REGION }}
+  AWS_ROLE_ARN: ${{ vars.DCERT_LIVE_ALB_ROLE_ARN }}
+
+jobs:
+  live-alb:
+    name: Live ALB policy tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check the configuration
+        run: |
+          if [ -z "$AWS_REGION" ] || [ -z "$AWS_ROLE_ARN" ]; then
+            echo "::error::set the repository variables DCERT_LIVE_ALB_REGION and DCERT_LIVE_ALB_ROLE_ARN"
+            exit 1
+          fi
+
+      - name: Assume the test role with GitHub OIDC
+        run: |
+          token="$(curl -sSf -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" | jq -r .value)"
+          echo "::add-mask::${token}"
+          creds="$(aws sts assume-role-with-web-identity \
+            --role-arn "$AWS_ROLE_ARN" \
+            --role-session-name "dcert-live-alb-${GITHUB_RUN_ID}" \
+            --web-identity-token "$token" \
+            --duration-seconds 3600 \
+            --query Credentials --output json)"
+          for key in AccessKeyId SecretAccessKey SessionToken; do
+            echo "::add-mask::$(jq -r ".${key}" <<<"$creds")"
+          done
+          {
+            echo "AWS_ACCESS_KEY_ID=$(jq -r .AccessKeyId <<<"$creds")"
+            echo "AWS_SECRET_ACCESS_KEY=$(jq -r .SecretAccessKey <<<"$creds")"
+            echo "AWS_SESSION_TOKEN=$(jq -r .SessionToken <<<"$creds")"
+          } >> "$GITHUB_ENV"
+
+      - name: Install Terraform
+        run: scripts/ci/install_terraform.sh "$TERRAFORM_VERSION"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+
+      # The vendored OpenSSL has ML-KEM, so the group checks run for real.
+      - name: Build the live tests
+        run: cargo test --features vendored --test policy_alb_live --no-run
+
+      - name: Create the load balancer
+        run: make live-alb-up
+
+      - name: Run the live tests
+        run: make live-alb-test
+
+      - name: Destroy the load balancer
+        if: ${{ always() && !inputs.keep }}
+        run: make live-alb-down

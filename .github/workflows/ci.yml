@@ -349,6 +349,29 @@ jobs:
       - name: Table regenerates from the vendored registry
         run: python scripts/gen_cipher_table.py generate --check
 
+  # The Terraform fixture for the live ALB tests must stay valid even though
+  # it only runs on demand (.github/workflows/live-alb.yml).
+  terraform-fixture:
+    name: Terraform fixture
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TERRAFORM_VERSION: "1.9.8"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Terraform
+        run: scripts/ci/install_terraform.sh "$TERRAFORM_VERSION"
+
+      - name: Format
+        run: terraform fmt -check -recursive infra
+
+      - name: Validate
+        run: |
+          terraform -chdir=infra/test-alb init -backend=false -input=false
+          terraform -chdir=infra/test-alb validate
+
   # kb/tls_policies.yaml is generated from a snapshot of the AWS and Mozilla
   # pages that publish each policy. A change on those pages is reported
   # (with the live snapshot in the log) but does not block unrelated changes.

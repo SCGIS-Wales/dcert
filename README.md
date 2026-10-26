@@ -1216,7 +1216,9 @@ X?" with bounded handshakes, four at a time:
    ECDSA suites, to learn which certificate key types the listener holds.
 2. Each protocol version alone: accepted exactly when the policy lists it.
 3. Each TLS 1.2 cipher of the policy alone: accepted, with that cipher
-   negotiated. Every other catalogued TLS 1.2 cipher: refused.
+   negotiated. Every other catalogued TLS 1.2 cipher the linked OpenSSL can
+   offer: refused. Suites are offered at security level 0, so weak ones are
+   tested too.
 4. Each TLS 1.3 suite of the policy alone: accepted. Every other suite the
    linked OpenSSL implements: refused.
 5. Each group of the policy alone, `X25519` alone for post quantum policies
@@ -1240,6 +1242,35 @@ Exit codes: 0 conformant (or inconclusive without `--strict`), 9 non
 conformant, 10 inconclusive with `--strict`, 2 when no version is accepted.
 STARTTLS, `--resolve`, `--connect-to`, proxies, timeouts and the mTLS client
 certificate flags apply to every handshake.
+
+#### Testing against AWS security policies
+
+`tests/policy_alb_pq.rs` checks the two required ALB post quantum policies
+against loopback servers built from the catalogue on every CI run. The live
+tests in `tests/policy_alb_live.rs` check the same verdicts against real
+load balancers; they skip unless `DCERT_LIVE_ALB_TLS13_1_3_PQ_URL` and
+`DCERT_LIVE_ALB_TLS13_1_2_RES_PQ_URL` are set.
+
+```bash
+# A listener on ELBSecurityPolicy-TLS13-1-3-PQ-2025-09: TLS 1.3 only.
+dcert policy test https://my-alb.eu-west-2.elb.amazonaws.com:443 \
+  --policy ELBSecurityPolicy-TLS13-1-3-PQ-2025-09 --provider aws_alb
+# A listener on ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09: TLS 1.2 and 1.3.
+dcert policy test https://my-alb.eu-west-2.elb.amazonaws.com:8443 \
+  --policy ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09 --provider aws_alb -f json
+
+# Throwaway fixture with both listeners: apply, run the live tests, destroy.
+export AWS_REGION=eu-west-2
+make live-alb
+```
+
+Both are `conformant` when dcert links OpenSSL 3.5 or later (the vendored
+build does); on older OpenSSL the ML-KEM group checks are `not_testable`
+and the verdict is `inconclusive`.
+
+The manual workflow `Live ALB policy tests` does the same with GitHub OIDC.
+Setup, IAM policies and clean up are in
+[docs/testing/aws-alb-policy-fixtures.md](docs/testing/aws-alb-policy-fixtures.md).
 
 ---
 
