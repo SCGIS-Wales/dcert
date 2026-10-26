@@ -5,6 +5,7 @@
 //! `VaultParams::default()` then assign fields, so the related lint is allowed.
 #![allow(clippy::field_reassign_with_default, unsafe_code, unused_imports)]
 
+use crate::cliargs::ToCliArgs;
 use crate::config::*;
 use crate::exec::*;
 use crate::http::*;
@@ -487,23 +488,36 @@ fn test_mtls_params_to_args() {
     params.client_cert = Some("cert.pem".to_string());
     params.client_key = Some("key.pem".to_string());
     params.ca_cert = Some("ca.pem".to_string());
-    let args = params.to_args();
-    assert!(args.contains(&"--client-cert".to_string()));
-    assert!(args.contains(&"--client-key".to_string()));
-    assert!(args.contains(&"--ca-cert".to_string()));
+    let (args, _) = params.cli_args();
+    assert_eq!(
+        args,
+        ["--client-cert=cert.pem", "--client-key=key.pem", "--ca-cert=ca.pem"]
+    );
 }
 
 // ---------------------------------------------------------------
 // HttpTlsParams connection-override unit tests
 // ---------------------------------------------------------------
 
-/// Index of the value that follows `flag` in an argv vector.
+/// Every value given for `flag` in an argv vector, in either the
+/// `--flag value` or the `--flag=value` form.
 fn value_after(args: &[String], flag: &str) -> Vec<String> {
-    args.iter()
-        .zip(args.iter().skip(1))
-        .filter(|(f, _)| f.as_str() == flag)
-        .map(|(_, v)| v.clone())
-        .collect()
+    let prefix = format!("{flag}=");
+    let mut values = Vec::new();
+    for (i, arg) in args.iter().enumerate() {
+        if let Some(v) = arg.strip_prefix(&prefix) {
+            values.push(v.to_string());
+        } else if arg == flag
+            && let Some(v) = args.get(i + 1)
+        {
+            values.push(v.clone());
+        }
+    }
+    values
+}
+
+fn argv(params: &impl ToCliArgs) -> Vec<String> {
+    params.cli_args().0
 }
 
 #[test]
@@ -512,7 +526,7 @@ fn test_http_tls_params_connect_to_accepts_single_string() {
         connect_to: Some(OneOrMany::One("10.0.0.5".to_string())),
         ..Default::default()
     };
-    assert_eq!(value_after(&params.to_args(), "--connect-to"), vec!["10.0.0.5"]);
+    assert_eq!(value_after(&argv(&params), "--connect-to"), vec!["10.0.0.5"]);
 }
 
 #[test]
@@ -525,7 +539,7 @@ fn test_http_tls_params_connect_to_accepts_list() {
         ..Default::default()
     };
     assert_eq!(
-        value_after(&params.to_args(), "--connect-to"),
+        value_after(&argv(&params), "--connect-to"),
         vec!["api.example.com:443:origin.internal:8443", "10.0.0.5"]
     );
 }
@@ -540,7 +554,7 @@ fn test_http_tls_params_resolve_to_args() {
         ..Default::default()
     };
     assert_eq!(
-        value_after(&params.to_args(), "--resolve"),
+        value_after(&argv(&params), "--resolve"),
         vec!["api.example.com:443:10.0.0.5", "*:8443:10.0.0.6"]
     );
 }
@@ -548,12 +562,12 @@ fn test_http_tls_params_resolve_to_args() {
 #[test]
 fn test_http_tls_params_deserializes_string_or_list() {
     let one: HttpTlsParams = serde_json::from_value(serde_json::json!({"connect_to": "10.0.0.5"})).unwrap();
-    assert_eq!(value_after(&one.to_args(), "--connect-to"), vec!["10.0.0.5"]);
+    assert_eq!(value_after(&argv(&one), "--connect-to"), vec!["10.0.0.5"]);
 
     let many: HttpTlsParams =
         serde_json::from_value(serde_json::json!({"resolve": ["a.example.com:443:10.0.0.5"]})).unwrap();
     assert_eq!(
-        value_after(&many.to_args(), "--resolve"),
+        value_after(&argv(&many), "--resolve"),
         vec!["a.example.com:443:10.0.0.5"]
     );
 }
@@ -565,13 +579,13 @@ fn test_http_tls_params_proxy_goes_via_env_not_argv() {
         noproxy: Some("*".to_string()),
         ..Default::default()
     };
-    let args = params.to_args();
+    let (args, env) = params.cli_args();
     assert!(
         !args.iter().any(|a| a.contains("proxy.corp")),
         "proxy credentials must not reach argv: {args:?}"
     );
     assert_eq!(
-        params.env_vars(),
+        env,
         vec![
             ("DCERT_PROXY", "http://user:pass@proxy.corp:3128"),
             ("DCERT_NOPROXY", "*"),
@@ -598,7 +612,7 @@ fn test_http_transport_deserializes_the_same_params_as_stdio() {
     let http_tls: HttpTlsParams = serde_json::from_value(arguments).expect("unknown keys are ignored");
     assert!(http_tls.validate().is_ok());
 
-    let args = http_tls.to_args();
+    let (args, env) = http_tls.cli_args();
     assert_eq!(
         value_after(&args, "--connect-to"),
         vec!["api.example.com:443:origin.internal:8443"]
@@ -606,7 +620,7 @@ fn test_http_transport_deserializes_the_same_params_as_stdio() {
     assert_eq!(value_after(&args, "--resolve"), vec!["api.example.com:443:10.0.0.5"]);
     assert_eq!(value_after(&args, "--sni"), vec!["api.example.com"]);
     assert_eq!(
-        http_tls.env_vars(),
+        env,
         vec![("DCERT_PROXY", "http://proxy.corp:3128"), ("DCERT_NOPROXY", "*")]
     );
 }
@@ -2232,6 +2246,28 @@ fn injected_flags_respect_caller_values_and_work_without_separator() {
 }
 
 #[test]
+fn injected_flags_respect_caller_values_in_equals_form() {
+    let full = inject_flags(
+        &["check", "--timeout=7", "--debug", "--", "example.com"],
+        true,
+        "10",
+        "5",
+    );
+    assert_eq!(
+        full,
+        [
+            "check",
+            "--timeout=7",
+            "--debug",
+            "--read-timeout",
+            "5",
+            "--",
+            "example.com"
+        ]
+    );
+}
+
+#[test]
 fn explain_exit_2_with_empty_list_is_an_answer() {
     assert_eq!(cert::explain_ok_codes(2, "[]\n"), &[0, 2]);
     assert_eq!(cert::explain_ok_codes(0, "[{\"x\":1}]"), &[0]);
@@ -2546,16 +2582,13 @@ async fn headers_and_body_never_reach_the_child_command_line() {
     config.subprocess_timeout = Duration::from_secs(10);
     let server = DcertMcpServer::new(config);
     let body = "B".repeat(200 * 1024);
-    let http_tls = HttpTlsParams {
-        headers: Some(vec!["Authorization: Bearer sekrit-token".to_string()]),
-        data: Some(body),
-        ..Default::default()
-    };
-    let mut mtls = MtlsParams::default();
-    let (stdout, _stderr, _code) = server
-        .run_probe("check", "https://example.com", Vec::new(), &mut mtls, Some(&http_tls))
-        .await
-        .expect("run");
+    let mut params: CheckRevocationParams = serde_json::from_value(serde_json::json!({
+        "target": "https://example.com",
+        "headers": ["Authorization: Bearer sekrit-token"],
+        "data": body,
+    }))
+    .expect("params");
+    let (stdout, _stderr, _code) = server.run_probe(&mut params).await.expect("run");
     let cmdline = stdout
         .lines()
         .find(|l| l.starts_with("CMDLINE:"))
@@ -2619,11 +2652,11 @@ fn http_tls_args_never_carry_headers_or_body() {
         http_tls.validate().is_ok(),
         "a body may start with '-' now it is in a file"
     );
-    let args = http_tls.to_args();
+    let args = argv(&http_tls);
     assert!(
         !args
             .iter()
-            .any(|a| a.contains("abc123") || a == "--header" || a == "--data"),
+            .any(|a| a.contains("abc123") || a.starts_with("--header=") || a.starts_with("--data=")),
         "{args:?}"
     );
     let (file_args, files) = http_tls.secret_files().expect("files");

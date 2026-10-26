@@ -16,6 +16,12 @@ summary is written.
   fixed defaults. `--cipher-notation` is the canonical name of `--ciphers`,
   which stays as an alias. `check --help` groups these flags under "TLS
   options" and "Connection options".
+- The MCP server builds every probe's command line through one serialiser
+  (`ToCliArgs` and `ArgBuilder` in `src/mcp/cliargs.rs`) that always emits
+  `--flag=value`, so a value starting with `-` can never be read as a flag.
+  A parity test checks that every probe tool property reaches a flag the CLI
+  accepts, and that every `check` flag is sent by a tool or listed as CLI
+  only with its reason.
 
 ### Security
 
@@ -84,6 +90,9 @@ summary is written.
   `DCERT_MCP_FILE_ROOT` to add it back.
 
 ### Fixed
+
+- `--method` is case insensitive, so `POST` works on the CLI and the MCP
+  `method: "POST"` the tool schema documents is no longer rejected.
 
 - IMAP STARTTLS accepts untagged `*` lines (capabilities, alerts) before
   the tagged `a001 OK`, as RFC 9051 allows, instead of failing on the first

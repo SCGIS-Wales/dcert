@@ -3,6 +3,7 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use crate::cliargs::{ArgBuilder, ToCliArgs};
 use crate::validate::{reject_flag_like, validate_arg, validate_path};
 use dcert::limits::{READ_TIMEOUT_RANGE, TIMEOUT_RANGE, check_range};
 
@@ -54,37 +55,16 @@ impl MtlsParams {
         }
         Ok(())
     }
+}
 
-    pub(crate) fn to_args(&self) -> Vec<String> {
-        let mut args = Vec::new();
-        if let Some(ref p) = self.client_cert {
-            args.push("--client-cert".to_string());
-            args.push(p.clone());
-        }
-        if let Some(ref p) = self.client_key {
-            args.push("--client-key".to_string());
-            args.push(p.clone());
-        }
-        if let Some(ref p) = self.pkcs12 {
-            args.push("--pkcs12".to_string());
-            args.push(p.clone());
-        }
-        // cert_password is passed via DCERT_CERT_PASSWORD env var (see run_dcert_with_env)
-        // to avoid exposing it in process listings.
-        if let Some(ref p) = self.ca_cert {
-            args.push("--ca-cert".to_string());
-            args.push(p.clone());
-        }
-        args
-    }
-
-    /// Returns env vars to set on the subprocess for secret parameters.
-    pub(crate) fn env_vars(&self) -> Vec<(&str, &str)> {
-        let mut vars = Vec::new();
-        if let Some(ref p) = self.cert_password {
-            vars.push(("DCERT_CERT_PASSWORD", p.as_str()));
-        }
-        vars
+impl ToCliArgs for MtlsParams {
+    fn write_args<'a>(&'a self, out: &mut ArgBuilder<'a>) {
+        out.value("client-cert", self.client_cert.as_deref())
+            .value("client-key", self.client_key.as_deref())
+            .value("pkcs12", self.pkcs12.as_deref())
+            .value("ca-cert", self.ca_cert.as_deref())
+            // The password travels in the environment, never in argv.
+            .env("DCERT_CERT_PASSWORD", self.cert_password.as_deref());
     }
 }
 
@@ -226,67 +206,30 @@ fn path_arg(file: &tempfile::NamedTempFile) -> Result<String, String> {
         .ok_or_else(|| "temporary file path is not valid UTF-8".to_string())
 }
 
-impl HttpTlsParams {
-    pub(crate) fn to_args(&self) -> Vec<String> {
-        let mut args = Vec::new();
-        if let Some(ref v) = self.cipher_list {
-            args.push("--cipher-list".to_string());
-            args.push(v.clone());
-        }
-        if let Some(ref v) = self.cipher_suites {
-            args.push("--cipher-suites".to_string());
-            args.push(v.clone());
-        }
-        if let Some(ref v) = self.groups {
-            args.push("--groups".to_string());
-            args.push(v.clone());
-        }
-        if let Some(ref v) = self.tls_profile {
-            args.push("--tls-profile".to_string());
-            args.push(v.clone());
-        }
-        if self.pq_probe == Some(true) {
-            args.push("--pq-probe".to_string());
-        }
-        if let Some(ref v) = self.sni {
-            args.push("--sni".to_string());
-            args.push(v.clone());
-        }
-        for spec in self.connect_to.iter().flat_map(OneOrMany::values) {
-            args.push("--connect-to".to_string());
-            args.push(spec.to_string());
-        }
-        for spec in self.resolve.iter().flat_map(OneOrMany::values) {
-            args.push("--resolve".to_string());
-            args.push(spec.to_string());
-        }
-        if let Some(v) = self.timeout {
-            args.push("--timeout".to_string());
-            args.push(v.to_string());
-        }
-        if let Some(v) = self.read_timeout {
-            args.push("--read-timeout".to_string());
-            args.push(v.to_string());
-        }
-        if let Some(ref v) = self.method {
-            args.push("--method".to_string());
-            args.push(v.clone());
-        }
-        if let Some(ref v) = self.http_protocol {
-            args.push("--http-protocol".to_string());
-            args.push(v.clone());
-        }
-        if let Some(ref v) = self.ciphers_notation {
-            args.push("--cipher-notation".to_string());
-            args.push(v.clone());
-        }
-        if let Some(ref v) = self.starttls {
-            args.push("--starttls".to_string());
-            args.push(v.clone());
-        }
-        args
+impl ToCliArgs for HttpTlsParams {
+    fn write_args<'a>(&'a self, out: &mut ArgBuilder<'a>) {
+        out.value("cipher-list", self.cipher_list.as_deref())
+            .value("cipher-suites", self.cipher_suites.as_deref())
+            .value("groups", self.groups.as_deref())
+            .value("tls-profile", self.tls_profile.as_deref())
+            .flag("pq-probe", self.pq_probe == Some(true))
+            .value("sni", self.sni.as_deref())
+            .repeat("connect-to", self.connect_to.iter().flat_map(OneOrMany::values))
+            .repeat("resolve", self.resolve.iter().flat_map(OneOrMany::values))
+            .value("timeout", self.timeout)
+            .value("read-timeout", self.read_timeout)
+            .value("method", self.method.as_deref())
+            .value("http-protocol", self.http_protocol.as_deref())
+            .value("cipher-notation", self.ciphers_notation.as_deref())
+            .value("starttls", self.starttls.as_deref())
+            // A proxy URL may carry credentials, so proxy settings travel in
+            // the environment like DCERT_CERT_PASSWORD.
+            .env("DCERT_PROXY", self.proxy.as_deref())
+            .env("DCERT_NOPROXY", self.noproxy.as_deref());
     }
+}
 
+impl HttpTlsParams {
     /// Headers and the request body travel in private temporary files
     /// (mode 0600 on Unix) passed as `--headers-file` and `--data-file`,
     /// never in argv: argv is readable by every local user through `ps` and
@@ -309,20 +252,6 @@ impl HttpTlsParams {
             files.push(file);
         }
         Ok((args, files))
-    }
-
-    /// Proxy settings travel as environment variables rather than argv: a proxy
-    /// URL may carry credentials, and argv is world-readable via `ps`. This is
-    /// the same treatment `MtlsParams` gives `DCERT_CERT_PASSWORD`.
-    pub(crate) fn env_vars(&self) -> Vec<(&str, &str)> {
-        let mut vars = Vec::new();
-        if let Some(ref p) = self.proxy {
-            vars.push(("DCERT_PROXY", p.as_str()));
-        }
-        if let Some(ref n) = self.noproxy {
-            vars.push(("DCERT_NOPROXY", n.as_str()));
-        }
-        vars
     }
 
     /// Reject values that could smuggle extra flags into the dcert subprocess.
@@ -680,6 +609,130 @@ pub(crate) struct ValidateCertificateParams {
     /// mTLS and CA configuration
     #[serde(flatten, default)]
     pub(crate) mtls: MtlsParams,
+}
+
+// -- Probe tools: what each one sends to `dcert check` or `dcert diagnose` --
+
+/// A tool that probes a target through `dcert check` (or `dcert diagnose`).
+pub(crate) trait ProbeParams: ToCliArgs {
+    /// The subcommand the tool runs.
+    const SUBCOMMAND: &'static str = "check";
+
+    fn target(&self) -> &str;
+
+    /// The shared option groups, validated before the argv is built.
+    fn groups(&mut self) -> (&mut MtlsParams, Option<&HttpTlsParams>);
+}
+
+/// Implement [`ProbeParams`] for a tool whose `mtls` and `http_tls` groups
+/// are both flattened into its parameters.
+macro_rules! probe_params {
+    ($ty:ty $(, $sub:literal)?) => {
+        impl ProbeParams for $ty {
+            $(const SUBCOMMAND: &'static str = $sub;)?
+
+            fn target(&self) -> &str {
+                &self.target
+            }
+
+            fn groups(&mut self) -> (&mut MtlsParams, Option<&HttpTlsParams>) {
+                (&mut self.mtls, Some(&self.http_tls))
+            }
+        }
+    };
+}
+probe_params!(AnalyzeCertificateParams);
+probe_params!(CheckExpiryParams);
+probe_params!(CheckRevocationParams);
+probe_params!(TlsConnectionInfoParams);
+probe_params!(ExportPemParams);
+probe_params!(DiagnoseEndpointParams, "diagnose");
+
+impl ProbeParams for ValidateCertificateParams {
+    fn target(&self) -> &str {
+        &self.target
+    }
+
+    fn groups(&mut self) -> (&mut MtlsParams, Option<&HttpTlsParams>) {
+        (&mut self.mtls, None)
+    }
+}
+
+impl ToCliArgs for AnalyzeCertificateParams {
+    fn write_args<'a>(&'a self, out: &mut ArgBuilder<'a>) {
+        out.value("format", Some("json"))
+            .flag("fingerprint", self.fingerprint)
+            .flag("extensions", self.extensions)
+            .flag("check-revocation", self.check_revocation)
+            .flag("no-trust-check", self.no_trust_check)
+            .flag("resolve-issuers", self.resolve_issuers)
+            .value("issuer-timeout", self.issuer_timeout)
+            .flag("refresh-public-roots", self.refresh_public_roots)
+            .extend(&self.mtls)
+            .extend(&self.http_tls);
+    }
+}
+
+impl ToCliArgs for CheckExpiryParams {
+    fn write_args<'a>(&'a self, out: &mut ArgBuilder<'a>) {
+        out.value("format", Some("json"))
+            .flag("fingerprint", true)
+            .value("expiry-warn", Some(self.days))
+            .extend(&self.mtls)
+            .extend(&self.http_tls);
+    }
+}
+
+impl ToCliArgs for CheckRevocationParams {
+    fn write_args<'a>(&'a self, out: &mut ArgBuilder<'a>) {
+        out.value("format", Some("json"))
+            .flag("check-revocation", true)
+            .flag("extensions", true)
+            .extend(&self.mtls)
+            .extend(&self.http_tls);
+    }
+}
+
+impl ToCliArgs for TlsConnectionInfoParams {
+    fn write_args<'a>(&'a self, out: &mut ArgBuilder<'a>) {
+        out.value("format", Some("json"))
+            .flag("fingerprint", true)
+            .flag("extensions", true)
+            .value("min-tls", self.min_tls.as_deref())
+            .value("max-tls", self.max_tls.as_deref())
+            .extend(&self.mtls)
+            .extend(&self.http_tls);
+    }
+}
+
+impl ToCliArgs for ExportPemParams {
+    fn write_args<'a>(&'a self, out: &mut ArgBuilder<'a>) {
+        // Without an output file the chain comes back in the JSON as
+        // `pem_data` (`--export-pem=-`).
+        out.value("format", Some("json"))
+            .value("export-pem", Some(self.output_path.as_deref().unwrap_or("-")))
+            .flag("exclude-expired", self.exclude_expired)
+            .extend(&self.mtls)
+            .extend(&self.http_tls);
+    }
+}
+
+impl ToCliArgs for DiagnoseEndpointParams {
+    fn write_args<'a>(&'a self, out: &mut ArgBuilder<'a>) {
+        out.value("format", Some("json"))
+            .flag("show-body", self.show_body)
+            .flag("no-verify", self.no_verify)
+            .extend(&self.mtls)
+            .extend(&self.http_tls);
+    }
+}
+
+impl ToCliArgs for ValidateCertificateParams {
+    fn write_args<'a>(&'a self, out: &mut ArgBuilder<'a>) {
+        out.value("format", Some("json"))
+            .flag("compliance", true)
+            .extend(&self.mtls);
+    }
 }
 
 pub(crate) fn default_rsa_4096() -> String {
