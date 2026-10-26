@@ -277,7 +277,7 @@ impl HttpTlsParams {
             args.push(v.clone());
         }
         if let Some(ref v) = self.ciphers_notation {
-            args.push("--ciphers".to_string());
+            args.push("--cipher-notation".to_string());
             args.push(v.clone());
         }
         if let Some(ref v) = self.starttls {

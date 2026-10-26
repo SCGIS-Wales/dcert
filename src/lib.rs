@@ -27,5 +27,6 @@ pub mod secret;
 #[cfg(test)]
 pub(crate) mod testutil;
 pub mod tls;
+pub mod tlsopts;
 pub mod trust;
 pub mod vault;

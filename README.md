@@ -373,7 +373,7 @@ dcert mail.example.com:587 --starttls smtp
 dcert imap.example.com:143 --starttls imap
 
 # Show the negotiated cipher suite in IANA or OpenSSL notation
-dcert https://example.com --ciphers iana
+dcert https://example.com --cipher-notation iana
 ```
 
 #### mTLS (Mutual TLS)
@@ -443,7 +443,8 @@ Options:
       --max-tls <VERSION>              Maximum TLS version [1.2, 1.3]
       --cipher-list <STRING>           Allowed TLS 1.2 ciphers (OpenSSL format)
       --cipher-suites <SUITES>         Allowed TLS 1.3 cipher suites (colon-separated)
-      --ciphers <NOTATION>             Show the negotiated cipher suite in [iana, openssl] notation
+      --cipher-notation <NOTATION>     Show the negotiated cipher suite in [iana, openssl] notation
+                                       (--ciphers is accepted as an alias)
       --groups <GROUPS>                Key exchange groups to offer (OpenSSL group list, e.g.
                                        X25519MLKEM768:X25519; ML-KEM needs OpenSSL 3.5+)
       --tls-profile <PROFILE>          Mozilla client profile [modern, intermediate]
@@ -672,6 +673,10 @@ dcert verify-key cert.pem --key private.key
 
 # Verify against an HTTPS endpoint
 dcert verify-key https://example.com --key private.key
+
+# Network targets take the same TLS and connection options as check
+dcert verify-key https://api.internal --key private.key --ca-cert ca.pem --proxy http://proxy:3128
+dcert verify-key mail.example.com:587 --starttls smtp --key private.key
 
 # Auto-discover all cert/key pairs in the current directory
 dcert verify-key

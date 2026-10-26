@@ -520,10 +520,6 @@ pub struct KeyMatchResult {
     pub details: String,
 }
 
-/// Verify that a private key matches a certificate's public key.
-///
-/// The `key_path` is a PEM file containing the private key.
-/// The `target` is either a PEM file or HTTPS URL. For HTTPS, we fetch the leaf cert.
 /// Report the public-key algorithm of an OpenSSL key by its key id.
 ///
 /// Unlike probing `rsa()`/`ec_key()` and falling back to a bare `"Unknown"`,
@@ -542,9 +538,47 @@ pub fn pkey_algorithm<T>(pkey: &openssl::pkey::PKey<T>) -> String {
     }
 }
 
-pub fn verify_key_matches_cert(key_path: &str, target: &str, debug: bool) -> Result<KeyMatchResult> {
+/// Fetch the presented chain of `target` as PEM, over HTTPS or, with
+/// `--starttls`, over the mail or FTP protocol upgrade. Every setting comes
+/// from `probe`, the same builder `check` uses.
+fn fetch_chain_pem(target: &str, probe: &crate::tlsopts::ProbeOptions<'_>) -> Result<String> {
+    if let Some(protocol) = probe.tls.starttls {
+        let (host, port) = crate::output::starttls_host_port(target, protocol.default_port());
+        let conn = crate::tls::fetch_tls_chain_starttls(&crate::tls::StarttlsFetchOptions {
+            probe: probe.tls_probe(),
+            host: &host,
+            port,
+            protocol,
+            identity: probe.identity,
+        })?;
+        return Ok(conn.pem_data);
+    }
+    let conn = crate::tls::fetch_tls_chain_openssl(&crate::tls::TlsFetchOptions {
+        probe: probe.tls_probe(),
+        endpoint: target,
+        method: "GET",
+        headers: &[],
+        body: None,
+        http_protocol: crate::cli::HttpProtocol::Http1_1,
+        proxy_config: &probe.proxy,
+        identity: probe.identity,
+        body_limit: 0,
+    })?;
+    Ok(conn.pem_data)
+}
+
+/// Verify that the private key in `key_path` matches the certificate in
+/// `target`: a PEM file, an HTTPS URL, or with `--starttls` a host[:port].
+/// Network targets are fetched with the TLS and connection settings in
+/// `probe` (proxy, overrides, SNI, CA bundle, timeouts).
+pub fn verify_key_matches_cert(
+    key_path: &str,
+    target: &str,
+    probe: &crate::tlsopts::ProbeOptions<'_>,
+) -> Result<KeyMatchResult> {
     use crate::debug::debug_log;
     use openssl::pkey::PKey;
+    let debug = probe.debug;
 
     // Load private key
     debug_log!(debug, "Loading private key from: {}", key_path);
@@ -560,36 +594,9 @@ pub fn verify_key_matches_cert(key_path: &str, target: &str, debug: bool) -> Res
     debug_log!(debug, "Key type: {} ({} bits)", key_type, key_size_bits);
 
     // Load certificate PEM data
-    let cert_pem = if target.starts_with("https://") {
+    let cert_pem = if target.starts_with("https://") || probe.tls.starttls.is_some() {
         debug_log!(debug, "Fetching certificate from: {}", target);
-        // Fetch TLS chain from the target
-        let proxy_config = crate::proxy::ProxyConfig::from_env();
-        let connect_overrides = crate::connect::ConnectOverrides::default();
-        let conn = crate::tls::fetch_tls_chain_openssl(&crate::tls::TlsFetchOptions {
-            probe: crate::tls::TlsProbeOptions {
-                no_verify: false,
-                timeout_secs: crate::tls::CONNECTION_TIMEOUT_SECS,
-                read_timeout_secs: crate::tls::READ_TIMEOUT_SECS,
-                sni_override: None,
-                connect_overrides: &connect_overrides,
-                min_tls: None,
-                max_tls: None,
-                cipher_list: None,
-                cipher_suites: None,
-                groups: None,
-                ca_cert_path: None,
-                debug,
-            },
-            endpoint: target,
-            method: "GET",
-            headers: &[],
-            body: None,
-            http_protocol: crate::cli::HttpProtocol::Http1_1,
-            proxy_config: &proxy_config,
-            identity: crate::tls::ClientIdentity::default(),
-            body_limit: 0,
-        })?;
-        conn.pem_data
+        fetch_chain_pem(target, probe)?
     } else {
         std::fs::read_to_string(target).map_err(|e| anyhow::anyhow!("Failed to read certificate '{target}': {e}"))?
     };

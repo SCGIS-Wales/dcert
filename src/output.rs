@@ -11,18 +11,17 @@ use x509_parser::prelude::FromDer;
 use crate::cert::{CertInfo, CertProcessOpts, extract_ocsp_url, parse_cert_infos_from_pem};
 use crate::cli::{CheckArgs, CipherNotation, HttpProtocol, OutputFormat, SortOrder};
 use crate::compliance::{self, ChainComplianceReport, Severity};
-use crate::connect::ConnectOverrides;
 use crate::convert::{CertRole, ConvertResult, write_public_file};
 use crate::debug::debug_log;
 use crate::diagnose::{Diagnosis, PlatformHint};
-use crate::keyex::{self, EffectiveTlsSettings, KeyExchangeClass, PqProbeStatus};
+use crate::keyex::{self, KeyExchangeClass, PqProbeStatus};
 use crate::mtls::ClientAuthStatus;
 use crate::ocsp::check_ocsp_status;
-use crate::proxy::ProxyConfig;
 use crate::tls::{
     ClientIdentity, PqProbeRequest, ProbeTransport, StarttlsFetchOptions, TlsConnectionInfo, TlsFetchOptions,
-    TlsProbeOptions, fetch_tls_chain_openssl, fetch_tls_chain_starttls, probe_post_quantum,
+    fetch_tls_chain_openssl, fetch_tls_chain_starttls, probe_post_quantum,
 };
+use crate::tlsopts::ProbeOptions;
 use crate::trust::{PublicRoots, RootTrustClass, RootTrustInfo, TrustOpts, assess_root_trust};
 
 /// Debug/connection info for pretty output.
@@ -441,7 +440,7 @@ impl From<&TargetResult> for StructuredOutput {
 }
 
 /// The client certificate configured on the command line, if any.
-fn client_identity(args: &CheckArgs) -> ClientIdentity<'_> {
+pub fn client_identity(args: &CheckArgs) -> ClientIdentity<'_> {
     ClientIdentity {
         client_cert_path: args.client_cert.as_deref(),
         client_key_path: args.client_key.as_deref(),
@@ -485,8 +484,7 @@ pub fn starttls_host_port(target: &str, default_port: u16) -> (String, u16) {
 pub fn process_target(
     target: &str,
     args: &CheckArgs,
-    proxy_config: &ProxyConfig,
-    connect_overrides: &ConnectOverrides,
+    probe_opts: &ProbeOptions<'_>,
     public_roots: &PublicRoots,
     body: Option<&[u8]>,
     stdin_pem: Option<&str>,
@@ -501,17 +499,12 @@ pub fn process_target(
         extensions: args.extensions || compliance_mode,
     };
 
-    let tls_settings = keyex::effective_tls_settings(
-        args.tls_profile,
-        args.min_tls,
-        args.cipher_list.as_deref(),
-        args.cipher_suites.as_deref(),
-        args.groups.as_deref(),
-    );
-    if let Some(profile) = args.tls_profile {
+    let proxy_config = &probe_opts.proxy;
+    let identity = probe_opts.identity;
+    if let Some(profile) = args.tls.tls_profile {
         eprintln!(
             "Note: --tls-profile {profile:?} offers groups {} (ML-KEM hybrids need OpenSSL 3.5+; linked: {})",
-            tls_settings.groups.as_deref().unwrap_or("default"),
+            probe_opts.settings.groups.as_deref().unwrap_or("default"),
             openssl::version::version()
         );
     }
@@ -521,14 +514,12 @@ pub fn process_target(
             .ok_or_else(|| anyhow::anyhow!("No PEM data received from stdin"))?
             .to_string();
         (pem, None)
-    } else if let Some(protocol) = args.starttls {
+    } else if let Some(protocol) = args.tls.starttls {
         // STARTTLS mode: target is host[:port]. The target parser adds
         // `https://` to bare hostnames, so the scheme is stripped here.
         let (host, port) = starttls_host_port(target, protocol.default_port());
         let host = host.as_str();
-        let identity = client_identity(args);
-
-        let probe = probe_options(args, connect_overrides, &tls_settings);
+        let probe = probe_opts.tls_probe();
         let mut conn = fetch_tls_chain_starttls(&StarttlsFetchOptions {
             probe,
             host,
@@ -536,7 +527,7 @@ pub fn process_target(
             protocol,
             identity,
         })?;
-        if args.pq_probe {
+        if args.tls.pq_probe {
             conn.post_quantum_probe = Some(probe_post_quantum(
                 &PqProbeRequest {
                     host,
@@ -553,8 +544,7 @@ pub fn process_target(
         (pem, Some(conn))
     } else if target.starts_with("https://") {
         let method_str = args.method.to_string();
-        let probe = probe_options(args, connect_overrides, &tls_settings);
-        let identity = client_identity(args);
+        let probe = probe_opts.tls_probe();
         let mut conn = fetch_tls_chain_openssl(&TlsFetchOptions {
             probe,
             endpoint: target,
@@ -566,7 +556,7 @@ pub fn process_target(
             identity,
             body_limit: args.body_limit,
         })?;
-        if args.pq_probe
+        if args.tls.pq_probe
             && let Ok(url) = Url::parse(target)
             && let Some(host) = url.host_str()
         {
@@ -612,7 +602,7 @@ pub fn process_target(
                     let issuer_der = chain_ders.get(info.index + 1).map(Vec::as_slice);
                     let net = crate::ocsp::OcspNetwork {
                         proxy: Some(proxy_config),
-                        timeout: std::time::Duration::from_secs(args.timeout),
+                        timeout: std::time::Duration::from_secs(args.connection.timeout),
                         debug: args.debug,
                     };
                     info.revocation_status = Some(check_ocsp_status(der, issuer_der, &ocsp_url, &net));
@@ -849,29 +839,6 @@ pub fn print_findings(findings: &[compliance::Finding], indent: &str) {
     }
 }
 
-/// Shared TLS probe settings for a target, from the check arguments and the
-/// profile resolved settings.
-fn probe_options<'a>(
-    args: &'a CheckArgs,
-    connect_overrides: &'a ConnectOverrides,
-    tls: &'a EffectiveTlsSettings,
-) -> TlsProbeOptions<'a> {
-    TlsProbeOptions {
-        no_verify: args.no_verify,
-        timeout_secs: args.timeout,
-        read_timeout_secs: args.read_timeout,
-        sni_override: args.sni.as_deref(),
-        connect_overrides,
-        min_tls: tls.min_tls,
-        max_tls: args.max_tls,
-        cipher_list: tls.cipher_list.as_deref(),
-        cipher_suites: tls.cipher_suites.as_deref(),
-        groups: tls.groups.as_deref(),
-        ca_cert_path: args.ca_cert.as_deref(),
-        debug: args.debug,
-    }
-}
-
 /// Output results for a target in the requested format.
 pub fn output_results(
     result: &TargetResult,
@@ -898,7 +865,7 @@ pub fn output_results(
             hostname: hostname.as_deref(),
             conn: result.conn_info.as_ref(),
             http_protocol,
-            cipher_notation: args.ciphers,
+            cipher_notation: args.tls.cipher_notation,
         };
         print_pretty(&result.infos, &debug);
 

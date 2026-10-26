@@ -2,19 +2,19 @@ use anyhow::{Context, Result};
 use clap::CommandFactory;
 use clap::Parser;
 use colored::*;
-use dcert::{cert, cli, connect, convert, csr, diagnose, kbref, output, proxy, trust, vault};
+use dcert::{cert, cli, convert, csr, diagnose, kbref, output, tlsopts, trust, vault};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 use cli::{CheckArgs, Cli, Command, HttpMethod, KNOWN_SUBCOMMANDS, OutputFormat, exit_code};
-use connect::ConnectOverrides;
+use dcert::tls::ClientIdentity;
 use output::{
     StructuredOutput, TargetResult, check_expiry_warnings, export_pem_chain, export_pem_text, output_results,
     print_diff, print_structured, process_target,
 };
-use proxy::ProxyConfig;
+use tlsopts::ProbeOptions;
 
 /// Maximum size for stdin input (10 MB). Prevents OOM from accidentally
 /// piping huge files. 10 MB is generous enough for large PEM bundles
@@ -96,7 +96,7 @@ fn run_check(args: CheckArgs) -> Result<i32> {
 
 fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> Result<i32> {
     // Warn prominently when certificate verification is disabled
-    if args.no_verify {
+    if args.connection.no_verify {
         eprintln!(
             "{} {}",
             "WARNING:".yellow().bold(),
@@ -105,13 +105,7 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
     }
 
     // Validate min_tls <= max_tls ordering if both are set
-    if let (Some(min), Some(max)) = (&args.min_tls, &args.max_tls)
-        && min > max
-    {
-        return Err(anyhow::anyhow!(
-            "--min-tls ({min}) must not be greater than --max-tls ({max})"
-        ));
-    }
+    args.tls.validate()?;
 
     warn_secret_on_argv("--cert-password", "DCERT_CERT_PASSWORD", args.cert_password.is_some());
 
@@ -136,19 +130,23 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
         args.method = HttpMethod::Post;
     }
 
-    // Cache proxy configuration at startup: --proxy/--noproxy layered over the
-    // standard environment variables.
-    let proxy_config = ProxyConfig::resolve(args.proxy.as_deref(), args.noproxy.as_deref())?;
+    // Diff and watch mode compare fingerprints, so they always compute them.
+    if args.diff || args.watch.is_some() {
+        args.fingerprint = true;
+    }
 
-    // --resolve and --connect-to share one lookup table, built once per run.
-    let connect_overrides = ConnectOverrides::new(&args.resolve, &args.connect_to);
+    // Resolve the TLS profile, the proxy (--proxy/--noproxy layered over the
+    // standard environment variables) and the --resolve/--connect-to table
+    // once per run.
+    let probe_opts = ProbeOptions::new(&args.tls, &args.connection, output::client_identity(&args), args.debug)?;
+    let proxy_config = &probe_opts.proxy;
 
     // Build the public root set once per invocation (offline by default;
     // optionally refreshed from the upstream Mozilla/CCADB bundle). Reused
     // across every target so classifying 50+ certs stays fast.
     let public_roots = trust::PublicRoots::load(
         args.refresh_public_roots,
-        &proxy_config,
+        proxy_config,
         Duration::from_secs(args.issuer_timeout),
         args.debug,
     )?;
@@ -207,18 +205,8 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
         return Err(anyhow::anyhow!("--diff requires exactly 2 targets"));
     }
 
-    // Auto-enable fingerprint in diff mode so comparisons include fingerprints
-    if args.diff && !args.fingerprint {
-        args.fingerprint = true;
-    }
-
     // Watch mode
     if let Some(interval) = args.watch {
-        // Auto-enable fingerprint in watch mode so change detection works
-        if !args.fingerprint {
-            args.fingerprint = true;
-        }
-
         // The first Ctrl+C stops the loop between iterations (see
         // `register_sigint_handler`).
         COOPERATIVE_STOP.store(true, Ordering::SeqCst);
@@ -241,8 +229,7 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
                 match process_target(
                     target,
                     &args,
-                    &proxy_config,
-                    &connect_overrides,
+                    &probe_opts,
                     &public_roots,
                     body_data.as_deref(),
                     stdin_pem.as_deref(),
@@ -296,9 +283,9 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
         Some(kbref::ReferenceBase::builtin()?)
     };
     let probe = diagnose::ProbeContext {
-        proxy: Some(&proxy_config),
+        proxy: Some(proxy_config),
         client_cert_supplied: args.client_cert.is_some() || args.pkcs12.is_some(),
-        sni_overridden: args.sni.is_some(),
+        sni_overridden: args.tls.sni.is_some(),
     };
     let mut diagnose_outputs: Vec<DiagnoseOutput> = Vec::new();
 
@@ -306,8 +293,7 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
         match process_target(
             target,
             &args,
-            &proxy_config,
-            &connect_overrides,
+            &probe_opts,
             &public_roots,
             body_data.as_deref(),
             stdin_pem.as_deref(),
@@ -675,9 +661,24 @@ fn print_single_result(result: &cert::KeyMatchResult, cert_path: Option<&str>, k
 }
 
 fn run_verify_key(args: cli::VerifyKeyArgs) -> Result<i32> {
+    // verify-key compares keys; it reports nothing about the handshake.
+    if args.tls.pq_probe || args.tls.cipher_notation.is_some() {
+        return Err(anyhow::anyhow!(
+            "--pq-probe and --cipher-notation describe the handshake and apply to `dcert check` only"
+        ));
+    }
+    if args.connection.no_verify {
+        eprintln!(
+            "{} {}",
+            "WARNING:".yellow().bold(),
+            "TLS certificate verification is disabled (--no-verify). Connection is NOT secure.".yellow()
+        );
+    }
+    let probe = ProbeOptions::new(&args.tls, &args.connection, ClientIdentity::default(), args.debug)?;
+
     // If both target and key are provided, run single-pair verification
     if let (Some(target), Some(key)) = (&args.target, &args.key) {
-        let result = cert::verify_key_matches_cert(key, target, args.debug)?;
+        let result = cert::verify_key_matches_cert(key, target, &probe)?;
 
         print_structured(args.format, &result, || print_single_result(&result, None, None))?;
 
@@ -711,7 +712,7 @@ fn run_verify_key(args: cli::VerifyKeyArgs) -> Result<i32> {
     let mut all_results: Vec<serde_json::Value> = Vec::new();
 
     for (cert_path, key_path) in &pairs {
-        match cert::verify_key_matches_cert(key_path, cert_path, args.debug) {
+        match cert::verify_key_matches_cert(key_path, cert_path, &probe) {
             Ok(result) => {
                 match args.format {
                     OutputFormat::Json | OutputFormat::Yaml => {

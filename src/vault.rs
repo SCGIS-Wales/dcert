@@ -1517,7 +1517,11 @@ pub fn validate_from_kv(
         let cert_path_str = cert_path
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("Temp cert path contains invalid UTF-8"))?;
-        match crate::cert::verify_key_matches_cert(key_path_str, cert_path_str, false) {
+        // Both paths are local files, so the default probe settings are never used.
+        let tls = crate::tlsopts::TlsOptions::default();
+        let connection = crate::tlsopts::ConnectionOptions::default();
+        let probe = crate::tlsopts::ProbeOptions::new(&tls, &connection, crate::tls::ClientIdentity::default(), false)?;
+        match crate::cert::verify_key_matches_cert(key_path_str, cert_path_str, &probe) {
             Ok(result) => {
                 if result.matches {
                     println!(
