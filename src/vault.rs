@@ -1303,7 +1303,6 @@ pub fn display_certificate(pem_data: &str) {
                 hostname: None,
                 conn: None,
                 http_protocol: &crate::cli::HttpProtocol::Http1_1,
-                cipher_notation: None,
             };
             print_pretty(&infos, &debug);
         }

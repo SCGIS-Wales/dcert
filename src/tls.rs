@@ -206,9 +206,12 @@ pub struct TlsConnectionInfo {
     pub l4_latency: u128,
     pub l7_latency: u128,
     pub tls_version: String,
-    /// OpenSSL cipher name (e.g. "ECDHE-RSA-AES256-GCM-SHA384" for TLS 1.2)
-    pub tls_cipher: String,
-    /// IANA/RFC cipher name (e.g. "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384")
+    /// The negotiated suite. Serialised as `--cipher-notation` asks: by
+    /// default a record of OpenSSL and IANA names, code point, protocol,
+    /// forward secrecy and AEAD; with `openssl` or `iana` just that name.
+    pub tls_cipher: crate::ciphers::NegotiatedCipher,
+    /// IANA/RFC cipher name (e.g. "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384").
+    /// Deprecated: `tls_cipher.iana` carries it.
     pub tls_cipher_iana: Option<String>,
     /// ALPN negotiated protocol (e.g. "h2", "http/1.1")
     pub negotiated_protocol: Option<String>,
@@ -811,7 +814,7 @@ fn group_name_from_tmp_key(ssl: &openssl::ssl::SslRef) -> Option<String> {
 /// Negotiated session parameters, read once after the handshake.
 struct TlsSessionSummary {
     tls_version: String,
-    tls_cipher: String,
+    tls_cipher: crate::ciphers::NegotiatedCipher,
     tls_cipher_iana: Option<String>,
     negotiated_protocol: Option<String>,
     key_exchange_group: Option<String>,
@@ -847,9 +850,13 @@ fn session_summary(ssl: &openssl::ssl::SslRef, capture: &VerifyCapture, debug: b
     }
     TlsSessionSummary {
         tls_version: ssl.version_str().to_string(),
-        tls_cipher: current_cipher
-            .map(|c| c.name().to_string())
-            .unwrap_or_else(|| "unknown".to_string()),
+        tls_cipher: current_cipher.map_or_else(crate::ciphers::NegotiatedCipher::unknown, |c| {
+            crate::ciphers::NegotiatedCipher::new(
+                c.name(),
+                c.standard_name(),
+                Some(u16::from_be_bytes(c.protocol_id())),
+            )
+        }),
         tls_cipher_iana: current_cipher.and_then(|c| c.standard_name().map(ToString::to_string)),
         negotiated_protocol: ssl
             .selected_alpn_protocol()
@@ -1266,7 +1273,7 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
                         l4_latency: dialled.l4_latency,
                         l7_latency,
                         tls_version: "unknown (handshake aborted)".to_string(),
-                        tls_cipher: "unknown".to_string(),
+                        tls_cipher: crate::ciphers::NegotiatedCipher::unknown(),
                         chain_validation_errors: verify.errors(),
                         verification_disabled: probe.no_verify,
                         peer_address: dialled.peer_address,

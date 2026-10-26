@@ -26,7 +26,7 @@ fn tls12_only_single_cipher_is_negotiated_exactly() {
     let parsed = probe(&server);
     let conn = &parsed["connection"];
     assert_eq!(conn["tls_version"], "TLSv1.2", "{conn}");
-    assert_eq!(conn["tls_cipher"], "ECDHE-RSA-AES128-GCM-SHA256", "{conn}");
+    assert_eq!(conn["tls_cipher"]["openssl"], "ECDHE-RSA-AES128-GCM-SHA256", "{conn}");
     assert_eq!(parsed["certificates"][0]["common_name"], TEST_SERVER_CN);
     assert_eq!(
         server.observation(Duration::from_secs(5)),
@@ -47,7 +47,7 @@ fn tls13_single_suite_on_ecdsa_identity_is_negotiated_exactly() {
     let parsed = probe(&server);
     let conn = &parsed["connection"];
     assert_eq!(conn["tls_version"], "TLSv1.3", "{conn}");
-    assert_eq!(conn["tls_cipher"], "TLS_CHACHA20_POLY1305_SHA256", "{conn}");
+    assert_eq!(conn["tls_cipher"]["openssl"], "TLS_CHACHA20_POLY1305_SHA256", "{conn}");
 }
 
 #[test]

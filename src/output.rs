@@ -30,7 +30,6 @@ pub struct PrettyDebugInfo<'a> {
     pub hostname: Option<&'a str>,
     pub conn: Option<&'a TlsConnectionInfo>,
     pub http_protocol: &'a HttpProtocol,
-    pub cipher_notation: Option<CipherNotation>,
 }
 
 /// Key exchange group, its post quantum classification and the optional
@@ -166,23 +165,12 @@ pub fn print_pretty(infos: &[CertInfo], debug: &PrettyDebugInfo<'_>) {
         }
         println!("  Hostname matches certificate SANs/CN: {status}");
         println!("  TLS version used: {}", conn.tls_version);
-        // Cipher display: always show OpenSSL name in the default line,
-        // but when --ciphers is used, show the requested notation prominently
-        match debug.cipher_notation {
-            Some(CipherNotation::Iana) => {
-                let iana_name = conn
-                    .tls_cipher_iana
-                    .as_deref()
-                    .unwrap_or("unknown (IANA name not available)");
-                println!("  TLS ciphersuite agreed (IANA): {iana_name}");
-            }
-            Some(CipherNotation::Openssl) => {
-                println!("  TLS ciphersuite agreed (OpenSSL): {}", conn.tls_cipher);
-            }
-            None => {
-                println!("  TLS ciphersuite agreed: {}", conn.tls_cipher);
-            }
-        }
+        let label = match conn.tls_cipher.notation {
+            CipherNotation::Iana => " (IANA)",
+            CipherNotation::Openssl => " (OpenSSL)",
+            CipherNotation::All => "",
+        };
+        println!("  TLS ciphersuite agreed{label}: {}", conn.tls_cipher.display());
         print_key_exchange(conn);
         println!("  Client certificate (mTLS): {}", conn.client_auth.label());
         let ct_str = if leaf.ct_present { "true".green() } else { "false".red() };
@@ -649,6 +637,11 @@ pub fn process_target(
         None
     };
 
+    let conn_info = conn_info.map(|mut conn| {
+        conn.tls_cipher.notation = args.tls.notation();
+        conn
+    });
+
     Ok(TargetResult {
         target: target.to_string(),
         conn_info,
@@ -845,7 +838,6 @@ pub fn output_results(
     format: OutputFormat,
     http_protocol: &HttpProtocol,
     multi_target: bool,
-    args: &CheckArgs,
 ) -> Result<()> {
     if multi_target {
         println!("{}", format!("--- {} ---", result.target).bold().cyan());
@@ -865,7 +857,6 @@ pub fn output_results(
             hostname: hostname.as_deref(),
             conn: result.conn_info.as_ref(),
             http_protocol,
-            cipher_notation: args.tls.cipher_notation,
         };
         print_pretty(&result.infos, &debug);
 

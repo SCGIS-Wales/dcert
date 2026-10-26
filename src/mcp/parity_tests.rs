@@ -54,6 +54,7 @@ fn sample(property: &str) -> Map<String, Value> {
         "read_timeout" => json!(4),
         "min_tls" => json!("1.2"),
         "max_tls" => json!("1.3"),
+        "cipher" => json!(["0xC0,0x2F", "TLS_AES_128_GCM_SHA256"]),
         "cipher_list" => json!("ECDHE+AESGCM"),
         "cipher_suites" => json!("TLS_AES_128_GCM_SHA256"),
         "groups" => json!("X25519"),

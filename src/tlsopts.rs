@@ -11,6 +11,7 @@
 use anyhow::Result;
 use clap::Args;
 
+use crate::ciphers::{Cipher, CipherSet, parse_cipher_arg};
 use crate::cli::{CipherNotation, StarttlsProtocol, TlsVersionArg};
 use crate::connect::{ConnectOverride, ConnectOverrides, parse_connect_to, parse_resolve};
 use crate::keyex::{EffectiveTlsSettings, TlsProfile, effective_tls_settings};
@@ -34,16 +35,28 @@ pub struct TlsOptions {
     #[arg(long, value_enum, value_name = "VERSION")]
     pub max_tls: Option<TlsVersionArg>,
 
+    /// Offer only this cipher suite, in any notation: IANA name
+    /// (TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256), OpenSSL name
+    /// (ECDHE-RSA-AES128-GCM-SHA256) or code point (0xC02F, C02F, 0xC0,0x2F).
+    ///
+    /// Repeatable. TLS 1.2 and TLS 1.3 suites may be mixed; dcert configures
+    /// each family. Naming only TLS 1.3 suites limits the handshake to TLS
+    /// 1.3, and naming only TLS 1.2 suites limits it to TLS 1.2.
+    #[arg(long, value_name = "SUITE", value_parser = parse_cipher_arg,
+          conflicts_with_all = ["cipher_list", "cipher_suites"])]
+    pub cipher: Vec<&'static Cipher>,
+
     /// Set allowed TLS cipher suites using an OpenSSL cipher string (e.g. "ECDHE+AESGCM:CHACHA20")
     ///
-    /// Controls TLS 1.2 and below ciphers. Uses OpenSSL cipher string format.
-    /// See: https://www.openssl.org/docs/man1.1.1/man1/ciphers.html
+    /// Controls TLS 1.2 and below ciphers and is passed to OpenSSL as is.
+    /// Use --cipher to name suites in any notation.
+    /// See: https://docs.openssl.org/master/man1/openssl-ciphers/
     #[arg(long, value_name = "CIPHER_STRING")]
     pub cipher_list: Option<String>,
 
     /// Set allowed TLS 1.3 cipher suites (e.g. "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256")
     ///
-    /// Controls TLS 1.3 ciphers only. Uses colon-separated IANA cipher names.
+    /// Controls TLS 1.3 ciphers only and is passed to OpenSSL as is.
     #[arg(long, value_name = "CIPHERSUITES")]
     pub cipher_suites: Option<String>,
 
@@ -80,7 +93,9 @@ pub struct TlsOptions {
     #[arg(long, value_enum, value_name = "PROTOCOL")]
     pub starttls: Option<StarttlsProtocol>,
 
-    /// Show the negotiated (agreed) TLS cipher suite in the given notation.
+    /// Report the negotiated (agreed) TLS cipher suite in the given notation,
+    /// in pretty, JSON and YAML output [default: all]. `all` gives the OpenSSL
+    /// and IANA names, code point, protocol, forward secrecy and AEAD.
     /// `--ciphers` is accepted as an alias.
     #[arg(long = "cipher-notation", alias = "ciphers", value_enum, value_name = "NOTATION")]
     pub cipher_notation: Option<CipherNotation>,
@@ -88,14 +103,34 @@ pub struct TlsOptions {
 
 impl TlsOptions {
     /// The profile combined with the explicit flags; explicit flags win.
+    /// `--cipher` sets both cipher lists and, when it names one family only,
+    /// bounds the version to that family.
     pub fn effective(&self) -> EffectiveTlsSettings {
-        effective_tls_settings(
+        let mut settings = effective_tls_settings(
             self.tls_profile,
             self.min_tls,
             self.cipher_list.as_deref(),
             self.cipher_suites.as_deref(),
             self.groups.as_deref(),
-        )
+        );
+        settings.max_tls = self.max_tls;
+        if !self.cipher.is_empty() {
+            let set = CipherSet::from_ciphers(&self.cipher);
+            settings.cipher_list = set.cipher_list();
+            settings.cipher_suites = set.ciphersuites();
+            if set.tls12.is_empty() {
+                settings.min_tls = Some(TlsVersionArg::Tls1_3);
+            }
+            if set.tls13.is_empty() {
+                settings.max_tls = Some(TlsVersionArg::Tls1_2);
+            }
+        }
+        settings
+    }
+
+    /// The notation the negotiated cipher is reported in.
+    pub fn notation(&self) -> CipherNotation {
+        self.cipher_notation.unwrap_or_default()
     }
 
     /// Reject a version range that no handshake can satisfy.
@@ -104,6 +139,13 @@ impl TlsOptions {
             && min > max
         {
             anyhow::bail!("--min-tls ({min}) must not be greater than --max-tls ({max})");
+        }
+        let set = CipherSet::from_ciphers(&self.cipher);
+        if !self.cipher.is_empty() && set.tls12.is_empty() && self.max_tls == Some(TlsVersionArg::Tls1_2) {
+            anyhow::bail!("--cipher names only TLS 1.3 suites, which --max-tls 1.2 rules out");
+        }
+        if !self.cipher.is_empty() && set.tls13.is_empty() && self.min_tls == Some(TlsVersionArg::Tls1_3) {
+            anyhow::bail!("--cipher names only TLS 1.2 suites, which --min-tls 1.3 rules out");
         }
         Ok(())
     }
@@ -229,7 +271,7 @@ impl<'a> ProbeOptions<'a> {
             sni_override: self.tls.sni.as_deref(),
             connect_overrides: &self.connect_overrides,
             min_tls: self.settings.min_tls,
-            max_tls: self.tls.max_tls,
+            max_tls: self.settings.max_tls,
             cipher_list: self.settings.cipher_list.as_deref(),
             cipher_suites: self.settings.cipher_suites.as_deref(),
             groups: self.settings.groups.as_deref(),
@@ -264,6 +306,8 @@ mod tests {
         assert_eq!(parsed.connection.read_timeout, default.read_timeout);
         assert!(!parsed.connection.no_verify && !default.no_verify);
         assert!(parsed.tls.cipher_notation.is_none());
+        assert_eq!(parsed.tls.notation(), CipherNotation::All);
+        assert!(parsed.tls.cipher.is_empty());
     }
 
     #[test]
@@ -272,6 +316,44 @@ mod tests {
         let new = parse(&["--cipher-notation", "iana"]);
         assert!(matches!(old.tls.cipher_notation, Some(CipherNotation::Iana)));
         assert!(matches!(new.tls.cipher_notation, Some(CipherNotation::Iana)));
+    }
+
+    fn probe_settings(args: &[&str]) -> EffectiveTlsSettings {
+        parse(args).tls.effective()
+    }
+
+    #[test]
+    fn cipher_accepts_every_notation_and_fills_both_lists() {
+        let settings = probe_settings(&["--cipher", "0xC0,0x2F", "--cipher", "TLS_AES_128_GCM_SHA256"]);
+        assert_eq!(settings.cipher_list.as_deref(), Some("ECDHE-RSA-AES128-GCM-SHA256"));
+        assert_eq!(settings.cipher_suites.as_deref(), Some("TLS_AES_128_GCM_SHA256"));
+        assert_eq!((settings.min_tls, settings.max_tls), (None, None));
+        let same = probe_settings(&["--cipher", "ecdhe-rsa-aes128-gcm-sha256", "--cipher", "1301"]);
+        assert_eq!(same, settings);
+    }
+
+    #[test]
+    fn one_family_bounds_the_version() {
+        let tls13 = probe_settings(&["--cipher", "TLS_CHACHA20_POLY1305_SHA256"]);
+        assert_eq!(tls13.min_tls, Some(TlsVersionArg::Tls1_3));
+        assert_eq!(tls13.cipher_list, None);
+        let tls12 = probe_settings(&["--cipher", "C02F"]);
+        assert_eq!(tls12.max_tls, Some(TlsVersionArg::Tls1_2));
+        assert_eq!(tls12.cipher_suites, None);
+        assert!(parse(&["--cipher", "1301", "--max-tls", "1.2"]).tls.validate().is_err());
+        assert!(parse(&["--cipher", "C02F", "--min-tls", "1.3"]).tls.validate().is_err());
+    }
+
+    #[test]
+    fn cipher_rejects_unknown_and_unimplemented_suites_and_raw_lists() {
+        let parse_err = |args: &[&str]| {
+            Harness::try_parse_from(std::iter::once("dcert").chain(args.iter().copied()))
+                .expect_err("rejected")
+                .to_string()
+        };
+        assert!(parse_err(&["--cipher", "ECDHE-RSA-AES128-GCM-SHA265"]).contains("did you mean"));
+        assert!(parse_err(&["--cipher", "TLS_NULL_WITH_NULL_NULL"]).contains("no OpenSSL implementation"));
+        assert!(parse_err(&["--cipher", "C02F", "--cipher-list", "HIGH"]).contains("cannot be used with"));
     }
 
     #[test]

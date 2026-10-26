@@ -36,8 +36,10 @@ from dcert.tools import (
     create_truststore,
     default_session,
     error_message,
+    explain_cipher_suite,
     export_pem,
     extract_text,
+    list_cipher_suites,
     tls_connection_info,
     verify_key_match,
 )
@@ -296,6 +298,14 @@ CASES = [
         "create_truststore",
         {"cert_paths": ["leaf.pem"], "output_path": "t.p12", "allow_non_ca": True},
     ),
+    (list_cipher_suites, {}, "list_cipher_suites", {}),
+    (
+        list_cipher_suites,
+        {"protocol": "1.3", "offerable": True},
+        "list_cipher_suites",
+        {"protocol": "1.3", "offerable": True},
+    ),
+    (explain_cipher_suite, {"suite": "C02F"}, "explain_cipher_suite", {"suite": "C02F"}),
 ]
 
 
@@ -375,7 +385,7 @@ async def test_input_validation(open_session):
 
 
 def test_all_tool_functions_present():
-    assert len(TOOL_FUNCTIONS) == 11
+    assert len(TOOL_FUNCTIONS) == 13
     # inspect, not asyncio: asyncio.iscoroutinefunction is deprecated from 3.14.
     assert all(inspect.iscoroutinefunction(f) for f in TOOL_FUNCTIONS)
 

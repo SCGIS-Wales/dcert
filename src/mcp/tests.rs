@@ -787,6 +787,8 @@ fn test_every_tool_declares_title_and_open_world() {
     assert_eq!(open_world("vault_issue"), Some(true));
     assert_eq!(open_world("create_csr"), Some(false));
     assert_eq!(open_world("explain_edge_term"), Some(false));
+    assert_eq!(open_world("list_cipher_suites"), Some(false));
+    assert_eq!(open_world("explain_cipher_suite"), Some(false));
 }
 
 #[test]
@@ -1756,6 +1758,8 @@ async fn http_transport_exposes_every_tool() {
         "validate_certificate",
         "diagnose_endpoint",
         "explain_edge_term",
+        "list_cipher_suites",
+        "explain_cipher_suite",
         "vault_issue",
         "vault_revoke",
         "create_truststore",
@@ -2121,6 +2125,12 @@ fn http_tls_params_bound_the_request_body() {
 /// Call one tool on an in-process server and return the error text, or
 /// `None` when the call was not an error.
 async fn call_tool_error(tool: &str, arguments: serde_json::Value) -> Option<String> {
+    let (is_error, text) = call_tool_text(tool, arguments).await;
+    is_error.then_some(text)
+}
+
+/// Call one tool on an in-process server: whether it failed, and its text.
+async fn call_tool_text(tool: &str, arguments: serde_json::Value) -> (bool, String) {
     use rmcp::model::CallToolRequestParams;
     use rmcp::{ClientHandler, ServiceExt};
 
@@ -2148,7 +2158,69 @@ async fn call_tool_error(tool: &str, arguments: serde_json::Value) -> Option<Str
         .unwrap_or_default();
     client.cancel().await.unwrap();
     server_handle.abort();
-    response.is_error.unwrap_or(false).then_some(text)
+    (response.is_error.unwrap_or(false), text)
+}
+
+#[tokio::test]
+async fn explain_cipher_suite_gives_one_record_for_every_notation() {
+    let mut records = Vec::new();
+    for suite in [
+        "C02F",
+        "tls_ecdhe_rsa_with_aes_128_gcm_sha256",
+        "ECDHE-RSA-AES128-GCM-SHA256",
+        "0xC0,0x2F",
+    ] {
+        let (is_error, text) = call_tool_text("explain_cipher_suite", serde_json::json!({ "suite": suite })).await;
+        assert!(!is_error, "{suite}: {text}");
+        records.push(serde_json::from_str::<serde_json::Value>(&text).expect("JSON"));
+    }
+    assert!(records.windows(2).all(|w| w[0] == w[1]));
+    assert_eq!(records[0]["iana"], "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256");
+    assert_eq!(records[0]["openssl"], "ECDHE-RSA-AES128-GCM-SHA256");
+    assert_eq!(records[0]["code_point"], "0xC02F");
+}
+
+#[tokio::test]
+async fn explain_cipher_suite_suggests_near_misses() {
+    let error = call_tool_error(
+        "explain_cipher_suite",
+        serde_json::json!({ "suite": "ECDHE-RSA-AES128-GCM-SHA265" }),
+    )
+    .await
+    .expect("an unknown suite is an error");
+    assert!(error.contains("did you mean ECDHE-RSA-AES128-GCM-SHA256"), "{error}");
+}
+
+#[tokio::test]
+async fn list_cipher_suites_filters_and_validates() {
+    let (is_error, text) = call_tool_text(
+        "list_cipher_suites",
+        serde_json::json!({ "protocol": "1.3", "offerable": true }),
+    )
+    .await;
+    assert!(!is_error, "{text}");
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&text).expect("JSON list");
+    assert!(!rows.is_empty());
+    assert!(rows.iter().all(|r| r["protocol"] == "tls13" && r["offerable"] == true));
+    let error = call_tool_error("list_cipher_suites", serde_json::json!({ "protocol": "1.1" }))
+        .await
+        .expect("an unknown protocol is an error");
+    assert!(error.contains("protocol"), "{error}");
+}
+
+#[test]
+fn probe_tools_check_cipher_values() {
+    let mut params = HttpTlsParams::default();
+    params.cipher = Some(OneOrMany::Many(vec![
+        "0xC02F".to_string(),
+        "TLS_AES_128_GCM_SHA256".to_string(),
+    ]));
+    assert!(params.validate().is_ok());
+    params.cipher = Some(OneOrMany::One("--cipher-list=NULL".to_string()));
+    assert!(params.validate().unwrap_err().starts_with("cipher:"));
+    params.cipher = Some(OneOrMany::One("C02F".to_string()));
+    params.cipher_list = Some("HIGH".to_string());
+    assert!(params.validate().unwrap_err().contains("cannot be combined"));
 }
 
 #[tokio::test]

@@ -22,8 +22,28 @@ summary is written.
   vendored registry in `scripts/data`; its paths and URL live in
   `scripts/cipher_table.yaml`. A new CI job fails when the table is stale
   and reports when iana.org has a newer registry.
+- `--cipher <SUITE>` on `check`, `diagnose` and `verify-key`, repeatable,
+  in any notation (`TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256`,
+  `ECDHE-RSA-AES128-GCM-SHA256`, `0xC02F`, `C02F`, `0xC0,0x2F`). dcert sorts
+  the suites into the TLS 1.2 cipher list and the TLS 1.3 suite list, so
+  `--cipher 0xC02F --cipher TLS_AES_128_GCM_SHA256` works; naming one family
+  only limits the handshake to that version. `--cipher-list` and
+  `--cipher-suites` stay as raw OpenSSL passthrough. The MCP probe tools take
+  the same values as `cipher`.
+- `dcert ciphers list [--protocol 1.2|1.3] [--offerable]` and
+  `dcert ciphers explain <suite>`, and the MCP tools `list_cipher_suites` and
+  `explain_cipher_suite` (offline), with Python wrappers of the same names.
 
 ### Changed
+
+- The negotiated cipher (`tls_cipher` in JSON and YAML) is a record
+  `{openssl, iana, code_point, protocol, forward_secrecy, aead}` by default,
+  and pretty output names it in every notation. `--cipher-notation iana` or
+  `openssl` (new value `all` is the default) reports that name alone in
+  pretty, JSON and YAML output alike, so the MCP `ciphers_notation`
+  parameter now takes effect. `tls_cipher_iana` is deprecated in favour of
+  `tls_cipher.iana`. Consumers reading `tls_cipher` as a string should pass
+  `--cipher-notation openssl`.
 
 - One set of TLS and connection options (`src/tlsopts.rs`) is shared by
   `check` and `verify-key`, and one builder turns them into handshake
