@@ -29,6 +29,7 @@ pub mod secret;
 pub(crate) mod testutil;
 pub mod tls;
 pub mod tlsopts;
+pub mod tlspolicy;
 pub mod tlsscan;
 pub mod trust;
 pub mod vault;

@@ -374,6 +374,9 @@ jobs:
           python scripts/fetch_aws_tls_policies.py download --check --print-copy \
             || { echo "::warning::scripts/data/tls_policy_sources.json is behind the AWS or Mozilla pages; run fetch_aws_tls_policies.py download"; exit 1; }
 
+      - name: Catalogue regenerates from the snapshot
+        run: python scripts/fetch_aws_tls_policies.py generate --check
+
   # Functional test: build a platform wheel, install it in a venv,
   # and verify that dcert, dcert-mcp, and dcert-python commands work.
   # Pinned to ubuntu-22.04 to match the build environment for Linux wheels.
@@ -500,7 +503,7 @@ jobs:
   auto-tag:
     name: Auto-tag release
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    needs: [ test, test-post-quantum, security-audit, msrv, cipher-table ]
+    needs: [ test, test-post-quantum, security-audit, msrv, cipher-table, tls-policy-catalogue ]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

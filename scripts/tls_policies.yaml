@@ -4,6 +4,7 @@
 # compares the snapshot with the live pages.
 snapshot: scripts/data/tls_policy_sources.json
 catalogue: kb/tls_policies.yaml
+openssl_names: scripts/cipher_openssl_names.yaml
 max_download_bytes: 8388608
 download_timeout_seconds: 30
 sources:
@@ -12,3 +13,16 @@ sources:
   aws_cloudfront: https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/secure-connections-supported-viewer-protocols-ciphers.html
   aws_api_gateway: https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-security-policies-list.html
   mozilla: https://ssl-config.mozilla.org/guidelines/latest.json
+# Date the snapshot was taken; `download` updates it when it writes one.
+retrieved: "2026-10-26"
+# Facts a page states in prose rather than in its tables.
+statements:
+  aws_alb:
+    # "PQ policies support both classical and post-quantum ML-KEM key
+    # exchange algorithms" and name these hybrid groups; the console creates
+    # HTTPS listeners with the Res-PQ policy, the CLI, CloudFormation and
+    # CDK with ELBSecurityPolicy-2016-08.
+    post_quantum_groups: [X25519MLKEM768, SecP256r1MLKEM768, SecP384r1MLKEM1024]
+    defaults:
+      ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09: [console]
+      ELBSecurityPolicy-2016-08: [cli]

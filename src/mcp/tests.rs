@@ -790,6 +790,8 @@ fn test_every_tool_declares_title_and_open_world() {
     assert_eq!(open_world("list_cipher_suites"), Some(false));
     assert_eq!(open_world("explain_cipher_suite"), Some(false));
     assert_eq!(open_world("tls_scan"), Some(true));
+    assert_eq!(open_world("list_tls_policies"), Some(false));
+    assert_eq!(open_world("show_tls_policy"), Some(false));
 }
 
 #[test]
@@ -1762,6 +1764,8 @@ async fn http_transport_exposes_every_tool() {
         "list_cipher_suites",
         "explain_cipher_suite",
         "tls_scan",
+        "list_tls_policies",
+        "show_tls_policy",
         "vault_issue",
         "vault_revoke",
         "create_truststore",
@@ -2176,6 +2180,36 @@ async fn tls_connection_info_needs_allow_legacy_tls_for_tls_1_0_and_1_1() {
         .expect("a legacy version without the flag is an error");
         assert!(error.contains("allow_legacy_tls"), "{version}: {error}");
     }
+}
+
+#[tokio::test]
+async fn tls_policy_tools_list_and_show() {
+    let (is_error, text) = call_tool_text("list_tls_policies", serde_json::json!({ "provider": "aws_alb" })).await;
+    assert!(!is_error, "{text}");
+    let list: Vec<serde_json::Value> = serde_json::from_str(&text).expect("JSON list");
+    assert!(list.iter().all(|p| p["provider"] == "aws_alb"));
+    let (is_error, text) = call_tool_text(
+        "show_tls_policy",
+        serde_json::json!({ "id": "elbsecuritypolicy-tls13-1-3-pq-2025-09", "provider": "aws_alb" }),
+    )
+    .await;
+    assert!(!is_error, "{text}");
+    let shown: Vec<serde_json::Value> = serde_json::from_str(&text).expect("JSON list");
+    assert_eq!(shown.len(), 1);
+    assert_eq!(shown[0]["protocols"], serde_json::json!(["1.3"]));
+    let both = call_tool_text(
+        "show_tls_policy",
+        serde_json::json!({ "id": "ELBSecurityPolicy-2016-08" }),
+    )
+    .await;
+    assert_eq!(
+        serde_json::from_str::<Vec<serde_json::Value>>(&both.1).unwrap().len(),
+        2
+    );
+    let missing = call_tool_error("show_tls_policy", serde_json::json!({ "id": "nope" })).await;
+    assert!(missing.is_some_and(|e| e.contains("list_tls_policies")));
+    let bad = call_tool_error("list_tls_policies", serde_json::json!({ "provider": "azure" })).await;
+    assert!(bad.is_some_and(|e| e.contains("provider")));
 }
 
 #[tokio::test]

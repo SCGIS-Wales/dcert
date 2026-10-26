@@ -181,3 +181,22 @@ rewritten without AWS specifics, and the `mtls.nginx.*`, `envoy.*` and
   https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/transport_sockets/tls/v3/tls.proto
   and response code details:
   https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_conn_man/response_code_details
+
+## TLS security policies (`kb/tls_policies.yaml`, read on 2026-10-26)
+
+`scripts/fetch_aws_tls_policies.py download` reduces these pages to their
+tables (and Mozilla's JSON) in `scripts/data/tls_policy_sources.json`;
+`generate` writes the catalogue from that snapshot. Facts the ALB page states
+only in prose (the ML-KEM hybrid groups of the PQ policies, the console and
+CLI defaults) are recorded in `scripts/tls_policies.yaml` under `statements`.
+Where the NLB page's two tables disagree about a policy, the catalogue keeps
+the ciphers by policy table and says so in the entry's `notes`.
+
+| Provider | URL |
+|----------|-----|
+| Application Load Balancer security policies | https://docs.aws.amazon.com/elasticloadbalancing/latest/application/describe-ssl-policies.html |
+| Network Load Balancer security policies | https://docs.aws.amazon.com/elasticloadbalancing/latest/network/describe-ssl-policies.html |
+| CloudFront viewer protocols and ciphers | https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/secure-connections-supported-viewer-protocols-ciphers.html |
+| API Gateway security policies | https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-security-policies-list.html |
+| Mozilla server side TLS guidelines 6.0 | https://ssl-config.mozilla.org/guidelines/6.0.json |
+

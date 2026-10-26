@@ -708,6 +708,74 @@ impl DcertMcpServer {
         reply(outcome, "stderr", ok_codes)
     }
 
+    /// List the catalogued TLS security policies.
+    #[tool(
+        title = "List TLS Security Policies",
+        description = "List dcert's catalogue of named TLS security policies, taken from the AWS documentation (Application and Network Load Balancer `ELBSecurityPolicy-*`, CloudFront viewer policies, API Gateway policies) and Mozilla's server side TLS guidelines. Each entry has the id, provider, protocols, TLS 1.3 suites and TLS 1.2 ciphers by IANA name, key exchange groups where the provider names them, FIPS and post quantum flags, where the provider applies it by default, the source page and its retrieval date. Filter with `provider`. No network access. Use show_tls_policy for one policy.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    pub async fn list_tls_policies(
+        &self,
+        Parameters(params): Parameters<ListTlsPoliciesParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let provider = match params
+            .provider
+            .as_deref()
+            .map(|v| parse_enum("provider", v, true))
+            .transpose()
+        {
+            Ok(p) => p,
+            Err(e) => return ok_error(e),
+        };
+        match dcert::tlspolicy::PolicyCatalogue::builtin() {
+            Ok(catalogue) => json_reply(&catalogue.by_provider(provider).collect::<Vec<_>>()),
+            Err(e) => ok_error(e.to_string()),
+        }
+    }
+
+    /// Show one catalogued TLS security policy.
+    #[tool(
+        title = "Show TLS Security Policy",
+        description = "Show one named TLS security policy from dcert's catalogue, e.g. ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09, as JSON: protocols, TLS 1.3 suites and TLS 1.2 ciphers by IANA name, key exchange groups, FIPS and post quantum flags, defaults, notes, source page and retrieval date. ALB and NLB publish policies of the same name, so the answer is a list; pass `provider` to pick one. No network access.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    pub async fn show_tls_policy(
+        &self,
+        Parameters(params): Parameters<ShowTlsPolicyParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let provider = match params
+            .provider
+            .as_deref()
+            .map(|v| parse_enum("provider", v, true))
+            .transpose()
+        {
+            Ok(p) => p,
+            Err(e) => return ok_error(e),
+        };
+        let catalogue = match dcert::tlspolicy::PolicyCatalogue::builtin() {
+            Ok(c) => c,
+            Err(e) => return ok_error(e.to_string()),
+        };
+        let found = catalogue.find(&params.id, provider);
+        if found.is_empty() {
+            return ok_error(format!(
+                "no catalogued TLS policy named '{}'; list_tls_policies shows them",
+                params.id
+            ));
+        }
+        json_reply(&found)
+    }
+
     /// List TLS cipher suites from the IANA registry.
     #[tool(
         title = "List TLS Cipher Suites",

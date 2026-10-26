@@ -295,6 +295,49 @@ pub enum Command {
     /// Enumerate the TLS versions, cipher suites and groups a server accepts
     #[command(name = "tls-scan")]
     TlsScan(Box<TlsScanArgs>),
+
+    /// Inspect the catalogue of named TLS security policies (AWS, Mozilla)
+    #[command(name = "policy")]
+    Policy(PolicyArgs),
+}
+
+/// `dcert policy` arguments.
+#[derive(Args, Debug)]
+pub struct PolicyArgs {
+    #[command(subcommand)]
+    pub mode: PolicyMode,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PolicyMode {
+    /// List the catalogued policies
+    #[command(after_help = "\x1b[1mExamples:\x1b[0m
+  dcert policy list --provider aws_alb
+  dcert policy list -f json")]
+    List {
+        /// Only policies of this provider
+        #[arg(long, value_enum)]
+        provider: Option<crate::tlspolicy::PolicyProvider>,
+        /// Output format
+        #[arg(short, long, value_enum, default_value_t = OutputFormat::Pretty)]
+        format: OutputFormat,
+    },
+    /// Show one policy: protocols, suites in every notation, groups, source
+    #[command(after_help = "\x1b[1mExamples:\x1b[0m
+  dcert policy show ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09
+  dcert policy show ELBSecurityPolicy-2016-08 --provider aws_nlb -f json")]
+    Show {
+        /// Policy id, e.g. ELBSecurityPolicy-TLS13-1-3-PQ-2025-09 (case insensitive)
+        id: String,
+        /// The provider, when several publish the same id (ALB and NLB do)
+        #[arg(long, value_enum)]
+        provider: Option<crate::tlspolicy::PolicyProvider>,
+        /// Output format
+        #[arg(short, long, value_enum, default_value_t = OutputFormat::Pretty)]
+        format: OutputFormat,
+    },
+    /// Print the JSON schema of the catalogue file (kb/tls_policies.yaml)
+    Schema,
 }
 
 /// `dcert tls-scan` arguments.
@@ -457,6 +500,7 @@ pub const KNOWN_SUBCOMMANDS: &[&str] = &[
     "kb",
     "ciphers",
     "tls-scan",
+    "policy",
 ];
 
 // -- Check subcommand (default) --

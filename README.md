@@ -29,6 +29,7 @@
   - [dcert kb -- Diagnostics and Reference Knowledge Bases](#dcert-kb--diagnostics-and-reference-knowledge-bases)
   - [dcert ciphers -- Cipher Suite Lookup](#dcert-ciphers--cipher-suite-lookup)
   - [dcert tls-scan -- Version, Cipher and Group Enumeration](#dcert-tls-scan--version-cipher-and-group-enumeration)
+  - [dcert policy -- TLS Security Policy Catalogue](#dcert-policy--tls-security-policy-catalogue)
 - [MCP Server (AI IDE Integration)](#mcp-server-ai-ide-integration)
   - [Proxy and Timeout Configuration](#proxy-and-timeout-configuration)
   - [Troubleshooting](#troubleshooting)
@@ -159,6 +160,7 @@ dcert diagnose <target> [OPTIONS]      # TLS, mTLS, gateway, CDN and forward pro
 dcert kb <list|show|validate|schema>   # Inspect the diagnostics knowledge base
 dcert ciphers <list|explain>           # Look up cipher suites in any notation (offline)
 dcert tls-scan <target> [OPTIONS]      # Enumerate accepted TLS versions, cipher suites and groups
+dcert policy <list|show|schema>        # Named TLS security policies (AWS, Mozilla)
 dcert verify-key [--dir <DIR>]         # Auto-discover and verify all cert/key pairs
 dcert vault issue [OPTIONS]            # Issue a TLS certificate from Vault PKI
 dcert vault sign [OPTIONS]             # Sign a CSR using Vault PKI
@@ -1181,6 +1183,30 @@ the report says when the budget ran out. Certificate verification is
 skipped, since the question is what the server negotiates. The exit code is
 0 when at least one version was accepted and 2 when none was.
 
+### dcert policy -- TLS Security Policy Catalogue
+
+A catalogue of named TLS security policies, generated from the published
+pages: every Application and Network Load Balancer `ELBSecurityPolicy-*`
+(including the thirteen post quantum policies), the CloudFront viewer
+policies, the API Gateway policies for Regional, private and edge-optimized
+endpoints, and Mozilla's modern and intermediate configurations. Each entry
+lists protocols, TLS 1.3 suites and TLS 1.2 ciphers (by IANA name), the key
+exchange groups where the provider names them, FIPS and post quantum flags,
+where the provider applies it by default, and the source page with its
+retrieval date.
+
+```bash
+dcert policy list --provider aws_alb
+dcert policy show ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09 --provider aws_alb
+dcert policy show TLSv1.2_2021 -f json
+dcert policy schema > tls_policies.schema.json
+```
+
+ALB and NLB publish policies of the same names; `show` lists every match
+unless `--provider` picks one. API Gateway's edge-optimized `TLS_1_0` and
+`TLS_1_2` differ from the Regional ones and are catalogued as `TLS_1_0/edge`
+and `TLS_1_2/edge`. Sources are listed in `kb/SOURCES.md`.
+
 ---
 
 ## MCP Server (AI IDE Integration)
@@ -1203,6 +1229,8 @@ It implements the current MCP specification revision (**2025-11-25**) via the `r
 | `validate_csr` | Validate a CSR for compliance with CA/B Forum Baseline Requirements, DigiCert, and X9 standards. Returns findings with severity levels. |
 | `diagnose_endpoint` | Diagnose why an endpoint fails: TLS and mTLS on any server, Apigee, Envoy/Istio and nginx errors, CloudFront edge and origin errors, API Gateway gateway responses, forward proxy failures and TLS interception. Returns findings ordered earliest layer first with confidence, evidence and remediation, the `platforms` the probe fingerprinted, and context notes explaining CloudFront and API Gateway responses. |
 | `tls_scan` | Enumerate the TLS versions, cipher suites (with leaf key type) and key exchange groups a server accepts, one handshake at a time within a handshake budget. |
+| `list_tls_policies` | List the catalogued TLS security policies (AWS load balancers, CloudFront, API Gateway, Mozilla), filtered by provider. No network access. |
+| `show_tls_policy` | Show one catalogued policy: protocols, suites, groups, flags, defaults and source. No network access. |
 | `list_cipher_suites` | List TLS cipher suites from the IANA registry with every notation and property; filter by protocol family or by what the linked OpenSSL can offer. No network access. |
 | `explain_cipher_suite` | Explain one cipher suite given as an IANA name, OpenSSL name or code point. No network access. |
 | `explain_edge_term` | Look up what a CloudFront or API Gateway status code, header, error name, gateway response type or topic (viewer mTLS modes, origin mTLS, truststores, security policies, limits) means, from the built-in reference knowledge base. No network access. |

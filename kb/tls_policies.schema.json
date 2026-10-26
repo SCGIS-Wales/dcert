@@ -1,0 +1,139 @@
+{
+  "$defs": {
+    "PolicyProvider": {
+      "description": "Who publishes a policy.",
+      "oneOf": [
+        {
+          "const": "aws_alb",
+          "description": "Application Load Balancer `ELBSecurityPolicy-*`.",
+          "type": "string"
+        },
+        {
+          "const": "aws_nlb",
+          "description": "Network Load Balancer `ELBSecurityPolicy-*`.",
+          "type": "string"
+        },
+        {
+          "const": "aws_cloudfront",
+          "description": "CloudFront viewer security policies.",
+          "type": "string"
+        },
+        {
+          "const": "aws_api_gateway",
+          "description": "API Gateway security policies.",
+          "type": "string"
+        },
+        {
+          "const": "mozilla",
+          "description": "Mozilla server side TLS configurations.",
+          "type": "string"
+        }
+      ]
+    },
+    "TlsPolicy": {
+      "additionalProperties": false,
+      "description": "One named policy.",
+      "properties": {
+        "default_for": {
+          "description": "Where the provider applies this policy by default, in the provider's\nwords: `console`, `cli`, or an API Gateway resource such as `Regional APIs`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "fips": {
+          "description": "Approved for FIPS 140 workloads by the provider.",
+          "type": "boolean"
+        },
+        "groups": {
+          "description": "Key exchange groups the provider names for the policy.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "id": {
+          "description": "The provider's name for the policy, e.g. `ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09`.",
+          "type": "string"
+        },
+        "notes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "post_quantum": {
+          "description": "Offers ML-KEM hybrid key exchange.",
+          "type": "boolean"
+        },
+        "protocols": {
+          "description": "Protocol versions the policy accepts: `1.0`, `1.1`, `1.2`, `1.3`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "provider": {
+          "$ref": "#/$defs/PolicyProvider"
+        },
+        "retrieved": {
+          "description": "When that page was read, `YYYY-MM-DD`.",
+          "type": "string"
+        },
+        "source_url": {
+          "description": "The page the policy was taken from.",
+          "type": "string"
+        },
+        "tls12_ciphers": {
+          "description": "TLS 1.2 and earlier ciphers, by IANA name, in the provider's order.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tls13_suites": {
+          "description": "TLS 1.3 suites, by IANA name.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "unspecified_classical": {
+          "description": "The provider does not list the classical groups it accepts.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "provider",
+        "protocols",
+        "source_url",
+        "retrieved"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The catalogue file.",
+  "properties": {
+    "policies": {
+      "items": {
+        "$ref": "#/$defs/TlsPolicy"
+      },
+      "type": "array"
+    },
+    "version": {
+      "description": "Format version, currently 1.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "version",
+    "policies"
+  ],
+  "title": "PolicyCatalogue",
+  "type": "object"
+}

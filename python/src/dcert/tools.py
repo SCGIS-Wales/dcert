@@ -773,6 +773,43 @@ async def tls_scan(
     return await call_tool("tls_scan", arguments, session=session, timeout=timeout)
 
 
+async def list_tls_policies(
+    *,
+    provider: str | None = None,
+    session: Session | None = None,
+    timeout: float | None = None,
+) -> ToolResponse:
+    """List the catalogued TLS security policies (no network access).
+
+    Args:
+        provider: ``"aws_alb"``, ``"aws_nlb"``, ``"aws_cloudfront"``,
+            ``"aws_api_gateway"`` or ``"mozilla"``.
+        session: Session to use; the shared default when ``None``.
+        timeout: Per call timeout in seconds.
+    """
+    arguments = build_arguments("list_tls_policies", {}, {"provider": provider})
+    return await call_tool("list_tls_policies", arguments, session=session, timeout=timeout)
+
+
+async def show_tls_policy(
+    *,
+    policy_id: str,
+    provider: str | None = None,
+    session: Session | None = None,
+    timeout: float | None = None,
+) -> ToolResponse:
+    """Show one catalogued TLS security policy (no network access).
+
+    Args:
+        policy_id: Policy id, e.g. ``"ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09"``.
+        provider: The provider, when several publish the same id.
+        session: Session to use; the shared default when ``None``.
+        timeout: Per call timeout in seconds.
+    """
+    arguments = build_arguments("show_tls_policy", {"id": policy_id}, {"provider": provider})
+    return await call_tool("show_tls_policy", arguments, session=session, timeout=timeout)
+
+
 async def list_cipher_suites(
     *,
     protocol: str | None = None,
@@ -830,4 +867,6 @@ TOOL_FUNCTIONS: tuple[Callable[..., Awaitable[ToolResponse]], ...] = (
     list_cipher_suites,
     explain_cipher_suite,
     tls_scan,
+    list_tls_policies,
+    show_tls_policy,
 )

@@ -8,6 +8,8 @@
 #[path = "../../src/testutil.rs"]
 mod testutil;
 
+// Not every test crate uses the TLS harness.
+#[allow(unused_imports)]
 pub use testutil::*;
 
 use std::io::Write;
