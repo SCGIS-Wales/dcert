@@ -37,6 +37,14 @@ summary is written.
   and `--noproxy`, and the MCP server and the diagnostics use it. MCP enum
   parameters are checked with the CLI's own `ValueEnum` types and list the
   accepted values when one is refused.
+- One output path: every JSON and YAML result goes through
+  `print_structured`. Several targets in JSON now keep each target's fields
+  in the same order as single target output and YAML (they were sorted
+  alphabetically); `verify-key --dir` JSON and YAML gain the same field
+  order as a single pair. One `render_diagnosis` draws the diagnosis for
+  `check`, `diagnose` and failed probes, and watch mode runs the same pass
+  as a normal run, so `--watch` now includes the diagnosis and works with
+  `dcert diagnose`.
 
 ### Security
 

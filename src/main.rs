@@ -205,67 +205,6 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
         return Err(anyhow::anyhow!("--diff requires exactly 2 targets"));
     }
 
-    // Watch mode
-    if let Some(interval) = args.watch {
-        // The first Ctrl+C stops the loop between iterations (see
-        // `register_sigint_handler`).
-        COOPERATIVE_STOP.store(true, Ordering::SeqCst);
-
-        let mut iteration = 0u64;
-        let mut prev_fingerprints: std::collections::HashMap<String, Vec<Option<String>>> =
-            std::collections::HashMap::new();
-
-        while RUNNING.load(Ordering::SeqCst) {
-            iteration += 1;
-            let now = OffsetDateTime::now_utc()
-                .format(&Rfc3339)
-                .unwrap_or_else(|_| "unknown time".to_string());
-            println!(
-                "{}",
-                format!("=== Watch iteration {iteration} at {now} ===").bold().cyan()
-            );
-
-            for target in &targets {
-                match process_target(
-                    target,
-                    &args,
-                    &probe_opts,
-                    &public_roots,
-                    body_data.as_deref(),
-                    stdin_pem.as_deref(),
-                ) {
-                    Ok(result) => {
-                        // Check for changes
-                        let current_fps: Vec<Option<String>> =
-                            result.infos.iter().map(|c| c.sha256_fingerprint.clone()).collect();
-
-                        if let Some(prev) = prev_fingerprints.get(target)
-                            && prev != &current_fps
-                        {
-                            println!("{}", format!("CHANGE DETECTED for {target}").red().bold());
-                        }
-                        prev_fingerprints.insert(target.clone(), current_fps);
-
-                        output_results(&result, args.format, &args.http_protocol, targets.len() > 1, &args)?;
-                    }
-                    Err(e) => {
-                        eprintln!("{} {}: {}", "Error:".red().bold(), target, e);
-                    }
-                }
-            }
-
-            sleep_while_running(Duration::from_secs(interval));
-        }
-
-        println!("\nWatch stopped.");
-        return Ok(0);
-    }
-
-    // Normal (non-watch) mode
-    let multi_target = targets.len() > 1;
-    let mut exit_code = exit_code::SUCCESS;
-    let mut all_results: Vec<TargetResult> = Vec::new();
-
     // Diagnostics: load the knowledge base once, and describe the probe so
     // signals about the proxy and client identity can be evaluated.
     let kb = if args.no_diagnose {
@@ -287,104 +226,71 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
         client_cert_supplied: args.client_cert.is_some() || args.pkcs12.is_some(),
         sni_overridden: args.tls.sni.is_some(),
     };
-    let mut diagnose_outputs: Vec<DiagnoseOutput> = Vec::new();
+    let ctx = CheckContext {
+        args: &args,
+        probe_opts: &probe_opts,
+        public_roots: &public_roots,
+        body: body_data.as_deref(),
+        stdin_pem: stdin_pem.as_deref(),
+        kb: kb.as_ref(),
+        reference: reference.as_ref(),
+        probe: &probe,
+    };
 
-    for target in &targets {
-        match process_target(
-            target,
-            &args,
-            &probe_opts,
-            &public_roots,
-            body_data.as_deref(),
-            stdin_pem.as_deref(),
-        ) {
-            Ok(mut result) => {
-                let mut keep_body = args.show_body;
-                if let Some(kb) = &kb {
-                    let evidence = diagnose::Evidence::from_result(
-                        target,
-                        &probe,
-                        result.conn_info.as_ref(),
-                        &result.infos,
-                        result.root_trust.as_ref(),
-                    );
-                    let report = diagnose::diagnose(kb, &evidence);
-                    keep_body |= report.body_matched;
-                    result.diagnosis = report.findings;
-                    result.platforms = report.platforms.clone();
-                    if let Some(rb) = &reference {
-                        result.context = kbref::annotate(rb, &evidence);
-                    }
-                }
-                // The body excerpt is evidence, not output: keep it only when
-                // asked for or when a finding cites it.
-                if !keep_body && let Some(conn) = result.conn_info.as_mut() {
-                    conn.http_body_excerpt = None;
-                    conn.http_body_truncated = false;
-                }
-                if args.diagnose_only {
-                    diagnose_outputs.push(DiagnoseOutput {
-                        target: target.clone(),
-                        error: None,
-                        http_status: result
-                            .conn_info
-                            .as_ref()
-                            .map(|c| c.http_response_code)
-                            .filter(|c| *c > 0),
-                        diagnosis: result.diagnosis.clone(),
-                        platforms: result.platforms.clone(),
-                        context: result.context.clone(),
-                        body_excerpt: result.conn_info.as_ref().and_then(|c| c.http_body_excerpt.clone()),
-                        body_truncated: result.conn_info.as_ref().is_some_and(|c| c.http_body_truncated),
-                    });
-                }
-                // Promote to CLIENT_CERT_ERROR when the server demanded an mTLS
-                // client cert we didn't supply. This is more specific than the
-                // generic VERIFY_FAILED and tells callers what to fix.
-                if let Some(ref conn) = result.conn_info
-                    && conn.client_auth_required
-                    && exit_code < exit_code::CLIENT_CERT_ERROR
-                {
-                    exit_code = exit_code::CLIENT_CERT_ERROR;
-                } else if let Some(ref conn) = result.conn_info
-                    && conn.verify_result.is_some()
-                    && exit_code < exit_code::VERIFY_FAILED
-                {
-                    exit_code = exit_code::VERIFY_FAILED;
-                }
-                all_results.push(result);
+    // Watch mode
+    if let Some(interval) = args.watch {
+        // The first Ctrl+C stops the loop between iterations (see
+        // `register_sigint_handler`).
+        COOPERATIVE_STOP.store(true, Ordering::SeqCst);
+
+        let mut iteration = 0u64;
+        let mut prev_fingerprints: std::collections::HashMap<String, Vec<Option<String>>> =
+            std::collections::HashMap::new();
+
+        while RUNNING.load(Ordering::SeqCst) {
+            iteration += 1;
+            let now = OffsetDateTime::now_utc()
+                .format(&Rfc3339)
+                .unwrap_or_else(|_| "unknown time".to_string());
+            println!(
+                "{}",
+                format!("=== Watch iteration {iteration} at {now} ===").bold().cyan()
+            );
+
+            let pass = run_once(&ctx, &targets);
+            if args.diagnose_only {
+                print_structured(args.format, &pass.diagnose_outputs, || {
+                    print_diagnose_output_pretty(&pass.diagnose_outputs);
+                })?;
             }
-            Err(e) => {
-                eprintln!("{} {}: {}", "Error:".red().bold(), target, e);
-                if exit_code < exit_code::ERROR {
-                    exit_code = exit_code::ERROR;
+            for result in pass.results.iter().filter(|_| !args.diagnose_only) {
+                // Check for changes
+                let current_fps: Vec<Option<String>> =
+                    result.infos.iter().map(|c| c.sha256_fingerprint.clone()).collect();
+                if let Some(prev) = prev_fingerprints.get(&result.target)
+                    && prev != &current_fps
+                {
+                    println!("{}", format!("CHANGE DETECTED for {}", result.target).red().bold());
                 }
-                if let Some(kb) = &kb {
-                    let evidence = diagnose::Evidence::from_error(target, &probe, &e);
-                    let report = diagnose::diagnose(kb, &evidence);
-                    if args.diagnose_only {
-                        diagnose_outputs.push(DiagnoseOutput {
-                            target: target.clone(),
-                            error: Some(format!("{e:#}")),
-                            http_status: None,
-                            diagnosis: report.findings,
-                            platforms: report.platforms,
-                            context: Vec::new(),
-                            // A probe that failed outright never read a body.
-                            body_excerpt: None,
-                            body_truncated: false,
-                        });
-                    } else if !report.findings.is_empty() && matches!(args.format, OutputFormat::Pretty) {
-                        // Failed probes have no stdout record; keep the
-                        // diagnosis next to the error on stderr.
-                        let mut err = std::io::stderr().lock();
-                        let _ = output::write_platforms(&mut err, &report.platforms);
-                        let _ = output::write_diagnosis(&mut err, &report.findings);
-                    }
-                }
+                prev_fingerprints.insert(result.target.clone(), current_fps);
+
+                output_results(result, args.format, &args.http_protocol, targets.len() > 1, &args)?;
             }
+
+            sleep_while_running(Duration::from_secs(interval));
         }
+
+        println!("\nWatch stopped.");
+        return Ok(0);
     }
+
+    // Normal (non-watch) mode
+    let multi_target = targets.len() > 1;
+    let CheckPass {
+        results: mut all_results,
+        diagnose_outputs,
+        mut exit_code,
+    } = run_once(&ctx, &targets);
 
     if args.diagnose_only {
         print_structured(args.format, &diagnose_outputs, || {
@@ -418,22 +324,13 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
         }
     }
 
-    // JSON multi-target wrapping
-    if multi_target && matches!(args.format, OutputFormat::Json) {
-        let mut map = serde_json::Map::new();
-        for result in &all_results {
-            map.insert(
-                result.target.clone(),
-                serde_json::to_value(StructuredOutput::from(result))?,
-            );
-        }
-        println!("{}", serde_json::to_string_pretty(&map)?);
-    } else if multi_target && matches!(args.format, OutputFormat::Yaml) {
+    // Several targets in JSON or YAML: one document keyed by target.
+    if multi_target && !matches!(args.format, OutputFormat::Pretty) {
         let map: std::collections::BTreeMap<&str, StructuredOutput> = all_results
             .iter()
             .map(|r| (r.target.as_str(), StructuredOutput::from(r)))
             .collect();
-        println!("{}", serde_norway::to_string(&map)?);
+        print_structured(args.format, &map, || {})?;
     } else {
         for result in &all_results {
             output_results(result, args.format, &args.http_protocol, multi_target, &args)?;
@@ -708,31 +605,29 @@ fn run_verify_key(args: cli::VerifyKeyArgs) -> Result<i32> {
 
     eprintln!("Found {} cert/key pair(s) in '{}'", pairs.len(), args.dir);
 
+    /// One discovered pair's result, with the files it came from.
+    #[derive(serde::Serialize)]
+    struct PairResult<'a> {
+        #[serde(flatten)]
+        result: cert::KeyMatchResult,
+        cert_file: &'a str,
+        key_file: &'a str,
+    }
+
     let mut exit_code = exit_code::SUCCESS;
-    let mut all_results: Vec<serde_json::Value> = Vec::new();
+    let mut all_results: Vec<PairResult<'_>> = Vec::new();
 
     for (cert_path, key_path) in &pairs {
         match cert::verify_key_matches_cert(key_path, cert_path, &probe) {
             Ok(result) => {
-                match args.format {
-                    OutputFormat::Json | OutputFormat::Yaml => {
-                        let mut val = serde_json::to_value(&result)?;
-                        if let Some(obj) = val.as_object_mut() {
-                            obj.insert("cert_file".to_string(), serde_json::json!(cert_path));
-                            obj.insert("key_file".to_string(), serde_json::json!(key_path));
-                        }
-                        all_results.push(val);
-                    }
-                    OutputFormat::Pretty => {
-                        if pairs.len() > 1 {
-                            println!("---");
-                        }
-                        print_single_result(&result, Some(cert_path), Some(key_path));
-                    }
-                }
                 if !result.matches && exit_code < exit_code::KEY_MISMATCH {
                     exit_code = exit_code::KEY_MISMATCH;
                 }
+                all_results.push(PairResult {
+                    result,
+                    cert_file: cert_path,
+                    key_file: key_path,
+                });
             }
             Err(e) => {
                 eprintln!("{} {} + {}: {}", "Error:".red().bold(), cert_path, key_path, e);
@@ -743,9 +638,14 @@ fn run_verify_key(args: cli::VerifyKeyArgs) -> Result<i32> {
         }
     }
 
-    // Output collected JSON/YAML results
-    // Pretty output was printed per pair above.
-    print_structured(args.format, &all_results, || {})?;
+    print_structured(args.format, &all_results, || {
+        for pair in &all_results {
+            if pairs.len() > 1 {
+                println!("---");
+            }
+            print_single_result(&pair.result, Some(pair.cert_file), Some(pair.key_file));
+        }
+    })?;
 
     Ok(exit_code)
 }
@@ -1242,6 +1142,143 @@ struct DiagnoseOutput {
     body_truncated: bool,
 }
 
+/// Everything one pass over the targets needs, built once per run.
+struct CheckContext<'a> {
+    args: &'a CheckArgs,
+    probe_opts: &'a ProbeOptions<'a>,
+    public_roots: &'a trust::PublicRoots,
+    body: Option<&'a [u8]>,
+    stdin_pem: Option<&'a str>,
+    kb: Option<&'a diagnose::KnowledgeBase>,
+    reference: Option<&'a kbref::ReferenceBase>,
+    probe: &'a diagnose::ProbeContext<'a>,
+}
+
+/// What one pass produced: the results, the `dcert diagnose` records and
+/// the exit code so far.
+struct CheckPass {
+    results: Vec<TargetResult>,
+    diagnose_outputs: Vec<DiagnoseOutput>,
+    exit_code: i32,
+}
+
+/// Probe and diagnose every target once. A normal run calls it once; watch
+/// mode calls it on every iteration, so both share one implementation.
+fn run_once(ctx: &CheckContext<'_>, targets: &[String]) -> CheckPass {
+    let CheckContext {
+        args,
+        probe_opts,
+        public_roots,
+        body,
+        stdin_pem,
+        kb,
+        reference,
+        probe,
+    } = *ctx;
+    let mut exit_code = exit_code::SUCCESS;
+    let mut all_results: Vec<TargetResult> = Vec::new();
+    let mut diagnose_outputs: Vec<DiagnoseOutput> = Vec::new();
+
+    for target in targets {
+        match process_target(target, args, probe_opts, public_roots, body, stdin_pem) {
+            Ok(mut result) => {
+                let mut keep_body = args.show_body;
+                if let Some(kb) = kb {
+                    let evidence = diagnose::Evidence::from_result(
+                        target,
+                        probe,
+                        result.conn_info.as_ref(),
+                        &result.infos,
+                        result.root_trust.as_ref(),
+                    );
+                    let report = diagnose::diagnose(kb, &evidence);
+                    keep_body |= report.body_matched;
+                    result.diagnosis = report.findings;
+                    result.platforms = report.platforms.clone();
+                    if let Some(rb) = reference {
+                        result.context = kbref::annotate(rb, &evidence);
+                    }
+                }
+                // The body excerpt is evidence, not output: keep it only when
+                // asked for or when a finding cites it.
+                if !keep_body && let Some(conn) = result.conn_info.as_mut() {
+                    conn.http_body_excerpt = None;
+                    conn.http_body_truncated = false;
+                }
+                if args.diagnose_only {
+                    diagnose_outputs.push(DiagnoseOutput {
+                        target: target.clone(),
+                        error: None,
+                        http_status: result
+                            .conn_info
+                            .as_ref()
+                            .map(|c| c.http_response_code)
+                            .filter(|c| *c > 0),
+                        diagnosis: result.diagnosis.clone(),
+                        platforms: result.platforms.clone(),
+                        context: result.context.clone(),
+                        body_excerpt: result.conn_info.as_ref().and_then(|c| c.http_body_excerpt.clone()),
+                        body_truncated: result.conn_info.as_ref().is_some_and(|c| c.http_body_truncated),
+                    });
+                }
+                // Promote to CLIENT_CERT_ERROR when the server demanded an mTLS
+                // client cert we didn't supply. This is more specific than the
+                // generic VERIFY_FAILED and tells callers what to fix.
+                if let Some(ref conn) = result.conn_info
+                    && conn.client_auth_required
+                    && exit_code < exit_code::CLIENT_CERT_ERROR
+                {
+                    exit_code = exit_code::CLIENT_CERT_ERROR;
+                } else if let Some(ref conn) = result.conn_info
+                    && conn.verify_result.is_some()
+                    && exit_code < exit_code::VERIFY_FAILED
+                {
+                    exit_code = exit_code::VERIFY_FAILED;
+                }
+                all_results.push(result);
+            }
+            Err(e) => {
+                eprintln!("{} {}: {}", "Error:".red().bold(), target, e);
+                if exit_code < exit_code::ERROR {
+                    exit_code = exit_code::ERROR;
+                }
+                if let Some(kb) = kb {
+                    let evidence = diagnose::Evidence::from_error(target, probe, &e);
+                    let report = diagnose::diagnose(kb, &evidence);
+                    if args.diagnose_only {
+                        diagnose_outputs.push(DiagnoseOutput {
+                            target: target.clone(),
+                            error: Some(format!("{e:#}")),
+                            http_status: None,
+                            diagnosis: report.findings,
+                            platforms: report.platforms,
+                            context: Vec::new(),
+                            // A probe that failed outright never read a body.
+                            body_excerpt: None,
+                            body_truncated: false,
+                        });
+                    } else if !report.findings.is_empty() && matches!(args.format, OutputFormat::Pretty) {
+                        // Failed probes have no stdout record; keep the
+                        // diagnosis next to the error on stderr.
+                        let _ = output::render_diagnosis(
+                            &mut std::io::stderr().lock(),
+                            &report.platforms,
+                            &report.findings,
+                            &[],
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    CheckPass {
+        results: all_results,
+        diagnose_outputs,
+        exit_code,
+    }
+}
+
 fn print_diagnose_output_pretty(items: &[DiagnoseOutput]) {
     for item in items {
         println!("{}", format!("--- {} ---", item.target).bold().cyan());
@@ -1255,14 +1292,13 @@ fn print_diagnose_output_pretty(items: &[DiagnoseOutput]) {
         if item.diagnosis.is_empty() {
             println!("No knowledge base entry matched. Re-run with --debug for the raw exchange.");
             println!();
-        } else {
-            let _ = output::write_platforms(&mut std::io::stdout().lock(), &item.platforms);
-            output::print_diagnosis_pretty(&item.diagnosis);
         }
-        if !item.context.is_empty() {
-            let mut out = std::io::stdout().lock();
-            let _ = output::write_context(&mut out, &item.context);
-        }
+        let _ = output::render_diagnosis(
+            &mut std::io::stdout().lock(),
+            &item.platforms,
+            &item.diagnosis,
+            &item.context,
+        );
         if let Some(body) = &item.body_excerpt {
             println!("{}", "Response body:".bold());
             for line in body.lines() {
@@ -1311,9 +1347,13 @@ fn run_kb(args: cli::KbArgs) -> Result<i32> {
             let entry = kb
                 .get(&id)
                 .ok_or_else(|| anyhow::anyhow!("no knowledge base entry with id '{id}'"))?;
-            print_structured(format, entry, || {
-                println!("{}", serde_norway::to_string(entry).unwrap_or_default());
-            })?;
+            // An entry has no prose rendering: pretty output is its YAML.
+            let format = if matches!(format, OutputFormat::Pretty) {
+                OutputFormat::Yaml
+            } else {
+                format
+            };
+            print_structured(format, entry, || {})?;
             Ok(exit_code::SUCCESS)
         }
         KbMode::Validate { file } => {
@@ -1338,7 +1378,7 @@ fn run_kb(args: cli::KbArgs) -> Result<i32> {
             } else {
                 diagnose::KnowledgeBase::json_schema()
             };
-            println!("{}", serde_json::to_string_pretty(&schema)?);
+            print_structured(OutputFormat::Json, &schema, || {})?;
             Ok(exit_code::SUCCESS)
         }
         KbMode::Explain { query, service, format } => {
