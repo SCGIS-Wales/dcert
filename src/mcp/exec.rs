@@ -157,11 +157,17 @@ pub(crate) fn inject_flags(args: &[&str], debug: bool, timeout: &str, read_timeo
     let split = args.iter().position(|a| *a == "--").unwrap_or(args.len());
     let (options, targets) = args.split_at(split);
     let mut full: Vec<String> = options.iter().map(|a| (*a).to_string()).collect();
-    if debug && !options.contains(&"--debug") {
+    // Tool arguments use both `--flag value` and `--flag=value`.
+    let has = |flag: &str| {
+        options
+            .iter()
+            .any(|a| *a == flag || a.strip_prefix(flag).is_some_and(|rest| rest.starts_with('=')))
+    };
+    if debug && !has("--debug") {
         full.push("--debug".to_string());
     }
     for (flag, value) in [("--timeout", timeout), ("--read-timeout", read_timeout)] {
-        if !options.contains(&flag) {
+        if !has(flag) {
             full.push(flag.to_string());
             full.push(value.to_string());
         }

@@ -389,7 +389,7 @@ pub struct CheckArgs {
     pub sort_expiry: Option<SortOrder>,
 
     /// HTTP method to use for HTTPS requests (default: GET)
-    #[arg(long, value_enum, default_value_t = HttpMethod::Get, conflicts_with = "starttls")]
+    #[arg(long, value_enum, ignore_case = true, default_value_t = HttpMethod::Get, conflicts_with = "starttls")]
     pub method: HttpMethod,
 
     /// Custom HTTP headers (key:value), can be repeated

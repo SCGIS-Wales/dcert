@@ -42,11 +42,14 @@ struct McpCli {
     addr: String,
 }
 
+mod cliargs;
 mod config;
 mod exec;
 mod http;
 mod params;
 mod params_vault;
+#[cfg(test)]
+mod parity_tests;
 mod security;
 #[cfg(test)]
 mod tests;
