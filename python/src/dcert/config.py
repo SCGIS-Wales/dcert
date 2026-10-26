@@ -67,6 +67,17 @@ class PlatformTarget:
 
 
 @dataclass(frozen=True)
+class AuthConfig:
+    """Where HTTP and SSE authentication settings come from."""
+
+    token_env: str
+    oidc_issuer_env: str
+    oidc_audience_env: str
+    oidc_jwks_env: str
+    min_token_length: int
+
+
+@dataclass(frozen=True)
 class ServerConfig:
     """Defaults for the FastMCP proxy server."""
 
@@ -75,6 +86,8 @@ class ServerConfig:
     port: int
     transports: tuple[str, ...]
     default_transport: str
+    loopback_hosts: tuple[str, ...]
+    auth: AuthConfig
 
 
 @dataclass(frozen=True)
@@ -201,6 +214,7 @@ def parse_config(raw: Mapping[str, Any]) -> Config:
     if "default" not in install_dirs:
         raise ValueError("config.yaml: 'install.directories' needs a 'default' entry")
     transports = _string_tuple(server, "transports")
+    auth = _section(server, "auth")
     exporters = _string_tuple(otel, "exporters")
     try:
         return Config(
@@ -233,6 +247,14 @@ def parse_config(raw: Mapping[str, Any]) -> Config:
                 transports=transports,
                 default_transport=_member(
                     str(server["default_transport"]), transports, "default_transport"
+                ),
+                loopback_hosts=_string_tuple(server, "loopback_hosts"),
+                auth=AuthConfig(
+                    token_env=str(auth["token_env"]),
+                    oidc_issuer_env=str(auth["oidc_issuer_env"]),
+                    oidc_audience_env=str(auth["oidc_audience_env"]),
+                    oidc_jwks_env=str(auth["oidc_jwks_env"]),
+                    min_token_length=int(auth["min_token_length"]),
                 ),
             ),
             resilience=ResilienceDefaults(

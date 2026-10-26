@@ -116,6 +116,6 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 # Tests: assert statements, missing annotations and fixture arguments are expected.
-"tests/*" = ["S101", "ANN", "ARG001", "S105", "S106", "S108", "ASYNC230", "ASYNC240"]
+"tests/*" = ["S101", "S104", "ANN", "ARG001", "S105", "S106", "S108", "ASYNC230", "ASYNC240"]
 "../scripts/test_*.py" = ["S101", "ANN", "ARG001", "S603", "S607"]
 "scripts/test_*.py" = ["S101", "ANN", "ARG001", "S603", "S607"]

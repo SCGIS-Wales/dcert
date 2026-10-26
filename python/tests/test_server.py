@@ -16,6 +16,7 @@ from dcert.server import (
     build_subprocess_env,
     create_server,
     create_transport,
+    passthrough_matches,
 )
 
 # ---------------------------------------------------------------------------
@@ -136,7 +137,7 @@ def test_build_subprocess_env_skips_unset():
     ],
 )
 def test_passthrough_env_vars(var):
-    assert var in PASSTHROUGH_ENV_VARS
+    assert passthrough_matches(var, PASSTHROUGH_ENV_VARS)
 
 
 # ---------------------------------------------------------------------------

@@ -8,6 +8,16 @@ summary is written.
 
 ### Security
 
+- `dcert-python --transport http|sse` refuses to start without
+  authentication: a static bearer token of at least 32 characters
+  (`--auth-token`, `DCERT_MCP_AUTH_TOKEN`) or an https OIDC issuer, audience
+  and JWKS URL. Requests with a `Host` header other than loopback, the bind
+  address or `--allowed-hosts` are answered 400 (S4).
+- The Python proxy now forwards the `DCERT_MCP_*` policy variables, the
+  Vault settings (`VAULT_ADDR`, `VAULT_TOKEN`, `VAULT_CACERT`,
+  `VAULT_CAPATH`, `VAULT_SKIP_VERIFY`), `DCERT_KB_FILE`, `DCERT_PROXY`,
+  `DCERT_NOPROXY`, `ALL_PROXY`, `TMPDIR` and `XDG_CACHE_HOME` to
+  `dcert-mcp`; previously a hardened deployment lost its policy silently.
 - MCP destination policy (S3): `DCERT_MCP_DENY_PRIVATE_TARGETS` (default on
   in HTTP mode) refuses loopback, private, link local and metadata
   addresses, and `DCERT_MCP_ALLOWED_TARGETS` restricts tool calls to listed

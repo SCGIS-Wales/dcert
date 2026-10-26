@@ -5,8 +5,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
+from fastmcp.server.auth.providers.jwt import JWTVerifier
 
 from dcert import cli
+from dcert.auth import BearerTokenVerifier, HostHeaderGuard
 from dcert.cli import dcert_main, dcert_mcp_main, main, otel_overrides, resilience_overrides
 from dcert.resilience import OTelConfig, resilience_config_from_env
 
@@ -86,31 +88,101 @@ def test_choices_come_from_config(runner):
     assert f"default: {cli._CONFIG.server.default_transport}" in result.output
 
 
+TOKEN = "t" * 40
+
+
 def test_stdio_transport(runner, fake_binary, isolated_env):
     server = MagicMock()
     with patch("dcert.server.create_server", return_value=server) as create:
         result = runner.invoke(main, ["--binary", fake_binary])
     assert result.exit_code == 0, result.output
-    create.assert_called_once_with(binary_path=fake_binary, resilience=resilience_config_from_env())
+    create.assert_called_once_with(
+        binary_path=fake_binary, resilience=resilience_config_from_env(), auth=None
+    )
     server.run.assert_called_once_with()
 
 
-def test_http_transport(runner, fake_binary, isolated_env):
+def _run_kwargs(server):
+    """Return the keyword arguments of the single ``server.run`` call."""
+    server.run.assert_called_once()
+    return server.run.call_args.kwargs
+
+
+def test_http_transport(runner, fake_binary, isolated_env, monkeypatch):
+    monkeypatch.setenv(cli._CONFIG.server.auth.token_env, TOKEN)
     server = MagicMock()
     args = ["--binary", fake_binary, "--transport", "http", "--host", "127.0.0.1", "--port", "9090"]
-    with patch("dcert.server.create_server", return_value=server):
+    with patch("dcert.server.create_server", return_value=server) as create:
         result = runner.invoke(main, args)
     assert result.exit_code == 0, result.output
-    server.run.assert_called_once_with(transport="http", host="127.0.0.1", port=9090)
+    assert isinstance(create.call_args.kwargs["auth"], BearerTokenVerifier)
+    kwargs = _run_kwargs(server)
+    assert (kwargs["transport"], kwargs["host"], kwargs["port"]) == ("http", "127.0.0.1", 9090)
+    (guard,) = kwargs["middleware"]
+    assert guard.cls is HostHeaderGuard
+    assert guard.kwargs["hosts"] == frozenset({"127.0.0.1", "localhost", "::1"})
 
 
 def test_defaults_come_from_config(runner, fake_binary, isolated_env):
     server = MagicMock()
     with patch("dcert.server.create_server", return_value=server):
-        runner.invoke(main, ["--binary", fake_binary, "--transport", "sse"])
-    server.run.assert_called_once_with(
-        transport="sse", host=cli._CONFIG.server.host, port=cli._CONFIG.server.port
+        result = runner.invoke(
+            main, ["--binary", fake_binary, "--transport", "sse", "--auth-token", TOKEN]
+        )
+    assert result.exit_code == 0, result.output
+    kwargs = _run_kwargs(server)
+    assert (kwargs["transport"], kwargs["host"], kwargs["port"]) == (
+        "sse",
+        cli._CONFIG.server.host,
+        cli._CONFIG.server.port,
     )
+
+
+@pytest.mark.parametrize("transport", ["http", "sse"])
+def test_network_transports_refuse_to_start_without_auth(
+    runner, fake_binary, isolated_env, transport
+):
+    with patch("dcert.server.create_server") as create:
+        result = runner.invoke(main, ["--binary", fake_binary, "--transport", transport])
+    assert result.exit_code == 1
+    assert "refusing to start" in result.output
+    assert cli._CONFIG.server.auth.token_env in result.output
+    create.assert_not_called()
+
+
+def test_short_token_is_refused(runner, fake_binary, isolated_env):
+    result = runner.invoke(
+        main, ["--binary", fake_binary, "--transport", "http", "--auth-token", "short"]
+    )
+    assert result.exit_code == 1
+    assert "at least" in result.output
+
+
+def test_oidc_configuration_builds_a_jwt_verifier(runner, fake_binary, isolated_env):
+    server = MagicMock()
+    args = [
+        "--binary",
+        fake_binary,
+        "--transport",
+        "http",
+        "--oidc-issuer",
+        "https://idp.example.com",
+        "--oidc-audience",
+        "dcert",
+        "--oidc-jwks-uri",
+        "https://idp.example.com/keys",
+        "--host",
+        "0.0.0.0",
+        "--allowed-hosts",
+        "mcp.example.com,Other.Example.com",
+    ]
+    with patch("dcert.server.create_server", return_value=server) as create:
+        result = runner.invoke(main, args)
+    assert result.exit_code == 0, result.output
+    assert isinstance(create.call_args.kwargs["auth"], JWTVerifier)
+    hosts = _run_kwargs(server)["middleware"][0].kwargs["hosts"]
+    assert {"mcp.example.com", "other.example.com", "localhost"} <= hosts
+    assert "0.0.0.0" not in hosts
 
 
 def test_flags_override_the_configuration(runner, fake_binary, isolated_env):
