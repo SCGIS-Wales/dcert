@@ -167,5 +167,54 @@ Every authentication failure returns the same bare `401 Unauthorized` with a `WW
 | `DCERT_MCP_ALLOWED_ORIGINS` | Comma-separated CORS allowlist for HTTP mode (default: none; `*` = any origin) |
 | `DCERT_MCP_AUTH_FAILURE_LIMIT` | Failed authentications per client address before 429 (default: 10; `0` disables) |
 | `DCERT_MCP_AUTH_FAILURE_WINDOW` | Window for the failure limit in seconds (default: 60) |
-| `DCERT_PROXY` | Forward proxy URL for the `dcert` binary; overrides `HTTPS_PROXY`/`HTTP_PROXY` |
+| `DCERT_MCP_ALLOWED_HOSTS` | Comma separated `Host` header allowlist for HTTP mode (default: loopback names and the bind address) |
+| `DCERT_MCP_ALLOW_INSECURE` | Set to `1` to start HTTP mode without authentication on a non loopback bind (refused by default) |
+| `DCERT_MCP_SCOPE_WRITE` / `DCERT_MCP_SCOPE_READ` / `DCERT_MCP_SCOPE_<TOOL>` | Scopes or roles required per tool class or per tool (needs OIDC) |
+| `DCERT_MCP_JWKS_TTL` | JWKS cache lifetime in seconds (default: 3600) |
+| `DCERT_MCP_MAX_CONCURRENT_REQUESTS` | Concurrent in flight HTTP requests (default: 64) |
+| `DCERT_MCP_REQUEST_TIMEOUT` | Per request timeout in seconds (default: 120) |
+| `DCERT_MCP_MAX_BODY_BYTES` | Largest accepted request body (default: 1048576) |
+| `DCERT_MCP_FILE_ROOT` | Directories file parameters and file targets are confined to (default: the working directory); the first is the child's working directory |
+| `DCERT_MCP_ALLOWED_TARGETS` | Destinations tool calls may reach: hostnames, `.suffix` patterns, IPs, CIDRs |
+| `DCERT_MCP_DENY_PRIVATE_TARGETS` | `1` refuses private, loopback, link local and metadata destinations (default: `1` in HTTP mode, `0` in stdio mode) |
+| `DCERT_MCP_VAULT_ADDR_ALLOWLIST` | Vault addresses a tool call may target; also the addresses that may receive the server's own Vault token |
+| `DCERT_MCP_VAULT_ALLOW_SKIP_VERIFY` | Set to `1` to let a tool call disable Vault TLS verification |
+| `DCERT_MCP_MODE` / `DCERT_MCP_ADDR` | Transport (`stdio` or `http`) and HTTP bind address |
+| `DCERT_MCP_TIMEOUT` / `DCERT_MCP_CONNECTION_TIMEOUT` / `DCERT_MCP_READ_TIMEOUT` | Subprocess, TCP connect and read timeouts in seconds |
+| `DCERT_MCP_DEBUG` | `1` passes `--debug` to every `dcert` subprocess (debug output masks secrets) |
+| `DCERT_MCP_BINARY` | Path of the `dcert-mcp` binary for the Python package |
+| `DCERT_PROXY` | Forward proxy URL for the `dcert` binary; overrides `HTTPS_PROXY`/`HTTP_PROXY` (http:// only) |
 | `DCERT_NOPROXY` | Proxy bypass list for the `dcert` binary; overrides `NO_PROXY` |
+| `DCERT_ALLOWED_TARGETS` / `DCERT_DENY_PRIVATE_TARGETS` | The destination policy the CLI enforces; set by the MCP server for its child, usable directly |
+
+The Python proxy (`dcert-python`) also reads the resilience and telemetry variables `DCERT_MCP_TOOL_TIMEOUT`, `DCERT_MCP_CONNECT_TIMEOUT`, `DCERT_MCP_RECONNECT_MAX`, `DCERT_MCP_NO_RETRY`, `DCERT_MCP_RETRY_MAX_ATTEMPTS`, `DCERT_MCP_RETRY_BASE_DELAY`, `DCERT_MCP_RETRY_MAX_DELAY`, `DCERT_MCP_RETRY_MULTIPLIER`, `DCERT_MCP_NO_CIRCUIT_BREAKER`, `DCERT_MCP_CB_THRESHOLD`, `DCERT_MCP_CB_RESET_TIMEOUT`, `DCERT_MCP_RATE_LIMIT_ENABLED`, `DCERT_MCP_RATE_LIMIT_RPS`, `DCERT_MCP_RATE_LIMIT_BURST`, `DCERT_MCP_BULKHEAD_MAX`, `DCERT_MCP_CACHE_ENABLED`, `DCERT_MCP_CACHE_TOOL_TTL`, `DCERT_MCP_CACHE_LIST_TTL`, `DCERT_MCP_MAX_RESPONSE_BYTES`, `DCERT_MCP_OTEL_ENABLED`, `DCERT_MCP_OTEL_EXPORTER` and `DCERT_MCP_OTEL_SERVICE_NAME` (see `python/src/dcert/resilience.py`). None of them weakens a security control. In HTTP and SSE mode it requires `DCERT_MCP_AUTH_TOKEN` (at least 32 characters) or `DCERT_MCP_OIDC_ISSUER`, `DCERT_MCP_OIDC_AUDIENCE` and `DCERT_MCP_OIDC_JWKS_URL`.
+
+## Threat Model for HTTP Mode
+
+HTTP mode exposes tools that make outbound connections, read and write files and talk to Vault on behalf of remote callers. The controls above address these threats:
+
+| Threat | Control |
+|--------|---------|
+| Unauthenticated use | OIDC or a static bearer token is required on any non loopback bind; `dcert-python` refuses to start without one; failed attempts are rate limited per address |
+| Token theft on the wire | Bearer tokens must travel over TLS; terminate TLS in front of the server and set `DCERT_MCP_BEHIND_TLS=1` (a warning is logged otherwise) |
+| Token confusion (ID tokens, other audiences) | Issuer, audience, `typ` and scope or role claims are checked; JWKS keys are bound to the token algorithm |
+| Privilege escalation between tools | Per tool scopes (`DCERT_MCP_SCOPE_*`), failing closed on batches and malformed requests |
+| Server side request forgery | Destination policy on target, overrides, proxy and AIA URLs, enforced again by the child at dial time |
+| File system access | `DCERT_MCP_FILE_ROOT` confinement with canonical paths passed to the child |
+| Credential exfiltration | The server's Vault token only reaches operator configured Vault addresses; secrets travel in the environment or 0600 files, never argv; `DCERT_MCP_*` secrets are stripped from children |
+| Weakened verification | `no_verify` and Vault `skip_verify` need explicit operator switches |
+| Browser based DNS rebinding | `Host` header allowlist |
+| Resource exhaustion | Request body, concurrency, timeout and subprocess limits |
+| Repudiation | One audit record per tool call with caller and redacted target |
+
+## Supply Chain
+
+Every release publishes `SHA256SUMS` over all assets and a CycloneDX SBOM (`dcert-sbom.cdx.json`). Release archives, the SBOM and the Python wheels carry GitHub build provenance attestations (`gh attestation verify <file> --repo SCGIS-Wales/dcert`). The container image is scanned with Trivy on every build, failing on fixable critical or high findings, and each pushed digest is signed keylessly with cosign:
+
+```bash
+cosign verify ghcr.io/scgis-wales/dcert@<digest> \
+  --certificate-identity-regexp 'https://github.com/SCGIS-Wales/dcert/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+All GitHub Actions are pinned to commit SHAs.

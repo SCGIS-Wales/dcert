@@ -8,6 +8,11 @@ summary is written.
 
 ### Security
 
+- Supply chain: releases publish `SHA256SUMS` and a CycloneDX SBOM; release
+  archives, the SBOM and wheels carry build provenance attestations; the
+  container image is scanned with Trivy on every build and each pushed
+  digest is signed keylessly with cosign. `SECURITY.md` documents every
+  `DCERT_MCP_*` variable and the HTTP mode threat model.
 - HTTP mode authorisation and OIDC hardening: per tool scope checks fail
   closed when the tool cannot be determined (batches, non object bodies);
   issuer and JWKS URL must be https; the discovery `issuer` must match and a
