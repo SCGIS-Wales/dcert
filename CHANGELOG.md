@@ -6,6 +6,17 @@ summary is written.
 
 ## Unreleased
 
+### Changed
+
+- One set of TLS and connection options (`src/tlsopts.rs`) is shared by
+  `check` and `verify-key`, and one builder turns them into handshake
+  settings. `verify-key` over HTTPS now honours `--proxy`, `--noproxy`,
+  `--resolve`, `--connect-to`, `--sni`, `--ca-cert`, `--no-verify`, the TLS
+  version, cipher and group flags, the timeouts and `--starttls`, instead of
+  fixed defaults. `--cipher-notation` is the canonical name of `--ciphers`,
+  which stays as an alias. `check --help` groups these flags under "TLS
+  options" and "Connection options".
+
 ### Security
 
 - Supply chain: releases publish `SHA256SUMS` and a CycloneDX SBOM; release

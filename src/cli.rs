@@ -1,13 +1,7 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use openssl::ssl::SslVersion;
 
-use crate::connect::{ConnectOverride, parse_connect_to, parse_resolve};
 pub use crate::secret::Secret;
-
-/// Validate an OpenSSL group list before it reaches libssl.
-fn parse_groups(value: &str) -> Result<String, String> {
-    crate::keyex::validate_groups_list(value).map(|()| value.trim().to_string())
-}
 
 /// Return the version string for `--version` output.
 ///
@@ -395,126 +389,32 @@ pub struct CheckArgs {
     pub sort_expiry: Option<SortOrder>,
 
     /// HTTP method to use for HTTPS requests (default: GET)
-    #[arg(long, value_enum, default_value_t = HttpMethod::Get)]
+    #[arg(long, value_enum, default_value_t = HttpMethod::Get, conflicts_with = "starttls")]
     pub method: HttpMethod,
 
     /// Custom HTTP headers (key:value), can be repeated
-    #[arg(long, value_parser = parse_header, num_args = 0.., value_name = "HEADER")]
+    #[arg(long, value_parser = parse_header, num_args = 0.., value_name = "HEADER", conflicts_with = "starttls")]
     pub header: Vec<(String, String)>,
 
     /// Read HTTP headers from a file, one `Key: Value` per line (blank lines
     /// and lines starting with `#` are ignored). Keeps secrets such as bearer
     /// tokens out of the process list; added after any --header values.
-    #[arg(long, value_name = "FILE")]
+    #[arg(long, value_name = "FILE", conflicts_with = "starttls")]
     pub headers_file: Option<String>,
 
     /// Send data as the request body (implies POST if --method is not explicitly set).
     /// Similar to curl's -d flag.
-    #[arg(short = 'd', long = "data", value_name = "DATA")]
+    #[arg(short = 'd', long = "data", value_name = "DATA", conflicts_with = "starttls")]
     pub data: Option<String>,
 
     /// Read request body from a file (implies POST if --method is not explicitly set).
     /// Similar to curl's --data-binary @file.
-    #[arg(long = "data-file", value_name = "FILE", conflicts_with = "data")]
+    #[arg(long = "data-file", value_name = "FILE", conflicts_with_all = ["data", "starttls"])]
     pub data_file: Option<String>,
 
     /// HTTP protocol to use (default: http1-1)
-    #[arg(long, value_enum, default_value_t = HttpProtocol::Http1_1)]
+    #[arg(long, value_enum, default_value_t = HttpProtocol::Http1_1, conflicts_with = "starttls")]
     pub http_protocol: HttpProtocol,
-
-    /// Minimum TLS version to accept [possible values: 1.2, 1.3]
-    #[arg(long, value_enum, value_name = "VERSION")]
-    pub min_tls: Option<TlsVersionArg>,
-
-    /// Maximum TLS version to accept [possible values: 1.2, 1.3]
-    #[arg(long, value_enum, value_name = "VERSION")]
-    pub max_tls: Option<TlsVersionArg>,
-
-    /// Set allowed TLS cipher suites using an OpenSSL cipher string (e.g. "ECDHE+AESGCM:CHACHA20")
-    ///
-    /// Controls TLS 1.2 and below ciphers. Uses OpenSSL cipher string format.
-    /// See: https://www.openssl.org/docs/man1.1.1/man1/ciphers.html
-    #[arg(long, value_name = "CIPHER_STRING")]
-    pub cipher_list: Option<String>,
-
-    /// Set allowed TLS 1.3 cipher suites (e.g. "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256")
-    ///
-    /// Controls TLS 1.3 ciphers only. Uses colon-separated IANA cipher names.
-    #[arg(long, value_name = "CIPHERSUITES")]
-    pub cipher_suites: Option<String>,
-
-    /// Key exchange groups to offer, as an OpenSSL group list
-    /// (e.g. "X25519MLKEM768:X25519:secp384r1"). Post quantum hybrids
-    /// (RFC 10024) need OpenSSL 3.5 or later; the default keeps the linked
-    /// library's own list, which on 3.5+ already offers X25519MLKEM768.
-    #[arg(long, value_name = "GROUPS", value_parser = parse_groups)]
-    pub groups: Option<String>,
-
-    /// Apply a named TLS client profile (Mozilla configurator v6): `modern`
-    /// is TLS 1.3 only, `intermediate` adds forward secret AEAD TLS 1.2
-    /// suites. Both put X25519MLKEM768 first when OpenSSL supports it.
-    /// Explicit --min-tls, --cipher-list, --cipher-suites and --groups win.
-    #[arg(long, value_enum, value_name = "PROFILE")]
-    pub tls_profile: Option<crate::keyex::TlsProfile>,
-
-    /// Run a second handshake offering only the RFC 10024 hybrid post quantum
-    /// groups and report whether the server supports post quantum key
-    /// agreement (requires OpenSSL 3.5 or later; reported as not testable otherwise).
-    #[arg(long)]
-    pub pq_probe: bool,
-
-    /// Disable TLS certificate verification (insecure)
-    #[arg(long)]
-    pub no_verify: bool,
-
-    /// TCP connect timeout in seconds — how long to wait to *establish* the
-    /// connection. Does not bound the response wait (see --read-timeout).
-    #[arg(long, value_name = "SECONDS", default_value_t = crate::limits::DEFAULT_TIMEOUT_SECS,
-          value_parser = clap::value_parser!(u64).range(crate::limits::TIMEOUT_RANGE))]
-    pub timeout: u64,
-
-    /// Read timeout in seconds — how long each read may wait for the server.
-    /// Everything after the TCP connect (proxy CONNECT, STARTTLS, the TLS
-    /// handshake and the HTTP exchange) also shares one wall clock budget of
-    /// --timeout plus --read-timeout, so a server that trickles bytes cannot
-    /// hold a probe open.
-    #[arg(long, value_name = "SECONDS", default_value_t = crate::limits::DEFAULT_READ_TIMEOUT_SECS,
-          value_parser = clap::value_parser!(u64).range(crate::limits::READ_TIMEOUT_RANGE))]
-    pub read_timeout: u64,
-
-    /// Override SNI hostname for TLS handshake
-    #[arg(long)]
-    pub sni: Option<String>,
-
-    /// Pin HOST:PORT to a specific IP address instead of using DNS, like curl's
-    /// --resolve. The hostname is still used for SNI, the Host header and
-    /// certificate validation. Repeatable; the host may be `*` and several
-    /// comma-separated addresses may be given (tried in order). Use
-    /// --connect-to to redirect to a hostname rather than an IP. Example:
-    /// `dcert https://api.example.com --resolve api.example.com:443:10.0.0.5`
-    #[arg(long, value_name = "HOST:PORT:ADDRESS", value_parser = parse_resolve)]
-    pub resolve: Vec<ConnectOverride>,
-
-    /// Redirect the connection to another host or IP while keeping the target
-    /// hostname for SNI, the Host header and certificate validation. Accepts a
-    /// bare IP address, or curl's HOST1:PORT1:HOST2:PORT2 form where empty
-    /// fields mean "any"/"unchanged". Repeatable. Example:
-    /// `dcert https://api.example.com --connect-to api.example.com:443:origin.internal:8443`
-    #[arg(long, value_name = "IP|HOST1:PORT1:HOST2:PORT2", value_parser = parse_connect_to)]
-    pub connect_to: Vec<ConnectOverride>,
-
-    /// Forward proxy URL for HTTPS/HTTP requests, like curl's -x. Overrides the
-    /// HTTPS_PROXY/HTTP_PROXY environment variables. Credentials may be embedded
-    /// (http://user:pass@proxy:3128). Pass an empty value to force a direct
-    /// connection. Note that --resolve/--connect-to always bypass the proxy.
-    #[arg(long, value_name = "URL", env = "DCERT_PROXY", hide_env_values = true)]
-    pub proxy: Option<String>,
-
-    /// Comma-separated list of hosts that must bypass the proxy, like curl's
-    /// --noproxy. Overrides NO_PROXY; `*` bypasses the proxy entirely and an
-    /// empty value clears an inherited NO_PROXY.
-    #[arg(long = "noproxy", value_name = "LIST", env = "DCERT_NOPROXY", hide_env_values = true)]
-    pub noproxy: Option<String>,
 
     /// Show SHA-256 fingerprint for each certificate
     #[arg(long)]
@@ -539,10 +439,6 @@ pub struct CheckArgs {
     /// Check certificate revocation status via OCSP
     #[arg(long)]
     pub check_revocation: bool,
-
-    /// Show the negotiated (agreed) TLS cipher suite in the given notation
-    #[arg(long, value_enum, value_name = "NOTATION")]
-    pub ciphers: Option<CipherNotation>,
 
     /// Run compliance checks against CA/B Forum Baseline Requirements, DigiCert, and X9 standards.
     /// Reports findings (error/warning/info) and overall COMPLIANT/NON-COMPLIANT status.
@@ -569,10 +465,6 @@ pub struct CheckArgs {
     /// Password for the PKCS12/PFX file (or set DCERT_CERT_PASSWORD env var)
     #[arg(long, value_name = "PASS", env = "DCERT_CERT_PASSWORD", hide_env_values = true)]
     pub cert_password: Option<Secret>,
-
-    /// Custom CA certificate bundle PEM file for server verification (overrides system CAs)
-    #[arg(long, value_name = "PATH")]
-    pub ca_cert: Option<String>,
 
     // -- Root CA trust classification --
     /// Skip the root-CA trust classification (publicly trusted vs private PKI vs
@@ -601,15 +493,11 @@ pub struct CheckArgs {
     #[arg(long)]
     pub refresh_public_roots: bool,
 
-    // -- STARTTLS --
-    /// Perform STARTTLS negotiation before the TLS handshake (for mail/FTP
-    /// servers). The target is treated as host[:port], not an HTTPS URL.
-    ///
-    /// Cannot be combined with the HTTP request options (--method, --header,
-    /// --data, --data-file, --http-protocol): STARTTLS inspects the certificate
-    /// over a plain protocol upgrade and never sends an HTTP request.
-    #[arg(long, value_enum, value_name = "PROTOCOL", conflicts_with_all = ["method", "header", "headers_file", "data", "data_file", "http_protocol"])]
-    pub starttls: Option<StarttlsProtocol>,
+    #[command(flatten)]
+    pub tls: crate::tlsopts::TlsOptions,
+
+    #[command(flatten)]
+    pub connection: crate::tlsopts::ConnectionOptions,
 }
 
 // -- Convert subcommand --
@@ -756,6 +644,12 @@ pub struct VerifyKeyArgs {
     /// Show verbose debug output
     #[arg(long)]
     pub debug: bool,
+
+    #[command(flatten)]
+    pub tls: crate::tlsopts::TlsOptions,
+
+    #[command(flatten)]
+    pub connection: crate::tlsopts::ConnectionOptions,
 }
 
 // -- CSR subcommand --
