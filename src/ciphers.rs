@@ -13,6 +13,8 @@ use std::sync::OnceLock;
 use openssl::ssl::{Ssl, SslContext, SslMethod};
 use serde::Serialize;
 
+use crate::cli::CipherNotation;
+
 #[path = "ciphers_table.rs"]
 mod table;
 
@@ -23,6 +25,15 @@ mod table;
 pub enum Protocol {
     Tls12,
     Tls13,
+}
+
+impl From<crate::cli::TlsVersionArg> for Protocol {
+    fn from(version: crate::cli::TlsVersionArg) -> Self {
+        match version {
+            crate::cli::TlsVersionArg::Tls1_2 => Self::Tls12,
+            crate::cli::TlsVersionArg::Tls1_3 => Self::Tls13,
+        }
+    }
 }
 
 /// One cipher suite of the IANA registry.
@@ -206,6 +217,136 @@ impl Cipher {
     }
 }
 
+/// A suite as `dcert ciphers explain` and `list` report it: every table
+/// field, the code point as text and whether the linked OpenSSL offers it.
+#[derive(Debug, Serialize)]
+pub struct CipherDetails {
+    pub code_point: String,
+    #[serde(flatten)]
+    pub cipher: &'static Cipher,
+    pub offerable: bool,
+}
+
+impl From<&'static Cipher> for CipherDetails {
+    fn from(cipher: &'static Cipher) -> Self {
+        Self {
+            code_point: cipher.code_point(),
+            cipher,
+            offerable: cipher.offerable(),
+        }
+    }
+}
+
+/// The registry's suites, optionally one protocol family and only those
+/// the linked OpenSSL offers, in code point order.
+pub fn list(protocol: Option<Protocol>, offerable_only: bool) -> Vec<CipherDetails> {
+    all()
+        .iter()
+        .filter(|c| protocol.is_none_or(|p| c.protocol == p))
+        .map(CipherDetails::from)
+        .filter(|d| !offerable_only || d.offerable)
+        .collect()
+}
+
+/// The suite a handshake negotiated, serialised in the notation
+/// `--cipher-notation` asks for: a record with every notation by default,
+/// or just the OpenSSL or IANA name.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NegotiatedCipher {
+    /// OpenSSL's name for the suite, `unknown` when there was no handshake.
+    pub openssl: String,
+    /// The IANA name, when OpenSSL reports one.
+    pub iana: Option<String>,
+    pub code: Option<u16>,
+    pub notation: CipherNotation,
+}
+
+impl NegotiatedCipher {
+    /// The record for a suite OpenSSL negotiated.
+    pub fn new(openssl: &str, iana: Option<&str>, code: Option<u16>) -> Self {
+        let row = code.and_then(Cipher::by_code);
+        Self {
+            openssl: openssl.to_string(),
+            iana: iana.or(row.map(|c| c.iana)).map(str::to_string),
+            code,
+            notation: CipherNotation::default(),
+        }
+    }
+
+    /// No handshake completed.
+    pub fn unknown() -> Self {
+        Self {
+            openssl: "unknown".to_string(),
+            ..Self::default()
+        }
+    }
+
+    /// The table row for this suite, when the registry has it.
+    pub fn row(&self) -> Option<&'static Cipher> {
+        self.code.and_then(Cipher::by_code)
+    }
+
+    /// One line for pretty output, in the configured notation.
+    pub fn display(&self) -> String {
+        match self.notation {
+            CipherNotation::Openssl => self.openssl.clone(),
+            CipherNotation::Iana => self
+                .iana
+                .clone()
+                .unwrap_or_else(|| "unknown (IANA name not available)".to_string()),
+            CipherNotation::All => {
+                let mut extra: Vec<String> = Vec::new();
+                if let Some(iana) = self.iana.as_deref().filter(|i| *i != self.openssl) {
+                    extra.push(iana.to_string());
+                }
+                if let Some(code) = self.code {
+                    extra.push(format!("0x{code:04X}"));
+                }
+                if extra.is_empty() {
+                    self.openssl.clone()
+                } else {
+                    format!("{} ({})", self.openssl, extra.join(", "))
+                }
+            }
+        }
+    }
+}
+
+impl Serialize for NegotiatedCipher {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        match self.notation {
+            CipherNotation::Openssl => serializer.serialize_str(&self.openssl),
+            CipherNotation::Iana => serializer.serialize_some(&self.iana),
+            CipherNotation::All => {
+                let row = self.row();
+                let mut record = serializer.serialize_struct("NegotiatedCipher", 6)?;
+                record.serialize_field("openssl", &self.openssl)?;
+                record.serialize_field("iana", &self.iana)?;
+                record.serialize_field("code_point", &self.code.map(|c| format!("0x{c:04X}")))?;
+                record.serialize_field("protocol", &row.map(|c| c.protocol))?;
+                record.serialize_field("forward_secrecy", &row.map(|c| c.pfs))?;
+                record.serialize_field("aead", &row.map(|c| c.aead))?;
+                record.end()
+            }
+        }
+    }
+}
+
+/// clap value parser for `--cipher`: one suite in any notation that the
+/// linked OpenSSL implements.
+pub fn parse_cipher_arg(value: &str) -> Result<&'static Cipher, String> {
+    let cipher = Cipher::parse(value).map_err(|e| e.to_string())?;
+    if cipher.openssl.is_none() {
+        return Err(format!(
+            "{} ({}) has no OpenSSL implementation, so dcert cannot offer it",
+            cipher.iana,
+            cipher.code_point()
+        ));
+    }
+    Ok(cipher)
+}
+
 /// An ordered set of suites, split by protocol the way OpenSSL configures
 /// them (a TLS 1.2 cipher list and a TLS 1.3 suite list).
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -215,6 +356,15 @@ pub struct CipherSet {
 }
 
 impl CipherSet {
+    /// The set of the given suites, in order, duplicates dropped.
+    pub fn from_ciphers<'c>(ciphers: impl IntoIterator<Item = &'c &'static Cipher>) -> Self {
+        let mut set = Self::default();
+        for cipher in ciphers {
+            set.push(cipher);
+        }
+        set
+    }
+
     fn push(&mut self, cipher: &'static Cipher) {
         let list = match cipher.protocol {
             Protocol::Tls12 => &mut self.tls12,

@@ -61,7 +61,9 @@ from dcert.tools import (
     create_keystore,
     create_session,
     create_truststore,
+    explain_cipher_suite,
     export_pem,
+    list_cipher_suites,
     tls_connection_info,
     verify_key_match,
 )
@@ -111,4 +113,6 @@ __all__ = [
     "convert_pem_to_pfx",
     "create_keystore",
     "create_truststore",
+    "list_cipher_suites",
+    "explain_cipher_suite",
 ]

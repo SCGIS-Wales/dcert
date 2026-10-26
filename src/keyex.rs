@@ -293,6 +293,7 @@ impl TlsProfile {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EffectiveTlsSettings {
     pub min_tls: Option<crate::cli::TlsVersionArg>,
+    pub max_tls: Option<crate::cli::TlsVersionArg>,
     pub cipher_list: Option<String>,
     pub cipher_suites: Option<String>,
     pub groups: Option<String>,
@@ -310,6 +311,7 @@ pub fn effective_tls_settings(
     let base = profile.map(TlsProfile::settings);
     EffectiveTlsSettings {
         min_tls: min_tls.or_else(|| base.as_ref().map(|b| b.min_tls)),
+        max_tls: None,
         cipher_list: cipher_list
             .map(ToString::to_string)
             .or_else(|| base.as_ref().and_then(|b| b.cipher_list.clone())),

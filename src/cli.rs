@@ -165,12 +165,15 @@ pub enum SortOrder {
     Desc,
 }
 
-#[derive(ValueEnum, Clone, Debug, Copy)]
+#[derive(ValueEnum, Clone, Debug, Copy, Default, PartialEq, Eq)]
 pub enum CipherNotation {
-    /// IANA/RFC standard names (e.g. TLS_AES_256_GCM_SHA384)
+    /// IANA/RFC standard names (e.g. TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256)
     Iana,
-    /// OpenSSL names (e.g. TLS_AES_256_GCM_SHA384) — same for TLS 1.3, differs for TLS 1.2
+    /// OpenSSL names (e.g. ECDHE-RSA-AES128-GCM-SHA256); TLS 1.3 suites keep their IANA name
     Openssl,
+    /// Every notation: OpenSSL and IANA names, code point, protocol, forward secrecy and AEAD
+    #[default]
+    All,
 }
 
 /// Canonical one-liner description used by CLI, MCP, and Cargo.toml.
@@ -230,7 +233,7 @@ pub enum Command {
 
     /// Verify that a private key matches a certificate
     #[command(name = "verify-key", alias = "vk")]
-    VerifyKey(VerifyKeyArgs),
+    VerifyKey(Box<VerifyKeyArgs>),
 
     /// Create or validate Certificate Signing Requests (CSRs)
     #[command(name = "csr")]
@@ -247,6 +250,48 @@ pub enum Command {
     /// Inspect or validate the diagnostics knowledge base
     #[command(name = "kb")]
     Kb(KbArgs),
+
+    /// Look up TLS cipher suites in any notation (offline)
+    #[command(name = "ciphers")]
+    Ciphers(CiphersArgs),
+}
+
+/// `dcert ciphers` arguments.
+#[derive(Args, Debug)]
+pub struct CiphersArgs {
+    #[command(subcommand)]
+    pub mode: CiphersMode,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CiphersMode {
+    /// List the cipher suites of the IANA registry
+    #[command(after_help = "\x1b[1mExamples:\x1b[0m
+  dcert ciphers list --protocol 1.3              TLS 1.3 suites
+  dcert ciphers list --offerable -f json         What this build can offer")]
+    List {
+        /// Only suites of this protocol family [possible values: 1.2, 1.3]
+        #[arg(long, value_enum, value_name = "VERSION")]
+        protocol: Option<TlsVersionArg>,
+        /// Only suites the linked OpenSSL can offer at its default security level
+        #[arg(long)]
+        offerable: bool,
+        /// Output format
+        #[arg(short, long, value_enum, default_value_t = OutputFormat::Pretty)]
+        format: OutputFormat,
+    },
+    /// Show one cipher suite in every notation
+    #[command(after_help = "\x1b[1mExamples:\x1b[0m
+  dcert ciphers explain C02F
+  dcert ciphers explain TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+  dcert ciphers explain ECDHE-RSA-AES128-GCM-SHA256 -f json")]
+    Explain {
+        /// IANA name, OpenSSL name or code point (0xC02F, C02F, 0xC0,0x2F)
+        suite: String,
+        /// Output format
+        #[arg(short, long, value_enum, default_value_t = OutputFormat::Pretty)]
+        format: OutputFormat,
+    },
 }
 
 /// `dcert kb` arguments.
@@ -327,6 +372,7 @@ pub const KNOWN_SUBCOMMANDS: &[&str] = &[
     "diagnose",
     "dx",
     "kb",
+    "ciphers",
 ];
 
 // -- Check subcommand (default) --

@@ -27,6 +27,7 @@
   - [dcert vault -- HashiCorp Vault PKI](#dcert-vault--hashicorp-vault-pki)
   - [dcert diagnose -- TLS, mTLS, Gateway, CDN and Proxy Diagnostics](#dcert-diagnose--tls-mtls-gateway-cdn-and-proxy-diagnostics)
   - [dcert kb -- Diagnostics and Reference Knowledge Bases](#dcert-kb--diagnostics-and-reference-knowledge-bases)
+  - [dcert ciphers -- Cipher Suite Lookup](#dcert-ciphers--cipher-suite-lookup)
 - [MCP Server (AI IDE Integration)](#mcp-server-ai-ide-integration)
   - [Proxy and Timeout Configuration](#proxy-and-timeout-configuration)
   - [Troubleshooting](#troubleshooting)
@@ -155,6 +156,7 @@ dcert convert <MODE> [OPTIONS]         # Format conversion (PFX/PEM/keystore/tru
 dcert verify-key <target> --key <KEY>  # Key-certificate matching (single pair)
 dcert diagnose <target> [OPTIONS]      # TLS, mTLS, gateway, CDN and forward proxy diagnostics
 dcert kb <list|show|validate|schema>   # Inspect the diagnostics knowledge base
+dcert ciphers <list|explain>           # Look up cipher suites in any notation (offline)
 dcert verify-key [--dir <DIR>]         # Auto-discover and verify all cert/key pairs
 dcert vault issue [OPTIONS]            # Issue a TLS certificate from Vault PKI
 dcert vault sign [OPTIONS]             # Sign a CSR using Vault PKI
@@ -312,10 +314,13 @@ dcert --min-tls 1.3 https://example.com
 # Force TLS 1.2 only
 dcert --min-tls 1.2 --max-tls 1.2 https://example.com
 
-# Specific TLS 1.2 ciphers
-dcert --cipher-list "ECDHE+AESGCM:CHACHA20" --max-tls 1.2 https://example.com
+# Offer exactly these suites, in any notation (IANA name, OpenSSL name or
+# code point); TLS 1.2 and TLS 1.3 suites may be mixed
+dcert https://example.com --cipher 0xC02F --cipher TLS_AES_128_GCM_SHA256
+dcert https://example.com --cipher ECDHE-RSA-AES256-GCM-SHA384   # TLS 1.2 only
 
-# TLS 1.3 cipher suites
+# Raw OpenSSL cipher strings, passed as is
+dcert --cipher-list "ECDHE+AESGCM:CHACHA20" --max-tls 1.2 https://example.com
 dcert --cipher-suites "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256" https://example.com
 
 # Post quantum key exchange (RFC 10024 hybrids, OpenSSL 3.5+ on the dcert host).
@@ -372,7 +377,10 @@ dcert https://localhost:8443 --no-verify
 dcert mail.example.com:587 --starttls smtp
 dcert imap.example.com:143 --starttls imap
 
-# Show the negotiated cipher suite in IANA or OpenSSL notation
+# The negotiated cipher suite is reported in every notation by default
+# (pretty: "ECDHE-RSA-AES128-GCM-SHA256 (TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256, 0xC02F)";
+# JSON/YAML: tls_cipher {openssl, iana, code_point, protocol, forward_secrecy, aead}).
+# --cipher-notation iana or openssl reports that name alone, in every format.
 dcert https://example.com --cipher-notation iana
 ```
 
@@ -441,10 +449,12 @@ Options:
       --http-protocol <PROTO>          HTTP protocol [http1-1, http2] (default: http1-1)
       --min-tls <VERSION>              Minimum TLS version [1.2, 1.3]
       --max-tls <VERSION>              Maximum TLS version [1.2, 1.3]
-      --cipher-list <STRING>           Allowed TLS 1.2 ciphers (OpenSSL format)
-      --cipher-suites <SUITES>         Allowed TLS 1.3 cipher suites (colon-separated)
-      --cipher-notation <NOTATION>     Show the negotiated cipher suite in [iana, openssl] notation
-                                       (--ciphers is accepted as an alias)
+      --cipher <SUITE>                 Offer only this suite, in any notation (IANA, OpenSSL,
+                                       0xC02F, C02F, 0xC0,0x2F); repeatable, TLS 1.2 and 1.3 mixed
+      --cipher-list <STRING>           Allowed TLS 1.2 ciphers (OpenSSL format, passed as is)
+      --cipher-suites <SUITES>         Allowed TLS 1.3 cipher suites (colon-separated, passed as is)
+      --cipher-notation <NOTATION>     Report the negotiated suite as [all, iana, openssl]
+                                       (default: all; --ciphers is accepted as an alias)
       --groups <GROUPS>                Key exchange groups to offer (OpenSSL group list, e.g.
                                        X25519MLKEM768:X25519; ML-KEM needs OpenSSL 3.5+)
       --tls-profile <PROFILE>          Mozilla client profile [modern, intermediate]
@@ -1117,6 +1127,25 @@ entries:
       - https://intranet.example.com/edge-policy
 ```
 
+### dcert ciphers -- Cipher Suite Lookup
+
+One table of the IANA TLS Cipher Suites registry, offline: code point, IANA
+and OpenSSL names, protocol family, key exchange, authentication, encryption,
+MAC, the AEAD, forward secrecy, export, NULL, anonymous and FIPS flags, the
+IANA recommended or discouraged status, and whether the linked OpenSSL can
+offer the suite. Every notation names the same record:
+
+```bash
+dcert ciphers explain C02F
+dcert ciphers explain TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+dcert ciphers explain ECDHE-RSA-AES128-GCM-SHA256 -f json
+
+dcert ciphers list --protocol 1.3            # TLS 1.3 suites
+dcert ciphers list --offerable -f json       # what this build can offer
+```
+
+A misspelt name is an error that suggests the nearest known names.
+
 ---
 
 ## MCP Server (AI IDE Integration)
@@ -1138,6 +1167,8 @@ It implements the current MCP specification revision (**2025-11-25**) via the `r
 | `create_csr` | Create a PKCS#10 CSR and private key. Supports RSA/ECDSA, OU metadata, and encrypted keys. Compliant with CA/B Forum, DigiCert, and X9 standards. |
 | `validate_csr` | Validate a CSR for compliance with CA/B Forum Baseline Requirements, DigiCert, and X9 standards. Returns findings with severity levels. |
 | `diagnose_endpoint` | Diagnose why an endpoint fails: TLS and mTLS on any server, Apigee, Envoy/Istio and nginx errors, CloudFront edge and origin errors, API Gateway gateway responses, forward proxy failures and TLS interception. Returns findings ordered earliest layer first with confidence, evidence and remediation, the `platforms` the probe fingerprinted, and context notes explaining CloudFront and API Gateway responses. |
+| `list_cipher_suites` | List TLS cipher suites from the IANA registry with every notation and property; filter by protocol family or by what the linked OpenSSL can offer. No network access. |
+| `explain_cipher_suite` | Explain one cipher suite given as an IANA name, OpenSSL name or code point. No network access. |
 | `explain_edge_term` | Look up what a CloudFront or API Gateway status code, header, error name, gateway response type or topic (viewer mTLS modes, origin mTLS, truststores, security policies, limits) means, from the built-in reference knowledge base. No network access. |
 | `validate_certificate` | Run compliance checks on a certificate (PEM file or HTTPS endpoint). Checks key size, signature algorithm, validity period (SC-081v3 schedule), revocation pointers (SC-063v4), SANs, CT, EKU, and Basic Constraints against CA/B Forum standards. |
 | `verify_key_match` | Verify that a private key matches a certificate (PEM file or HTTPS endpoint). |
@@ -1580,8 +1611,8 @@ dcert https://site.com --fingerprint --extensions --check-revocation
 # Compliance audit against CA/B Forum Baseline Requirements
 dcert https://site.com --compliance
 
-# Test specific cipher suites
-dcert --cipher-list "ECDHE+AESGCM" --max-tls 1.2 https://target.com
+# Test specific cipher suites, named in any notation
+dcert https://target.com --cipher ECDHE-RSA-AES128-GCM-SHA256 --cipher 0xC030
 ```
 
 ### CSR Management

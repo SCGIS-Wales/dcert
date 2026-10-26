@@ -96,7 +96,15 @@ pub(crate) struct HttpTlsParams {
     /// Custom HTTP headers as "Key:Value" strings (repeatable)
     #[serde(default)]
     pub(crate) headers: Option<Vec<String>>,
-    /// OpenSSL cipher string for TLS 1.2 and below (e.g. "ECDHE+AESGCM:CHACHA20")
+    /// Cipher suites to offer, each in any notation: IANA name
+    /// ("TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"), OpenSSL name
+    /// ("ECDHE-RSA-AES128-GCM-SHA256") or code point ("0xC02F", "C02F",
+    /// "0xC0,0x2F"). A single string or a list; TLS 1.2 and 1.3 suites may be
+    /// mixed. Naming one family only limits the handshake to that version.
+    /// Cannot be combined with `cipher_list` or `cipher_suites`.
+    #[serde(default)]
+    pub(crate) cipher: Option<OneOrMany>,
+    /// OpenSSL cipher string for TLS 1.2 and below (e.g. "ECDHE+AESGCM:CHACHA20"), passed as is
     #[serde(default)]
     pub(crate) cipher_list: Option<String>,
     /// Colon-separated IANA cipher names for TLS 1.3 (e.g. "TLS_AES_256_GCM_SHA384")
@@ -172,7 +180,9 @@ pub(crate) struct HttpTlsParams {
     /// HTTP protocol version: "http1-1" or "http2" (default: http1-1)
     #[serde(default)]
     pub(crate) http_protocol: Option<String>,
-    /// Show negotiated cipher in "iana" or "openssl" notation
+    /// How the negotiated cipher is reported: "all" (default; a record with
+    /// the OpenSSL and IANA names, code point, protocol, forward secrecy and
+    /// AEAD), or "iana" or "openssl" for that name alone
     #[serde(default)]
     pub(crate) ciphers_notation: Option<String>,
     /// STARTTLS protocol: "smtp", "imap", "pop3", "ftp". When set, target is treated as host[:port]
@@ -208,7 +218,8 @@ fn path_arg(file: &tempfile::NamedTempFile) -> Result<String, String> {
 
 impl ToCliArgs for HttpTlsParams {
     fn write_args<'a>(&'a self, out: &mut ArgBuilder<'a>) {
-        out.value("cipher-list", self.cipher_list.as_deref())
+        out.repeat("cipher", self.cipher.iter().flat_map(OneOrMany::values))
+            .value("cipher-list", self.cipher_list.as_deref())
             .value("cipher-suites", self.cipher_suites.as_deref())
             .value("groups", self.groups.as_deref())
             .value("tls-profile", self.tls_profile.as_deref())
@@ -301,6 +312,14 @@ impl HttpTlsParams {
         if let Some(ref v) = self.ciphers_notation {
             parse_enum::<dcert::cli::CipherNotation>("ciphers_notation", v, false)?;
         }
+        if let Some(ref ciphers) = self.cipher {
+            if self.cipher_list.is_some() || self.cipher_suites.is_some() {
+                return Err("cipher cannot be combined with cipher_list or cipher_suites".to_string());
+            }
+            for value in ciphers.values() {
+                dcert::ciphers::parse_cipher_arg(value).map_err(|e| format!("cipher: {e}"))?;
+            }
+        }
         for (name, value) in [
             ("cipher_list", &self.cipher_list),
             ("cipher_suites", &self.cipher_suites),
@@ -362,6 +381,24 @@ pub(crate) struct ExplainEdgeTermParams {
     /// Restrict the answer to one service: "cloudfront" or "api_gateway" (default: both)
     #[serde(default)]
     pub(crate) service: Option<String>,
+}
+
+/// Parameters for the list_cipher_suites tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct ListCipherSuitesParams {
+    /// Only suites of this protocol family: "1.2" (TLS 1.2 and earlier) or "1.3"
+    #[serde(default)]
+    pub(crate) protocol: Option<String>,
+    /// Only suites the server's linked OpenSSL can offer (default: false)
+    #[serde(default)]
+    pub(crate) offerable: bool,
+}
+
+/// Parameters for the explain_cipher_suite tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct ExplainCipherSuiteParams {
+    /// The suite in any notation: IANA name (TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256), OpenSSL name (ECDHE-RSA-AES128-GCM-SHA256) or code point (0xC02F, C02F, 0xC0,0x2F); case insensitive
+    pub(crate) suite: String,
 }
 
 /// Parameters for the analyze_certificate tool.

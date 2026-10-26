@@ -727,6 +727,48 @@ async def create_truststore(
     return await call_tool("create_truststore", arguments, session=session, timeout=timeout)
 
 
+async def list_cipher_suites(
+    *,
+    protocol: str | None = None,
+    offerable: bool = False,
+    session: Session | None = None,
+    timeout: float | None = None,
+) -> ToolResponse:
+    """List TLS cipher suites from the IANA registry (no network access).
+
+    Args:
+        protocol: Only one protocol family, ``"1.2"`` or ``"1.3"``.
+        offerable: Only suites the server's linked OpenSSL can offer.
+        session: Session to use; the shared default when ``None``.
+        timeout: Per call timeout in seconds.
+    """
+    arguments = build_arguments(
+        "list_cipher_suites",
+        {},
+        {"protocol": protocol},
+        defaulted={"offerable": (offerable, False)},
+    )
+    return await call_tool("list_cipher_suites", arguments, session=session, timeout=timeout)
+
+
+async def explain_cipher_suite(
+    *,
+    suite: str,
+    session: Session | None = None,
+    timeout: float | None = None,
+) -> ToolResponse:
+    """Explain one TLS cipher suite given in any notation (no network access).
+
+    Args:
+        suite: IANA name, OpenSSL name or code point (``"0xC02F"``, ``"C02F"``,
+            ``"0xC0,0x2F"``), case insensitive.
+        session: Session to use; the shared default when ``None``.
+        timeout: Per call timeout in seconds.
+    """
+    arguments = build_arguments("explain_cipher_suite", {"suite": suite})
+    return await call_tool("explain_cipher_suite", arguments, session=session, timeout=timeout)
+
+
 TOOL_FUNCTIONS: tuple[Callable[..., Awaitable[ToolResponse]], ...] = (
     analyze_certificate,
     check_expiry,
@@ -739,4 +781,6 @@ TOOL_FUNCTIONS: tuple[Callable[..., Awaitable[ToolResponse]], ...] = (
     convert_pem_to_pfx,
     create_keystore,
     create_truststore,
+    list_cipher_suites,
+    explain_cipher_suite,
 )

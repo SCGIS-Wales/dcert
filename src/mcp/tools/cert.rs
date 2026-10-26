@@ -34,6 +34,14 @@ impl DcertMcpServer {
     }
 }
 
+/// A tool answer computed in process, as pretty JSON.
+fn json_reply<T: serde::Serialize>(value: &T) -> Result<CallToolResult, rmcp::ErrorData> {
+    match serde_json::to_string_pretty(value) {
+        Ok(text) => ok_text(text),
+        Err(e) => ok_error(format!("cannot serialise the answer: {e}")),
+    }
+}
+
 /// Whether the operator lets tool calls disable certificate verification
 /// (`DCERT_MCP_ALLOW_NO_VERIFY=1`). The caller is not the party who should
 /// decide that the server may talk to an unverified peer.
@@ -212,7 +220,7 @@ impl DcertMcpServer {
     /// Get TLS connection details for an HTTPS endpoint.
     #[tool(
         title = "TLS Connection Info",
-        description = "Get TLS connection details for an HTTPS endpoint including protocol version, cipher suite, ALPN negotiation, DNS/TCP/TLS latency, verification status, full OSI-layer diagnostics, the mTLS state (`client_auth`: not_requested, optional, required or presented, detected from the server's CertificateRequest on TLS 1.2 and 1.3, `acceptable_client_cas` with the CA names the server accepts, and `client_auth_required` plus the captured server chain when the server refuses the connection without a client certificate). Supports mTLS and custom CA bundles. To probe a specific IP/backend while validating a hostname (e.g. behind a load balancer, or when DNS does not resolve), keep the hostname in `target` and use `connect_to` (an IP, or 'HOST1:PORT1:HOST2:PORT2' to redirect to another hostname/port) or `resolve` ('HOST:PORT:IP'). Set `proxy`/`noproxy` to override the forward proxy for this request.",
+        description = "Get TLS connection details for an HTTPS endpoint including protocol version, the negotiated cipher suite (`tls_cipher`: by default a record with the OpenSSL and IANA names, code point, protocol, forward secrecy and AEAD; set `ciphers_notation` to \"iana\" or \"openssl\" for that name alone), ALPN negotiation, DNS/TCP/TLS latency, verification status, full OSI-layer diagnostics, the mTLS state (`client_auth`: not_requested, optional, required or presented, detected from the server's CertificateRequest on TLS 1.2 and 1.3, `acceptable_client_cas` with the CA names the server accepts, and `client_auth_required` plus the captured server chain when the server refuses the connection without a client certificate). Supports mTLS and custom CA bundles. To probe a specific IP/backend while validating a hostname (e.g. behind a load balancer, or when DNS does not resolve), keep the hostname in `target` and use `connect_to` (an IP, or 'HOST1:PORT1:HOST2:PORT2' to redirect to another hostname/port) or `resolve` ('HOST:PORT:IP'). Set `proxy`/`noproxy` to override the forward proxy for this request. Set `cipher` to offer specific suites in any notation.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,
@@ -638,6 +646,52 @@ impl DcertMcpServer {
         // codes are reported inline rather than treated as tool errors.
         let outcome = self.run_probe(&mut params).await;
         reply(outcome, "stderr", &[0])
+    }
+
+    /// List TLS cipher suites from the IANA registry.
+    #[tool(
+        title = "List TLS Cipher Suites",
+        description = "List TLS cipher suites from dcert's table of the IANA TLS Cipher Suites registry, without any network access. Each entry has the code point, IANA name, OpenSSL name (null when OpenSSL does not implement the suite), protocol family (tls12 or tls13), key exchange, authentication, encryption, MAC, the AEAD, forward secrecy, export, NULL, anonymous and FIPS flags, the IANA recommended or discouraged status, and whether this server's linked OpenSSL can offer it. Filter with `protocol` (\"1.2\" or \"1.3\") and `offerable`. Use explain_cipher_suite for one suite.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    pub async fn list_cipher_suites(
+        &self,
+        Parameters(params): Parameters<ListCipherSuitesParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let protocol = match params.protocol.as_deref() {
+            None => None,
+            Some(v) => match parse_enum::<dcert::cli::TlsVersionArg>("protocol", v, false) {
+                Ok(version) => Some(version.into()),
+                Err(e) => return ok_error(e),
+            },
+        };
+        json_reply(&dcert::ciphers::list(protocol, params.offerable))
+    }
+
+    /// Show one TLS cipher suite in every notation.
+    #[tool(
+        title = "Explain TLS Cipher Suite",
+        description = "Explain one TLS cipher suite given in any notation: IANA name (TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256), OpenSSL name (ECDHE-RSA-AES128-GCM-SHA256) or code point (0xC02F, C02F, 0xC0,0x2F), case insensitive. Returns JSON with every notation, the protocol family, key exchange, authentication, encryption, MAC, the AEAD, forward secrecy, export, NULL, anonymous and FIPS flags, the IANA recommended or discouraged status, and whether this server's linked OpenSSL can offer it. An unknown name returns an error with the nearest known names. No network access. Use it to translate between notations, for example the OpenSSL names in an AWS load balancer security policy and the IANA names in a scanner report.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    pub async fn explain_cipher_suite(
+        &self,
+        Parameters(params): Parameters<ExplainCipherSuiteParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        match dcert::ciphers::Cipher::parse(&params.suite) {
+            Ok(cipher) => json_reply(&dcert::ciphers::CipherDetails::from(cipher)),
+            Err(e) => ok_error(e.to_string()),
+        }
     }
 
     /// Explain a CloudFront or API Gateway status code, header, error name or topic.

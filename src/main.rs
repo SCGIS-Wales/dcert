@@ -274,7 +274,7 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
                 }
                 prev_fingerprints.insert(result.target.clone(), current_fps);
 
-                output_results(result, args.format, &args.http_protocol, targets.len() > 1, &args)?;
+                output_results(result, args.format, &args.http_protocol, targets.len() > 1)?;
             }
 
             sleep_while_running(Duration::from_secs(interval));
@@ -333,7 +333,7 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
         print_structured(args.format, &map, || {})?;
     } else {
         for result in &all_results {
-            output_results(result, args.format, &args.http_protocol, multi_target, &args)?;
+            output_results(result, args.format, &args.http_protocol, multi_target)?;
         }
     }
 
@@ -1107,7 +1107,7 @@ fn run() -> Result<i32> {
     match cli.command {
         Command::Check(args) => run_check(*args),
         Command::Convert(args) => run_convert(args),
-        Command::VerifyKey(args) => run_verify_key(args),
+        Command::VerifyKey(args) => run_verify_key(*args),
         Command::Csr(args) => run_csr(args),
         Command::Vault(args) => run_vault(*args),
         Command::Diagnose(mut args) => {
@@ -1115,6 +1115,98 @@ fn run() -> Result<i32> {
             run_check(*args)
         }
         Command::Kb(args) => run_kb(args),
+        Command::Ciphers(args) => run_ciphers(args),
+    }
+}
+
+/// Pretty output of one suite: one line per field.
+fn print_cipher_details(d: &dcert::ciphers::CipherDetails) {
+    let c = d.cipher;
+    let yes_no = |b: bool| if b { "yes" } else { "no" };
+    println!("{}", c.iana.bold());
+    println!("  Code point      : {}", d.code_point);
+    println!(
+        "  OpenSSL name    : {}",
+        c.openssl.unwrap_or("none (not implemented by OpenSSL)")
+    );
+    println!(
+        "  Protocol        : {}",
+        match c.protocol {
+            dcert::ciphers::Protocol::Tls12 => "TLS 1.2 and earlier",
+            dcert::ciphers::Protocol::Tls13 => "TLS 1.3",
+        }
+    );
+    println!("  Key exchange    : {}", c.kx);
+    println!("  Authentication  : {}", c.au);
+    println!("  Encryption      : {}", c.enc);
+    println!("  MAC             : {}", c.mac);
+    println!("  AEAD            : {}", yes_no(c.aead));
+    println!("  Forward secrecy : {}", yes_no(c.pfs));
+    println!("  FIPS approved   : {}", yes_no(c.fips));
+    let status = if c.recommended {
+        "recommended".green()
+    } else if c.discouraged {
+        "discouraged".red()
+    } else {
+        "not recommended".normal()
+    };
+    println!("  IANA status     : {status}");
+    let weak: Vec<&str> = [
+        (c.null, "NULL encryption"),
+        (c.anonymous, "anonymous"),
+        (c.export, "export grade"),
+    ]
+    .into_iter()
+    .filter_map(|(on, label)| on.then_some(label))
+    .collect();
+    if !weak.is_empty() {
+        println!("  Weakness        : {}", weak.join(", ").red());
+    }
+    println!(
+        "  Offerable here  : {} (linked {})",
+        yes_no(d.offerable),
+        openssl::version::version()
+    );
+}
+
+fn run_ciphers(args: cli::CiphersArgs) -> Result<i32> {
+    use cli::CiphersMode;
+    match args.mode {
+        CiphersMode::List {
+            protocol,
+            offerable,
+            format,
+        } => {
+            let rows = dcert::ciphers::list(protocol.map(Into::into), offerable);
+            print_structured(format, &rows, || {
+                println!("{} cipher suites", rows.len());
+                for d in &rows {
+                    let flags = [
+                        (d.cipher.pfs, "PFS"),
+                        (d.cipher.aead, "AEAD"),
+                        (d.offerable, "offerable"),
+                    ]
+                    .into_iter()
+                    .filter_map(|(on, label)| on.then_some(label))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                    println!(
+                        "  {}  {:<48} {:<34} {}",
+                        d.code_point,
+                        d.cipher.iana,
+                        d.cipher.openssl.unwrap_or("-"),
+                        flags
+                    );
+                }
+            })?;
+            Ok(exit_code::SUCCESS)
+        }
+        CiphersMode::Explain { suite, format } => {
+            let cipher = dcert::ciphers::Cipher::parse(&suite)?;
+            let details = dcert::ciphers::CipherDetails::from(cipher);
+            print_structured(format, &details, || print_cipher_details(&details))?;
+            Ok(exit_code::SUCCESS)
+        }
     }
 }
 
