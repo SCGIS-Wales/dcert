@@ -815,7 +815,15 @@ async fn test_run_dcert_with_pem_file() {
     }
 
     let config = test_config(dcert_path);
-    let result = run_dcert(&["tests/data/valid.pem", "--format", "json"], &config).await;
+    let result = run_dcert(
+        Invocation::new(target_args(
+            "check",
+            vec!["--format=json".to_string()],
+            "tests/data/valid.pem",
+        )),
+        &config,
+    )
+    .await;
 
     assert!(result.is_ok(), "run_dcert should succeed: {result:?}");
     let (stdout, _stderr, code) = result.unwrap();
@@ -838,7 +846,15 @@ async fn test_run_dcert_with_invalid_file() {
     }
 
     let config = test_config(dcert_path);
-    let result = run_dcert(&["nonexistent_file.pem", "--format", "json"], &config).await;
+    let result = run_dcert(
+        Invocation::new(target_args(
+            "check",
+            vec!["--format=json".to_string()],
+            "nonexistent_file.pem",
+        )),
+        &config,
+    )
+    .await;
 
     assert!(result.is_ok(), "run_dcert should not fail on spawn");
     let (_stdout, stderr, code) = result.unwrap();
@@ -2219,9 +2235,41 @@ fn target_args_names_the_subcommand_and_ends_with_the_target() {
     assert_eq!(args, ["check", "--format", "json", "--", "kb"]);
 }
 
+fn strings(args: &[&str]) -> Vec<String> {
+    args.iter().map(ToString::to_string).collect()
+}
+
+#[test]
+fn only_subcommands_that_take_them_get_the_shared_flags() {
+    let kb = inject_flags(&strings(&["kb", "explain", "403"]), true, "10", "5");
+    assert_eq!(kb, ["kb", "explain", "403"]);
+    let vault = inject_flags(&strings(&["vault", "list"]), true, "10", "5");
+    assert_eq!(vault, ["vault", "list", "--debug"]);
+    let quiet_vault = inject_flags(&strings(&["vault", "list"]), false, "10", "5");
+    assert_eq!(quiet_vault, ["vault", "list"], "vault runs no longer force --debug");
+    let verify = inject_flags(&strings(&["verify-key", "--", "https://x"]), false, "10", "5");
+    assert_eq!(
+        verify,
+        [
+            "verify-key",
+            "--timeout",
+            "10",
+            "--read-timeout",
+            "5",
+            "--",
+            "https://x"
+        ]
+    );
+}
+
 #[test]
 fn injected_flags_land_before_the_target_separator() {
-    let full = inject_flags(&["check", "--format", "json", "--", "example.com"], true, "10", "5");
+    let full = inject_flags(
+        &strings(&["check", "--format", "json", "--", "example.com"]),
+        true,
+        "10",
+        "5",
+    );
     assert_eq!(
         full,
         [
@@ -2241,14 +2289,14 @@ fn injected_flags_land_before_the_target_separator() {
 
 #[test]
 fn injected_flags_respect_caller_values_and_work_without_separator() {
-    let full = inject_flags(&["kb", "explain", "403", "--timeout", "3"], false, "10", "5");
-    assert_eq!(full, ["kb", "explain", "403", "--timeout", "3", "--read-timeout", "5"]);
+    let full = inject_flags(&strings(&["check", "--timeout", "3"]), false, "10", "5");
+    assert_eq!(full, ["check", "--timeout", "3", "--read-timeout", "5"]);
 }
 
 #[test]
 fn injected_flags_respect_caller_values_in_equals_form() {
     let full = inject_flags(
-        &["check", "--timeout=7", "--debug", "--", "example.com"],
+        &strings(&["check", "--timeout=7", "--debug", "--", "example.com"]),
         true,
         "10",
         "5",
@@ -2386,7 +2434,7 @@ fn vault_child_token(env: &[(&'static str, &str)], params: &VaultParams) -> Resu
         .build()
         .expect("runtime");
     runtime
-        .block_on(run_dcert_vault(&["list"], params, &config, &[]))
+        .block_on(run_dcert_vault(["list"], params, &config, &[]))
         .map(|(stdout, _, _)| stdout.trim().to_string())
 }
 

@@ -3,8 +3,9 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use crate::cliargs::ArgBuilder;
 use crate::config::McpConfig;
-use crate::exec::{acquire_permit, run_child_with_timeout, spawn_dcert};
+use crate::exec::{Invocation, RunOutcome, run_dcert};
 use crate::params::{
     default_cert_key_name, default_key_key_name, default_kv_version, default_ttl, default_vault_mount,
 };
@@ -323,14 +324,12 @@ pub(crate) async fn vault_authenticate(vault_params: &VaultParams) -> Result<zer
 /// Run dcert vault with vault-specific environment variables.
 /// Resolves vault_addr, handles auth (LDAP/AppRole → token), and passes
 /// configuration to the subprocess via env vars and CLI flags.
-pub(crate) async fn run_dcert_vault(
-    vault_args: &[&str],
+pub(crate) async fn run_dcert_vault<S: Into<String>>(
+    vault_args: impl IntoIterator<Item = S>,
     vault_params: &VaultParams,
     config: &McpConfig,
     extra_env: &[(&str, &str)],
-) -> Result<(String, String, i32), String> {
-    let _permit = acquire_permit(config).await?;
-
+) -> RunOutcome {
     // The address policy decides whether the server's own token may be used,
     // so it is checked before any token is resolved.
     let trust = match vault_params.resolve_addr() {
@@ -348,21 +347,15 @@ pub(crate) async fn run_dcert_vault(
         };
     let skip_verify = effective_skip_verify(vault_params.skip_verify)?;
 
-    // Build CLI args: "vault" <subcommand> [flags] --format json
-    let mut full_args: Vec<String> = vec!["vault".to_string()];
-    // Add vault global flags before subcommand
-    if skip_verify {
-        full_args.push("--skip-verify".to_string());
-    }
-    if let Some(ref cacert) = vault_params.vault_cacert {
-        full_args.push("--vault-cacert".to_string());
-        full_args.push(cacert.clone());
-    }
-    full_args.push("--debug".to_string());
-    // Add subcommand-specific args
-    for arg in vault_args {
-        full_args.push(arg.to_string());
-    }
+    // "vault" [global flags] <subcommand> [flags]. The runner adds --debug
+    // only when DCERT_MCP_DEBUG asks for it, as for every other tool.
+    let mut global = ArgBuilder::new();
+    global
+        .positional(["vault"])
+        .flag("skip-verify", skip_verify)
+        .value("vault-cacert", vault_params.vault_cacert.as_deref());
+    let (mut full_args, _) = global.into_parts();
+    full_args.extend(vault_args.into_iter().map(Into::into));
 
     // Vault settings travel as environment variables: the address so the
     // subprocess needs no flag, the token so it never appears in argv.
@@ -376,9 +369,7 @@ pub(crate) async fn run_dcert_vault(
     }
     env.extend_from_slice(extra_env);
 
-    let args_refs: Vec<&str> = full_args.iter().map(String::as_str).collect();
-    let mut child = spawn_dcert(config, &args_refs, &env)?;
-    run_child_with_timeout(&mut child, config).await
+    run_dcert(Invocation::new(full_args).env(&env), config).await
 }
 
 // ---------------------------------------------------------------------------

@@ -145,95 +145,104 @@ pub(crate) fn target_args(subcommand: &str, options: Vec<String>, target: &str) 
     let mut args = Vec::with_capacity(options.len() + 3);
     args.push(subcommand.to_string());
     args.extend(options);
-    args.push("--".to_string());
-    args.push(target.to_string());
+    args.extend(["--".to_string(), target.to_string()]);
     args
 }
 
-/// Add `--debug` (when `debug`), `--timeout` and `--read-timeout` unless the
-/// caller already set them. They go before any `--`, after which every
-/// argument is a target.
-pub(crate) fn inject_flags(args: &[&str], debug: bool, timeout: &str, read_timeout: &str) -> Vec<String> {
-    let split = args.iter().position(|a| *a == "--").unwrap_or(args.len());
+/// What a dcert run produced: stdout, stderr and the exit code, or why it
+/// could not run at all.
+pub(crate) type RunOutcome = Result<(String, String, i32), String>;
+
+/// One dcert run: the argument vector (subcommand first) and the per call
+/// environment that carries secrets, which never travel in argv.
+#[derive(Debug)]
+pub(crate) struct Invocation<'a> {
+    args: Vec<String>,
+    env: Vec<(&'a str, &'a str)>,
+}
+
+impl<'a> Invocation<'a> {
+    pub(crate) fn new<S: Into<String>>(args: impl IntoIterator<Item = S>) -> Self {
+        Self {
+            args: args.into_iter().map(Into::into).collect(),
+            env: Vec::new(),
+        }
+    }
+
+    pub(crate) fn env(mut self, vars: &[(&'a str, &'a str)]) -> Self {
+        self.env.extend_from_slice(vars);
+        self
+    }
+
+    fn subcommand(&self) -> &str {
+        self.args.first().map_or("", String::as_str)
+    }
+}
+
+/// The shared flags a subcommand accepts: `(--debug, --timeout and
+/// --read-timeout)`.
+fn shared_flags(subcommand: &str) -> (bool, bool) {
+    match subcommand {
+        "check" | "diagnose" | "verify-key" => (true, true),
+        "vault" => (true, false),
+        _ => (false, false),
+    }
+}
+
+/// Add `--debug` (when `debug`), `--timeout` and `--read-timeout` where the
+/// subcommand accepts them and the caller did not set them. They go before
+/// any `--`, after which every argument is a target.
+pub(crate) fn inject_flags(args: &[String], debug: bool, timeout: &str, read_timeout: &str) -> Vec<String> {
+    let (takes_debug, takes_timeouts) = shared_flags(args.first().map_or("", String::as_str));
+    let split = args.iter().position(|a| a == "--").unwrap_or(args.len());
     let (options, targets) = args.split_at(split);
-    let mut full: Vec<String> = options.iter().map(|a| (*a).to_string()).collect();
+    let mut full = options.to_vec();
     // Tool arguments use both `--flag value` and `--flag=value`.
     let has = |flag: &str| {
         options
             .iter()
-            .any(|a| *a == flag || a.strip_prefix(flag).is_some_and(|rest| rest.starts_with('=')))
+            .any(|a| a == flag || a.strip_prefix(flag).is_some_and(|rest| rest.starts_with('=')))
     };
-    if debug && !has("--debug") {
+    if takes_debug && debug && !has("--debug") {
         full.push("--debug".to_string());
     }
-    for (flag, value) in [("--timeout", timeout), ("--read-timeout", read_timeout)] {
-        if !has(flag) {
-            full.push(flag.to_string());
-            full.push(value.to_string());
+    if takes_timeouts {
+        for (flag, value) in [("--timeout", timeout), ("--read-timeout", read_timeout)] {
+            if !has(flag) {
+                full.push(flag.to_string());
+                full.push(value.to_string());
+            }
         }
     }
-    full.extend(targets.iter().map(|a| (*a).to_string()));
+    full.extend_from_slice(targets);
     full
 }
 
-/// Run dcert with given arguments and return (stdout, stderr, exit_code).
+/// Run dcert once and return (stdout, stderr, exit_code).
 ///
-/// Passes `--debug` when `DCERT_MCP_DEBUG` is truthy so MCP tool responses include diagnostic info.
-/// Passes `--timeout` and `--read-timeout` from the MCP config to the subprocess.
-/// Enforces a subprocess timeout to prevent indefinite hangs from slow or unreachable targets.
-/// Acquires a semaphore permit to limit concurrent subprocess invocations.
+/// The one subprocess runner: it holds a concurrency permit for the life of
+/// the child, injects `--debug` (when `DCERT_MCP_DEBUG` is truthy) and the
+/// configured `--timeout` and `--read-timeout` wherever the subcommand takes
+/// them, and enforces the subprocess timeout. All parameter validation
+/// happens in the caller first, so a rejected call never holds a permit.
 ///
-/// Note: The subprocess inherits all parent environment variables (we do NOT call
-/// `.env_clear()` or `.env()` on the Command). This is required for proxy support —
-/// HTTPS_PROXY, HTTP_PROXY, NO_PROXY, SSL_CERT_FILE, and SSL_CERT_DIR are forwarded
-/// automatically to the dcert CLI subprocess.
-pub(crate) async fn run_dcert(args: &[&str], config: &McpConfig) -> Result<(String, String, i32), String> {
-    run_dcert_with_env(args, config, None).await
-}
-
-/// Run dcert with optional environment variables for passing secrets securely.
-/// Secrets like cert_password are passed via env vars instead of CLI args to avoid
-/// exposing them in process listings (ps aux, /proc/<pid>/cmdline).
-pub(crate) async fn run_dcert_with_env(
-    args: &[&str],
-    config: &McpConfig,
-    env_vars: Option<&[(&str, &str)]>,
-) -> Result<(String, String, i32), String> {
+/// The subprocess inherits the parent environment (proxy variables, CA
+/// bundle paths) apart from the server's own `DCERT_MCP_*` settings; see
+/// [`spawn_dcert`].
+pub(crate) async fn run_dcert(invocation: Invocation<'_>, config: &McpConfig) -> RunOutcome {
     let _permit = acquire_permit(config).await?;
-
-    let full_args = inject_flags(
-        args,
+    debug_assert!(
+        !invocation.subcommand().is_empty(),
+        "an invocation names its subcommand"
+    );
+    let args = inject_flags(
+        &invocation.args,
         debug_enabled(),
         &config.connection_timeout.to_string(),
         &config.read_timeout.to_string(),
     );
-    let full_args: Vec<&str> = full_args.iter().map(String::as_str).collect();
-
-    let mut child = spawn_dcert(config, &full_args, env_vars.unwrap_or(&[]))?;
-    run_child_with_timeout(&mut child, config).await
-}
-
-/// Run dcert without --debug and without --timeout/--read-timeout flags.
-/// Used for subcommands (convert, verify-key) that don't support connection timeouts.
-/// Acquires a semaphore permit to limit concurrent subprocess invocations.
-/// Optionally accepts environment variables (e.g., for passing passwords securely).
-///
-/// Note: The subprocess inherits all parent environment variables including proxy
-/// settings. See `run_dcert()` for details.
-pub(crate) async fn run_dcert_raw(
-    args: &[&str],
-    config: &McpConfig,
-    env_vars: Option<&[(&str, &str)]>,
-) -> Result<(String, String, i32), String> {
-    // The semaphore permit binds to `_permit` and is released when this
-    // function returns (success, error, or `?` propagation). It bounds
-    // concurrent subprocesses to `MAX_CONCURRENT_SUBPROCESSES` so a flood
-    // of MCP tool calls cannot exhaust the host's process table. All
-    // parameter validation (paths, passwords, aliases) happens in the
-    // caller before we get here, so failed validation never holds a permit.
-    let _permit = acquire_permit(config).await?;
-
-    let mut child = spawn_dcert(config, args, env_vars.unwrap_or(&[]))?;
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut child = spawn_dcert(config, &args, &invocation.env)?;
     run_child_with_timeout(&mut child, config).await
 }
 
@@ -244,10 +253,7 @@ pub(crate) const EXIT_SIGNALLED: i32 = 128;
 /// so a chatty child can never block on a full pipe, and killing it on
 /// timeout so no orphan is left behind. Output is capped while it streams,
 /// not after it has been buffered.
-pub(crate) async fn run_child_with_timeout(
-    child: &mut tokio::process::Child,
-    config: &McpConfig,
-) -> Result<(String, String, i32), String> {
+pub(crate) async fn run_child_with_timeout(child: &mut tokio::process::Child, config: &McpConfig) -> RunOutcome {
     use tokio::io::AsyncReadExt;
 
     let stdout_pipe = child.stdout.take();
