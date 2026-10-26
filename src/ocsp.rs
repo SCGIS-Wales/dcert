@@ -1,7 +1,6 @@
 use openssl::hash::MessageDigest;
 use openssl::x509::X509;
 use std::io::Write;
-use std::net::IpAddr;
 use std::time::Duration;
 use url::Url;
 
@@ -11,69 +10,13 @@ use crate::tls::{read_http_response, resolve_host};
 /// Determine whether an OCSP responder host is safe to contact.
 ///
 /// The OCSP URL comes from the certificate's AIA extension and is therefore
-/// **attacker-controlled** when we're checking a certificate from an untrusted
+/// **attacker controlled** when we're checking a certificate from an untrusted
 /// source. Without a guard, a malicious cert can specify
 /// `http://169.254.169.254/...` (cloud metadata), `http://127.0.0.1:8200/...`
-/// (local Vault/services), or any RFC 1918 address — turning `dcert` into an
-/// SSRF probe. We reject IP literals that target loopback, link-local,
-/// private (RFC 1918), or unique-local-IPv6 ranges.
-///
-/// Hostnames are accepted at parse time (we cannot prevent DNS rebinding here
-/// without a full resolver dance); the destination IP appears in the debug
-/// output of `direct_tcp_connect` and an external SSRF allow-list at the
-/// network layer remains the strongest defence.
+/// (local Vault/services), or any RFC 1918 address, turning `dcert` into an
+/// SSRF probe. The ranges live in [`crate::netpolicy::is_internal_ip`].
 pub fn is_safe_ocsp_host(host: &str) -> bool {
-    // Strip optional surrounding `[` `]` for IPv6 literals.
-    let trimmed = host.trim_start_matches('[').trim_end_matches(']');
-    match trimmed.parse::<IpAddr>() {
-        Ok(IpAddr::V4(v4)) => !is_internal_v4(v4),
-        Ok(IpAddr::V6(v6)) => {
-            if v6.is_loopback() || v6.is_unspecified() {
-                return false;
-            }
-            // Link-local: fe80::/10
-            let segs = v6.segments();
-            if (segs[0] & 0xffc0) == 0xfe80 {
-                return false;
-            }
-            // Unique local addresses (ULA): fc00::/7
-            if (segs[0] & 0xfe00) == 0xfc00 {
-                return false;
-            }
-            // Multicast ff00::/8 is never a responder.
-            if v6.is_multicast() {
-                return false;
-            }
-            // IPv4-mapped IPv6 (::ffff:0:0/96): apply the full v4 policy.
-            if let Some(v4) = v6.to_ipv4_mapped()
-                && is_internal_v4(v4)
-            {
-                return false;
-            }
-            true
-        }
-        // Hostnames are accepted; resolution (and the resulting safety check
-        // at the network layer) is logged via debug output.
-        Err(_) => true,
-    }
-}
-
-/// IPv4 ranges an OCSP responder must never live in: loopback, RFC 1918,
-/// link local (including the cloud metadata address), carrier grade NAT
-/// (100.64.0.0/10), the IETF protocol block 192.0.0.0/24, documentation
-/// networks, multicast, the reserved 240.0.0.0/4, broadcast and unspecified.
-fn is_internal_v4(v4: std::net::Ipv4Addr) -> bool {
-    let [a, b, _, _] = v4.octets();
-    v4.is_loopback()
-        || v4.is_private()
-        || v4.is_link_local()
-        || v4.is_broadcast()
-        || v4.is_unspecified()
-        || v4.is_documentation()
-        || v4.is_multicast()
-        || (a == 100 && (64..=127).contains(&b))
-        || (a == 192 && b == 0 && v4.octets()[2] == 0)
-        || a >= 240
+    crate::netpolicy::is_safe_host_literal(host)
 }
 
 /// Maximum accepted OCSP response size (DER plus HTTP head).
@@ -162,6 +105,9 @@ pub fn check_ocsp_status(cert_der: &[u8], issuer_der: Option<&[u8]>, ocsp_url: &
     };
     if !is_safe_ocsp_host(&addr.ip().to_string()) {
         return "unknown (OCSP responder rejected: address is private, loopback or otherwise internal)".to_string();
+    }
+    if let Err(e) = crate::netpolicy::enforce_addr(&host, &addr) {
+        return format!("unknown (OCSP responder rejected: {e})");
     }
     let tcp_stream = match std::net::TcpStream::connect_timeout(&addr, OCSP_TIMEOUT) {
         Ok(s) => {

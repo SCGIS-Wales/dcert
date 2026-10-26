@@ -41,6 +41,7 @@ impl DcertMcpServer {
         if let Some(http_tls) = http_tls {
             http_tls.validate()?;
         }
+        check_destinations(&self.config.destinations, probe_destinations(&target, http_tls)?).await?;
         let mut options = options;
         options.extend(mtls.to_args());
         let mut env_refs = mtls.env_vars();
@@ -205,6 +206,19 @@ impl DcertMcpServer {
             return ok_error(e);
         }
         if let Err(e) = validate_target(&params.target_b) {
+            return ok_error(e);
+        }
+
+        let destinations = probe_destinations(&params.target_a, None).and_then(|mut a| {
+            probe_destinations(&params.target_b, None).map(|b| {
+                a.extend(b);
+                a
+            })
+        });
+        if let Err(e) = match destinations {
+            Ok(d) => check_destinations(&self.config.destinations, d).await,
+            Err(e) => Err(e),
+        } {
             return ok_error(e);
         }
 

@@ -8,6 +8,14 @@ summary is written.
 
 ### Security
 
+- MCP destination policy (S3): `DCERT_MCP_DENY_PRIVATE_TARGETS` (default on
+  in HTTP mode) refuses loopback, private, link local and metadata
+  addresses, and `DCERT_MCP_ALLOWED_TARGETS` restricts tool calls to listed
+  hosts, suffixes, IPs and CIDRs. It covers `target`, `connect_to`,
+  `resolve`, `proxy` and AIA issuer URLs, and the CLI child enforces it on
+  the address it actually dials (`DCERT_ALLOWED_TARGETS`,
+  `DCERT_DENY_PRIVATE_TARGETS`). The OCSP address guard moved to
+  `src/netpolicy.rs` and now honours the same policy.
 - MCP Vault tools no longer send the server's own token (`VAULT_TOKEN` or
   `~/.vault-token`) to a caller chosen `vault_addr`. The inherited token is
   used only for the server's `VAULT_ADDR` or an address in

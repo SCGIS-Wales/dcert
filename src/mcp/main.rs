@@ -52,7 +52,8 @@ mod validate;
 
 use crate::config::{
     DEFAULT_CONNECTION_TIMEOUT, DEFAULT_READ_TIMEOUT, DEFAULT_SUBPROCESS_TIMEOUT, MCP_DESCRIPTION, McpConfig,
-    McpProxyInfo, dcert_mcp_long_version, dcert_mcp_version, find_dcert_binary, log_startup_diagnostics,
+    McpProxyInfo, dcert_mcp_long_version, dcert_mcp_version, destination_policy_from_env, find_dcert_binary,
+    log_startup_diagnostics,
 };
 use crate::tools::DcertMcpServer;
 
@@ -66,6 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         read_timeout: cli.read_timeout,
         dcert_binary: find_dcert_binary(),
         proxy_config: McpProxyInfo::from_env(),
+        destinations: destination_policy_from_env(cli.mode == "http")?,
     };
 
     match cli.mode.as_str() {

@@ -62,6 +62,17 @@ impl Default for DcertMcpServer {
             read_timeout: DEFAULT_READ_TIMEOUT,
             dcert_binary: find_dcert_binary(),
             proxy_config: McpProxyInfo::from_env(),
+            // Stdio defaults; a malformed policy falls back to deny private.
+            destinations: crate::config::destination_policy_from_env(false).unwrap_or_else(|_| {
+                dcert::netpolicy::DestinationPolicy::parse(
+                    None,
+                    Some("1"),
+                    true,
+                    crate::config::ALLOWED_TARGETS_VAR,
+                    crate::config::DENY_PRIVATE_TARGETS_VAR,
+                )
+                .unwrap_or_default()
+            }),
         })
     }
 }

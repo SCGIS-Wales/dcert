@@ -90,6 +90,17 @@ pub(crate) fn spawn_dcert(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
+    // The child enforces the same destination policy on the sockets it opens
+    // and on AIA fetches. Both variables are always set so an inherited value
+    // can never weaken the server's policy.
+    cmd.env(
+        dcert::netpolicy::ALLOWED_TARGETS_ENV,
+        config.destinations.allow_list_env(),
+    )
+    .env(
+        dcert::netpolicy::DENY_PRIVATE_TARGETS_ENV,
+        if config.destinations.denies_private() { "1" } else { "0" },
+    );
     for (key, value) in env_vars {
         cmd.env(key, value);
     }

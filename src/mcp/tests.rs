@@ -723,6 +723,7 @@ fn test_config(dcert_binary: PathBuf) -> McpConfig {
             http_proxy: None,
             no_proxy: None,
         },
+        destinations: Default::default(),
     }
 }
 
@@ -1393,6 +1394,7 @@ async fn test_oversized_child_output_is_truncated_not_killed() {
             http_proxy: None,
             no_proxy: None,
         },
+        destinations: Default::default(),
     };
 
     let over = MAX_OUTPUT_SIZE + 1_000_000;
@@ -1429,6 +1431,7 @@ fn test_format_timeout_error_with_proxy() {
             http_proxy: None,
             no_proxy: Some("localhost,127.0.0.1".to_string()),
         },
+        destinations: Default::default(),
     };
     let msg = format_timeout_error(&config);
     assert!(msg.contains("120s"), "should mention timeout duration");
@@ -1449,6 +1452,7 @@ fn test_format_timeout_error_without_proxy() {
             http_proxy: None,
             no_proxy: None,
         },
+        destinations: Default::default(),
     };
     let msg = format_timeout_error(&config);
     assert!(msg.contains("60s"));
@@ -2380,4 +2384,131 @@ fn explicit_token_replaces_the_server_token_for_a_caller_chosen_vault() {
     params.vault_token = Some("caller-token".to_string());
     let out = vault_child_token(&[("VAULT_TOKEN", "server-secret")], &params).expect("allowed");
     assert_eq!(out, "TOKEN=caller-token");
+}
+
+// ---------------------------------------------------------------
+// Plan PR 1.3: destination policy
+// ---------------------------------------------------------------
+
+fn deny_private_policy(allowed: &str) -> dcert::netpolicy::DestinationPolicy {
+    dcert::netpolicy::DestinationPolicy::parse(
+        Some(allowed),
+        Some("1"),
+        false,
+        ALLOWED_TARGETS_VAR,
+        DENY_PRIVATE_TARGETS_VAR,
+    )
+    .expect("policy")
+}
+
+#[test]
+fn probe_destinations_cover_target_overrides_and_proxy() {
+    let http_tls = HttpTlsParams {
+        connect_to: Some(OneOrMany::Many(vec![
+            "10.0.0.5".to_string(),
+            "api.example.com:443:origin.internal:8443".to_string(),
+        ])),
+        resolve: Some(OneOrMany::One("api.example.com:443:10.0.0.6,10.0.0.7".to_string())),
+        proxy: Some("http://proxy.corp:3128".to_string()),
+        ..Default::default()
+    };
+    let dests = probe_destinations("https://api.example.com:8443/x", Some(&http_tls)).expect("dests");
+    assert_eq!(
+        dests,
+        vec![
+            ("api.example.com".to_string(), 8443),
+            ("10.0.0.5".to_string(), 443),
+            ("origin.internal".to_string(), 8443),
+            ("10.0.0.6".to_string(), 443),
+            ("10.0.0.7".to_string(), 443),
+            ("proxy.corp".to_string(), 3128),
+        ]
+    );
+    assert_eq!(
+        probe_destinations("mail.example.com:587", None).expect("dests"),
+        vec![("mail.example.com".to_string(), 587)]
+    );
+}
+
+#[test]
+fn probe_destinations_skip_local_file_targets() {
+    assert!(probe_destinations("certs/chain.pem", None).expect("dests").is_empty());
+}
+
+#[tokio::test]
+async fn check_destinations_refuses_loopback_metadata_and_private_overrides() {
+    let policy = deny_private_policy("");
+    for (host, port) in [
+        ("127.0.0.1", 443),
+        ("169.254.169.254", 80),
+        ("10.0.0.5", 443),
+        ("fd00:ec2::254", 80),
+    ] {
+        let err = check_destinations(&policy, vec![(host.to_string(), port)])
+            .await
+            .expect_err(host);
+        assert!(err.contains(DENY_PRIVATE_TARGETS_VAR), "{err}");
+    }
+    assert!(
+        check_destinations(&policy, vec![("93.184.216.34".to_string(), 443)])
+            .await
+            .is_ok()
+    );
+}
+
+#[tokio::test]
+async fn check_destinations_allow_list_overrides_private_denial() {
+    let policy = deny_private_policy("10.0.0.0/8,.corp.example");
+    assert!(
+        check_destinations(&policy, vec![("10.1.2.3".to_string(), 443)])
+            .await
+            .is_ok()
+    );
+    assert!(
+        check_destinations(&policy, vec![("svc.corp.example".to_string(), 443)])
+            .await
+            .is_ok()
+    );
+    assert!(
+        check_destinations(&policy, vec![("93.184.216.34".to_string(), 443)])
+            .await
+            .is_err()
+    );
+}
+
+#[test]
+fn destination_policy_defaults_deny_private_in_http_mode_only() {
+    let _env = EnvGuard::unset_all(&[ALLOWED_TARGETS_VAR, DENY_PRIVATE_TARGETS_VAR]);
+    assert!(destination_policy_from_env(true).expect("http").denies_private());
+    assert!(!destination_policy_from_env(false).expect("stdio").denies_private());
+}
+
+#[test]
+fn destination_policy_explicit_setting_wins_over_mode_default() {
+    let mut env = EnvGuard::unset_all(&[ALLOWED_TARGETS_VAR, DENY_PRIVATE_TARGETS_VAR]);
+    env.set(DENY_PRIVATE_TARGETS_VAR, "0");
+    assert!(!destination_policy_from_env(true).expect("http").denies_private());
+    env.set(DENY_PRIVATE_TARGETS_VAR, "1");
+    assert!(destination_policy_from_env(false).expect("stdio").denies_private());
+    env.set(ALLOWED_TARGETS_VAR, "not a host!");
+    assert!(destination_policy_from_env(false).is_err());
+}
+
+/// The child receives the effective policy, overriding anything inherited.
+#[cfg(unix)]
+#[tokio::test]
+async fn spawned_child_receives_the_destination_policy() {
+    let env_bin = PathBuf::from("/usr/bin/env");
+    if !env_bin.exists() {
+        eprintln!("Skipping test: /usr/bin/env not found");
+        return;
+    }
+    let mut config = test_config(env_bin);
+    config.subprocess_timeout = Duration::from_secs(5);
+    config.destinations = deny_private_policy("api.example.com");
+    let mut child = spawn_dcert(&config, &[], &[]).expect("spawn env");
+    let (stdout, _stderr, code) = run_child_with_timeout(&mut child, &config).await.expect("env");
+    assert_eq!(code, 0);
+    assert!(stdout.contains("DCERT_DENY_PRIVATE_TARGETS=1\n"), "{stdout}");
+    assert!(stdout.contains("DCERT_ALLOWED_TARGETS=api.example.com\n"), "{stdout}");
 }

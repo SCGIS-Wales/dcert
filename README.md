@@ -1461,6 +1461,8 @@ OIDC tokens are validated against JWKS (JSON Web Key Sets) with automatic key ro
 | `DCERT_MCP_AUTH_FAILURE_LIMIT` | Failed authentications per client address before a 429 is answered (default: 10; `0` disables) |
 | `DCERT_MCP_AUTH_FAILURE_WINDOW` | Window for that limit in seconds (default: 60) |
 | `DCERT_MCP_FILE_ROOT` | Comma separated directories that tool file parameters and file targets are confined to (default: the working directory only). The first root is the working directory of every dcert child process |
+| `DCERT_MCP_ALLOWED_TARGETS` | Comma separated destinations tool calls may reach: hostnames, suffixes (`.corp.example`), IPs and CIDRs. Applies to `target`, `connect_to`, `resolve`, `proxy` and AIA issuer URLs. When set, everything else is refused, and a listed entry overrides the private range denial |
+| `DCERT_MCP_DENY_PRIVATE_TARGETS` | `1` refuses loopback, RFC 1918, link local (`169.254.0.0/16`, `fe80::/10`), `fc00::/7` and the metadata addresses `169.254.169.254` and `fd00:ec2::254` (default: `1` in HTTP mode, `0` in stdio mode) |
 | `DCERT_MCP_VAULT_ADDR_ALLOWLIST` | Comma separated Vault addresses a tool call may target. The server's own `VAULT_TOKEN` or `~/.vault-token` is used only for these addresses or the server's `VAULT_ADDR`; any other address needs an explicit `vault_token` |
 | `DCERT_MCP_VAULT_ALLOW_SKIP_VERIFY` | Set to `1` to let a tool call disable Vault TLS verification (refused by default) |
 
