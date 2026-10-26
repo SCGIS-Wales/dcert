@@ -265,6 +265,15 @@ summary is written.
 
 ### Testing
 
+- Hermetic conformance tests for `ELBSecurityPolicy-TLS13-1-3-PQ-2025-09`
+  and `ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09` (`tests/policy_alb_pq.rs`)
+  against loopback servers configured from the catalogue: conformant
+  emulations, TLS 1.2 refused by the TLS 1.3 only policy, an extra TLS 1.2
+  version, an extra CBC cipher named in every notation, an extra TLS 1.1
+  seen only with `--allow-legacy-tls`, RSA only versus dual certificate
+  listeners, and `--identify` naming the policy with its FIPS twin one
+  ChaCha20 suite away. Each runs in JSON and pretty output with its exit
+  code, on OpenSSL 3.0 (ML-KEM checks not testable) and the vendored build.
 - Hermetic TLS test harness shared by unit and integration tests
   (`src/testutil.rs`, included by `tests/support/mod.rs`). A builder pins
   protocol versions, TLS 1.2 ciphers, TLS 1.3 suites, groups, security level,
