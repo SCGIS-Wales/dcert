@@ -1116,6 +1116,120 @@ fn run() -> Result<i32> {
         }
         Command::Kb(args) => run_kb(args),
         Command::Ciphers(args) => run_ciphers(args),
+        Command::TlsScan(args) => run_tls_scan(*args),
+    }
+}
+
+/// `dcert tls-scan`: enumerate versions, suites and groups.
+fn run_tls_scan(args: cli::TlsScanArgs) -> Result<i32> {
+    use dcert::tls::{PqProbeRequest, ProbeTransport};
+    let tls = tlsopts::TlsOptions {
+        sni: args.sni.clone(),
+        starttls: args.starttls,
+        allow_legacy_tls: args.allow_legacy_tls,
+        ..Default::default()
+    };
+    let probe = ProbeOptions::new(&tls, &args.connection, ClientIdentity::default(), args.debug)?;
+    let (host, port, transport) = match args.starttls {
+        Some(protocol) => {
+            let (host, port) = output::starttls_host_port(&args.target, protocol.default_port());
+            (host, port, ProbeTransport::Starttls(protocol))
+        }
+        None => {
+            let url = url::Url::parse(&args.target)
+                .ok()
+                .filter(|u| u.scheme() == "https")
+                .ok_or_else(|| anyhow::anyhow!("tls-scan needs an HTTPS URL or hostname, got '{}'", args.target))?;
+            let host = url
+                .host_str()
+                .ok_or_else(|| anyhow::anyhow!("'{}' has no host", args.target))?
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .to_string();
+            (host, url.port().unwrap_or(443), ProbeTransport::Tls)
+        }
+    };
+    let request = PqProbeRequest {
+        host: &host,
+        port,
+        transport,
+        proxy_config: Some(&probe.proxy),
+        identity: ClientIdentity::default(),
+        alpn: None,
+    };
+    let limits = dcert::tlsscan::ScanLimits {
+        allow_legacy_tls: args.allow_legacy_tls,
+        max_handshakes: usize::try_from(args.max_handshakes).unwrap_or(usize::MAX),
+        concurrency: dcert::limits::SCAN_CONCURRENCY,
+    };
+    let report = dcert::tlsscan::scan(&args.target, &request, &probe.tls_probe(), limits);
+    print_structured(args.format, &report, || print_scan_pretty(&report))?;
+    Ok(if report.reachable() {
+        exit_code::SUCCESS
+    } else {
+        exit_code::ERROR
+    })
+}
+
+/// Pretty output of a scan: versions, accepted suites, groups.
+fn print_scan_pretty(report: &dcert::tlsscan::ScanReport) {
+    use dcert::tlsscan::GroupStatus;
+    println!(
+        "{} {} ({} of at most {} handshakes)",
+        "TLS scan of".bold(),
+        report.target,
+        report.handshakes,
+        report.max_handshakes
+    );
+    for v in &report.versions {
+        if !v.accepted {
+            let why = v.alert.as_deref().unwrap_or("refused");
+            println!("  TLS {:<4} {} ({why})", v.version, "rejected".red());
+            continue;
+        }
+        println!("  TLS {:<4} {}", v.version, "accepted".green());
+        for c in v.ciphers.iter().filter(|c| c.accepted) {
+            let code = c.cipher.code.map(|n| format!("0x{n:04X}")).unwrap_or_default();
+            println!(
+                "    {code:<7} {:<48} {:<32} {:<12} {}",
+                c.cipher.iana.as_deref().unwrap_or("-"),
+                c.cipher.openssl,
+                c.group.as_deref().unwrap_or("-"),
+                c.leaf_key.as_deref().unwrap_or("-")
+            );
+        }
+        let rejected = v.ciphers.iter().filter(|c| !c.accepted).count();
+        if rejected > 0 {
+            println!("    {rejected} other suites offered and refused");
+        }
+    }
+    if let Some(version) = report.groups_version {
+        let list = |status: GroupStatus| {
+            report
+                .groups
+                .iter()
+                .filter(|g| g.status == status)
+                .map(|g| g.group)
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        println!("  Groups at TLS {version}:");
+        println!("    accepted     : {}", list(GroupStatus::Accepted).green());
+        println!("    refused      : {}", list(GroupStatus::Rejected));
+        let untestable = list(GroupStatus::NotTestable);
+        if !untestable.is_empty() {
+            println!(
+                "    not testable : {untestable} (linked {})",
+                openssl::version::version()
+            );
+        }
+    }
+    if report.truncated {
+        println!(
+            "  {} the scan stopped at --max-handshakes {}; raise it to try every suite and group",
+            "Note:".yellow(),
+            report.max_handshakes
+        );
     }
 }
 

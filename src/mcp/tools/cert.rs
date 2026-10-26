@@ -6,6 +6,7 @@ use rmcp::{tool, tool_router};
 
 use super::{DcertMcpServer, ok_error, ok_text, reply};
 use crate::cliargs::ArgBuilder;
+use crate::cliargs::ToCliArgs;
 use crate::exec::{Invocation, RunOutcome, run_dcert, target_args};
 use crate::params::*;
 use crate::validate::*;
@@ -655,6 +656,56 @@ impl DcertMcpServer {
         // codes are reported inline rather than treated as tool errors.
         let outcome = self.run_probe(&mut params).await;
         reply(outcome, "stderr", &[0])
+    }
+
+    /// Enumerate the TLS versions, cipher suites and groups a server accepts.
+    #[tool(
+        title = "Scan TLS Versions, Ciphers and Groups",
+        description = "Enumerate what a TLS server accepts: each protocol version on its own (TLS 1.3 and 1.2; 1.1 and 1.0 too with `allow_legacy_tls`), then every cipher suite the linked OpenSSL can offer, one per handshake, for each accepted version, then each key exchange group (post quantum hybrids, pure ML-KEM and classical) at the newest accepted version. Returns JSON with `versions` (accepted or the alert, the negotiated suite, group and leaf key type, and every suite tried with the suite in every notation, the group, the leaf key type such as `RSA 2048` or `EC prime256v1`, and the alert on rejection), `groups` (accepted, rejected or not_testable) and the handshake count. At most `max_handshakes` handshakes (default 120), four at a time; `truncated` says when the budget ran out. Certificate verification is skipped: the scan asks what the server negotiates, not whether it is trusted. Use it to check a server or load balancer against a TLS security policy.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
+    pub async fn tls_scan(
+        &self,
+        Parameters(params): Parameters<TlsScanParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let target = match resolve_target(&params.target) {
+            Ok(t) if !target_is_file(&t) => t,
+            Ok(_) => return ok_error("tls_scan needs an HTTPS URL or hostname, not a file".to_string()),
+            Err(e) => return ok_error(e),
+        };
+        if let Some(n) = params.max_handshakes
+            && let Err(e) = dcert::limits::check_range("max_handshakes", n, &dcert::limits::MAX_HANDSHAKES_RANGE)
+        {
+            return ok_error(e);
+        }
+        let routing = params.routing();
+        if let Err(e) = routing.validate() {
+            return ok_error(e);
+        }
+        let destinations = match probe_destinations(&target, Some(&routing)) {
+            Ok(d) => d,
+            Err(e) => return ok_error(e),
+        };
+        if let Err(e) = check_destinations(&self.config.destinations, destinations).await {
+            return ok_error(e);
+        }
+        let (mut options, env_refs) = params.cli_args();
+        options.push("--format=json".to_string());
+        let args = target_args("tls-scan", options, &target);
+        let outcome = run_dcert(Invocation::new(args).env(&env_refs), &self.config).await;
+        // Exit 2 with a report means no version was accepted: an answer.
+        let ok_codes: &[i32] = match &outcome {
+            Ok((stdout, _, 2)) if serde_json::from_str::<serde_json::Value>(stdout).is_ok_and(|v| v.is_object()) => {
+                &[0, 2]
+            }
+            _ => &[0],
+        };
+        reply(outcome, "stderr", ok_codes)
     }
 
     /// List TLS cipher suites from the IANA registry.

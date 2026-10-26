@@ -29,6 +29,13 @@ pub const DEFAULT_BODY_LIMIT: usize = 16 * 1024;
 pub const MAX_BODY_LIMIT: usize = 1024 * 1024;
 const _: () = assert!(DEFAULT_BODY_LIMIT <= MAX_BODY_LIMIT);
 
+/// `dcert tls-scan --max-handshakes`: handshakes one scan may make.
+pub const DEFAULT_MAX_HANDSHAKES: u64 = 120;
+/// Accepted `--max-handshakes` values.
+pub const MAX_HANDSHAKES_RANGE: RangeInclusive<u64> = 1..=2_000;
+/// Handshakes a scan runs at once, so a server is not flooded.
+pub const SCAN_CONCURRENCY: usize = 4;
+
 /// `DCERT_MCP_TIMEOUT`: subprocess timeout in seconds for the MCP server.
 pub const SUBPROCESS_TIMEOUT_RANGE: RangeInclusive<u64> = 1..=3600;
 
@@ -96,5 +103,6 @@ mod tests {
         assert!(TIMEOUT_RANGE.contains(&DEFAULT_TIMEOUT_SECS));
         assert!(READ_TIMEOUT_RANGE.contains(&DEFAULT_READ_TIMEOUT_SECS));
         assert!(ISSUER_TIMEOUT_RANGE.contains(&DEFAULT_ISSUER_TIMEOUT_SECS));
+        assert!(MAX_HANDSHAKES_RANGE.contains(&DEFAULT_MAX_HANDSHAKES));
     }
 }

@@ -183,7 +183,7 @@ impl<'a> Invocation<'a> {
 /// --read-timeout)`.
 fn shared_flags(subcommand: &str) -> (bool, bool) {
     match subcommand {
-        "check" | "diagnose" | "verify-key" => (true, true),
+        "check" | "diagnose" | "verify-key" | "tls-scan" => (true, true),
         "vault" => (true, false),
         _ => (false, false),
     }

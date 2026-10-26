@@ -30,6 +30,13 @@ summary is written.
   only limits the handshake to that version. `--cipher-list` and
   `--cipher-suites` stay as raw OpenSSL passthrough. The MCP probe tools take
   the same values as `cipher`.
+- `dcert tls-scan <target>` and the MCP tool `tls_scan` (Python `tls_scan()`):
+  each protocol version on its own, then every suite the linked OpenSSL can
+  offer per accepted version, then each key exchange group, recording the
+  suite in every notation, the group, the leaf key type and the alert on
+  rejection. Four handshakes at a time, at most `--max-handshakes` (default
+  120); TLS 1.0 and 1.1 with `--allow-legacy-tls`; STARTTLS, `--resolve`,
+  `--connect-to` and proxies as for `check`.
 - `--min-tls` and `--max-tls` accept `1.0` and `1.1`, offered only with the
   new `--allow-legacy-tls`, which sets OpenSSL security level 0 for the
   handshake, lowers the floor to TLS 1.0 unless `--min-tls` is given and

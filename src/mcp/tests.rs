@@ -789,6 +789,7 @@ fn test_every_tool_declares_title_and_open_world() {
     assert_eq!(open_world("explain_edge_term"), Some(false));
     assert_eq!(open_world("list_cipher_suites"), Some(false));
     assert_eq!(open_world("explain_cipher_suite"), Some(false));
+    assert_eq!(open_world("tls_scan"), Some(true));
 }
 
 #[test]
@@ -1760,6 +1761,7 @@ async fn http_transport_exposes_every_tool() {
         "explain_edge_term",
         "list_cipher_suites",
         "explain_cipher_suite",
+        "tls_scan",
         "vault_issue",
         "vault_revoke",
         "create_truststore",
@@ -2174,6 +2176,30 @@ async fn tls_connection_info_needs_allow_legacy_tls_for_tls_1_0_and_1_1() {
         .expect("a legacy version without the flag is an error");
         assert!(error.contains("allow_legacy_tls"), "{version}: {error}");
     }
+}
+
+#[tokio::test]
+async fn tls_scan_validates_before_it_runs() {
+    let file = call_tool_error("tls_scan", serde_json::json!({ "target": "Cargo.toml" })).await;
+    assert!(
+        file.as_deref()
+            .is_some_and(|e| e.contains("not a file") || e.contains("outside")),
+        "{file:?}"
+    );
+    let budget = call_tool_error(
+        "tls_scan",
+        serde_json::json!({ "target": "example.com", "max_handshakes": 0 }),
+    )
+    .await
+    .expect("zero handshakes is refused");
+    assert!(budget.contains("max_handshakes"), "{budget}");
+    let starttls = call_tool_error(
+        "tls_scan",
+        serde_json::json!({ "target": "example.com", "starttls": "gopher" }),
+    )
+    .await
+    .expect("unknown STARTTLS protocol is refused");
+    assert!(starttls.contains("starttls"), "{starttls}");
 }
 
 #[tokio::test]

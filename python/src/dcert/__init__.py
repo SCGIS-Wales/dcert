@@ -65,6 +65,7 @@ from dcert.tools import (
     export_pem,
     list_cipher_suites,
     tls_connection_info,
+    tls_scan,
     verify_key_match,
 )
 
@@ -115,4 +116,5 @@ __all__ = [
     "create_truststore",
     "list_cipher_suites",
     "explain_cipher_suite",
+    "tls_scan",
 ]
