@@ -385,6 +385,17 @@ fn resolve_issuers(certs: &mut Vec<X509>, opts: &TrustOpts, proxy: &ProxyConfig)
                 Ok(bytes) => {
                     reachable = Some(true);
                     if let Some(issuer) = parse_issuer_cert(&bytes) {
+                        // Only a certificate whose key verifies the
+                        // signature of the one below may join the chain;
+                        // anything an endpoint serves otherwise is ignored.
+                        if !issued_by(certs.last(), &issuer) {
+                            debug_log!(
+                                opts.debug,
+                                "AIA certificate from {} did not sign the certificate below it; ignored",
+                                url
+                            );
+                            continue;
+                        }
                         // Guard against an endpoint returning a cert already in
                         // the chain (would loop forever).
                         if cert_in_chain(&issuer, certs) {
@@ -409,6 +420,14 @@ fn resolve_issuers(certs: &mut Vec<X509>, opts: &TrustOpts, proxy: &ProxyConfig)
     }
 
     (completed, reachable)
+}
+
+/// Whether `issuer`'s public key verifies the signature on `child`.
+fn issued_by(child: Option<&X509>, issuer: &X509) -> bool {
+    let (Some(child), Ok(key)) = (child, issuer.public_key()) else {
+        return false;
+    };
+    child.verify(&key).unwrap_or(false)
 }
 
 /// Extract AIA "CA Issuers" URLs (OID 1.3.6.1.5.5.7.48.2) from a certificate.
@@ -637,6 +656,20 @@ fn cert_in_chain(cert: &X509Ref, chain: &[X509]) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn an_aia_certificate_must_verify_the_child_signature() {
+        let pki = crate::testutil::test_pki();
+        assert!(
+            issued_by(Some(&pki.rsa.cert), &pki.ca.cert),
+            "the test CA signed the leaf"
+        );
+        assert!(
+            !issued_by(Some(&pki.rsa.cert), &pki.ecdsa.cert),
+            "a sibling leaf did not"
+        );
+        assert!(!issued_by(None, &pki.ca.cert));
+    }
     use super::*;
 
     // Self-signed test certificate (CN=test.example.com).

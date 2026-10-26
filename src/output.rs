@@ -610,7 +610,12 @@ pub fn process_target(
             {
                 if let Some(ocsp_url) = extract_ocsp_url(&cert) {
                     let issuer_der = chain_ders.get(info.index + 1).map(Vec::as_slice);
-                    info.revocation_status = Some(check_ocsp_status(der, issuer_der, &ocsp_url, args.debug));
+                    let net = crate::ocsp::OcspNetwork {
+                        proxy: Some(proxy_config),
+                        timeout: std::time::Duration::from_secs(args.timeout),
+                        debug: args.debug,
+                    };
+                    info.revocation_status = Some(check_ocsp_status(der, issuer_der, &ocsp_url, &net));
                 } else {
                     info.revocation_status = Some("unknown (no OCSP responder)".to_string());
                 }

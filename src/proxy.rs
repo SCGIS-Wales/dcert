@@ -176,6 +176,22 @@ fn validate_proxy_url(proxy: &str) -> Result<()> {
     Ok(())
 }
 
+/// The `Proxy-Authorization` header line (with its CRLF) for credentials
+/// embedded in the proxy URL, or an empty string when there are none.
+pub(crate) fn proxy_authorization_header(proxy: &Url) -> String {
+    match (proxy.username(), proxy.password()) {
+        (username, Some(password)) if !username.is_empty() => {
+            use base64::Engine;
+            let decoded_user = percent_encoding::percent_decode_str(username).decode_utf8_lossy();
+            let decoded_pass = percent_encoding::percent_decode_str(password).decode_utf8_lossy();
+            let credentials =
+                base64::engine::general_purpose::STANDARD.encode(format!("{decoded_user}:{decoded_pass}"));
+            format!("Proxy-Authorization: Basic {credentials}\r\n")
+        }
+        _ => String::new(),
+    }
+}
+
 /// Connect through an HTTP proxy using the CONNECT method.
 ///
 /// `connect_timeout` bounds the TCP connection to the proxy and
@@ -216,18 +232,7 @@ pub fn connect_through_proxy(
         .and_then(|()| stream.set_write_timeout(Some(Duration::from_secs(read_timeout_secs.max(1)))))
         .map_err(|e| anyhow::anyhow!("Failed to set proxy socket timeouts: {e}"))?;
 
-    // Build Proxy-Authorization header if credentials are present in the proxy URL
-    let auth_header = match (proxy.username(), proxy.password()) {
-        (username, Some(password)) if !username.is_empty() => {
-            use base64::Engine;
-            let decoded_user = percent_encoding::percent_decode_str(username).decode_utf8_lossy();
-            let decoded_pass = percent_encoding::percent_decode_str(password).decode_utf8_lossy();
-            let credentials =
-                base64::engine::general_purpose::STANDARD.encode(format!("{decoded_user}:{decoded_pass}"));
-            format!("Proxy-Authorization: Basic {credentials}\r\n")
-        }
-        _ => String::new(),
-    };
+    let auth_header = proxy_authorization_header(&proxy);
 
     // Send CONNECT request
     let connect_request = format!(
