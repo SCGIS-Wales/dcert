@@ -71,14 +71,14 @@ pub fn blocking_client_with_summary(opts: &HttpClientOptions<'_>) -> Result<(req
             if let Some(p) = &proxy.https_proxy {
                 builder = builder.proxy(
                     reqwest::Proxy::https(p)
-                        .map_err(|e| anyhow::anyhow!("invalid https proxy '{p}': {e}"))?
+                        .map_err(|e| anyhow::anyhow!("invalid https proxy '{}': {e}", crate::debug::sanitize_url(p)))?
                         .no_proxy(no_proxy.clone()),
                 );
             }
             if let Some(p) = &proxy.http_proxy {
                 builder = builder.proxy(
                     reqwest::Proxy::http(p)
-                        .map_err(|e| anyhow::anyhow!("invalid http proxy '{p}': {e}"))?
+                        .map_err(|e| anyhow::anyhow!("invalid http proxy '{}': {e}", crate::debug::sanitize_url(p)))?
                         .no_proxy(no_proxy),
                 );
             }

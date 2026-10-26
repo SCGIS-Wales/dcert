@@ -402,6 +402,12 @@ pub struct CheckArgs {
     #[arg(long, value_parser = parse_header, num_args = 0.., value_name = "HEADER")]
     pub header: Vec<(String, String)>,
 
+    /// Read HTTP headers from a file, one `Key: Value` per line (blank lines
+    /// and lines starting with `#` are ignored). Keeps secrets such as bearer
+    /// tokens out of the process list; added after any --header values.
+    #[arg(long, value_name = "FILE")]
+    pub headers_file: Option<String>,
+
     /// Send data as the request body (implies POST if --method is not explicitly set).
     /// Similar to curl's -d flag.
     #[arg(short = 'd', long = "data", value_name = "DATA")]
@@ -496,13 +502,13 @@ pub struct CheckArgs {
     /// HTTPS_PROXY/HTTP_PROXY environment variables. Credentials may be embedded
     /// (http://user:pass@proxy:3128). Pass an empty value to force a direct
     /// connection. Note that --resolve/--connect-to always bypass the proxy.
-    #[arg(long, value_name = "URL", env = "DCERT_PROXY")]
+    #[arg(long, value_name = "URL", env = "DCERT_PROXY", hide_env_values = true)]
     pub proxy: Option<String>,
 
     /// Comma-separated list of hosts that must bypass the proxy, like curl's
     /// --noproxy. Overrides NO_PROXY; `*` bypasses the proxy entirely and an
     /// empty value clears an inherited NO_PROXY.
-    #[arg(long = "noproxy", value_name = "LIST", env = "DCERT_NOPROXY")]
+    #[arg(long = "noproxy", value_name = "LIST", env = "DCERT_NOPROXY", hide_env_values = true)]
     pub noproxy: Option<String>,
 
     /// Show SHA-256 fingerprint for each certificate
@@ -556,7 +562,7 @@ pub struct CheckArgs {
     pub pkcs12: Option<String>,
 
     /// Password for the PKCS12/PFX file (or set DCERT_CERT_PASSWORD env var)
-    #[arg(long, value_name = "PASS", env = "DCERT_CERT_PASSWORD")]
+    #[arg(long, value_name = "PASS", env = "DCERT_CERT_PASSWORD", hide_env_values = true)]
     pub cert_password: Option<Secret>,
 
     /// Custom CA certificate bundle PEM file for server verification (overrides system CAs)
@@ -596,7 +602,7 @@ pub struct CheckArgs {
     /// Cannot be combined with the HTTP request options (--method, --header,
     /// --data, --data-file, --http-protocol): STARTTLS inspects the certificate
     /// over a plain protocol upgrade and never sends an HTTP request.
-    #[arg(long, value_enum, value_name = "PROTOCOL", conflicts_with_all = ["method", "header", "data", "data_file", "http_protocol"])]
+    #[arg(long, value_enum, value_name = "PROTOCOL", conflicts_with_all = ["method", "header", "headers_file", "data", "data_file", "http_protocol"])]
     pub starttls: Option<StarttlsProtocol>,
 }
 
@@ -628,7 +634,7 @@ pub enum ConvertMode {
         /// Input PKCS12/PFX file
         input: String,
         /// Password for PKCS12 file (or set DCERT_CERT_PASSWORD env var)
-        #[arg(long, env = "DCERT_CERT_PASSWORD")]
+        #[arg(long, env = "DCERT_CERT_PASSWORD", hide_env_values = true)]
         password: Secret,
         /// Output directory for PEM files (cert.pem, key.pem, ca.pem)
         #[arg(short, long, default_value = ".")]
@@ -648,7 +654,7 @@ pub enum ConvertMode {
         #[arg(short, long)]
         output: String,
         /// Password for the output PKCS12 file
-        #[arg(long, env = "DCERT_CERT_PASSWORD")]
+        #[arg(long, env = "DCERT_CERT_PASSWORD", hide_env_values = true)]
         password: Secret,
         /// Additional CA certificate PEM file to include in the chain
         #[arg(long)]
@@ -668,7 +674,7 @@ pub enum ConvertMode {
         #[arg(short, long)]
         output: String,
         /// KeyStore password
-        #[arg(long, env = "DCERT_KEYSTORE_PASSWORD")]
+        #[arg(long, env = "DCERT_KEYSTORE_PASSWORD", hide_env_values = true)]
         password: Secret,
         /// Alias for the key entry
         #[arg(long, default_value = "server")]
@@ -690,7 +696,12 @@ pub enum ConvertMode {
         #[arg(short, long)]
         output: String,
         /// TrustStore password (or set DCERT_TRUSTSTORE_PASSWORD env var)
-        #[arg(long, env = "DCERT_TRUSTSTORE_PASSWORD", default_value = "changeit")]
+        #[arg(
+            long,
+            env = "DCERT_TRUSTSTORE_PASSWORD",
+            hide_env_values = true,
+            default_value = "changeit"
+        )]
         password: String,
         /// Allow non-CA (leaf/server) certificates in the truststore. By
         /// default dcert rejects leaf certs and prints guidance, because a
@@ -812,7 +823,7 @@ pub struct CsrCreateArgs {
 
     /// Passphrase for private key encryption (or set DCERT_KEY_PASSWORD env var).
     /// Required when --encrypt-key is set.
-    #[arg(long, env = "DCERT_KEY_PASSWORD", requires = "encrypt_key")]
+    #[arg(long, env = "DCERT_KEY_PASSWORD", hide_env_values = true, requires = "encrypt_key")]
     pub key_password: Option<Secret>,
 
     /// Output CSR file path [default: <cn>.csr]
@@ -874,11 +885,23 @@ pub struct VaultArgs {
     pub auth_method: String,
 
     /// LDAP username (required when auth_method is "ldap"). Also: DCERT_LDAP_USERNAME
-    #[arg(long, global = true, value_name = "USERNAME", env = "DCERT_LDAP_USERNAME")]
+    #[arg(
+        long,
+        global = true,
+        value_name = "USERNAME",
+        env = "DCERT_LDAP_USERNAME",
+        hide_env_values = true
+    )]
     pub ldap_username: Option<String>,
 
     /// LDAP password (required when auth_method is "ldap"). Also: DCERT_LDAP_PASSWORD
-    #[arg(long, global = true, value_name = "PASSWORD", env = "DCERT_LDAP_PASSWORD")]
+    #[arg(
+        long,
+        global = true,
+        value_name = "PASSWORD",
+        env = "DCERT_LDAP_PASSWORD",
+        hide_env_values = true
+    )]
     pub ldap_password: Option<Secret>,
 
     /// LDAP auth mount point (default: "ldap")
@@ -886,11 +909,23 @@ pub struct VaultArgs {
     pub ldap_mount: String,
 
     /// AppRole role_id (required when auth_method is "approle"). Also: DCERT_APPROLE_ROLE_ID
-    #[arg(long, global = true, value_name = "ID", env = "DCERT_APPROLE_ROLE_ID")]
+    #[arg(
+        long,
+        global = true,
+        value_name = "ID",
+        env = "DCERT_APPROLE_ROLE_ID",
+        hide_env_values = true
+    )]
     pub approle_role_id: Option<String>,
 
     /// AppRole secret_id (required when auth_method is "approle"). Also: DCERT_APPROLE_SECRET_ID
-    #[arg(long, global = true, value_name = "ID", env = "DCERT_APPROLE_SECRET_ID")]
+    #[arg(
+        long,
+        global = true,
+        value_name = "ID",
+        env = "DCERT_APPROLE_SECRET_ID",
+        hide_env_values = true
+    )]
     pub approle_secret_id: Option<Secret>,
 
     /// AppRole auth mount point (default: "approle")
@@ -968,7 +1003,7 @@ pub struct VaultIssueArgs {
     pub format: OutputFormat,
 
     /// PFX password — if provided, output will be PKCS12/PFX instead of PEM
-    #[arg(long, env = "DCERT_CERT_PASSWORD")]
+    #[arg(long, env = "DCERT_CERT_PASSWORD", hide_env_values = true)]
     pub pfx_password: Option<Secret>,
 
     /// Store certificate and key in Vault KV at this path after issuance
@@ -1019,7 +1054,7 @@ pub struct VaultSignArgs {
     pub format: OutputFormat,
 
     /// PFX password — if provided, output will be PKCS12/PFX instead of PEM
-    #[arg(long, env = "DCERT_CERT_PASSWORD")]
+    #[arg(long, env = "DCERT_CERT_PASSWORD", hide_env_values = true)]
     pub pfx_password: Option<Secret>,
 
     /// Store certificate in Vault KV at this path after signing
@@ -1220,6 +1255,20 @@ pub fn looks_like_hostname(s: &str) -> bool {
         // Could be a single-label hostname like "localhost"
         host_part.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') && host_part.len() > 1
     }
+}
+
+/// Parse the contents of a `--headers-file`: one `Key: Value` per line,
+/// ignoring blank lines and `#` comments. Errors name the line number but
+/// never echo the line, which may carry a secret.
+pub fn parse_headers_file(text: &str) -> Result<Vec<(String, String)>, String> {
+    text.lines()
+        .enumerate()
+        .filter(|(_, line)| {
+            let t = line.trim();
+            !t.is_empty() && !t.starts_with('#')
+        })
+        .map(|(i, line)| parse_header(line).map_err(|e| format!("line {}: {e}", i + 1)))
+        .collect()
 }
 
 pub fn parse_header(s: &str) -> Result<(String, String), String> {

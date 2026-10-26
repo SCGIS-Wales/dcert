@@ -5,6 +5,8 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 use url::Url;
 
+use crate::debug::sanitize_url;
+
 use crate::debug::debug_log;
 
 /// The forward proxy refused the `CONNECT` tunnel. Carries the proxy's
@@ -141,8 +143,12 @@ impl ProxyConfig {
 /// Reject proxy URLs we cannot actually tunnel through, so the failure lands at
 /// argument-handling time rather than mid-connection.
 fn validate_proxy_url(proxy: &str) -> Result<()> {
-    let url = Url::parse(proxy)
-        .map_err(|e| anyhow::anyhow!("Invalid --proxy URL '{proxy}': {e} (expected e.g. http://proxy.corp:3128)"))?;
+    let url = Url::parse(proxy).map_err(|e| {
+        anyhow::anyhow!(
+            "Invalid --proxy URL '{}': {e} (expected e.g. http://proxy.corp:3128)",
+            sanitize_url(proxy)
+        )
+    })?;
     match url.scheme() {
         "http" | "https" => {}
         other => {
@@ -152,7 +158,10 @@ fn validate_proxy_url(proxy: &str) -> Result<()> {
         }
     }
     if url.host_str().is_none_or(str::is_empty) {
-        return Err(anyhow::anyhow!("--proxy URL '{proxy}' must include a host"));
+        return Err(anyhow::anyhow!(
+            "--proxy URL '{}' must include a host",
+            sanitize_url(proxy)
+        ));
     }
     Ok(())
 }
@@ -171,7 +180,8 @@ pub fn connect_through_proxy(
     read_timeout_secs: u64,
     debug: bool,
 ) -> Result<TcpStream> {
-    let proxy = Url::parse(proxy_url).map_err(|e| anyhow::anyhow!("Invalid proxy URL {proxy_url}: {e}"))?;
+    let proxy =
+        Url::parse(proxy_url).map_err(|e| anyhow::anyhow!("Invalid proxy URL {}: {e}", sanitize_url(proxy_url)))?;
 
     let proxy_host = proxy
         .host_str()

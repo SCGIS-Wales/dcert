@@ -28,7 +28,7 @@ impl DcertMcpServer {
     /// tool specific `args`, and run dcert.
     ///
     /// Tools with no HTTP/TLS options (`validate_certificate`) pass `None`.
-    async fn run_probe(
+    pub(crate) async fn run_probe(
         &self,
         subcommand: &str,
         target: &str,
@@ -45,9 +45,14 @@ impl DcertMcpServer {
         let mut options = options;
         options.extend(mtls.to_args());
         let mut env_refs = mtls.env_vars();
+        // Kept alive until the child has finished reading them.
+        let mut _secret_files = Vec::new();
         if let Some(http_tls) = http_tls {
             options.extend(http_tls.to_args());
             env_refs.extend(http_tls.env_vars());
+            let (file_args, files) = http_tls.secret_files()?;
+            options.extend(file_args);
+            _secret_files = files;
         }
         let args = target_args(subcommand, options, &target);
         let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();

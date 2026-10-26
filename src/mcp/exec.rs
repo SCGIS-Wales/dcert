@@ -90,6 +90,13 @@ pub(crate) fn spawn_dcert(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
+    // The server's own settings, including secrets such as
+    // DCERT_MCP_AUTH_TOKEN, are of no use to the CLI and must not reach it.
+    for (name, _) in std::env::vars_os() {
+        if name.to_string_lossy().starts_with("DCERT_MCP_") {
+            cmd.env_remove(&name);
+        }
+    }
     // The child enforces the same destination policy on the sockets it opens
     // and on AIA fetches. Both variables are always set so an inherited value
     // can never weaken the server's policy.

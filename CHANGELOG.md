@@ -8,6 +8,14 @@ summary is written.
 
 ### Security
 
+- Secrets off argv and out of `--help`: the MCP server passes headers and
+  request bodies to the CLI through private 0600 files (new
+  `--headers-file`, existing `--data-file`), which also lifts the 128 KiB
+  single argument limit on bodies; `DCERT_MCP_*` settings are stripped from
+  the child environment; `--help` hides the values of secret and proxy
+  environment variables; proxy credentials are masked in every error; and
+  `x-vault-token`, `x-auth-token`, `api-key`, `ocp-apim-subscription-key`
+  and `x-amz-security-token` join the masked headers.
 - `dcert-python --transport http|sse` refuses to start without
   authentication: a static bearer token of at least 32 characters
   (`--auth-token`, `DCERT_MCP_AUTH_TOKEN`) or an https OIDC issuer, audience

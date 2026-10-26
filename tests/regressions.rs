@@ -213,3 +213,88 @@ fn cli_refuses_a_connect_to_override_outside_the_allow_list() {
     assert!(!output.status.success());
     assert!(stderr.contains("DCERT_ALLOWED_TARGETS"), "{stderr}");
 }
+
+// ---------------------------------------------------------------
+// Plan PR 1.5: secrets out of --help and argv
+// ---------------------------------------------------------------
+
+#[test]
+fn help_never_prints_secret_environment_values() {
+    for (subcommand, var) in [
+        (vec!["check", "--help"], "DCERT_CERT_PASSWORD"),
+        (vec!["check", "--help"], "DCERT_PROXY"),
+        (vec!["vault", "--help"], "DCERT_LDAP_PASSWORD"),
+        (vec!["vault", "--help"], "DCERT_APPROLE_SECRET_ID"),
+    ] {
+        let output = dcert_bin()
+            .env(var, "hunter2-secret-value")
+            .args(&subcommand)
+            .output()
+            .expect("failed to run dcert");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains(var), "{var} should still be documented");
+        assert!(!stdout.contains("hunter2-secret-value"), "{var} value leaked: {stdout}");
+    }
+}
+
+#[test]
+fn headers_file_headers_reach_the_server() {
+    let server = TlsServer::builder()
+        .respond(|req| {
+            let mut out = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                req.len()
+            )
+            .into_bytes();
+            out.extend_from_slice(req);
+            out
+        })
+        .spawn();
+    let dir = tempfile::tempdir().unwrap();
+    let headers = dir.path().join("headers.txt");
+    std::fs::write(&headers, "# comment\n\nX-Api-Key: from-file\nX-Second: two\n").unwrap();
+    let output = dcert_bin()
+        .args([
+            &server.url(),
+            "--no-verify",
+            "--show-body",
+            "--headers-file",
+            headers.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("failed to run dcert");
+    let parsed = json_output(&output);
+    let body = parsed["connection"]["http_body_excerpt"]
+        .as_str()
+        .expect("echoed request");
+    assert!(body.contains("\r\nX-Api-Key: from-file\r\n"), "{body:?}");
+    assert!(body.contains("\r\nX-Second: two\r\n"), "{body:?}");
+}
+
+#[test]
+fn malformed_headers_file_names_the_line_without_echoing_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let headers = dir.path().join("headers.txt");
+    std::fs::write(&headers, "Good: yes\nno-colon-secret-value\n").unwrap();
+    let output = dcert_bin()
+        .args(["https://example.invalid", "--headers-file", headers.to_str().unwrap()])
+        .output()
+        .expect("failed to run dcert");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(stderr.contains("line 2"), "{stderr}");
+    assert!(!stderr.contains("no-colon-secret-value"), "{stderr}");
+}
+
+#[test]
+fn proxy_errors_mask_credentials() {
+    let output = dcert_bin()
+        .args(["https://example.invalid", "--proxy", "http://user:hunter2@[bad"])
+        .output()
+        .expect("failed to run dcert");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(!stderr.contains("hunter2"), "{stderr}");
+}

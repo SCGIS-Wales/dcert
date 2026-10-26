@@ -2050,7 +2050,10 @@ fn http_tls_params_bound_the_request_body() {
     params.data = Some(String::new());
     assert!(params.validate().is_ok(), "an empty body stays permitted");
     params.data = Some("--data-binary".to_string());
-    assert!(params.validate().unwrap_err().contains("must not start with '-'"));
+    assert!(
+        params.validate().is_ok(),
+        "the body travels in a file, so a leading '-' is harmless"
+    );
 }
 
 // ---------------------------------------------------------------
@@ -2511,4 +2514,120 @@ async fn spawned_child_receives_the_destination_policy() {
     assert_eq!(code, 0);
     assert!(stdout.contains("DCERT_DENY_PRIVATE_TARGETS=1\n"), "{stdout}");
     assert!(stdout.contains("DCERT_ALLOWED_TARGETS=api.example.com\n"), "{stdout}");
+}
+
+// ---------------------------------------------------------------
+// Plan PR 1.5: secrets stay off argv
+// ---------------------------------------------------------------
+
+/// The child's own command line, as other local users see it in /proc, must
+/// carry neither header values nor the body; both arrive in files.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn headers_and_body_never_reach_the_child_command_line() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = dir.path().join("fake-dcert");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\n\
+         printf 'CMDLINE:'; tr '\\0' ' ' < /proc/$$/cmdline; echo\n\
+         while [ $# -gt 0 ]; do\n\
+           case \"$1\" in\n\
+             --headers-file) printf 'HEADERS:'; cat \"$2\"; stat -c 'MODE:%a' \"$2\";;\n\
+             --data-file) printf 'DATA_BYTES:'; wc -c < \"$2\";;\n\
+           esac\n\
+           shift\n\
+         done\n",
+    )
+    .expect("write script");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let mut config = test_config(script);
+    config.subprocess_timeout = Duration::from_secs(10);
+    let server = DcertMcpServer::new(config);
+    let body = "B".repeat(200 * 1024);
+    let http_tls = HttpTlsParams {
+        headers: Some(vec!["Authorization: Bearer sekrit-token".to_string()]),
+        data: Some(body),
+        ..Default::default()
+    };
+    let mut mtls = MtlsParams::default();
+    let (stdout, _stderr, _code) = server
+        .run_probe("check", "https://example.com", Vec::new(), &mut mtls, Some(&http_tls))
+        .await
+        .expect("run");
+    let cmdline = stdout
+        .lines()
+        .find(|l| l.starts_with("CMDLINE:"))
+        .expect("cmdline line");
+    // The messages never echo the child's output: it carries the header value.
+    assert!(
+        !cmdline.contains("sekrit-token"),
+        "the header value must not be on argv"
+    );
+    assert!(!cmdline.contains("BBBB"), "body must not be on argv");
+    assert!(
+        cmdline.contains("--headers-file") && cmdline.contains("--data-file"),
+        "headers and body must be passed as files"
+    );
+    assert!(
+        stdout.contains("HEADERS:Authorization: Bearer sekrit-token"),
+        "the headers file must carry the header"
+    );
+    assert!(stdout.contains("MODE:600"), "the files must be private (0600)");
+    assert!(
+        stdout.contains(&format!("DATA_BYTES:{}", 200 * 1024)),
+        "the data file must carry the whole body"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn server_settings_are_stripped_from_the_child_environment() {
+    let env_bin = PathBuf::from("/usr/bin/env");
+    if !env_bin.exists() {
+        eprintln!("Skipping test: /usr/bin/env not found");
+        return;
+    }
+    let mut config = test_config(env_bin);
+    config.subprocess_timeout = Duration::from_secs(5);
+    let mut child = {
+        let mut env = EnvGuard::unset_all(&["DCERT_MCP_AUTH_TOKEN", "DCERT_MCP_OIDC_ISSUER"]);
+        env.set("DCERT_MCP_AUTH_TOKEN", "server-only-secret");
+        env.set("DCERT_MCP_OIDC_ISSUER", "https://idp.example.com");
+        spawn_dcert(&config, &[], &[]).expect("spawn env")
+    };
+    let (stdout, _stderr, _code) = run_child_with_timeout(&mut child, &config).await.expect("env");
+    assert!(
+        !stdout.contains("server-only-secret"),
+        "DCERT_MCP_AUTH_TOKEN reached the child"
+    );
+    assert!(
+        !stdout.contains("DCERT_MCP_OIDC_ISSUER"),
+        "DCERT_MCP_OIDC_ISSUER reached the child"
+    );
+}
+
+#[test]
+fn http_tls_args_never_carry_headers_or_body() {
+    let http_tls = HttpTlsParams {
+        headers: Some(vec!["X-Api-Key: abc123".to_string()]),
+        data: Some("-starts-with-a-dash".to_string()),
+        ..Default::default()
+    };
+    assert!(
+        http_tls.validate().is_ok(),
+        "a body may start with '-' now it is in a file"
+    );
+    let args = http_tls.to_args();
+    assert!(
+        !args
+            .iter()
+            .any(|a| a.contains("abc123") || a == "--header" || a == "--data"),
+        "{args:?}"
+    );
+    let (file_args, files) = http_tls.secret_files().expect("files");
+    assert_eq!(files.len(), 2);
+    assert_eq!(file_args[0], "--headers-file");
+    assert_eq!(file_args[2], "--data-file");
 }
