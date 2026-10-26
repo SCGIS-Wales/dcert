@@ -33,7 +33,7 @@ jobs:
         rust: [ stable ]
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -44,7 +44,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -56,11 +56,89 @@ jobs:
       - name: Cargo fmt (check)
         run: cargo fmt --all -- --check
 
+      # No --all-features: that silently enables `vendored`, so the system
+      # OpenSSL 3.0 code path the Linux release links against was never
+      # tested. The vendored build has its own job below.
       - name: Cargo clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
 
       - name: Cargo test
-        run: cargo test --all-features --verbose
+        run: cargo test --verbose
+
+  # Minimum supported Rust version from Cargo.toml (`rust-version`). The
+  # toolchain file pins the release toolchain, so the MSRV is selected with
+  # `cargo +1.91` explicitly.
+  msrv:
+    name: MSRV (Rust 1.91)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust 1.91
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: "1.91"
+
+      - name: Cache cargo
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-msrv-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-msrv-
+
+      - name: Cargo check on the MSRV
+        run: cargo +1.91 check --all-targets --locked
+
+  # The Linux release binary is built on ubuntu 22.04 (OpenSSL 3.0 headers)
+  # and the Docker image runs it on debian trixie (OpenSSL 3.5). This job
+  # reproduces that pairing against a loopback ML-KEM server and asserts the
+  # negotiated group is named.
+  # Tracking: plan PR 2.6 (docs/plans/2026-10-tls-policy-hardening.md) resolves
+  # the group name at runtime. Until it lands the assertion fails, so the
+  # step is allowed to fail; PR 2.6 removes continue-on-error.
+  pq-shipped-binary:
+    name: Shipped binary on OpenSSL 3.5 (debian trixie)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev
+
+      - name: Cache cargo
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-22.04-x86_64-unknown-linux-gnu-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-22.04-x86_64-unknown-linux-gnu-cargo-
+
+      - name: Build the release binary as build-linux does
+        run: cargo build --release --bin dcert
+
+      - name: Probe a loopback ML-KEM server inside debian:trixie
+        continue-on-error: true
+        run: |
+          docker run --rm \
+            -v "$PWD/target/release/dcert:/usr/local/bin/dcert:ro" \
+            -v "$PWD/scripts/ci/pq_shipped_binary.sh:/pq_shipped_binary.sh:ro" \
+            debian:trixie bash /pq_shipped_binary.sh
 
   # The hosted Ubuntu runners still link OpenSSL 3.0, which cannot negotiate
   # ML-KEM. This job builds with the `vendored` feature (OpenSSL 3.6 from
@@ -73,7 +151,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
@@ -81,7 +159,7 @@ jobs:
           toolchain: stable
 
       - name: Cache cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -107,7 +185,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
@@ -115,7 +193,7 @@ jobs:
           toolchain: stable
 
       - name: Cache cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -127,7 +205,7 @@ jobs:
       # Prebuilt binaries rather than `cargo install`, which rebuilt each
       # tool from source on every run.
       - name: Install audit tooling
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: cargo-audit,cargo-deny,cargo-cyclonedx
 
@@ -141,7 +219,7 @@ jobs:
         run: cargo cyclonedx --format json --all
 
       - name: Upload SBOM artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sbom
           path: '**/*.cdx.json'
@@ -156,10 +234,10 @@ jobs:
         working-directory: python
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
@@ -182,6 +260,14 @@ jobs:
       - name: Mypy (build scripts)
         run: mypy --strict ../scripts/build_wheels.py
 
+      # Known vulnerabilities in the resolved dependency set (runtime and dev).
+      # The package itself is installed editable and is not on PyPI at this
+      # version, so it is skipped.
+      - name: Dependency audit
+        run: |
+          pip install pip-audit
+          pip-audit --skip-editable --progress-spinner off
+
   python-test:
     name: Python test (${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -195,10 +281,10 @@ jobs:
         working-directory: python
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ matrix.python-version }}
           allow-prereleases: true
@@ -217,10 +303,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
@@ -240,10 +326,10 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
@@ -264,10 +350,10 @@ jobs:
         working-directory: python
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
@@ -291,7 +377,7 @@ jobs:
         run: twine check dist/*
 
       - name: Upload source distribution
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: python-sdist
           path: python/dist/*.tar.gz
@@ -307,7 +393,7 @@ jobs:
         working-directory: python
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
@@ -315,7 +401,7 @@ jobs:
           toolchain: stable
 
       - name: Cache cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -334,7 +420,7 @@ jobs:
         working-directory: .
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
@@ -357,7 +443,7 @@ jobs:
   auto-tag:
     name: Auto-tag release
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    needs: [ test, test-post-quantum, security-audit ]
+    needs: [ test, test-post-quantum, security-audit, msrv ]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -368,7 +454,7 @@ jobs:
       created: ${{ steps.create_tag.outputs.created }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           token: ${{ secrets.TAP_GITHUB_TOKEN }}
@@ -464,7 +550,7 @@ jobs:
           - x86_64-unknown-linux-gnu
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -487,7 +573,7 @@ jobs:
           sudo apt-get install -y pkg-config libssl-dev
 
       - name: Cache cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -505,7 +591,7 @@ jobs:
           tar czf dist/dcert-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release dcert dcert-mcp
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dcert-${{ matrix.target }}
           path: dist/dcert-${{ matrix.target }}.tar.gz
@@ -518,7 +604,7 @@ jobs:
     if: always() && needs.test.result == 'success' && (needs.auto-tag.result == 'success' || needs.auto-tag.result == 'skipped')
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -535,7 +621,7 @@ jobs:
           toolchain: stable
 
       - name: Cache cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -557,7 +643,7 @@ jobs:
           tar czf dist/dcert-x86_64-apple-darwin.tar.gz -C target/release dcert dcert-mcp
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dcert-x86_64-apple-darwin
           path: dist/dcert-x86_64-apple-darwin.tar.gz
@@ -570,7 +656,7 @@ jobs:
     if: always() && needs.test.result == 'success' && (needs.auto-tag.result == 'success' || needs.auto-tag.result == 'skipped')
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -587,7 +673,7 @@ jobs:
           toolchain: stable
 
       - name: Cache cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -609,7 +695,7 @@ jobs:
           tar czf dist/dcert-aarch64-apple-darwin.tar.gz -C target/release dcert dcert-mcp
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dcert-aarch64-apple-darwin
           path: dist/dcert-aarch64-apple-darwin.tar.gz
@@ -622,7 +708,7 @@ jobs:
     if: always() && needs.test.result == 'success' && (needs.auto-tag.result == 'success' || needs.auto-tag.result == 'skipped')
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -652,7 +738,7 @@ jobs:
           where.exe perl
 
       - name: Cache cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -673,7 +759,7 @@ jobs:
             -DestinationPath "dist/dcert-x86_64-pc-windows-msvc.zip" -Force
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dcert-x86_64-pc-windows-msvc
           path: dist/dcert-x86_64-pc-windows-msvc.zip
@@ -687,10 +773,10 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
@@ -706,7 +792,7 @@ jobs:
         run: pip install build pyyaml
 
       - name: Download all release artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: dcert-*
           merge-multiple: true
@@ -765,13 +851,13 @@ jobs:
         run: ls -la python/platform-dist/
 
       - name: Upload universal wheel
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: python-wheel-universal
           path: python/dist/*.whl
 
       - name: Upload platform wheels
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: python-wheels-platform
           path: python/platform-dist/*.whl
@@ -789,10 +875,10 @@ jobs:
       packages: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Download Linux x86_64 artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dcert-x86_64-unknown-linux-gnu
           path: ./docker-bin
@@ -806,7 +892,7 @@ jobs:
 
       - name: Docker meta
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
@@ -815,17 +901,17 @@ jobs:
             type=ref,event=branch
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           push: true
@@ -840,22 +926,22 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Download Linux x86_64 artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dcert-x86_64-unknown-linux-gnu
           path: ./artifacts
 
       - name: Download macOS x86_64 artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dcert-x86_64-apple-darwin
           path: ./artifacts
 
       - name: Download macOS ARM64 artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dcert-aarch64-apple-darwin
           path: ./artifacts
@@ -929,7 +1015,7 @@ jobs:
           cat dcert.rb
 
       - name: Checkout homebrew-tap
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: SCGIS-Wales/homebrew-tap
           token: ${{ secrets.TAP_GITHUB_TOKEN }}
@@ -957,7 +1043,7 @@ jobs:
           fi
 
       - name: Upload Homebrew Formula
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: homebrew-formula
           path: dcert.rb
@@ -973,34 +1059,34 @@ jobs:
       packages: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Download Linux x86_64 artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dcert-x86_64-unknown-linux-gnu
           path: ./artifacts/dcert-x86_64-unknown-linux-gnu
 
       - name: Download Windows x86_64 artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dcert-x86_64-pc-windows-msvc
           path: ./artifacts/dcert-x86_64-pc-windows-msvc
 
       - name: Download macOS Intel artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dcert-x86_64-apple-darwin
           path: ./artifacts/dcert-x86_64-apple-darwin
 
       - name: Download macOS ARM64 artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dcert-aarch64-apple-darwin
           path: ./artifacts/dcert-aarch64-apple-darwin
 
       - name: Download Homebrew formula
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: homebrew-formula
           path: ./artifacts/homebrew-formula
@@ -1132,7 +1218,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -1234,10 +1320,10 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Download Windows artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dcert-x86_64-pc-windows-msvc
           path: ./artifacts
@@ -1280,7 +1366,7 @@ jobs:
           Write-Host "Packed: $($pkgs[0].Name)"
 
       - name: Upload nupkg artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dcert-chocolatey
           path: dist-choco/*.nupkg
@@ -1300,7 +1386,7 @@ jobs:
       CHOCO_API_KEY: ${{ secrets.CHOCO_API_KEY }}
     steps:
       - name: Download nupkg artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dcert-chocolatey
           path: ./dist-choco
@@ -1366,19 +1452,19 @@ jobs:
       url: https://pypi.org/project/dcert/
     steps:
       - name: Download universal wheel
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: python-wheel-universal
           path: dist/
 
       - name: Download platform wheels
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: python-wheels-platform
           path: dist/
 
       - name: Download source distribution
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: python-sdist
           path: dist/
@@ -1396,7 +1482,7 @@ jobs:
       - name: Publish to PyPI (attempt 1)
         id: publish1
         continue-on-error: true
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: dist/
           skip-existing: true
@@ -1409,7 +1495,7 @@ jobs:
         id: publish2
         if: steps.publish1.outcome == 'failure'
         continue-on-error: true
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: dist/
           skip-existing: true
@@ -1422,7 +1508,7 @@ jobs:
       # (i.e. a real problem rather than a transient blip) fails the job.
       - name: Publish to PyPI (attempt 3, final)
         if: steps.publish1.outcome == 'failure' && steps.publish2.outcome == 'failure'
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: dist/
           skip-existing: true
