@@ -592,11 +592,14 @@ fn test_min_tls_rejects_1_0() {
         .arg("1.0")
         .output()
         .expect("failed to run dcert");
-    assert!(!output.status.success(), "--min-tls 1.0 should be rejected as insecure");
+    assert!(
+        !output.status.success(),
+        "--min-tls 1.0 should be rejected without --allow-legacy-tls"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("invalid value '1.0'"),
-        "error should indicate 1.0 is not a valid value: {stderr}"
+        stderr.contains("--allow-legacy-tls") && stderr.contains("RFC 8996"),
+        "error should name the opt in flag and the deprecation: {stderr}"
     );
 }
 
@@ -609,11 +612,14 @@ fn test_min_tls_rejects_1_1() {
         .arg("1.1")
         .output()
         .expect("failed to run dcert");
-    assert!(!output.status.success(), "--min-tls 1.1 should be rejected as insecure");
+    assert!(
+        !output.status.success(),
+        "--min-tls 1.1 should be rejected without --allow-legacy-tls"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("invalid value '1.1'"),
-        "error should indicate 1.1 is not a valid value: {stderr}"
+        stderr.contains("--allow-legacy-tls") && stderr.contains("RFC 8996"),
+        "error should name the opt in flag and the deprecation: {stderr}"
     );
 }
 

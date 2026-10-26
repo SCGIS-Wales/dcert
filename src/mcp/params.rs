@@ -188,6 +188,11 @@ pub(crate) struct HttpTlsParams {
     /// STARTTLS protocol: "smtp", "imap", "pop3", "ftp". When set, target is treated as host[:port]
     #[serde(default)]
     pub(crate) starttls: Option<String>,
+    /// Allow TLS 1.0 and 1.1 (deprecated by RFC 8996) at OpenSSL security
+    /// level 0 for this probe. With no minimum version given, the probe
+    /// then also offers TLS 1.0 and 1.1 (default: false)
+    #[serde(default)]
+    pub(crate) allow_legacy_tls: Option<bool>,
 }
 
 /// Upper bound on the request body a tool call may send (1 MiB), so a client
@@ -224,6 +229,7 @@ impl ToCliArgs for HttpTlsParams {
             .value("groups", self.groups.as_deref())
             .value("tls-profile", self.tls_profile.as_deref())
             .flag("pq-probe", self.pq_probe == Some(true))
+            .flag("allow-legacy-tls", self.allow_legacy_tls == Some(true))
             .value("sni", self.sni.as_deref())
             .repeat("connect-to", self.connect_to.iter().flat_map(OneOrMany::values))
             .repeat("resolve", self.resolve.iter().flat_map(OneOrMany::values))
@@ -487,9 +493,9 @@ pub(crate) struct CompareCertificatesParams {
 pub(crate) struct TlsConnectionInfoParams {
     /// HTTPS URL or hostname to inspect TLS connection details
     pub(crate) target: String,
-    /// Minimum TLS version: "1.2" or "1.3"
+    /// Minimum TLS version: "1.2" or "1.3"; "1.0" and "1.1" need `allow_legacy_tls`
     pub(crate) min_tls: Option<String>,
-    /// Maximum TLS version: "1.2" or "1.3"
+    /// Maximum TLS version: "1.2" or "1.3"; "1.0" and "1.1" need `allow_legacy_tls`
     pub(crate) max_tls: Option<String>,
     /// mTLS and CA configuration
     #[serde(flatten, default)]

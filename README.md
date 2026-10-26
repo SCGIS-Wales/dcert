@@ -314,6 +314,12 @@ dcert --min-tls 1.3 https://example.com
 # Force TLS 1.2 only
 dcert --min-tls 1.2 --max-tls 1.2 https://example.com
 
+# Probe a legacy server: TLS 1.0 and 1.1 are deprecated (RFC 8996) and only
+# offered with --allow-legacy-tls, which drops OpenSSL to security level 0
+# for this handshake and prints a warning
+dcert https://legacy.example.com --allow-legacy-tls
+dcert https://legacy.example.com --allow-legacy-tls --min-tls 1.1 --max-tls 1.1
+
 # Offer exactly these suites, in any notation (IANA name, OpenSSL name or
 # code point); TLS 1.2 and TLS 1.3 suites may be mixed
 dcert https://example.com --cipher 0xC02F --cipher TLS_AES_128_GCM_SHA256
@@ -447,8 +453,11 @@ Options:
   -d, --data <DATA>                    Request body (implies POST)
       --data-file <FILE>               Request body from file (implies POST)
       --http-protocol <PROTO>          HTTP protocol [http1-1, http2] (default: http1-1)
-      --min-tls <VERSION>              Minimum TLS version [1.2, 1.3]
-      --max-tls <VERSION>              Maximum TLS version [1.2, 1.3]
+      --min-tls <VERSION>              Minimum TLS version [1.0, 1.1, 1.2, 1.3] (1.0 and 1.1 need
+                                       --allow-legacy-tls)
+      --max-tls <VERSION>              Maximum TLS version [1.0, 1.1, 1.2, 1.3]
+      --allow-legacy-tls               Offer TLS 1.0 and 1.1 (RFC 8996 deprecated) at OpenSSL
+                                       security level 0; the floor becomes 1.0 unless --min-tls is set
       --cipher <SUITE>                 Offer only this suite, in any notation (IANA, OpenSSL,
                                        0xC02F, C02F, 0xC0,0x2F); repeatable, TLS 1.2 and 1.3 mixed
       --cipher-list <STRING>           Allowed TLS 1.2 ciphers (OpenSSL format, passed as is)

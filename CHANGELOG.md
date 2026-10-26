@@ -30,6 +30,11 @@ summary is written.
   only limits the handshake to that version. `--cipher-list` and
   `--cipher-suites` stay as raw OpenSSL passthrough. The MCP probe tools take
   the same values as `cipher`.
+- `--min-tls` and `--max-tls` accept `1.0` and `1.1`, offered only with the
+  new `--allow-legacy-tls`, which sets OpenSSL security level 0 for the
+  handshake, lowers the floor to TLS 1.0 unless `--min-tls` is given and
+  prints a one line warning. Without it a legacy version is a clear error
+  citing RFC 8996. The MCP tools take `allow_legacy_tls`.
 - `dcert ciphers list [--protocol 1.2|1.3] [--offerable]` and
   `dcert ciphers explain <suite>`, and the MCP tools `list_cipher_suites` and
   `explain_cipher_suite` (offline), with Python wrappers of the same names.

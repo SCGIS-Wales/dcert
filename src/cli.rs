@@ -110,8 +110,15 @@ pub enum HttpProtocol {
     Http2,
 }
 
+/// A TLS protocol version, oldest first so the derived order compares them.
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TlsVersionArg {
+    /// Deprecated (RFC 8996); offered only with --allow-legacy-tls
+    #[value(name = "1.0")]
+    Tls1_0,
+    /// Deprecated (RFC 8996); offered only with --allow-legacy-tls
+    #[value(name = "1.1")]
+    Tls1_1,
     #[value(name = "1.2")]
     Tls1_2,
     #[value(name = "1.3")]
@@ -121,6 +128,8 @@ pub enum TlsVersionArg {
 impl TlsVersionArg {
     pub fn to_ssl_version(self) -> SslVersion {
         match self {
+            TlsVersionArg::Tls1_0 => SslVersion::TLS1,
+            TlsVersionArg::Tls1_1 => SslVersion::TLS1_1,
             TlsVersionArg::Tls1_2 => SslVersion::TLS1_2,
             TlsVersionArg::Tls1_3 => SslVersion::TLS1_3,
         }
@@ -128,10 +137,38 @@ impl TlsVersionArg {
 
     pub fn label(self) -> &'static str {
         match self {
+            TlsVersionArg::Tls1_0 => "TLS 1.0",
+            TlsVersionArg::Tls1_1 => "TLS 1.1",
             TlsVersionArg::Tls1_2 => "TLS 1.2",
             TlsVersionArg::Tls1_3 => "TLS 1.3",
         }
     }
+
+    /// The version as the flags take it, e.g. `1.2`.
+    pub fn number(self) -> &'static str {
+        match self {
+            TlsVersionArg::Tls1_0 => "1.0",
+            TlsVersionArg::Tls1_1 => "1.1",
+            TlsVersionArg::Tls1_2 => "1.2",
+            TlsVersionArg::Tls1_3 => "1.3",
+        }
+    }
+
+    /// TLS 1.0 and 1.1, deprecated by RFC 8996.
+    pub fn is_legacy(self) -> bool {
+        self < TlsVersionArg::Tls1_2
+    }
+}
+
+/// The cipher suite family `dcert ciphers list --protocol` selects.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CipherFamilyArg {
+    /// Suites of TLS 1.2 and earlier
+    #[value(name = "1.2")]
+    Tls1_2,
+    /// TLS 1.3 suites
+    #[value(name = "1.3")]
+    Tls1_3,
 }
 
 impl std::fmt::Display for TlsVersionArg {
@@ -270,9 +307,9 @@ pub enum CiphersMode {
   dcert ciphers list --protocol 1.3              TLS 1.3 suites
   dcert ciphers list --offerable -f json         What this build can offer")]
     List {
-        /// Only suites of this protocol family [possible values: 1.2, 1.3]
+        /// Only suites of this protocol family: 1.2 (TLS 1.2 and earlier) or 1.3
         #[arg(long, value_enum, value_name = "VERSION")]
-        protocol: Option<TlsVersionArg>,
+        protocol: Option<CipherFamilyArg>,
         /// Only suites the linked OpenSSL can offer at its default security level
         #[arg(long)]
         offerable: bool,

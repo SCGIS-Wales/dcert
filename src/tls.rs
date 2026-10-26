@@ -1650,10 +1650,11 @@ pub fn probe_post_quantum(req: &PqProbeRequest<'_>, probe: &TlsProbeOptions<'_>)
     if !crate::keyex::openssl_supports_mlkem() {
         return PqProbeResult::not_testable();
     }
-    if probe.max_tls == Some(TlsVersionArg::Tls1_2) {
-        return PqProbeResult::not_testable_with(
-            "hybrid groups exist in TLS 1.3 only, but --max-tls 1.2 was given".to_string(),
-        );
+    if let Some(max) = probe.max_tls.filter(|m| *m < TlsVersionArg::Tls1_3) {
+        return PqProbeResult::not_testable_with(format!(
+            "hybrid groups exist in TLS 1.3 only, but --max-tls {} was given",
+            max.number()
+        ));
     }
     let groups = crate::keyex::pq_probe_groups();
     let pq_probe = TlsProbeOptions {

@@ -27,11 +27,11 @@ pub enum Protocol {
     Tls13,
 }
 
-impl From<crate::cli::TlsVersionArg> for Protocol {
-    fn from(version: crate::cli::TlsVersionArg) -> Self {
-        match version {
-            crate::cli::TlsVersionArg::Tls1_2 => Self::Tls12,
-            crate::cli::TlsVersionArg::Tls1_3 => Self::Tls13,
+impl From<crate::cli::CipherFamilyArg> for Protocol {
+    fn from(family: crate::cli::CipherFamilyArg) -> Self {
+        match family {
+            crate::cli::CipherFamilyArg::Tls1_2 => Self::Tls12,
+            crate::cli::CipherFamilyArg::Tls1_3 => Self::Tls13,
         }
     }
 }
