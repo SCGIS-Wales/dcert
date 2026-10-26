@@ -322,3 +322,62 @@ pub(crate) fn validate_list(values: &[String], param_name: &str, max: usize) -> 
     }
     Ok(())
 }
+
+/// Every destination a probe names, as `(host, port)`: the target (unless it
+/// is a local file), each `connect_to` and `resolve` address and the `proxy`.
+pub(crate) fn probe_destinations(
+    target: &str,
+    http_tls: Option<&crate::params::HttpTlsParams>,
+) -> Result<Vec<(String, u16)>, String> {
+    let mut out = Vec::new();
+    if !target_is_file(target) {
+        out.push(target_host_port(target)?);
+    }
+    let Some(http_tls) = http_tls else {
+        return Ok(out);
+    };
+    for spec in http_tls.connect_to.iter().flat_map(crate::params::OneOrMany::values) {
+        let ov = dcert::connect::parse_connect_to(spec)?;
+        let port = ov.target_port().unwrap_or(443);
+        out.extend(ov.targets().iter().map(|h| (h.clone(), port)));
+    }
+    for spec in http_tls.resolve.iter().flat_map(crate::params::OneOrMany::values) {
+        let ov = dcert::connect::parse_resolve(spec)?;
+        out.extend(ov.targets().iter().map(|h| (h.clone(), 443)));
+    }
+    if let Some(proxy) = http_tls.proxy.as_deref().filter(|p| !p.trim().is_empty()) {
+        let url = url::Url::parse(proxy).map_err(|e| format!("Invalid proxy '{proxy}': {e}"))?;
+        let host = url.host_str().ok_or_else(|| format!("proxy '{proxy}' has no host"))?;
+        out.push((host.to_string(), url.port_or_known_default().unwrap_or(3128)));
+    }
+    Ok(out)
+}
+
+/// Host and port of a URL or `host[:port]` target.
+fn target_host_port(target: &str) -> Result<(String, u16), String> {
+    if target.starts_with("https://") {
+        let url = url::Url::parse(target).map_err(|e| format!("Invalid target '{target}': {e}"))?;
+        let host = url.host_str().ok_or_else(|| format!("target '{target}' has no host"))?;
+        return Ok((host.to_string(), url.port_or_known_default().unwrap_or(443)));
+    }
+    Ok(dcert::output::starttls_host_port(target, 443))
+}
+
+/// Check destinations against the server's policy. Resolution is blocking,
+/// so it runs off the async executor.
+pub(crate) async fn check_destinations(
+    policy: &dcert::netpolicy::DestinationPolicy,
+    destinations: Vec<(String, u16)>,
+) -> Result<(), String> {
+    if policy.is_open() || destinations.is_empty() {
+        return Ok(());
+    }
+    let policy = policy.clone();
+    tokio::task::spawn_blocking(move || {
+        destinations
+            .iter()
+            .try_for_each(|(host, port)| policy.check(host, *port))
+    })
+    .await
+    .map_err(|e| format!("destination check failed: {e}"))?
+}

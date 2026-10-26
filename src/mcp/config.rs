@@ -182,6 +182,27 @@ pub(crate) struct McpConfig {
     pub(crate) dcert_binary: PathBuf,
     /// Detected proxy configuration (for logging; env vars are inherited by subprocesses).
     pub(crate) proxy_config: McpProxyInfo,
+    /// Which destinations tool calls may reach (`DCERT_MCP_ALLOWED_TARGETS`,
+    /// `DCERT_MCP_DENY_PRIVATE_TARGETS`), also handed to every child.
+    pub(crate) destinations: dcert::netpolicy::DestinationPolicy,
+}
+
+/// Operator variables for the destination policy.
+pub(crate) const ALLOWED_TARGETS_VAR: &str = "DCERT_MCP_ALLOWED_TARGETS";
+/// See [`ALLOWED_TARGETS_VAR`].
+pub(crate) const DENY_PRIVATE_TARGETS_VAR: &str = "DCERT_MCP_DENY_PRIVATE_TARGETS";
+
+/// The destination policy from the environment. Private ranges are denied by
+/// default in HTTP mode, where callers are remote, and allowed in stdio mode,
+/// where the caller is the local user.
+pub(crate) fn destination_policy_from_env(http_mode: bool) -> Result<dcert::netpolicy::DestinationPolicy, String> {
+    dcert::netpolicy::DestinationPolicy::parse(
+        std::env::var(ALLOWED_TARGETS_VAR).ok().as_deref(),
+        std::env::var(DENY_PRIVATE_TARGETS_VAR).ok().as_deref(),
+        http_mode,
+        ALLOWED_TARGETS_VAR,
+        DENY_PRIVATE_TARGETS_VAR,
+    )
 }
 
 /// Log MCP server startup diagnostics to stderr.
@@ -210,6 +231,21 @@ pub(crate) fn log_startup_diagnostics(config: &McpConfig) {
     match &config.proxy_config.no_proxy {
         Some(no_proxy) => eprintln!("[dcert-mcp] NO_PROXY: {no_proxy}"),
         None => eprintln!("[dcert-mcp] NO_PROXY: (none)"),
+    }
+
+    if config.destinations.is_open() {
+        eprintln!("[dcert-mcp] destinations: unrestricted");
+    } else {
+        let allow = config.destinations.allow_list_env();
+        eprintln!(
+            "[dcert-mcp] destinations: private ranges {}; allow list: {}",
+            if config.destinations.denies_private() {
+                "denied"
+            } else {
+                "allowed"
+            },
+            if allow.is_empty() { "(none)" } else { allow.as_str() }
+        );
     }
 
     // Warn if dcert binary not found at resolved path

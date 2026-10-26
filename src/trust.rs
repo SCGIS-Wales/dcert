@@ -434,14 +434,14 @@ const ISSUER_MAX_REDIRECTS: usize = 2;
 /// Build a blocking HTTP client whose proxy behaviour mirrors dcert's
 /// [`ProxyConfig`] and whose connect and read timeout is the short issuer
 /// timeout.
-fn http_client(proxy: &ProxyConfig, timeout: Duration) -> Result<reqwest::blocking::Client> {
+fn http_client(proxy: &ProxyConfig, timeout: Duration, max_redirects: usize) -> Result<reqwest::blocking::Client> {
     crate::http::blocking_client(&crate::http::HttpClientOptions {
         timeout: Some(timeout),
         proxy: Some(proxy),
         // AIA endpoints occasionally redirect http to https; anything longer
         // is not a CA repository, and an unbounded chain would let a hostile
         // issuer URL walk the client around arbitrary hosts.
-        max_redirects: Some(ISSUER_MAX_REDIRECTS),
+        max_redirects: Some(max_redirects),
         ..Default::default()
     })
 }
@@ -452,8 +452,16 @@ fn http_client(proxy: &ProxyConfig, timeout: Duration) -> Result<reqwest::blocki
 /// internal IPs — private-PKI AIA endpoints legitimately live on internal
 /// hosts, which is exactly the case `--resolve-issuers` exists to reach. It is
 /// gated behind that explicit opt-in flag.
+///
+/// The destination policy (`DCERT_ALLOWED_TARGETS`, `DCERT_DENY_PRIVATE_TARGETS`,
+/// set by the MCP server for its child) still applies, and while it
+/// restricts anything redirects are not followed, since a redirect would
+/// reach a host that was never checked.
 fn fetch_issuer(url: &str, opts: &TrustOpts, proxy: &ProxyConfig) -> Result<Vec<u8>> {
-    let client = http_client(proxy, opts.issuer_timeout)?;
+    crate::netpolicy::enforce_url(url)?;
+    let restricted = crate::netpolicy::cli_policy().map_or(true, |p| !p.is_open());
+    let redirects = if restricted { 0 } else { ISSUER_MAX_REDIRECTS };
+    let client = http_client(proxy, opts.issuer_timeout, redirects)?;
     let resp = client
         .get(url)
         .send()
@@ -487,7 +495,7 @@ fn read_capped(resp: reqwest::blocking::Response, cap: usize, what: &str) -> Res
 
 /// Fetch and parse the upstream Mozilla/CCADB PEM bundle, caching it best-effort.
 fn refresh_public_roots(proxy: &ProxyConfig, timeout: Duration, debug: bool) -> Result<Vec<X509>> {
-    let client = http_client(proxy, timeout)?;
+    let client = http_client(proxy, timeout, ISSUER_MAX_REDIRECTS)?;
     let resp = client
         .get(CCADB_BUNDLE_URL)
         .send()

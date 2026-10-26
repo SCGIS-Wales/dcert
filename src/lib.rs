@@ -16,6 +16,7 @@ pub mod http;
 pub mod kbref;
 pub mod keyex;
 pub mod mtls;
+pub mod netpolicy;
 pub mod ocsp;
 pub mod output;
 pub mod proxy;

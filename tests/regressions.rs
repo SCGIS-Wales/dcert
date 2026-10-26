@@ -165,3 +165,51 @@ fn watch_mode_stops_cleanly_on_ctrl_c() {
     assert_eq!(exit.code(), Some(0), "cooperative stop exits 0");
     assert!(rest.contains("Watch stopped."), "{rest}");
 }
+
+// ---------------------------------------------------------------
+// Plan PR 1.3: the CLI enforces the destination policy it is handed
+// ---------------------------------------------------------------
+
+#[test]
+fn cli_refuses_a_loopback_target_when_private_destinations_are_denied() {
+    let server = TlsServer::builder().spawn();
+    let output = dcert_bin()
+        .env("DCERT_DENY_PRIVATE_TARGETS", "1")
+        .args([&server.url(), "--no-verify", "--format", "json"])
+        .output()
+        .expect("failed to run dcert");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(stderr.contains("DCERT_DENY_PRIVATE_TARGETS"), "{stderr}");
+}
+
+#[test]
+fn cli_allow_list_overrides_the_private_denial() {
+    let server = TlsServer::builder().spawn();
+    let output = dcert_bin()
+        .env("DCERT_DENY_PRIVATE_TARGETS", "1")
+        .env("DCERT_ALLOWED_TARGETS", "127.0.0.0/8")
+        .args([&server.url(), "--no-verify", "--format", "json"])
+        .output()
+        .expect("failed to run dcert");
+    let parsed = json_output(&output);
+    assert_eq!(parsed["certificates"][0]["common_name"], TEST_SERVER_CN, "{parsed}");
+}
+
+#[test]
+fn cli_refuses_a_connect_to_override_outside_the_allow_list() {
+    let server = TlsServer::builder().spawn();
+    let output = dcert_bin()
+        .env("DCERT_ALLOWED_TARGETS", "api.example.com")
+        .args([
+            "https://api.example.com",
+            "--connect-to",
+            &format!("api.example.com:443:127.0.0.1:{}", server.port()),
+            "--no-verify",
+        ])
+        .output()
+        .expect("failed to run dcert");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(stderr.contains("DCERT_ALLOWED_TARGETS"), "{stderr}");
+}

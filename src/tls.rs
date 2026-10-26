@@ -78,6 +78,9 @@ pub fn resolve_host(host: &str, port: u16) -> Result<(SocketAddr, u128)> {
 /// Returns the stream, DNS latency in milliseconds, and the resolved socket address.
 pub fn direct_tcp_connect(host: &str, port: u16, timeout: Duration) -> Result<(TcpStream, u128, SocketAddr)> {
     let (socket_addr, dns_ms) = resolve_host(host, port)?;
+    // The destination policy is enforced on the address actually dialled, so
+    // a name that resolves somewhere else the second time is still refused.
+    crate::netpolicy::enforce_addr(host, &socket_addr)?;
 
     let stream = TcpStream::connect_timeout(&socket_addr, timeout).map_err(|e| {
         let kind = e.kind();
@@ -118,9 +121,11 @@ pub fn connect_via_override(ov: &ResolvedOverride<'_>, timeout: Duration) -> Res
         let attempt = match target.parse::<IpAddr>() {
             Ok(ip) => {
                 let addr = SocketAddr::new(ip, ov.port);
-                TcpStream::connect_timeout(&addr, timeout)
-                    .map(|s| (s, addr, 0))
-                    .map_err(|e| anyhow::anyhow!("{e}"))
+                crate::netpolicy::enforce_addr(target, &addr).and_then(|()| {
+                    TcpStream::connect_timeout(&addr, timeout)
+                        .map(|s| (s, addr, 0))
+                        .map_err(|e| anyhow::anyhow!("{e}"))
+                })
             }
             Err(_) => direct_tcp_connect(target, ov.port, timeout).map(|(s, dns, addr)| (s, addr, dns)),
         };

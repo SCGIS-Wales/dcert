@@ -55,6 +55,16 @@ pub struct ConnectOverride {
 }
 
 impl ConnectOverride {
+    /// Hosts or IPs this override dials.
+    pub fn targets(&self) -> &[String] {
+        &self.targets
+    }
+
+    /// Port this override dials; `None` keeps the original port.
+    pub fn target_port(&self) -> Option<u16> {
+        self.target_port
+    }
+
     fn matches(&self, host: &str, port: u16) -> bool {
         if let Some(ref h) = self.match_host
             && !h.eq_ignore_ascii_case(host)
