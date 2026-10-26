@@ -461,6 +461,114 @@ impl ToCliArgs for TlsScanParams {
     }
 }
 
+/// Parameters for the tls_policy_test tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct TlsPolicyTestParams {
+    /// HTTPS URL or hostname to test (host[:port] with `starttls`)
+    pub(crate) target: String,
+    /// The policy to test against, e.g. "ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09". Required unless `identify` is true
+    #[serde(default)]
+    pub(crate) policy: Option<String>,
+    /// The provider, when several publish the policy id (ALB and NLB do): "aws_alb", "aws_nlb", "aws_cloudfront", "aws_api_gateway" or "mozilla"
+    #[serde(default)]
+    pub(crate) provider: Option<String>,
+    /// Test only these protocol versions, e.g. ["1.2", "1.3"] (default: all four)
+    #[serde(default)]
+    pub(crate) versions: Option<Vec<String>>,
+    /// Rank every catalogued policy by how well the endpoint matches it instead of testing one (default: false)
+    #[serde(default)]
+    pub(crate) identify: Option<bool>,
+    /// Report an inconclusive verdict as exit code 10 instead of 0 (default: false)
+    #[serde(default)]
+    pub(crate) strict: Option<bool>,
+    /// Also test TLS 1.0 and 1.1 at OpenSSL security level 0; without it their checks are not testable (default: false)
+    #[serde(default)]
+    pub(crate) allow_legacy_tls: Option<bool>,
+    /// Override the SNI hostname
+    #[serde(default)]
+    pub(crate) sni: Option<String>,
+    /// STARTTLS protocol: "smtp", "imap", "pop3", "ftp". When set, target is treated as host[:port]
+    #[serde(default)]
+    pub(crate) starttls: Option<String>,
+    /// Redirect the connection while keeping the target hostname for SNI: a bare IP or 'HOST1:PORT1:HOST2:PORT2'. A string or a list.
+    #[serde(default)]
+    pub(crate) connect_to: Option<OneOrMany>,
+    /// Pin 'HOST:PORT:ADDRESS' to an IP address like curl's --resolve. A string or a list.
+    #[serde(default)]
+    pub(crate) resolve: Option<OneOrMany>,
+    /// Forward proxy URL (http:// only); an empty string forces a direct connection
+    #[serde(default)]
+    pub(crate) proxy: Option<String>,
+    /// Comma-separated hosts that bypass the proxy; "*" bypasses it entirely
+    #[serde(default)]
+    pub(crate) noproxy: Option<String>,
+    /// Connection timeout in seconds per handshake (default: 10)
+    #[serde(default)]
+    pub(crate) timeout: Option<u64>,
+    /// Read timeout in seconds per handshake (default: 5)
+    #[serde(default)]
+    pub(crate) read_timeout: Option<u64>,
+    /// mTLS and CA configuration, used on every handshake
+    #[serde(flatten, default)]
+    pub(crate) mtls: MtlsParams,
+}
+
+impl TlsPolicyTestParams {
+    /// The routing and TLS settings as the probe tools carry them.
+    pub(crate) fn routing(&self) -> HttpTlsParams {
+        HttpTlsParams {
+            sni: self.sni.clone(),
+            starttls: self.starttls.clone(),
+            connect_to: self.connect_to.clone(),
+            resolve: self.resolve.clone(),
+            proxy: self.proxy.clone(),
+            noproxy: self.noproxy.clone(),
+            timeout: self.timeout,
+            read_timeout: self.read_timeout,
+            allow_legacy_tls: self.allow_legacy_tls,
+            ..HttpTlsParams::default()
+        }
+    }
+
+    /// Policy and version choices the CLI would refuse.
+    pub(crate) fn validate_choices(&self) -> Result<(), String> {
+        match (&self.policy, self.identify == Some(true)) {
+            (None, false) => return Err("give `policy`, or set `identify` to true".to_string()),
+            (Some(_), true) => return Err("`policy` and `identify` cannot be combined".to_string()),
+            (Some(id), false) => validate_arg(id, "policy")?,
+            (None, true) => {}
+        }
+        if let Some(ref provider) = self.provider {
+            parse_enum::<dcert::tlspolicy::PolicyProvider>("provider", provider, true)?;
+        }
+        for version in self.versions.iter().flatten() {
+            parse_enum::<dcert::cli::TlsVersionArg>("versions", version, false)?;
+        }
+        Ok(())
+    }
+}
+
+impl ToCliArgs for TlsPolicyTestParams {
+    fn write_args<'a>(&'a self, out: &mut ArgBuilder<'a>) {
+        let versions = self.versions.as_ref().filter(|v| !v.is_empty()).map(|v| v.join(","));
+        out.value("policy", self.policy.as_deref())
+            .value("provider", self.provider.as_deref())
+            .value("versions", versions)
+            .flag("identify", self.identify == Some(true))
+            .flag("strict", self.strict == Some(true))
+            .flag("allow-legacy-tls", self.allow_legacy_tls == Some(true))
+            .value("sni", self.sni.as_deref())
+            .value("starttls", self.starttls.as_deref())
+            .repeat("connect-to", self.connect_to.iter().flat_map(OneOrMany::values))
+            .repeat("resolve", self.resolve.iter().flat_map(OneOrMany::values))
+            .value("timeout", self.timeout)
+            .value("read-timeout", self.read_timeout)
+            .extend(&self.mtls)
+            .env(dcert::proxy::DCERT_PROXY_ENV, self.proxy.as_deref())
+            .env(dcert::proxy::DCERT_NOPROXY_ENV, self.noproxy.as_deref());
+    }
+}
+
 /// Parameters for the list_tls_policies tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct ListTlsPoliciesParams {

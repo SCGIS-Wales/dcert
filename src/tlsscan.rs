@@ -126,7 +126,7 @@ pub fn alert_reason(error: &str) -> String {
 
 /// Run `work` over `items` with at most `workers` threads, results in input
 /// order.
-fn run_bounded<T: Sync, R: Send>(items: &[T], workers: usize, work: impl Fn(&T) -> R + Sync) -> Vec<R> {
+pub(crate) fn run_bounded<T: Sync, R: Send>(items: &[T], workers: usize, work: impl Fn(&T) -> R + Sync) -> Vec<R> {
     let next = AtomicUsize::new(0);
     let mut results: Vec<Option<R>> = Vec::new();
     results.resize_with(items.len(), || None);
@@ -177,7 +177,7 @@ fn suites_for(version: TlsVersionArg) -> Vec<&'static Cipher> {
 }
 
 /// Every TLS 1.3 suite the linked OpenSSL implements, colon separated.
-fn all_tls13_suites() -> String {
+pub(crate) fn all_tls13_suites() -> String {
     suites_for(TlsVersionArg::Tls1_3)
         .iter()
         .filter_map(|c| c.openssl)
@@ -187,7 +187,7 @@ fn all_tls13_suites() -> String {
 
 /// The cipher string for TLS 1.2 and earlier: everything, at security level
 /// 0 for the legacy versions.
-fn broad_cipher_list(version: TlsVersionArg) -> &'static str {
+pub(crate) fn broad_cipher_list(version: TlsVersionArg) -> &'static str {
     if version.is_legacy() { "ALL:@SECLEVEL=0" } else { "ALL" }
 }
 
@@ -355,7 +355,7 @@ pub fn scan(target: &str, req: &PqProbeRequest<'_>, base: &TlsProbeOptions<'_>, 
 }
 
 /// Whether the linked OpenSSL knows `group`, so a refusal is the server's.
-fn group_implemented(group: &str) -> bool {
+pub(crate) fn group_implemented(group: &str) -> bool {
     openssl::ssl::SslContext::builder(openssl::ssl::SslMethod::tls())
         .and_then(|mut b| b.set_groups_list(group))
         .is_ok()

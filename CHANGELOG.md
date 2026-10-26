@@ -30,6 +30,14 @@ summary is written.
   only limits the handshake to that version. `--cipher-list` and
   `--cipher-suites` stay as raw OpenSSL passthrough. The MCP probe tools take
   the same values as `cipher`.
+- `dcert policy test <target> --policy <id>` and the MCP tool
+  `tls_policy_test` (Python `tls_policy_test()`): conformance of an endpoint
+  to a catalogued policy, check by check (versions, TLS 1.2 ciphers and
+  exclusions, TLS 1.3 suites and exclusions, groups, classical fallback,
+  hybrid exclusion), aware of the listener's certificate key types, with
+  the verdict `conformant`, `non_conformant` or `inconclusive` and exit
+  codes 0, 9 and 10 (`--strict`). `--identify` ranks every catalogued
+  policy against one set of handshakes. `--versions` limits the versions.
 - A catalogue of named TLS security policies, `kb/tls_policies.yaml` with
   `kb/tls_policies.schema.json`: 113 policies from the ALB, NLB, CloudFront
   and API Gateway documentation and Mozilla's guidelines 6.0, each with

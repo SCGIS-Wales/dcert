@@ -67,6 +67,7 @@ from dcert.tools import (
     list_tls_policies,
     show_tls_policy,
     tls_connection_info,
+    tls_policy_test,
     tls_scan,
     verify_key_match,
 )
@@ -121,4 +122,5 @@ __all__ = [
     "tls_scan",
     "list_tls_policies",
     "show_tls_policy",
+    "tls_policy_test",
 ]

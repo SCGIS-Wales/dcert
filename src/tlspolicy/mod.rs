@@ -18,11 +18,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::ciphers::{Cipher, Protocol};
 
+pub mod conformance;
+
 /// The catalogue as shipped.
-pub const BUILTIN_POLICIES: &str = include_str!("../kb/tls_policies.yaml");
+pub const BUILTIN_POLICIES: &str = include_str!("../../kb/tls_policies.yaml");
 
 /// Who publishes a policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, clap::ValueEnum)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema, clap::ValueEnum,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum PolicyProvider {
     /// Application Load Balancer `ELBSecurityPolicy-*`.

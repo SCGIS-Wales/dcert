@@ -810,6 +810,63 @@ async def show_tls_policy(
     return await call_tool("show_tls_policy", arguments, session=session, timeout=timeout)
 
 
+async def tls_policy_test(
+    *,
+    target: str,
+    policy: str | None = None,
+    provider: str | None = None,
+    versions: Sequence[str] | None = None,
+    identify: bool = False,
+    strict: bool = False,
+    allow_legacy_tls: bool = False,
+    sni: str | None = None,
+    starttls: str | None = None,
+    session: Session | None = None,
+    timeout: float | None = None,
+    **options: Unpack[ConnectionOptions],
+) -> ToolResponse:
+    """Test whether *target* behaves exactly like a named TLS security policy.
+
+    Args:
+        target: HTTPS URL or hostname (``host[:port]`` with *starttls*).
+        policy: Policy id, e.g. ``"ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09"``;
+            required unless *identify* is set.
+        provider: The provider, when several publish the policy id.
+        versions: Only these protocol versions, e.g. ``["1.2", "1.3"]``.
+        identify: Rank every catalogued policy instead of testing one.
+        strict: Report an inconclusive verdict as a failure (exit code 10).
+        allow_legacy_tls: Also test TLS 1.0 and 1.1.
+        sni: Override the SNI hostname.
+        starttls: ``"smtp"``, ``"imap"``, ``"pop3"`` or ``"ftp"``.
+        session: Session to use; the shared default when ``None``.
+        timeout: Per call timeout in seconds.
+        **options: See :class:`ConnectionOptions`.
+
+    Raises:
+        ValueError: If neither or both of *policy* and *identify* are given.
+    """
+    if (policy is None) != identify:
+        raise ValueError("tls_policy_test() needs exactly one of policy or identify=True")
+    arguments = build_arguments(
+        "tls_policy_test",
+        {"target": target},
+        {
+            "policy": policy,
+            "provider": provider,
+            "versions": list(versions) if versions else None,
+            "sni": sni,
+            "starttls": starttls,
+            **options,
+        },
+        defaulted={
+            "identify": (identify, False),
+            "strict": (strict, False),
+            "allow_legacy_tls": (allow_legacy_tls, False),
+        },
+    )
+    return await call_tool("tls_policy_test", arguments, session=session, timeout=timeout)
+
+
 async def list_cipher_suites(
     *,
     protocol: str | None = None,
@@ -869,4 +926,5 @@ TOOL_FUNCTIONS: tuple[Callable[..., Awaitable[ToolResponse]], ...] = (
     tls_scan,
     list_tls_policies,
     show_tls_policy,
+    tls_policy_test,
 )
