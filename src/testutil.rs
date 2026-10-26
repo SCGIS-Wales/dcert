@@ -435,6 +435,9 @@ impl TlsServerBuilder {
             builder.set_security_level(level);
         }
         if self.min.is_some() || self.max.is_some() {
+            // The Mozilla profile also disables TLS 1.0 and 1.1 by option;
+            // explicit bounds decide instead, so legacy servers can be built.
+            builder.clear_options(openssl::ssl::SslOptions::NO_TLSV1 | openssl::ssl::SslOptions::NO_TLSV1_1);
             builder.set_min_proto_version(self.min).expect("min version");
             builder.set_max_proto_version(self.max).expect("max version");
         }

@@ -248,6 +248,15 @@ impl DcertMcpServer {
         {
             return ok_error(format!("min_tls ({min}) must not be greater than max_tls ({max})"));
         }
+        let legacy = [bounds.0, bounds.1]
+            .into_iter()
+            .flatten()
+            .any(dcert::cli::TlsVersionArg::is_legacy);
+        if legacy && params.http_tls.allow_legacy_tls != Some(true) {
+            return ok_error(
+                "TLS 1.0 and 1.1 are deprecated (RFC 8996); set allow_legacy_tls to true to probe them".to_string(),
+            );
+        }
         let outcome = self.run_probe(&mut params).await;
         reply(outcome, "debug/stderr", &[0])
     }
@@ -665,7 +674,7 @@ impl DcertMcpServer {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let protocol = match params.protocol.as_deref() {
             None => None,
-            Some(v) => match parse_enum::<dcert::cli::TlsVersionArg>("protocol", v, false) {
+            Some(v) => match parse_enum::<dcert::cli::CipherFamilyArg>("protocol", v, false) {
                 Ok(version) => Some(version.into()),
                 Err(e) => return ok_error(e),
             },

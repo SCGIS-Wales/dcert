@@ -47,7 +47,8 @@ fn sample(property: &str) -> Map<String, Value> {
         | "exclude_expired"
         | "show_body"
         | "no_verify"
-        | "pq_probe" => json!(true),
+        | "pq_probe"
+        | "allow_legacy_tls" => json!(true),
         "issuer_timeout" => json!(3),
         "days" => json!(10),
         "timeout" => json!(7),

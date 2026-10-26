@@ -691,8 +691,8 @@ fn test_validate_tls_version_accepts_valid() {
 
 #[test]
 fn test_validate_tls_version_rejects_invalid() {
-    assert!(validate_tls_version("1.0").is_err());
-    assert!(validate_tls_version("1.1").is_err());
+    assert!(validate_tls_version("1.9").is_err());
+    assert!(validate_tls_version("0.9").is_err());
     assert!(validate_tls_version("2.0").is_err());
     assert!(validate_tls_version("tls1.3").is_err());
     assert!(validate_tls_version("").is_err());
@@ -1018,7 +1018,7 @@ async fn test_mcp_tls_connection_rejects_invalid_tls_version() {
             CallToolRequestParams::new("tls_connection_info").with_arguments(
                 serde_json::json!({
                     "target": "example.com",
-                    "min_tls": "1.0"
+                    "min_tls": "0.9"
                 })
                 .as_object()
                 .unwrap()
@@ -2065,7 +2065,9 @@ fn validate_tls_version_parses_into_the_cli_enum_and_orders() {
     let v12 = validate_tls_version("1.2").unwrap();
     let v13 = validate_tls_version("1.3").unwrap();
     assert!(v12 < v13);
-    assert!(validate_tls_version("1.1").is_err());
+    // 1.0 and 1.1 parse (they need allow_legacy_tls at the tool) and order first.
+    let v11 = validate_tls_version("1.1").unwrap();
+    assert!(v11 < v12 && v11.is_legacy() && !v12.is_legacy());
     assert!(validate_tls_version("TLS1.2").is_err());
 }
 
@@ -2159,6 +2161,19 @@ async fn call_tool_text(tool: &str, arguments: serde_json::Value) -> (bool, Stri
     client.cancel().await.unwrap();
     server_handle.abort();
     (response.is_error.unwrap_or(false), text)
+}
+
+#[tokio::test]
+async fn tls_connection_info_needs_allow_legacy_tls_for_tls_1_0_and_1_1() {
+    for version in ["1.0", "1.1"] {
+        let error = call_tool_error(
+            "tls_connection_info",
+            serde_json::json!({ "target": "example.com", "min_tls": version }),
+        )
+        .await
+        .expect("a legacy version without the flag is an error");
+        assert!(error.contains("allow_legacy_tls"), "{version}: {error}");
+    }
 }
 
 #[tokio::test]

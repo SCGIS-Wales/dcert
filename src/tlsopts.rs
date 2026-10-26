@@ -27,13 +27,22 @@ fn parse_groups(value: &str) -> Result<String, String> {
 #[derive(Args, Debug, Clone, Default)]
 #[command(next_help_heading = "TLS options")]
 pub struct TlsOptions {
-    /// Minimum TLS version to accept [possible values: 1.2, 1.3]
+    /// Minimum TLS version to accept [possible values: 1.0, 1.1, 1.2, 1.3]
+    ///
+    /// 1.0 and 1.1 are deprecated (RFC 8996) and need --allow-legacy-tls.
     #[arg(long, value_enum, value_name = "VERSION")]
     pub min_tls: Option<TlsVersionArg>,
 
-    /// Maximum TLS version to accept [possible values: 1.2, 1.3]
+    /// Maximum TLS version to accept [possible values: 1.0, 1.1, 1.2, 1.3]
     #[arg(long, value_enum, value_name = "VERSION")]
     pub max_tls: Option<TlsVersionArg>,
+
+    /// Offer TLS 1.0 and 1.1, deprecated by RFC 8996, to probe legacy
+    /// servers. Sets OpenSSL security level 0 for the handshake (legacy
+    /// versions sign with SHA-1 and MD5) and prints a warning. Without
+    /// --min-tls the floor becomes TLS 1.0.
+    #[arg(long)]
+    pub allow_legacy_tls: bool,
 
     /// Offer only this cipher suite, in any notation: IANA name
     /// (TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256), OpenSSL name
@@ -114,6 +123,9 @@ impl TlsOptions {
             self.groups.as_deref(),
         );
         settings.max_tls = self.max_tls;
+        if self.allow_legacy_tls {
+            settings.min_tls = Some(self.min_tls.unwrap_or(TlsVersionArg::Tls1_0));
+        }
         if !self.cipher.is_empty() {
             let set = CipherSet::from_ciphers(&self.cipher);
             settings.cipher_list = set.cipher_list();
@@ -124,6 +136,14 @@ impl TlsOptions {
             if set.tls13.is_empty() {
                 settings.max_tls = Some(TlsVersionArg::Tls1_2);
             }
+        }
+        if self.allow_legacy_tls {
+            // Legacy handshakes sign with SHA-1 and MD5, which security
+            // level 1 and above refuse.
+            settings.cipher_list = Some(format!(
+                "{}:@SECLEVEL=0",
+                settings.cipher_list.as_deref().unwrap_or("DEFAULT")
+            ));
         }
         settings
     }
@@ -140,9 +160,24 @@ impl TlsOptions {
         {
             anyhow::bail!("--min-tls ({min}) must not be greater than --max-tls ({max})");
         }
+        let legacy = [self.min_tls, self.max_tls]
+            .into_iter()
+            .flatten()
+            .any(TlsVersionArg::is_legacy);
+        if legacy && !self.allow_legacy_tls {
+            anyhow::bail!(
+                "TLS 1.0 and 1.1 are deprecated (RFC 8996) and not offered by default; add --allow-legacy-tls to probe them"
+            );
+        }
         let set = CipherSet::from_ciphers(&self.cipher);
-        if !self.cipher.is_empty() && set.tls12.is_empty() && self.max_tls == Some(TlsVersionArg::Tls1_2) {
-            anyhow::bail!("--cipher names only TLS 1.3 suites, which --max-tls 1.2 rules out");
+        if let Some(max) = self.max_tls.filter(|m| *m < TlsVersionArg::Tls1_3)
+            && !self.cipher.is_empty()
+            && set.tls12.is_empty()
+        {
+            anyhow::bail!(
+                "--cipher names only TLS 1.3 suites, which --max-tls {} rules out",
+                max.number()
+            );
         }
         if !self.cipher.is_empty() && set.tls13.is_empty() && self.min_tls == Some(TlsVersionArg::Tls1_3) {
             anyhow::bail!("--cipher names only TLS 1.2 suites, which --min-tls 1.3 rules out");
@@ -251,6 +286,11 @@ impl<'a> ProbeOptions<'a> {
         debug: bool,
     ) -> Result<Self> {
         tls.validate()?;
+        if tls.allow_legacy_tls {
+            eprintln!(
+                "Warning: --allow-legacy-tls offers deprecated TLS 1.0 and 1.1 at OpenSSL security level 0; use it to probe legacy servers only"
+            );
+        }
         Ok(Self {
             tls,
             connection,
@@ -342,6 +382,31 @@ mod tests {
         assert_eq!(tls12.cipher_suites, None);
         assert!(parse(&["--cipher", "1301", "--max-tls", "1.2"]).tls.validate().is_err());
         assert!(parse(&["--cipher", "C02F", "--min-tls", "1.3"]).tls.validate().is_err());
+    }
+
+    #[test]
+    fn legacy_versions_need_the_flag() {
+        for args in [
+            &["--min-tls", "1.0"][..],
+            &["--max-tls", "1.1"],
+            &["--min-tls", "1.1", "--max-tls", "1.2"],
+        ] {
+            assert!(parse(args).tls.validate().is_err(), "{args:?}");
+            let with_flag: Vec<&str> = args.iter().copied().chain(["--allow-legacy-tls"]).collect();
+            assert!(parse(&with_flag).tls.validate().is_ok(), "{with_flag:?}");
+        }
+    }
+
+    #[test]
+    fn the_legacy_flag_lowers_the_floor_and_the_security_level() {
+        let plain = probe_settings(&["--allow-legacy-tls"]);
+        assert_eq!(plain.min_tls, Some(TlsVersionArg::Tls1_0));
+        assert_eq!(plain.cipher_list.as_deref(), Some("DEFAULT:@SECLEVEL=0"));
+        let pinned = probe_settings(&["--allow-legacy-tls", "--min-tls", "1.1", "--cipher-list", "AES128-SHA"]);
+        assert_eq!(pinned.min_tls, Some(TlsVersionArg::Tls1_1));
+        assert_eq!(pinned.cipher_list.as_deref(), Some("AES128-SHA:@SECLEVEL=0"));
+        let off = probe_settings(&["--min-tls", "1.2"]);
+        assert_eq!(off.cipher_list, None);
     }
 
     #[test]
