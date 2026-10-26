@@ -70,6 +70,7 @@ pub(crate) fn debug_enabled_from(value: Option<&str>) -> bool {
 ///   disconnect, server shutdown) takes the child with it rather than leaving
 ///   an orphan running against a remote host.
 /// - stdout and stderr are piped and drained by [`run_child_with_timeout`].
+/// - the working directory is the first allowed file root.
 ///
 /// The child inherits the parent environment (proxy variables, CA bundle
 /// paths); `env_vars` adds per call secrets that must not travel in argv.
@@ -79,6 +80,11 @@ pub(crate) fn spawn_dcert(
     env_vars: &[(&str, &str)],
 ) -> Result<tokio::process::Child, String> {
     let mut cmd = Command::new(&config.dcert_binary);
+    // Run in the first allowed root so the child resolves any relative path
+    // exactly as `validate_path` did.
+    if let Some(root) = crate::validate::primary_root() {
+        cmd.current_dir(root);
+    }
     cmd.args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())

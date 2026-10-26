@@ -44,9 +44,10 @@ pub(crate) fn validate_target(target: &str) -> Result<(), String> {
     reject_flag_like(target, "target")
 }
 
-/// Root directory tool file parameters must stay inside. Defaults to the
-/// server's working directory; operators widen or move it with
-/// `DCERT_MCP_FILE_ROOT`.
+/// Roots tool file parameters must stay inside. Defaults to the server's
+/// working directory only; operators widen or move it with
+/// `DCERT_MCP_FILE_ROOT` (comma separated). The first root is also the
+/// working directory of every dcert child process.
 pub(crate) fn file_roots() -> Vec<std::path::PathBuf> {
     if let Some(raw) = std::env::var_os("DCERT_MCP_FILE_ROOT") {
         let roots: Vec<std::path::PathBuf> = raw
@@ -60,29 +61,38 @@ pub(crate) fn file_roots() -> Vec<std::path::PathBuf> {
             return roots;
         }
     }
-    // Two roots by default: where the server was started (the project an IDE
-    // has open) and the system scratch directory. Both are places a user
-    // naturally asks for certificate files. Everything else, including
-    // `/etc` and `~/.ssh`, needs an explicit `DCERT_MCP_FILE_ROOT`.
-    let mut roots = Vec::new();
-    if let Ok(cwd) = std::env::current_dir() {
-        roots.push(cwd);
-    }
-    roots.push(std::env::temp_dir());
-    roots
+    // The system temp directory is deliberately not a default root: it is
+    // world writable, so any local user could plant files or links there.
+    std::env::current_dir().into_iter().collect()
 }
 
-/// Canonicalise a path as far as its existing prefix allows, so a symlink in
-/// the middle of the path cannot point outside an allowed root while the
-/// final component does not exist yet.
-fn resolve_existing_prefix(path: &std::path::Path) -> std::path::PathBuf {
+/// The first allowed root, canonicalised: the directory relative paths
+/// resolve against and the working directory of the dcert child.
+pub(crate) fn primary_root() -> Option<std::path::PathBuf> {
+    file_roots().into_iter().next().map(|r| r.canonicalize().unwrap_or(r))
+}
+
+/// Canonicalise a path as far as its existing prefix allows and re-append
+/// the components that do not exist yet, so a symlink in the middle of the
+/// path cannot point outside an allowed root while the final component does
+/// not exist yet.
+fn canonicalise_with_tail(path: &std::path::Path) -> std::path::PathBuf {
     let mut probe = path.to_path_buf();
+    let mut tail = Vec::new();
     while !probe.exists() {
+        match probe.file_name() {
+            Some(name) => tail.push(name.to_os_string()),
+            None => break,
+        }
         if !probe.pop() {
             break;
         }
     }
-    probe.canonicalize().unwrap_or(probe)
+    let mut resolved = probe.canonicalize().unwrap_or(probe);
+    for name in tail.iter().rev() {
+        resolved.push(name);
+    }
+    resolved
 }
 
 /// How many links a chain may contain before it is treated as a loop.
@@ -91,7 +101,7 @@ const MAX_SYMLINK_DEPTH: usize = 16;
 /// Follow a chain of symlinks at `path` and return the path a read or write
 /// would actually land on, whether or not the end of the chain exists yet.
 ///
-/// [`resolve_existing_prefix`] alone is not enough here. `Path::exists`
+/// [`canonicalise_with_tail`] alone is not enough here. `Path::exists`
 /// follows symlinks, so a *dangling* link is seen as absent: the probe pops to
 /// the link's parent, the parent is inside a root, and the check passes while
 /// the later write follows the link somewhere else entirely. A world writable
@@ -121,12 +131,17 @@ fn resolve_link_chain(path: &std::path::Path) -> Option<std::path::PathBuf> {
 }
 
 /// Validate a file path parameter to prevent argument injection and path
-/// traversal, and confine it to the allowed roots.
+/// traversal, confine it to the allowed roots and return the canonical
+/// absolute path the dcert child must be given.
 ///
 /// Relative paths resolve against the first root; absolute paths are accepted
 /// only when they lie inside one of them. A tool call therefore cannot read
 /// `/etc/shadow` or write into `~/.ssh` on the host running the server.
-pub(crate) fn validate_path(path: &str, param_name: &str) -> Result<(), String> {
+/// Passing the returned path (not the caller's spelling) to the child means
+/// the child cannot resolve a relative path against a different directory.
+/// The refusal is worded the same whether or not the path exists, so it is
+/// not an oracle for files outside the roots.
+pub(crate) fn validate_path(path: &str, param_name: &str) -> Result<String, String> {
     if path.is_empty() {
         return Err(format!("{param_name} must not be empty"));
     }
@@ -156,9 +171,12 @@ pub(crate) fn validate_path(path: &str, param_name: &str) -> Result<(), String> 
             "{param_name} '{path}' resolves through a symlink loop or too many links"
         ));
     };
-    let resolved = resolve_existing_prefix(&landed);
+    let resolved = canonicalise_with_tail(&landed);
     if roots.iter().any(|root| resolved.starts_with(root)) {
-        return Ok(());
+        return resolved
+            .into_os_string()
+            .into_string()
+            .map_err(|_| format!("{param_name} '{path}' is not valid UTF-8 once resolved"));
     }
     Err(format!(
         "{param_name} '{path}' is outside the allowed roots ({}); set DCERT_MCP_FILE_ROOT to widen them",
@@ -168,6 +186,34 @@ pub(crate) fn validate_path(path: &str, param_name: &str) -> Result<(), String> 
             .collect::<Vec<_>>()
             .join(", ")
     ))
+}
+
+/// Whether a probe target names a local file rather than a URL or a
+/// `host[:port]`.
+///
+/// `https://` targets are URLs. Anything with a path separator is a file.
+/// A bare name is a file when it exists under the first root, which is the
+/// child's working directory, so this agrees with how the CLI decides.
+pub(crate) fn target_is_file(target: &str) -> bool {
+    if target.starts_with("https://") || target.starts_with("http://") {
+        return false;
+    }
+    if target.contains('/') || target.contains('\\') {
+        return true;
+    }
+    primary_root().is_some_and(|root| root.join(target).exists())
+}
+
+/// Validate a probe target and return the form to pass to the child: URLs
+/// and hostnames unchanged, file paths confined and made absolute with
+/// [`validate_path`].
+pub(crate) fn resolve_target(target: &str) -> Result<String, String> {
+    validate_target(target)?;
+    if target_is_file(target) {
+        validate_path(target, "target")
+    } else {
+        Ok(target.to_string())
+    }
 }
 
 /// Validate a free form value that reaches the subprocess argv (Vault mount,

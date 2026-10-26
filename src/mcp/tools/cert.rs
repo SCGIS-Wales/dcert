@@ -33,10 +33,10 @@ impl DcertMcpServer {
         subcommand: &str,
         target: &str,
         options: Vec<String>,
-        mtls: &MtlsParams,
+        mtls: &mut MtlsParams,
         http_tls: Option<&HttpTlsParams>,
     ) -> RunOutcome {
-        validate_target(target)?;
+        let target = resolve_target(target)?;
         mtls.validate()?;
         if let Some(http_tls) = http_tls {
             http_tls.validate()?;
@@ -48,7 +48,7 @@ impl DcertMcpServer {
             options.extend(http_tls.to_args());
             env_refs.extend(http_tls.env_vars());
         }
-        let args = target_args(subcommand, options, target);
+        let args = target_args(subcommand, options, &target);
         let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         run_dcert_with_env(&args_refs, &self.config, Some(&env_refs)).await
     }
@@ -79,7 +79,7 @@ impl DcertMcpServer {
     )]
     pub async fn analyze_certificate(
         &self,
-        Parameters(params): Parameters<AnalyzeCertificateParams>,
+        Parameters(mut params): Parameters<AnalyzeCertificateParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let mut args = vec!["--format".to_string(), "json".to_string()];
         if params.fingerprint {
@@ -105,7 +105,7 @@ impl DcertMcpServer {
             args.push("--refresh-public-roots".to_string());
         }
         let outcome = self
-            .run_probe("check", &params.target, args, &params.mtls, Some(&params.http_tls))
+            .run_probe("check", &params.target, args, &mut params.mtls, Some(&params.http_tls))
             .await;
         tool_reply(outcome, "debug/stderr", &[0])
     }
@@ -123,7 +123,7 @@ impl DcertMcpServer {
     )]
     pub async fn check_expiry(
         &self,
-        Parameters(params): Parameters<CheckExpiryParams>,
+        Parameters(mut params): Parameters<CheckExpiryParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         if params.days > 3650 {
             return ok_error(format!("days must be at most 3650 (10 years), got {}", params.days));
@@ -137,7 +137,7 @@ impl DcertMcpServer {
             params.days.to_string(),
         ];
         let outcome = self
-            .run_probe("check", &params.target, args, &params.mtls, Some(&params.http_tls))
+            .run_probe("check", &params.target, args, &mut params.mtls, Some(&params.http_tls))
             .await
             .map(|(stdout, stderr, code)| {
                 let status = match code {
@@ -164,7 +164,7 @@ impl DcertMcpServer {
     )]
     pub async fn check_revocation(
         &self,
-        Parameters(params): Parameters<CheckRevocationParams>,
+        Parameters(mut params): Parameters<CheckRevocationParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let args = vec![
             "--format".to_string(),
@@ -173,7 +173,7 @@ impl DcertMcpServer {
             "--extensions".to_string(),
         ];
         let outcome = self
-            .run_probe("check", &params.target, args, &params.mtls, Some(&params.http_tls))
+            .run_probe("check", &params.target, args, &mut params.mtls, Some(&params.http_tls))
             .await
             .map(|(stdout, stderr, code)| {
                 let prefixed = match code {
@@ -261,7 +261,7 @@ impl DcertMcpServer {
     )]
     pub async fn tls_connection_info(
         &self,
-        Parameters(params): Parameters<TlsConnectionInfoParams>,
+        Parameters(mut params): Parameters<TlsConnectionInfoParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let mut args = vec![
             "--format".to_string(),
@@ -292,7 +292,7 @@ impl DcertMcpServer {
             return ok_error(format!("min_tls ({min}) must not be greater than max_tls ({max})"));
         }
         let outcome = self
-            .run_probe("check", &params.target, args, &params.mtls, Some(&params.http_tls))
+            .run_probe("check", &params.target, args, &mut params.mtls, Some(&params.http_tls))
             .await;
         tool_reply(outcome, "debug/stderr", &[0])
     }
@@ -310,12 +310,13 @@ impl DcertMcpServer {
     )]
     pub async fn export_pem(
         &self,
-        Parameters(params): Parameters<ExportPemParams>,
+        Parameters(mut params): Parameters<ExportPemParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        if let Some(ref p) = params.output_path
-            && let Err(e) = validate_path(p, "output_path")
-        {
-            return ok_error(e);
+        if let Some(p) = params.output_path.as_mut() {
+            match validate_path(p, "output_path") {
+                Ok(v) => *p = v,
+                Err(e) => return ok_error(e),
+            }
         }
 
         // Without an output file the chain comes back in the JSON as
@@ -330,7 +331,7 @@ impl DcertMcpServer {
             args.push("--exclude-expired".to_string());
         }
         let outcome = self
-            .run_probe("check", &params.target, args, &params.mtls, Some(&params.http_tls))
+            .run_probe("check", &params.target, args, &mut params.mtls, Some(&params.http_tls))
             .await
             .map(|(stdout, stderr, code)| {
                 let prefixed = match &params.output_path {
@@ -355,13 +356,14 @@ impl DcertMcpServer {
     )]
     pub async fn verify_key_match(
         &self,
-        Parameters(params): Parameters<VerifyKeyMatchParams>,
+        Parameters(mut params): Parameters<VerifyKeyMatchParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         if let Err(e) = validate_target(&params.target) {
             return ok_error(e);
         }
-        if let Err(e) = validate_path(&params.key_path, "key_path") {
-            return ok_error(e);
+        match validate_path(&params.key_path, "key_path") {
+            Ok(p) => params.key_path = p,
+            Err(e) => return ok_error(e),
         }
 
         let args = target_args(
@@ -395,10 +397,11 @@ impl DcertMcpServer {
     )]
     pub async fn verify_key_auto_discover(
         &self,
-        Parameters(params): Parameters<VerifyKeyAutoDiscoverParams>,
+        Parameters(mut params): Parameters<VerifyKeyAutoDiscoverParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        if let Err(e) = validate_path(&params.dir, "dir") {
-            return ok_error(e);
+        match validate_path(&params.dir, "dir") {
+            Ok(p) => params.dir = p,
+            Err(e) => return ok_error(e),
         }
 
         let args = vec!["verify-key", "--dir", params.dir.as_str(), "--format", "json"];
@@ -422,13 +425,14 @@ impl DcertMcpServer {
     )]
     pub async fn convert_pfx_to_pem(
         &self,
-        Parameters(params): Parameters<ConvertPfxToPemParams>,
+        Parameters(mut params): Parameters<ConvertPfxToPemParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         if let Err(e) = validate_path(&params.pkcs12_path, "pkcs12_path") {
             return ok_error(e);
         }
-        if let Err(e) = validate_path(&params.output_dir, "output_dir") {
-            return ok_error(e);
+        match validate_path(&params.output_dir, "output_dir") {
+            Ok(p) => params.output_dir = p,
+            Err(e) => return ok_error(e),
         }
         if let Err(e) = validate_password(&params.password) {
             return ok_error(e);
@@ -465,24 +469,28 @@ impl DcertMcpServer {
     )]
     pub async fn convert_pem_to_pfx(
         &self,
-        Parameters(params): Parameters<ConvertPemToPfxParams>,
+        Parameters(mut params): Parameters<ConvertPemToPfxParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        if let Err(e) = validate_path(&params.cert_path, "cert_path") {
-            return ok_error(e);
+        match validate_path(&params.cert_path, "cert_path") {
+            Ok(p) => params.cert_path = p,
+            Err(e) => return ok_error(e),
         }
-        if let Err(e) = validate_path(&params.key_path, "key_path") {
-            return ok_error(e);
+        match validate_path(&params.key_path, "key_path") {
+            Ok(p) => params.key_path = p,
+            Err(e) => return ok_error(e),
         }
-        if let Err(e) = validate_path(&params.output_path, "output_path") {
-            return ok_error(e);
+        match validate_path(&params.output_path, "output_path") {
+            Ok(p) => params.output_path = p,
+            Err(e) => return ok_error(e),
         }
         if let Err(e) = validate_password(&params.password) {
             return ok_error(e);
         }
-        if let Some(ref ca) = params.ca_path
-            && let Err(e) = validate_path(ca, "ca_path")
-        {
-            return ok_error(e);
+        if let Some(p) = params.ca_path.as_mut() {
+            match validate_path(p, "ca_path") {
+                Ok(v) => *p = v,
+                Err(e) => return ok_error(e),
+            }
         }
 
         let mut args = vec![
@@ -524,16 +532,19 @@ impl DcertMcpServer {
     )]
     pub async fn create_keystore(
         &self,
-        Parameters(params): Parameters<CreateKeystoreParams>,
+        Parameters(mut params): Parameters<CreateKeystoreParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        if let Err(e) = validate_path(&params.cert_path, "cert_path") {
-            return ok_error(e);
+        match validate_path(&params.cert_path, "cert_path") {
+            Ok(p) => params.cert_path = p,
+            Err(e) => return ok_error(e),
         }
-        if let Err(e) = validate_path(&params.key_path, "key_path") {
-            return ok_error(e);
+        match validate_path(&params.key_path, "key_path") {
+            Ok(p) => params.key_path = p,
+            Err(e) => return ok_error(e),
         }
-        if let Err(e) = validate_path(&params.output_path, "output_path") {
-            return ok_error(e);
+        match validate_path(&params.output_path, "output_path") {
+            Ok(p) => params.output_path = p,
+            Err(e) => return ok_error(e),
         }
         if let Err(e) = validate_password(&params.password) {
             return ok_error(e);
@@ -578,7 +589,7 @@ impl DcertMcpServer {
     )]
     pub async fn create_csr(
         &self,
-        Parameters(params): Parameters<CreateCsrParams>,
+        Parameters(mut params): Parameters<CreateCsrParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         // Validate inputs
         if params.common_name.trim().is_empty() {
@@ -590,11 +601,13 @@ impl DcertMcpServer {
         if let Err(e) = validate_key_algorithm(&params.key_algorithm) {
             return ok_error(e);
         }
-        if let Err(e) = validate_path(&params.csr_output_path, "csr_output_path") {
-            return ok_error(e);
+        match validate_path(&params.csr_output_path, "csr_output_path") {
+            Ok(p) => params.csr_output_path = p,
+            Err(e) => return ok_error(e),
         }
-        if let Err(e) = validate_path(&params.key_output_path, "key_output_path") {
-            return ok_error(e);
+        match validate_path(&params.key_output_path, "key_output_path") {
+            Ok(p) => params.key_output_path = p,
+            Err(e) => return ok_error(e),
         }
         if params.encrypt_key && params.key_password.is_none() {
             return ok_error("key_password is required when encrypt_key is true".to_string());
@@ -698,10 +711,11 @@ impl DcertMcpServer {
     )]
     pub async fn validate_csr(
         &self,
-        Parameters(params): Parameters<ValidateCsrParams>,
+        Parameters(mut params): Parameters<ValidateCsrParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        if let Err(e) = validate_path(&params.csr_file, "csr_file") {
-            return ok_error(e);
+        match validate_path(&params.csr_file, "csr_file") {
+            Ok(p) => params.csr_file = p,
+            Err(e) => return ok_error(e),
         }
 
         let mut args: Vec<String> = vec![
@@ -735,7 +749,7 @@ impl DcertMcpServer {
     )]
     pub async fn diagnose_endpoint(
         &self,
-        Parameters(params): Parameters<DiagnoseEndpointParams>,
+        Parameters(mut params): Parameters<DiagnoseEndpointParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let mut args = vec!["--format".to_string(), "json".to_string()];
         if params.show_body {
@@ -747,7 +761,13 @@ impl DcertMcpServer {
         // A failed probe is the expected input for a diagnosis, so exit
         // codes are reported inline rather than treated as tool errors.
         let outcome = self
-            .run_probe("diagnose", &params.target, args, &params.mtls, Some(&params.http_tls))
+            .run_probe(
+                "diagnose",
+                &params.target,
+                args,
+                &mut params.mtls,
+                Some(&params.http_tls),
+            )
             .await;
         tool_reply(outcome, "stderr", &[0])
     }
@@ -802,10 +822,12 @@ impl DcertMcpServer {
     )]
     pub async fn validate_certificate(
         &self,
-        Parameters(params): Parameters<ValidateCertificateParams>,
+        Parameters(mut params): Parameters<ValidateCertificateParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let args = vec!["--format".to_string(), "json".to_string(), "--compliance".to_string()];
-        let outcome = self.run_probe("check", &params.target, args, &params.mtls, None).await;
+        let outcome = self
+            .run_probe("check", &params.target, args, &mut params.mtls, None)
+            .await;
         tool_reply(outcome, "debug/stderr", &[0])
     }
 
@@ -822,7 +844,7 @@ impl DcertMcpServer {
     )]
     pub async fn create_truststore(
         &self,
-        Parameters(params): Parameters<CreateTruststoreParams>,
+        Parameters(mut params): Parameters<CreateTruststoreParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         if params.cert_paths.is_empty() {
             return ok_error("cert_paths must contain at least one certificate file".to_string());
@@ -834,13 +856,15 @@ impl DcertMcpServer {
                 MAX_CERT_PATHS
             ));
         }
-        for path in &params.cert_paths {
-            if let Err(e) = validate_path(path, "cert_paths") {
-                return ok_error(e);
+        for path in &mut params.cert_paths {
+            match validate_path(path, "cert_paths") {
+                Ok(p) => *path = p,
+                Err(e) => return ok_error(e),
             }
         }
-        if let Err(e) = validate_path(&params.output_path, "output_path") {
-            return ok_error(e);
+        match validate_path(&params.output_path, "output_path") {
+            Ok(p) => params.output_path = p,
+            Err(e) => return ok_error(e),
         }
         if let Err(e) = validate_password(&params.password) {
             return ok_error(e);

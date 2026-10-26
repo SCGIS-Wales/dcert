@@ -101,6 +101,7 @@ subprocess:
     - DCERT_MCP_TIMEOUT
     - DCERT_MCP_CONNECTION_TIMEOUT
     - DCERT_MCP_READ_TIMEOUT
+    - DCERT_MCP_FILE_ROOT
 
 server:
   name: dcert-mcp
