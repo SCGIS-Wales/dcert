@@ -20,6 +20,8 @@ pub mod ocsp;
 pub mod output;
 pub mod proxy;
 pub mod secret;
+#[cfg(test)]
+pub(crate) mod testutil;
 pub mod tls;
 pub mod trust;
 pub mod vault;

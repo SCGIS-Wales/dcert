@@ -1,38 +1,12 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-use std::io::Write;
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
+mod support;
+
+use support::{
+    ClientAuthMode, HTTP_200, TlsServer, dcert_bin, json_output, openssl_number, run_with_stdin, spawn_fake_proxy,
+    test_data,
+};
 use tempfile::tempdir;
-
-fn dcert_bin() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_dcert"))
-}
-
-/// Run dcert with `args`, feed `input` on stdin and wait for it to finish.
-fn run_with_stdin(args: &[&str], input: &[u8]) -> std::process::Output {
-    let mut child = dcert_bin()
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to spawn dcert");
-    child
-        .stdin
-        .take()
-        .expect("stdin handle")
-        .write_all(input)
-        .expect("failed to write stdin");
-    child.wait_with_output().expect("failed to wait")
-}
-
-fn test_data(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("data")
-        .join(name)
-}
 
 // ---------------------------------------------------------------
 // Help & version output
@@ -1433,28 +1407,7 @@ const UNRESOLVABLE_HOST: &str = "dcert-connection-override.invalid";
 /// Returns the bound port. The listener serves exactly one connection and the
 /// thread then exits, which is all a single dcert invocation needs.
 fn spawn_loopback_tls_server() -> u16 {
-    // dcert only reads the status line, so a minimal response is enough to
-    // complete the exchange it expects.
-    spawn_loopback_tls_server_with(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-}
-
-/// Acceptor builder for the loopback servers, using the test fixture identity.
-/// `groups` restricts the key exchange groups the server accepts (OpenSSL
-/// group list syntax), for the post quantum tests.
-fn loopback_acceptor_builder(groups: Option<&str>) -> openssl::ssl::SslAcceptorBuilder {
-    use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
-
-    let mut builder = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls()).expect("acceptor builder");
-    builder
-        .set_private_key_file(test_data("verify-key-discovery/server.key"), SslFiletype::PEM)
-        .expect("load test key");
-    builder
-        .set_certificate_file(test_data("verify-key-discovery/server.crt"), SslFiletype::PEM)
-        .expect("load test cert");
-    if let Some(groups) = groups {
-        builder.set_groups_list(groups).expect("set server groups");
-    }
-    builder
+    TlsServer::builder().spawn().port()
 }
 
 /// Serve `connections` TLS connections on loopback; each one gets the request
@@ -1464,24 +1417,11 @@ fn spawn_loopback_tls_server_serving(
     groups: Option<&str>,
     respond: impl Fn(&[u8]) -> Vec<u8> + Send + 'static,
 ) -> u16 {
-    use std::io::Read as _;
-    use std::net::TcpListener;
-
-    let acceptor = loopback_acceptor_builder(groups).build();
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
-    let port = listener.local_addr().expect("local addr").port();
-    std::thread::spawn(move || {
-        for _ in 0..connections {
-            if let Ok((stream, _)) = listener.accept()
-                && let Ok(mut tls) = acceptor.accept(stream)
-            {
-                let mut req = [0u8; 4096];
-                let n = tls.read(&mut req).unwrap_or(0);
-                let _ = tls.write_all(&respond(&req[..n]));
-            }
-        }
-    });
-    port
+    let mut builder = TlsServer::builder().connections(connections).respond(respond);
+    if let Some(groups) = groups {
+        builder = builder.groups(groups);
+    }
+    builder.spawn().port()
 }
 
 #[test]
@@ -1716,25 +1656,6 @@ fn spawn_loopback_tls_echo_server() -> u16 {
     })
 }
 
-/// `OPENSSL_VERSION_NUMBER` of the linked library, as the tests see it.
-fn openssl_number() -> i64 {
-    openssl::version::number()
-}
-
-/// Parse dcert's JSON output. The loopback fixture certificate is issued to
-/// `test-server`, so a check against `https://127.0.0.1` legitimately exits
-/// with the hostname mismatch code; the structured output is what these
-/// tests assert on, not the exit status.
-fn json_output(output: &std::process::Output) -> serde_json::Value {
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    serde_json::from_str(&stdout).unwrap_or_else(|e| {
-        panic!(
-            "expected JSON output ({e}); stdout: {stdout}; stderr: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )
-    })
-}
-
 // ---------------------------------------------------------------
 // HTTP request line and Host header
 // ---------------------------------------------------------------
@@ -1769,9 +1690,7 @@ fn test_request_keeps_query_string_and_non_default_port_in_host() {
 fn test_key_exchange_group_is_reported_and_classified() {
     // Pin the server to classical groups so the verdict does not depend on
     // whether the linked OpenSSL offers ML-KEM by default.
-    let port = spawn_loopback_tls_server_serving(1, Some("X25519:secp384r1"), |_| {
-        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()
-    });
+    let port = spawn_loopback_tls_server_serving(1, Some("X25519:secp384r1"), |_| HTTP_200.to_vec());
     let target = format!("https://127.0.0.1:{port}");
     let output = dcert_bin()
         .args([&target, "--no-verify", "--format", "json"])
@@ -1792,9 +1711,7 @@ fn test_pq_probe_reports_support_or_not_testable() {
     if openssl_number() >= 0x3050_0000 {
         // OpenSSL 3.5+: the server accepts only X25519MLKEM768, so both the
         // main handshake and the probe must negotiate it.
-        let port = spawn_loopback_tls_server_serving(2, Some("X25519MLKEM768"), |_| {
-            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()
-        });
+        let port = spawn_loopback_tls_server_serving(2, Some("X25519MLKEM768"), |_| HTTP_200.to_vec());
         let target = format!("https://127.0.0.1:{port}");
         let output = dcert_bin()
             .args([
@@ -1838,9 +1755,7 @@ fn test_pq_probe_not_supported_by_classical_only_server() {
     if openssl_number() < 0x3050_0000 {
         return;
     }
-    let port = spawn_loopback_tls_server_serving(2, Some("X25519:secp384r1"), |_| {
-        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()
-    });
+    let port = spawn_loopback_tls_server_serving(2, Some("X25519:secp384r1"), |_| HTTP_200.to_vec());
     let target = format!("https://127.0.0.1:{port}");
     let output = dcert_bin()
         .args([&target, "--no-verify", "--pq-probe", "--format", "json"])
@@ -1878,23 +1793,6 @@ fn test_tls_profile_modern_is_accepted_and_version_names_openssl() {
     let stdout = String::from_utf8_lossy(&version.stdout);
     assert!(stdout.contains("OpenSSL") || stdout.contains("LibreSSL"), "{stdout}");
     assert!(stdout.contains("post quantum key exchange"), "{stdout}");
-}
-
-/// A forward proxy that refuses every CONNECT with `response`.
-fn spawn_fake_proxy(response: &'static [u8]) -> u16 {
-    use std::io::Read as _;
-    use std::net::TcpListener;
-
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
-    let port = listener.local_addr().expect("local addr").port();
-    std::thread::spawn(move || {
-        if let Ok((mut stream, _)) = listener.accept() {
-            let mut req = [0u8; 4096];
-            let _ = stream.read(&mut req);
-            let _ = stream.write_all(response);
-        }
-    });
-    port
 }
 
 const CLOUDFRONT_502: &[u8] = b"HTTP/1.1 502 Bad Gateway\r\n\
@@ -2307,54 +2205,21 @@ fn test_help_lists_diagnose_and_kb() {
 // mTLS detection (CertificateRequest callback, TLS 1.2 and 1.3)
 // ---------------------------------------------------------------
 
-/// How the loopback mTLS server treats client certificates.
-#[derive(Clone, Copy)]
-enum ClientAuthMode {
-    Required,
-    Optional,
-}
-
 /// Serve one TLS connection that sends a CertificateRequest naming the
 /// fixture identity as the acceptable CA, pinned to `version`. Required mode
 /// fails the handshake without a certificate (TLS 1.2 aborts it, TLS 1.3
 /// sends certificate_required after the client's Finished).
 fn spawn_loopback_mtls_server(mode: ClientAuthMode, version: openssl::ssl::SslVersion) -> u16 {
-    use openssl::ssl::SslVerifyMode;
-    use std::io::Read as _;
-    use std::net::TcpListener;
-
-    let mut builder = loopback_acceptor_builder(None);
-    builder.set_min_proto_version(Some(version)).expect("min version");
-    builder.set_max_proto_version(Some(version)).expect("max version");
-    let verify = match mode {
-        ClientAuthMode::Required => SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT,
-        ClientAuthMode::Optional => SslVerifyMode::PEER,
-    };
-    // Accept any presented certificate: these tests are about the request.
-    builder.set_verify_callback(verify, |_, _| true);
     let ca = openssl::x509::X509::from_pem(
         &std::fs::read(test_data("verify-key-discovery/server.crt")).expect("read fixture cert"),
     )
     .expect("parse fixture cert");
-    let mut names = openssl::stack::Stack::new().expect("name stack");
-    names
-        .push(ca.subject_name().to_owned().expect("copy name"))
-        .expect("push name");
-    builder.set_client_ca_list(names);
-    let acceptor = builder.build();
-
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
-    let port = listener.local_addr().expect("local addr").port();
-    std::thread::spawn(move || {
-        if let Ok((stream, _)) = listener.accept()
-            && let Ok(mut tls) = acceptor.accept(stream)
-        {
-            let mut req = [0u8; 4096];
-            let _ = tls.read(&mut req);
-            let _ = tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-        }
-    });
-    port
+    TlsServer::builder()
+        .versions(Some(version), Some(version))
+        .client_auth(mode)
+        .client_ca_names(vec![ca.subject_name().to_owned().expect("copy name")])
+        .spawn()
+        .port()
 }
 
 fn probe_loopback(port: u16) -> (serde_json::Value, Option<i32>) {
