@@ -35,6 +35,7 @@ class DownloadConfig:
     max_bytes: int
     chunk_size: int
     lock_file_name: str
+    install_record_file_name: str
     lock_poll_seconds: float
 
 
@@ -228,6 +229,7 @@ def parse_config(raw: Mapping[str, Any]) -> Config:
                 max_bytes=int(download["max_bytes"]),
                 chunk_size=int(download["chunk_size"]),
                 lock_file_name=str(download["lock_file_name"]),
+                install_record_file_name=str(download["install_record_file_name"]),
                 lock_poll_seconds=float(download["lock_poll_seconds"]),
             ),
             install=InstallConfig(

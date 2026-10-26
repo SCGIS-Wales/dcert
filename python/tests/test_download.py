@@ -662,7 +662,84 @@ def test_ensure_binary_rechecks_after_lock(install_dir, linux_platform):
     with (
         patch("dcert.download.load_checksums", return_value=_checksums("abc")),
         patch("dcert.download.build_opener", side_effect=install_while_locked) as opener,
-        patch("dcert.download._is_installed", side_effect=[False, True]),
+        patch("dcert.download.is_current", side_effect=[False, True]),
     ):
         assert ensure_binary("1.0.0") == str(target)
     opener.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Binary freshness (install record)
+# ---------------------------------------------------------------------------
+
+
+def _install(install_dir, version="1.0.0", payload=None):
+    """Run ensure_binary against a fake release; return (checksums, opener mock)."""
+    archive_bytes = _make_tar_gz(install_dir / "a.tar.gz", ["dcert", "dcert-mcp"], payload)
+    (install_dir / "a.tar.gz").unlink()
+    checksums = _checksums(hashlib.sha256(archive_bytes).hexdigest())
+    with (
+        patch("dcert.download.load_checksums", return_value=checksums),
+        patch("dcert.download.build_opener", return_value=_fake_opener(archive_bytes)) as opener,
+    ):
+        ensure_binary(version)
+    return checksums, opener
+
+
+def test_install_record_describes_the_install(install_dir, linux_platform):
+    checksums, _ = _install(install_dir, "2.0.0")
+    record = dl_mod.read_install_record(install_dir)
+    assert record["version"] == "2.0.0"
+    assert record["archive"] == ARCHIVE
+    assert record["archive_sha256"] == checksums["archives"][ARCHIVE]
+    assert record["binaries"]["dcert-mcp"] == dl_mod.file_sha256(install_dir / "dcert-mcp")
+    assert _leftovers(install_dir) == []
+
+
+def test_a_current_install_is_not_downloaded_again(install_dir, linux_platform):
+    checksums, _ = _install(install_dir, "2.0.0")
+    with (
+        patch("dcert.download.load_checksums", return_value=checksums),
+        patch("dcert.download.build_opener") as opener,
+    ):
+        assert ensure_binary("2.0.0") == str(install_dir / "dcert-mcp")
+    opener.assert_not_called()
+
+
+def test_a_new_package_version_downloads_again(install_dir, linux_platform):
+    _install(install_dir, "2.0.0")
+    _, opener = _install(install_dir, "2.0.1")
+    opener.assert_called_once()
+    assert dl_mod.read_install_record(install_dir)["version"] == "2.0.1"
+
+
+def test_a_modified_binary_downloads_again(install_dir, linux_platform):
+    checksums, _ = _install(install_dir, "2.0.0")
+    (install_dir / "dcert-mcp").write_text("#!/bin/sh\necho tampered")
+    assert not dl_mod.is_current(
+        install_dir / "dcert-mcp", install_dir, "2.0.0", checksums["archives"][ARCHIVE]
+    )
+
+
+def test_a_changed_embedded_checksum_downloads_again(install_dir, linux_platform):
+    checksums, _ = _install(install_dir, "2.0.0")
+    target = install_dir / "dcert-mcp"
+    assert dl_mod.is_current(target, install_dir, "2.0.0", checksums["archives"][ARCHIVE])
+    assert not dl_mod.is_current(target, install_dir, "2.0.0", "f" * 64)
+
+
+def test_an_unreadable_install_record_is_not_current(install_dir):
+    dl_mod.install_record_path(install_dir).write_text("not json")
+    assert dl_mod.read_install_record(install_dir) is None
+    target = install_dir / "dcert-mcp"
+    target.write_text("#!/bin/sh\necho x")
+    target.chmod(0o755)
+    assert not dl_mod.is_current(target, install_dir, "1.0.0", "0" * 64)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permissions")
+def test_install_dir_is_created_private(tmp_path, clean_env, monkeypatch):
+    created = tmp_path / "fresh" / "bin"
+    monkeypatch.setenv(load_config().install.env_override, str(created))
+    assert get_install_dir() == created
+    assert created.stat().st_mode & 0o777 == 0o700

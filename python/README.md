@@ -130,6 +130,8 @@ The proxy reads each tool's MCP annotations before applying caching or retries:
 3. A compiled `dcert-mcp` on `PATH` (pip console script wrappers and the running launcher are skipped)
 4. Download from GitHub Releases: https only, redirects restricted to GitHub hosts, size and time capped, SHA256 verified before extraction, installed atomically under a lock
 
+An install record beside the binaries (`.install-record.json`: package version, archive digest and each binary's digest) makes a later run download again when the package version changes, the embedded checksum changes or an installed binary was modified. The install directory is created with mode `0700`.
+
 Downloaded binaries are installed into a directory owned by dcert, never into pip's scripts directory, so a download can never replace a console script: `~/.local/share/dcert/bin` on Linux and macOS, `%LOCALAPPDATA%\dcert\bin` on Windows. Set `DCERT_INSTALL_DIR` to use another directory. `dcert-python --setup` downloads the binary ahead of time and prints where it was installed.
 
 ## Environment variables forwarded to the binary
