@@ -257,7 +257,7 @@ jobs:
         run: mypy
 
       - name: Mypy (build scripts)
-        run: mypy --strict ../scripts/build_wheels.py ../scripts/sync_defaults.py ../scripts/gen_cipher_table.py
+        run: mypy --strict ../scripts/build_wheels.py ../scripts/sync_defaults.py ../scripts/gen_cipher_table.py ../scripts/fetch_aws_tls_policies.py
 
       - name: Defaults in step with src/limits.rs
         run: python ../scripts/sync_defaults.py --check
@@ -319,7 +319,7 @@ jobs:
       - name: Run wheel builder tests
         run: >-
           pytest -v scripts/test_build_wheels.py scripts/test_sync_defaults.py
-          scripts/test_gen_cipher_table.py
+          scripts/test_gen_cipher_table.py scripts/test_fetch_aws_tls_policies.py
 
   # src/ciphers_table.rs is generated from the vendored IANA registry. The
   # table must regenerate byte for byte; a newer registry on iana.org is
@@ -348,6 +348,31 @@ jobs:
 
       - name: Table regenerates from the vendored registry
         run: python scripts/gen_cipher_table.py generate --check
+
+  # kb/tls_policies.yaml is generated from a snapshot of the AWS and Mozilla
+  # pages that publish each policy. A change on those pages is reported
+  # (with the live snapshot in the log) but does not block unrelated changes.
+  tls-policy-catalogue:
+    name: TLS policy catalogue
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install script dependencies
+        run: pip install pyyaml click
+
+      - name: Snapshot matches the published sources
+        continue-on-error: true
+        run: |
+          python scripts/fetch_aws_tls_policies.py download --check --print-copy \
+            || { echo "::warning::scripts/data/tls_policy_sources.json is behind the AWS or Mozilla pages; run fetch_aws_tls_policies.py download"; exit 1; }
 
   # Functional test: build a platform wheel, install it in a venv,
   # and verify that dcert, dcert-mcp, and dcert-python commands work.

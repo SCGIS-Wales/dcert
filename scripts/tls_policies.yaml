@@ -1,0 +1,15 @@
+# Inputs and outputs of scripts/fetch_aws_tls_policies.py, relative to the
+# repository root. The source pages are reduced to their tables and kept as
+# a snapshot, so the catalogue regenerates offline; `download --check`
+# compares the snapshot with the live pages.
+snapshot: scripts/data/tls_policy_sources.json
+catalogue: kb/tls_policies.yaml
+max_download_bytes: 8388608
+download_timeout_seconds: 30
+sources:
+  aws_alb: https://docs.aws.amazon.com/elasticloadbalancing/latest/application/describe-ssl-policies.html
+  aws_nlb: https://docs.aws.amazon.com/elasticloadbalancing/latest/network/describe-ssl-policies.html
+  aws_cloudfront: https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/secure-connections-supported-viewer-protocols-ciphers.html
+  aws_api_gateway: https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-security-policies-list.html
+  aws_api_gateway_custom_domain: https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-custom-domain-tls-version.html
+  mozilla: https://ssl-config.mozilla.org/guidelines/latest.json
