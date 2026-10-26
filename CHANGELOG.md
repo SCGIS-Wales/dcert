@@ -8,6 +8,17 @@ summary is written.
 
 ### Security
 
+- HTTP mode authorisation and OIDC hardening: per tool scope checks fail
+  closed when the tool cannot be determined (batches, non object bodies);
+  issuer and JWKS URL must be https; the discovery `issuer` must match and a
+  discovered `jwks_uri` must share the issuer's origin; stale JWKS keys are
+  capped at `DCERT_MCP_JWKS_MAX_STALE` (24 hours); the header `typ` and the
+  `scp`/`scope`/`roles` claims distinguish access tokens from ID tokens;
+  scopes are read from `scp` and `scope`; the JWK type and curve must match
+  the token algorithm. One audit record per tool call with a redacted
+  target. `diagnose_endpoint.no_verify` needs `DCERT_MCP_ALLOW_NO_VERIFY=1`,
+  and bearer auth on a non loopback bind warns unless
+  `DCERT_MCP_BEHIND_TLS=1`.
 - `https://` proxy URLs (from `--proxy`, `DCERT_PROXY` or `HTTPS_PROXY`) are
   refused with a clear error instead of being spoken to in plaintext, which
   exposed the CONNECT request and proxy credentials. TLS to the proxy is a

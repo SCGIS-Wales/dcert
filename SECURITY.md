@@ -61,12 +61,14 @@ The signature algorithm allow-list accepts only RSA (RS256/384/512) and ECDSA (E
 
 JWT tokens are validated against:
 - **Signature** — verified via JWKS (JSON Web Key Sets) with automatic key rotation. A JWKS entry without a `use` member is accepted as a signing key, as RFC 7517 makes `use` optional; entries marked for any other use are skipped. While a JWKS refresh is throttled or the identity provider is not answering, a key the cache already holds is still served past its TTL (logged at warn level once per interval), so a provider outage does not fail every token; a key id the cache has never seen is rejected. Discovery documents and key sets larger than 1 MiB are refused
-- **Issuer** — must match `DCERT_MCP_OIDC_ISSUER`
+- **Issuer** — must match `DCERT_MCP_OIDC_ISSUER`, which must be `https://` (plain `http://` is accepted for loopback only). A discovered `issuer` must equal it, and a discovered `jwks_uri` must be https and on the issuer's origin; keys from another origin need an explicit `DCERT_MCP_OIDC_JWKS_URL` (also https)
+- **Token type** — a header `typ` of `at+jwt` marks an access token; a plain `JWT` or a missing `typ` is accepted only when the token carries `scp`, `scope` or `roles`; any other type (an ID token, a logout token) is refused
+- **Key binding** — the JWK must match the header algorithm: RSA keys for RS256/384/512, P-256 for ES256, P-384 for ES384
 - **Audience** — must match `DCERT_MCP_OIDC_AUDIENCE` (prevents token confusion)
 - **Expiry** — expired tokens are rejected
 - **Not before** — tokens that are not yet valid are rejected, with a 60 second clock-skew allowance applied explicitly
 - **Authorized party** — optional client ID restriction via `DCERT_MCP_ALLOWED_CLIENTS`
-- **Scopes** — optional scope enforcement via `DCERT_MCP_REQUIRED_SCOPES`
+- **Scopes** — optional scope enforcement via `DCERT_MCP_REQUIRED_SCOPES`; scopes are read from both `scp` and `scope`
 - **Roles** — optional role enforcement via `DCERT_MCP_REQUIRED_ROLES`
 
 Supported algorithms: RS256, RS384, RS512, ES256, ES384.
@@ -79,7 +81,7 @@ Validated tokens are cached in-memory with:
 - Automatic background cleanup of expired entries
 - Tokens are never used beyond their `exp` claim
 
-JWKS keys are cached for `DCERT_MCP_JWKS_TTL` seconds (default 3600). A token bearing an unknown key id triggers at most one JWKS refresh per minute, so unauthenticated requests cannot be amplified into a flood against the identity provider. Discovery and JWKS fetches only run on a cache miss.
+JWKS keys are cached for `DCERT_MCP_JWKS_TTL` seconds (default 3600). While the identity provider cannot be reached a cached key is served past its TTL for at most `DCERT_MCP_JWKS_MAX_STALE` seconds more (default 86400), after which tokens fail. A token bearing an unknown key id triggers at most one JWKS refresh per minute, so unauthenticated requests cannot be amplified into a flood against the identity provider. Discovery and JWKS fetches only run on a cache miss.
 
 ### Audit Logging
 
@@ -87,7 +89,8 @@ All authentication events are logged as structured JSON:
 - `auth_success` — successful authentication with principal, tenant, scopes
 - `auth_failure` — failed attempts with reason and remote address
 - `auth_rate_limited` — a request refused before authentication because its address exceeded the failure limit
-- `authz_denied` — authorization denials with action context
+- `authz_denied` — authorization denials with action context. With any `DCERT_MCP_SCOPE_*` rule configured, a request whose tool cannot be determined (a JSON-RPC batch, a non object body, a `tools/call` without a name) is denied rather than let through
+- `tool_call` — one record per tool call with the tool name, the caller and a redacted target (scheme, host and port only; local paths appear as `<file>`)
 
 ### Static Token Mode
 
@@ -156,6 +159,9 @@ Every authentication failure returns the same bare `401 Unauthorized` with a `WW
 | `DCERT_MCP_REQUIRED_SCOPES` | Comma-separated required OAuth2 scopes |
 | `DCERT_MCP_REQUIRED_ROLES` | Comma-separated required app roles |
 | `DCERT_MCP_ALLOWED_CLIENTS` | Comma-separated allowed client app IDs |
+| `DCERT_MCP_JWKS_MAX_STALE` | Longest a cached JWKS key is served past its TTL during an identity provider outage, in seconds (default: 86400) |
+| `DCERT_MCP_ALLOW_NO_VERIFY` | Set to `1` to let `diagnose_endpoint` disable certificate verification (refused by default) |
+| `DCERT_MCP_BEHIND_TLS` | Set to `1` to confirm TLS is terminated in front of a non loopback HTTP bind; otherwise bearer authentication there logs a plaintext warning at startup |
 | `DCERT_MCP_SESSION_TTL` | Session cache inactivity TTL in seconds (default: 300) |
 | `DCERT_MCP_AUTH_TOKEN` | Static bearer token (lower priority than OIDC) |
 | `DCERT_MCP_ALLOWED_ORIGINS` | Comma-separated CORS allowlist for HTTP mode (default: none; `*` = any origin) |

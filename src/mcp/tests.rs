@@ -2631,3 +2631,40 @@ fn http_tls_args_never_carry_headers_or_body() {
     assert_eq!(file_args[0], "--headers-file");
     assert_eq!(file_args[2], "--data-file");
 }
+
+// ---------------------------------------------------------------
+// Plan PR 1.7: authorization fails closed, no_verify gate, TLS warning
+// ---------------------------------------------------------------
+
+#[test]
+fn no_verify_needs_the_operator_switch() {
+    let mut env = EnvGuard::unset_all(&["DCERT_MCP_ALLOW_NO_VERIFY"]);
+    assert!(!cert::no_verify_allowed());
+    env.set("DCERT_MCP_ALLOW_NO_VERIFY", "1");
+    assert!(cert::no_verify_allowed());
+    env.set("DCERT_MCP_ALLOW_NO_VERIFY", "0");
+    assert!(!cert::no_verify_allowed());
+}
+
+#[tokio::test]
+async fn diagnose_endpoint_refuses_no_verify_by_default() {
+    if std::env::var_os("DCERT_MCP_ALLOW_NO_VERIFY").is_some() {
+        return;
+    }
+    let err = call_tool_error(
+        "diagnose_endpoint",
+        serde_json::json!({"target": "https://example.invalid", "no_verify": true}),
+    )
+    .await
+    .expect("refused");
+    assert!(err.contains("DCERT_MCP_ALLOW_NO_VERIFY"), "{err}");
+}
+
+#[test]
+fn bearer_tls_warning_only_for_authenticated_non_loopback_binds_without_confirmation() {
+    assert!(bearer_needs_tls_warning(true, false, None));
+    assert!(bearer_needs_tls_warning(true, false, Some("0")));
+    assert!(!bearer_needs_tls_warning(true, false, Some("1")));
+    assert!(!bearer_needs_tls_warning(true, true, None));
+    assert!(!bearer_needs_tls_warning(false, false, None));
+}

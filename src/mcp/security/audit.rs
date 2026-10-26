@@ -83,6 +83,24 @@ impl AuditLogger {
     }
 }
 
+impl AuditLogger {
+    /// Logs one tool call, with the caller when a validated token is known
+    /// and the target already redacted by the caller.
+    pub fn log_tool_call(&self, claims: Option<&TokenClaims>, tool: &str, target: Option<&str>, remote_addr: &str) {
+        info!(
+            audit.event_type = "tool_call",
+            audit.result = "allowed",
+            audit.action = tool,
+            audit.target = target.unwrap_or(""),
+            audit.principal_id = claims.map_or("", |c| c.object_id.as_str()),
+            audit.principal_name = claims.map_or("", |c| c.preferred_username.as_str()),
+            audit.client_app_id = claims.map_or("", |c| c.authorized_party.as_str()),
+            audit.remote_addr = remote_addr,
+            "security_audit"
+        );
+    }
+}
+
 impl Default for AuditLogger {
     fn default() -> Self {
         Self::new()
@@ -134,6 +152,19 @@ mod tests {
         let logger = AuditLogger::new();
         let claims = make_test_claims();
         logger.log_authz_denied(&claims, "cert_analysis", "insufficient scope");
+    }
+
+    #[test]
+    fn test_log_tool_call_does_not_panic() {
+        let logger = AuditLogger::new();
+        let claims = make_test_claims();
+        logger.log_tool_call(
+            Some(&claims),
+            "analyze_certificate",
+            Some("https://example.com"),
+            "127.0.0.1",
+        );
+        logger.log_tool_call(None, "vault_list", None, "127.0.0.1");
     }
 
     #[test]
