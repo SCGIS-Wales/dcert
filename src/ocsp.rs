@@ -22,15 +22,25 @@ pub fn is_safe_ocsp_host(host: &str) -> bool {
 /// Maximum accepted OCSP response size (DER plus HTTP head).
 const MAX_OCSP_RESPONSE_SIZE: usize = 1024 * 1024;
 
-/// Socket connect and read bound for the responder exchange.
-const OCSP_TIMEOUT: Duration = Duration::from_secs(5);
-
 /// Clock skew tolerated when checking `thisUpdate` / `nextUpdate`.
 const OCSP_MAX_SKEW_SECS: u32 = 300;
 
 /// Check OCSP revocation status for a certificate.
 /// Returns "good", "revoked", "unknown", or an error description.
-pub fn check_ocsp_status(cert_der: &[u8], issuer_der: Option<&[u8]>, ocsp_url: &str, debug: bool) -> String {
+/// How the OCSP request reaches the responder.
+#[derive(Debug, Clone, Copy)]
+pub struct OcspNetwork<'a> {
+    /// The run's proxy settings; an `http://` proxy that does not bypass the
+    /// responder carries the request (absolute URI form).
+    pub proxy: Option<&'a crate::proxy::ProxyConfig>,
+    /// Connect timeout, and the bound on each read and on the whole reply
+    /// (from `--timeout`).
+    pub timeout: Duration,
+    pub debug: bool,
+}
+
+pub fn check_ocsp_status(cert_der: &[u8], issuer_der: Option<&[u8]>, ocsp_url: &str, net: &OcspNetwork<'_>) -> String {
+    let debug = net.debug;
     let cert = match X509::from_der(cert_der) {
         Ok(c) => c,
         Err(e) => return format!("error: failed to parse cert: {e}"),
@@ -96,43 +106,33 @@ pub fn check_ocsp_status(cert_der: &[u8], issuer_der: Option<&[u8]>, ocsp_url: &
 
     debug_log!(debug, "OCSP check: {}:{}{}", host, port, path);
 
-    // Resolve first and check the answer before any packet goes out, so a
-    // name pointing at an internal service is refused without connecting
-    // (connecting first would turn dcert into a port scan oracle).
-    let addrs = match crate::dns::resolve_all(&host, port, OCSP_TIMEOUT) {
-        Ok((addrs, _dns_ms)) => addrs,
-        Err(e) => return format!("unknown (could not resolve OCSP responder {host}: {e})"),
-    };
-    if addrs.iter().any(|a| !is_safe_ocsp_host(&a.ip().to_string())) {
-        return "unknown (OCSP responder rejected: address is private, loopback or otherwise internal)".to_string();
-    }
-    let tcp_stream = match crate::dns::connect_first(&host, port, &addrs, OCSP_TIMEOUT, |a| {
-        crate::netpolicy::enforce_addr(&host, a)
-    }) {
-        Ok((s, _)) => {
-            debug_log!(debug, "OCSP responder connected: {}:{}", host, port);
-            s
-        }
-        Err(e) => {
-            // The CA's OCSP endpoint (e.g. ocsp.digicert.com) is unreachable.
-            // This is frequently a firewall blocking outbound access to the CA
-            // rather than a problem with the certificate itself; say so clearly.
-            return format!(
-                "unknown (could not reach OCSP responder at {host}:{port}; CA endpoint unreachable, possibly firewall blocked: {e})"
-            );
-        }
+    let timeout = net.timeout.max(Duration::from_secs(1));
+    let via_proxy = net
+        .proxy
+        .filter(|p| !p.should_bypass(&host))
+        .and_then(|p| p.get_proxy_url("http"));
+    let (tcp_stream, request_target, proxy_auth) = match via_proxy {
+        Some(proxy_url) => match connect_proxy(proxy_url, timeout) {
+            Ok((stream, auth)) => {
+                debug_log!(debug, "OCSP via proxy {}", crate::debug::sanitize_url(proxy_url));
+                (stream, format!("http://{host}:{port}{path}"), auth)
+            }
+            Err(e) => return format!("unknown (could not reach the proxy for OCSP: {e})"),
+        },
+        None => match connect_direct(&host, port, timeout, debug) {
+            Ok(stream) => (stream, path.to_string(), String::new()),
+            Err(status) => return status,
+        },
     };
     if let Err(e) = tcp_stream
-        .set_read_timeout(Some(OCSP_TIMEOUT))
-        .and_then(|()| tcp_stream.set_write_timeout(Some(OCSP_TIMEOUT)))
+        .set_read_timeout(Some(timeout))
+        .and_then(|()| tcp_stream.set_write_timeout(Some(timeout)))
     {
-        eprintln!("Warning: failed to set OCSP read timeout: {e}");
+        return format!("error: failed to set OCSP socket timeouts: {e}");
     }
 
     let http_req = format!(
-        "POST {} HTTP/1.0\r\nHost: {}\r\nContent-Type: application/ocsp-request\r\nContent-Length: {}\r\n\r\n",
-        path,
-        host,
+        "POST {request_target} HTTP/1.0\r\nHost: {host}\r\n{proxy_auth}Content-Type: application/ocsp-request\r\nContent-Length: {}\r\n\r\n",
         request_bytes.len()
     );
 
@@ -150,7 +150,7 @@ pub fn check_ocsp_status(cert_der: &[u8], issuer_der: Option<&[u8]>, ocsp_url: &
 
     // Read the response through the shared bounded HTTP reader: one deadline,
     // a 64 KiB head cap and a body cap, then parse status and body.
-    let response = read_http_response(&mut tcp_stream, OCSP_TIMEOUT.as_secs(), MAX_OCSP_RESPONSE_SIZE);
+    let response = read_http_response(&mut tcp_stream, timeout.as_secs(), MAX_OCSP_RESPONSE_SIZE);
     if response.is_empty() {
         return "error: failed to read OCSP response".to_string();
     }
@@ -242,8 +242,86 @@ pub fn check_ocsp_status(cert_der: &[u8], issuer_der: Option<&[u8]>, ocsp_url: &
     result
 }
 
+/// Dial the responder directly. Every resolved address must be public
+/// before any packet goes out, so a name pointing at an internal service is
+/// refused without connecting (connecting first would make dcert a port
+/// scan oracle). The `Err` is the status string to report.
+fn connect_direct(host: &str, port: u16, timeout: Duration, debug: bool) -> Result<std::net::TcpStream, String> {
+    let addrs = match crate::dns::resolve_all(host, port, timeout) {
+        Ok((addrs, _dns_ms)) => addrs,
+        Err(e) => return Err(format!("unknown (could not resolve OCSP responder {host}: {e})")),
+    };
+    if addrs.iter().any(|a| !is_safe_ocsp_host(&a.ip().to_string())) {
+        return Err(
+            "unknown (OCSP responder rejected: address is private, loopback or otherwise internal)".to_string(),
+        );
+    }
+    match crate::dns::connect_first(host, port, &addrs, timeout, |a| crate::netpolicy::enforce_addr(host, a)) {
+        Ok((s, _)) => {
+            debug_log!(debug, "OCSP responder connected: {}:{}", host, port);
+            Ok(s)
+        }
+        // The CA's OCSP endpoint is unreachable. This is frequently a
+        // firewall blocking outbound access to the CA rather than a problem
+        // with the certificate itself; say so clearly.
+        Err(e) => Err(format!(
+            "unknown (could not reach OCSP responder at {host}:{port}; CA endpoint unreachable, possibly firewall blocked: {e})"
+        )),
+    }
+}
+
+/// Dial an `http://` forward proxy for a plain HTTP OCSP request. Returns
+/// the stream and the `Proxy-Authorization` header line, if any.
+fn connect_proxy(proxy_url: &str, timeout: Duration) -> anyhow::Result<(std::net::TcpStream, String)> {
+    let proxy = Url::parse(proxy_url)
+        .map_err(|e| anyhow::anyhow!("invalid proxy URL {}: {e}", crate::debug::sanitize_url(proxy_url)))?;
+    if proxy.scheme() != "http" {
+        anyhow::bail!("{}", crate::proxy::HTTPS_PROXY_UNSUPPORTED);
+    }
+    let host = proxy
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("proxy URL must include a host"))?;
+    let (stream, _, _) = crate::tls::direct_tcp_connect(host, proxy.port().unwrap_or(8080), timeout)?;
+    Ok((stream, crate::proxy::proxy_authorization_header(&proxy)))
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn ocsp_goes_through_an_http_proxy_with_an_absolute_uri() {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 8192];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let _ = tx.send(String::from_utf8_lossy(&buf[..n]).to_string());
+                let _ = stream.write_all(b"HTTP/1.0 503 Busy\r\nContent-Length: 0\r\n\r\n");
+            }
+        });
+        let proxy = crate::proxy::ProxyConfig::resolve(Some(&format!("http://u:p@127.0.0.1:{port}")), None)
+            .expect("proxy config");
+        let pki = crate::testutil::test_pki();
+        let leaf = pki.rsa.cert.to_der().expect("der");
+        let ca = pki.ca.cert.to_der().expect("der");
+        let net = super::OcspNetwork {
+            proxy: Some(&proxy),
+            timeout: std::time::Duration::from_secs(2),
+            debug: false,
+        };
+        let status = super::check_ocsp_status(&leaf, Some(&ca), "http://ocsp.test.invalid/status", &net);
+        assert!(status.contains("non-200: 503"), "{status}");
+        let request = rx.recv_timeout(std::time::Duration::from_secs(2)).expect("request");
+        assert!(
+            request.starts_with("POST http://ocsp.test.invalid:80/status HTTP/1.0\r\n"),
+            "{request}"
+        );
+        assert!(request.contains("Proxy-Authorization: Basic "), "{request}");
+        assert!(request.contains("Host: ocsp.test.invalid\r\n"), "{request}");
+    }
     use super::is_safe_ocsp_host;
 
     #[test]
@@ -310,7 +388,12 @@ mod tests {
         let pem = include_str!("../tests/data/valid.pem");
         let der = ::pem::parse(pem).expect("pem").into_contents();
         // The fixture is self signed, so it serves as its own issuer.
-        let result = super::check_ocsp_status(&der, Some(&der), "https://127.0.0.1:1/ocsp", false);
+        let net = super::OcspNetwork {
+            proxy: None,
+            timeout: std::time::Duration::from_secs(1),
+            debug: false,
+        };
+        let result = super::check_ocsp_status(&der, Some(&der), "https://127.0.0.1:1/ocsp", &net);
         assert!(result.contains("unsupported scheme 'https'"), "{result}");
     }
 

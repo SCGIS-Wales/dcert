@@ -74,6 +74,12 @@ summary is written.
 
 ### Fixed
 
+- OCSP requests honour the run's proxy settings (an `http://` proxy that
+  does not bypass the responder carries the request in absolute URI form)
+  and use `--timeout` instead of a fixed five seconds; failing to set a
+  socket timeout is an error rather than a warning. AIA fetched issuer
+  certificates join the chain only when their key verifies the signature of
+  the certificate below them.
 - DNS: resolution is bounded by the connect timeout, and every resolved
   address is tried in the resolver's order with the timeout shared between
   them (at least one second each); a failure lists every address attempted.
