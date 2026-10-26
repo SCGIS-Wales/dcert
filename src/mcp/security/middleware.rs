@@ -12,7 +12,7 @@
 
 use super::audit::AuditLogger;
 use super::oidc::{OidcValidator, TokenClaims};
-use super::scope::{ToolScopePolicy, tool_name_from_request};
+use super::scope::{ToolRequest, ToolScopePolicy, classify_request};
 use super::session::SessionCache;
 use axum::body::Body;
 use axum::extract::{ConnectInfo, Request, State};
@@ -124,18 +124,20 @@ pub async fn auth_middleware(State(state): State<Arc<AuthState>>, request: Reque
 
         // Per tool authorization: a token that passes the global scope check
         // is not automatically allowed to call a destructive tool.
-        let (request, tool) = match read_tool_name(request, state.max_body_bytes).await {
+        let (request, tool_request) = match read_tool_request(request, state.max_body_bytes).await {
             Ok(read) => read,
             Err(response) => return *response,
         };
-        if let Some(tool) = tool.as_deref()
-            && let Err(reason) = state.tool_scopes.authorize(tool, &claims)
-        {
+        if let Err(reason) = state.tool_scopes.authorize_request(&tool_request, &claims) {
+            let action = match &tool_request {
+                ToolRequest::Call { tool, .. } => tool.as_str(),
+                _ => "<undetermined>",
+            };
             if let Some(ref logger) = state.audit_logger {
-                logger.log_authz_denied(&claims, tool, &reason);
+                logger.log_authz_denied(&claims, action, &reason);
             }
             warn!(
-                tool = tool,
+                tool = action,
                 reason = reason.as_str(),
                 "tool call denied by scope policy"
             );
@@ -144,6 +146,7 @@ pub async fn auth_middleware(State(state): State<Arc<AuthState>>, request: Reque
 
         if let Some(ref logger) = state.audit_logger {
             logger.log_auth_success(&claims, &session_id, &remote_addr);
+            log_tool_call(logger, Some(&claims), &tool_request, &remote_addr);
         }
 
         // Inject claims into request extensions.
@@ -167,10 +170,25 @@ pub async fn auth_middleware(State(state): State<Arc<AuthState>>, request: Reque
             return unauthorized();
         }
 
+        if let Some(ref logger) = state.audit_logger {
+            let (request, tool_request) = match read_tool_request(request, state.max_body_bytes).await {
+                Ok(read) => read,
+                Err(response) => return *response,
+            };
+            log_tool_call(logger, None, &tool_request, &remote_addr);
+            return next.run(request).await;
+        }
         return next.run(request).await;
     }
 
     next.run(request).await
+}
+
+/// One audit record per tool call.
+fn log_tool_call(logger: &AuditLogger, claims: Option<&TokenClaims>, request: &ToolRequest, remote_addr: &str) {
+    if let ToolRequest::Call { tool, target } = request {
+        logger.log_tool_call(claims, tool, target.as_deref(), remote_addr);
+    }
 }
 
 // --- Authentication failure limiter ---
@@ -403,7 +421,7 @@ fn payload_too_large() -> Response {
     (StatusCode::PAYLOAD_TOO_LARGE, "Payload Too Large").into_response()
 }
 
-/// Buffer the request body far enough to read the MCP method and tool name,
+/// Buffer the request body far enough to classify the MCP request,
 /// returning a request that still carries the original body.
 ///
 /// `max_body_bytes` is the transport's own request limit, so this never
@@ -412,10 +430,10 @@ fn payload_too_large() -> Response {
 /// would otherwise report as a parse error. A body that cannot be read at all
 /// is answered with `400`. The response is boxed so the `Ok` path, which is
 /// the common one, does not carry its size.
-async fn read_tool_name(
+async fn read_tool_request(
     request: Request<Body>,
     max_body_bytes: usize,
-) -> Result<(Request<Body>, Option<String>), Box<Response>> {
+) -> Result<(Request<Body>, ToolRequest), Box<Response>> {
     // A declared length over the limit is refused before any of it is read.
     let limit = u64::try_from(max_body_bytes).unwrap_or(u64::MAX);
     if let Some(declared) = declared_content_length(request.headers())
@@ -433,12 +451,8 @@ async fn read_tool_name(
             return Err(Box::new((StatusCode::BAD_REQUEST, "Bad Request").into_response()));
         }
     };
-    let tool = serde_json::from_slice::<serde_json::Value>(&bytes)
-        .ok()
-        .as_ref()
-        .and_then(tool_name_from_request)
-        .map(str::to_string);
-    Ok((Request::from_parts(parts, Body::from(bytes)), tool))
+    let tool_request = classify_request(&bytes);
+    Ok((Request::from_parts(parts, Body::from(bytes)), tool_request))
 }
 
 /// The `Content-Length` header as a number, if present and well formed.
@@ -563,8 +577,11 @@ mod tests {
             .uri("/mcp")
             .body(Body::from(body.clone()))
             .expect("request");
-        let (request, tool) = read_tool_name(request, 1024).await.expect("under the limit");
-        assert_eq!(tool.as_deref(), Some("vault_revoke"));
+        let (request, tool) = read_tool_request(request, 1024).await.expect("under the limit");
+        assert!(
+            matches!(tool, ToolRequest::Call { ref tool, .. } if tool == "vault_revoke"),
+            "{tool:?}"
+        );
         let replayed = axum::body::to_bytes(request.into_body(), 1024).await.expect("body");
         assert_eq!(replayed, body.as_bytes());
     }
@@ -577,7 +594,7 @@ mod tests {
             .uri("/mcp")
             .body(Body::from(body.clone()))
             .expect("request");
-        let response = read_tool_name(request, 16)
+        let response = read_tool_request(request, 16)
             .await
             .expect_err("a body over the limit is rejected");
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
@@ -593,7 +610,7 @@ mod tests {
             .header(header::CONTENT_LENGTH, "4096")
             .body(Body::from("{}"))
             .expect("request");
-        let response = read_tool_name(request, 1024).await.expect_err("rejected");
+        let response = read_tool_request(request, 1024).await.expect_err("rejected");
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 

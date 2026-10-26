@@ -271,6 +271,21 @@ pub(crate) async fn run_http_mode(config: McpConfig, addr: &str) -> Result<(), B
         tracing::warn!("authentication: DISABLED — no OIDC issuer or static token configured");
     }
 
+    // Bearer tokens on a non loopback bind travel in plaintext unless TLS is
+    // terminated in front of this server; the operator confirms that with
+    // DCERT_MCP_BEHIND_TLS=1.
+    if bearer_needs_tls_warning(
+        auth_configured,
+        addr_is_loopback_async(addr).await,
+        std::env::var("DCERT_MCP_BEHIND_TLS").ok().as_deref(),
+    ) {
+        tracing::warn!(
+            addr = addr,
+            "bearer authentication on a non-loopback address: tokens travel in plaintext unless TLS is \
+             terminated in front of this server. Terminate TLS and set DCERT_MCP_BEHIND_TLS=1 to confirm."
+        );
+    }
+
     // Refuse to expose an unauthenticated endpoint on a non-loopback interface.
     // Binding to a public or LAN address with no OIDC issuer and no static
     // token lets any host on the network drive an API that spawns subprocesses.
@@ -504,4 +519,12 @@ pub(crate) async fn wait_for_shutdown_signal() {
         () = ctrl_c => {},
         () = terminate => {},
     }
+}
+
+/// Whether to warn that bearer tokens would cross the network in plaintext:
+/// authentication is on, the bind is not loopback and the operator has not
+/// confirmed TLS termination in front of the server.
+pub(crate) fn bearer_needs_tls_warning(auth_configured: bool, loopback: bool, behind_tls: Option<&str>) -> bool {
+    let confirmed = behind_tls.is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+    auth_configured && !loopback && !confirmed
 }

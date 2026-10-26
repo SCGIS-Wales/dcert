@@ -76,7 +76,73 @@ impl OidcConfig {
         if self.audience.is_empty() {
             return Err("OIDC audience is required".to_string());
         }
+        require_https(&self.issuer_url, "DCERT_MCP_OIDC_ISSUER")?;
+        if let Some(jwks) = self.jwks_url.as_deref().filter(|u| !u.is_empty()) {
+            require_https(jwks, "DCERT_MCP_OIDC_JWKS_URL")?;
+        }
         Ok(())
+    }
+}
+
+/// Require an `https://` URL. Plain `http://` is accepted only for a
+/// loopback host, for a local test identity provider.
+fn require_https(raw: &str, what: &str) -> Result<url::Url, String> {
+    let url = url::Url::parse(raw).map_err(|e| format!("{what} is not a valid URL ({raw}): {e}"))?;
+    let loopback = match url.host() {
+        Some(url::Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    };
+    match url.scheme() {
+        "https" => Ok(url),
+        "http" if loopback => Ok(url),
+        _ => Err(format!("{what} must be an https:// URL, got {raw}")),
+    }
+}
+
+/// Whether two URLs share scheme, host and port.
+fn same_origin(a: &str, b: &str) -> bool {
+    match (url::Url::parse(a), url::Url::parse(b)) {
+        (Ok(a), Ok(b)) => a.origin() == b.origin(),
+        _ => false,
+    }
+}
+
+/// Longest a cached signing key may be served past its TTL while the
+/// identity provider cannot be reached, from `DCERT_MCP_JWKS_MAX_STALE`
+/// (seconds, default 24 hours). Beyond it every token fails, so a key the
+/// provider has withdrawn cannot be honoured indefinitely during an outage.
+fn jwks_max_stale() -> Duration {
+    Duration::from_secs(
+        std::env::var("DCERT_MCP_JWKS_MAX_STALE")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(24 * 3600),
+    )
+}
+
+/// Token types that mark an OAuth 2.0 access token (RFC 9068).
+const ACCESS_TOKEN_TYPES: &[&str] = &["at+jwt", "application/at+jwt"];
+
+/// Check the header `typ`. An RFC 9068 access token type is accepted as is.
+/// A plain `JWT` or a missing `typ` (common for Entra ID and older
+/// providers) is accepted only when the token carries `scp`, `scope` or
+/// `roles`, which ID tokens do not. Any other type (an ID token, a logout
+/// token, a DPoP proof) is refused.
+fn check_token_type(typ: Option<&str>, claims: &HashMap<String, serde_json::Value>) -> Result<(), String> {
+    let typ = typ.map(str::to_ascii_lowercase);
+    match typ.as_deref() {
+        Some(t) if ACCESS_TOKEN_TYPES.contains(&t) => Ok(()),
+        None | Some("jwt" | "application/jwt") => {
+            if ["scp", "scope", "roles"].iter().any(|k| claims.contains_key(*k)) {
+                Ok(())
+            } else {
+                Err("token is not an access token: no at+jwt typ and no scp, scope or roles claim".to_string())
+            }
+        }
+        Some(other) => Err(format!("token type {other:?} is not an access token")),
     }
 }
 
@@ -152,9 +218,9 @@ impl OidcValidator {
         // only happen on a cache miss, and are throttled, so an unauthenticated
         // caller cannot make the server hammer the identity provider with one
         // request per token.
-        let key = match self.cached_signing_key(&kid).await {
+        let key = match self.cached_signing_key(&kid, header.alg).await {
             Some(key) => key,
-            None => self.fetch_signing_key(&kid).await?,
+            None => self.fetch_signing_key(&kid, header.alg).await?,
         };
 
         // Set up validation — supports both RSA and ECDSA algorithms.
@@ -172,6 +238,7 @@ impl OidcValidator {
         let token_data = decode::<HashMap<String, serde_json::Value>>(token_string, &key, &validation)
             .map_err(|e| format!("token validation failed: {e}"))?;
 
+        check_token_type(header.typ.as_deref(), &token_data.claims)?;
         let claims = extract_claims(&token_data.claims);
 
         // Validate authorized party.
@@ -203,9 +270,13 @@ impl OidcValidator {
     /// Look up a key in the cache without any network access. An entry past
     /// its TTL is not served here, so a refresh is attempted first; see
     /// [`OidcValidator::stale_signing_key`] for what happens when it cannot be.
-    async fn cached_signing_key(&self, kid: &str) -> Option<DecodingKey> {
+    async fn cached_signing_key(&self, kid: &str, alg: Algorithm) -> Option<DecodingKey> {
         let cache = self.jwks_cache.read().await;
-        if cache.is_expired() { None } else { cache.get_key(kid) }
+        if cache.is_expired() {
+            None
+        } else {
+            cache.get_key(kid, alg)
+        }
     }
 
     /// Look up a key in the cache even when the entry has passed its TTL.
@@ -217,9 +288,20 @@ impl OidcValidator {
     /// throttle interval, and a rotated out key is withdrawn as soon as a
     /// refresh succeeds. The fallback is logged at warn level once per
     /// interval so an outage is visible without flooding the log.
-    async fn stale_signing_key(&self, kid: &str, reason: &str) -> Option<DecodingKey> {
+    async fn stale_signing_key(&self, kid: &str, alg: Algorithm, reason: &str) -> Option<DecodingKey> {
         let mut cache = self.jwks_cache.write().await;
-        let key = cache.get_key(kid)?;
+        if cache
+            .fetched
+            .is_none_or(|t| t.elapsed() >= cache.ttl + jwks_max_stale())
+        {
+            warn!(
+                kid = kid,
+                reason = reason,
+                "JWKS keys are older than DCERT_MCP_JWKS_MAX_STALE allows; refusing to serve them"
+            );
+            return None;
+        }
+        let key = cache.get_key(kid, alg)?;
         if cache.should_warn_stale() {
             let age_secs = cache.fetched.map(|t| t.elapsed().as_secs());
             warn!(
@@ -246,9 +328,9 @@ impl OidcValidator {
     /// While a refresh is throttled or failing, a key the cache already holds
     /// is served even past its TTL, so a provider outage does not take the
     /// server down with it. Only a key id the cache has never seen fails.
-    async fn fetch_signing_key(&self, kid: &str) -> Result<DecodingKey, String> {
+    async fn fetch_signing_key(&self, kid: &str, alg: Algorithm) -> Result<DecodingKey, String> {
         if !self.claim_refresh_slot().await {
-            return match self.stale_signing_key(kid, "refresh throttled").await {
+            return match self.stale_signing_key(kid, alg, "refresh throttled").await {
                 Some(key) => Ok(key),
                 None => Err(format!("signing key {kid:?} not found in JWKS (refresh throttled)")),
             };
@@ -256,7 +338,7 @@ impl OidcValidator {
 
         // Re-check under the claim: a concurrent caller may have just filled
         // the cache between the miss and the claim.
-        if let Some(key) = self.cached_signing_key(kid).await {
+        if let Some(key) = self.cached_signing_key(kid, alg).await {
             return Ok(key);
         }
 
@@ -268,7 +350,7 @@ impl OidcValidator {
             },
         };
         if let Err(e) = refreshed {
-            return match self.stale_signing_key(kid, &e).await {
+            return match self.stale_signing_key(kid, alg, &e).await {
                 Some(key) => Ok(key),
                 None => Err(e),
             };
@@ -276,8 +358,8 @@ impl OidcValidator {
 
         let cache = self.jwks_cache.read().await;
         cache
-            .get_key(kid)
-            .ok_or_else(|| format!("signing key {kid:?} not found in JWKS"))
+            .get_key(kid, alg)
+            .ok_or_else(|| format!("signing key {kid:?} for {alg:?} not found in JWKS"))
     }
 
     /// Take the single refresh slot for this interval, returning `false` when
@@ -328,19 +410,40 @@ impl OidcValidator {
 
         #[derive(Deserialize)]
         struct DiscoveryDoc {
+            #[serde(default)]
+            issuer: String,
             jwks_uri: String,
         }
 
         let body = read_body_limited(resp, "discovery document").await?;
         let doc: DiscoveryDoc =
             serde_json::from_slice(&body).map_err(|e| format!("parsing discovery document: {e}"))?;
-
-        if doc.jwks_uri.is_empty() {
-            return Err("discovery document missing jwks_uri".to_string());
-        }
-
+        validate_discovery(&self.config.issuer_url, &doc.issuer, &doc.jwks_uri)?;
         Ok(doc.jwks_uri)
     }
+}
+
+/// Check a discovery document against the configured issuer (OpenID Connect
+/// Discovery 1.0 section 4.3): its `issuer` must equal the configured one,
+/// and the discovered `jwks_uri` must be https and on the issuer's origin.
+/// Keys from anywhere else need an explicit `DCERT_MCP_OIDC_JWKS_URL`.
+fn validate_discovery(configured_issuer: &str, issuer: &str, jwks_uri: &str) -> Result<(), String> {
+    let trim = |s: &str| s.trim_end_matches('/').to_string();
+    if trim(issuer) != trim(configured_issuer) {
+        return Err(format!(
+            "discovery document issuer {issuer:?} does not match the configured issuer {configured_issuer:?}"
+        ));
+    }
+    if jwks_uri.is_empty() {
+        return Err("discovery document missing jwks_uri".to_string());
+    }
+    require_https(jwks_uri, "discovered jwks_uri")?;
+    if !same_origin(jwks_uri, configured_issuer) {
+        return Err(format!(
+            "discovered jwks_uri {jwks_uri:?} is not on the issuer's origin; set DCERT_MCP_OIDC_JWKS_URL to trust it explicitly"
+        ));
+    }
+    Ok(())
 }
 
 /// Extracts typed claims from a JWT claims map.
@@ -362,12 +465,21 @@ fn extract_claims(m: &HashMap<String, serde_json::Value>) -> TokenClaims {
         if azp.is_empty() { get_str("appid") } else { azp }
     };
 
-    // scp: space-separated scopes.
-    let scopes = m
-        .get("scp")
-        .and_then(|v| v.as_str())
-        .map(|s| s.split_whitespace().map(String::from).collect())
-        .unwrap_or_default();
+    // Scopes from `scp` (Entra ID, Okta) and `scope` (RFC 9068), each a
+    // space separated string or an array, merged without duplicates.
+    let mut scopes: Vec<String> = Vec::new();
+    for key in ["scp", "scope"] {
+        let values: Vec<String> = match m.get(key) {
+            Some(serde_json::Value::String(s)) => s.split_whitespace().map(String::from).collect(),
+            Some(serde_json::Value::Array(arr)) => arr.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
+            _ => Vec::new(),
+        };
+        for v in values {
+            if !scopes.contains(&v) {
+                scopes.push(v);
+            }
+        }
+    }
 
     // roles: array of app roles.
     let roles = match m.get("roles") {
@@ -424,7 +536,23 @@ enum JwksCachedKey {
         x: String,
         /// The EC y coordinate (base64url string, as expected by jsonwebtoken).
         y: String,
+        /// The curve, `P-256` or `P-384`.
+        crv: String,
     },
+}
+
+impl JwksCachedKey {
+    /// Whether this key may verify a token signed with `alg`: RSA keys for
+    /// RS*, P-256 for ES256 and P-384 for ES384. A token cannot pick a key of
+    /// another type or curve than its header claims.
+    fn fits(&self, alg: Algorithm) -> bool {
+        match (self, alg) {
+            (Self::Rsa { .. }, Algorithm::RS256 | Algorithm::RS384 | Algorithm::RS512) => true,
+            (Self::Ec { crv, .. }, Algorithm::ES256) => crv == "P-256",
+            (Self::Ec { crv, .. }, Algorithm::ES384) => crv == "P-384",
+            _ => false,
+        }
+    }
 }
 
 /// Thread-safe JWKS key cache with TTL.
@@ -470,10 +598,10 @@ impl JwksCache {
         }
     }
 
-    fn get_key(&self, kid: &str) -> Option<DecodingKey> {
-        self.keys.get(kid).and_then(|k| match k {
+    fn get_key(&self, kid: &str, alg: Algorithm) -> Option<DecodingKey> {
+        self.keys.get(kid).filter(|k| k.fits(alg)).and_then(|k| match k {
             JwksCachedKey::Rsa { n, e } => Some(DecodingKey::from_rsa_raw_components(n, e)),
-            JwksCachedKey::Ec { x, y } => DecodingKey::from_ec_components(x, y).ok(),
+            JwksCachedKey::Ec { x, y, .. } => DecodingKey::from_ec_components(x, y).ok(),
         })
     }
 
@@ -609,7 +737,11 @@ fn parse_jwks(body: &[u8]) -> Result<HashMap<String, JwksCachedKey>, String> {
                     warn!(kid = kid.as_str(), "skipping malformed EC JWKS key");
                     continue;
                 }
-                JwksCachedKey::Ec { x: x_str, y: y_str }
+                JwksCachedKey::Ec {
+                    x: x_str,
+                    y: y_str,
+                    crv: crv.to_string(),
+                }
             }
             _ => continue,
         };
@@ -728,8 +860,8 @@ mod tests {
             .await;
 
         let v = validator_with_jwks_url(&format!("{}/jwks", server.uri()));
-        assert!(v.fetch_signing_key("k1").await.is_ok());
-        assert!(v.cached_signing_key("k1").await.is_some());
+        assert!(v.fetch_signing_key("k1", Algorithm::RS256).await.is_ok());
+        assert!(v.cached_signing_key("k1", Algorithm::RS256).await.is_some());
     }
 
     #[tokio::test]
@@ -740,14 +872,14 @@ mod tests {
         v.jwks_cache.write().await.last_attempt = Some(Instant::now());
 
         assert!(
-            v.cached_signing_key("k1").await.is_none(),
+            v.cached_signing_key("k1", Algorithm::RS256).await.is_none(),
             "an expired entry is not served on the fast path"
         );
         assert!(
-            v.fetch_signing_key("k1").await.is_ok(),
+            v.fetch_signing_key("k1", Algorithm::RS256).await.is_ok(),
             "while the refresh is throttled the stale key is still the provider's key"
         );
-        let err = v.fetch_signing_key("k2").await.unwrap_err();
+        let err = v.fetch_signing_key("k2", Algorithm::RS256).await.unwrap_err();
         assert!(err.contains("throttled"), "{err}");
     }
 
@@ -764,12 +896,12 @@ mod tests {
         prime_expired_cache(&v, "k1").await;
 
         assert!(
-            v.fetch_signing_key("k1").await.is_ok(),
+            v.fetch_signing_key("k1", Algorithm::RS256).await.is_ok(),
             "a provider outage must not fail tokens signed with a key the cache holds"
         );
         // A key id the cache has never seen cannot be served from anywhere;
         // this attempt is throttled by the failed one just before it.
-        assert!(v.fetch_signing_key("k2").await.is_err());
+        assert!(v.fetch_signing_key("k2", Algorithm::RS256).await.is_err());
         assert!(
             v.jwks_cache.read().await.is_expired(),
             "a failed refresh leaves the TTL untouched so the next interval retries"
@@ -978,5 +1110,158 @@ mod tests {
         let mut cache = JwksCache::new();
         cache.update(HashMap::new());
         assert!(!cache.is_expired());
+    }
+
+    // --- Plan PR 1.7: OIDC hardening ---
+
+    fn config(issuer: &str, jwks: Option<&str>) -> OidcConfig {
+        OidcConfig {
+            issuer_url: issuer.to_string(),
+            audience: "api://test".to_string(),
+            jwks_url: jwks.map(str::to_string),
+            required_scopes: vec![],
+            required_roles: vec![],
+            allowed_client_ids: vec![],
+        }
+    }
+
+    #[test]
+    fn issuer_and_jwks_url_must_be_https_except_on_loopback() {
+        assert!(config("http://idp.example.com", None).validate().is_err());
+        assert!(
+            config("https://idp.example.com", Some("http://keys.example.com"))
+                .validate()
+                .is_err()
+        );
+        assert!(
+            config("https://idp.example.com", Some("https://keys.example.com"))
+                .validate()
+                .is_ok()
+        );
+        assert!(config("http://127.0.0.1:8080", None).validate().is_ok());
+        assert!(config("http://localhost:8080", None).validate().is_ok());
+    }
+
+    fn loopback_validator(issuer: &str) -> OidcValidator {
+        OidcValidator {
+            config: config(issuer, None),
+            http_client: Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_secs(10))
+                .build()
+                .expect("client"),
+            jwks_cache: Arc::new(RwLock::new(JwksCache::new())),
+        }
+    }
+
+    async fn discovery_server(doc: impl Fn(&str) -> serde_json::Value) -> MockServer {
+        let server = MockServer::start().await;
+        let body = doc(&server.uri());
+        Mock::given(method("GET"))
+            .and(path("/.well-known/openid-configuration"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    #[tokio::test]
+    async fn discovery_accepts_a_matching_issuer_and_same_origin_jwks() {
+        let server =
+            discovery_server(|uri| serde_json::json!({"issuer": uri, "jwks_uri": format!("{uri}/keys")})).await;
+        let v = loopback_validator(&server.uri());
+        assert_eq!(v.discover_jwks().await, Ok(format!("{}/keys", server.uri())));
+    }
+
+    #[tokio::test]
+    async fn discovery_refuses_a_different_issuer() {
+        let server = discovery_server(
+            |uri| serde_json::json!({"issuer": "https://evil.example", "jwks_uri": format!("{uri}/keys")}),
+        )
+        .await;
+        let err = loopback_validator(&server.uri())
+            .discover_jwks()
+            .await
+            .expect_err("issuer mismatch");
+        assert!(err.contains("does not match"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn discovery_refuses_jwks_on_another_origin() {
+        let server = discovery_server(
+            |uri| serde_json::json!({"issuer": uri, "jwks_uri": "https://keys.elsewhere.example/keys"}),
+        )
+        .await;
+        let err = loopback_validator(&server.uri())
+            .discover_jwks()
+            .await
+            .expect_err("other origin");
+        assert!(err.contains("DCERT_MCP_OIDC_JWKS_URL"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn discovery_refuses_plain_http_jwks() {
+        let server =
+            discovery_server(|uri| serde_json::json!({"issuer": uri, "jwks_uri": "http://keys.example.com/keys"}))
+                .await;
+        let err = loopback_validator(&server.uri())
+            .discover_jwks()
+            .await
+            .expect_err("http jwks");
+        assert!(err.contains("https"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn keys_older_than_the_staleness_cap_are_not_served() {
+        let v = test_validator();
+        let Some(long_ago) = Instant::now().checked_sub(Duration::from_secs(3600 + 25 * 3600)) else {
+            return;
+        };
+        {
+            let mut cache = v.jwks_cache.write().await;
+            cache.update(HashMap::from([("k1".to_string(), rsa_cached_key())]));
+            cache.ttl = Duration::from_secs(3600);
+            cache.fetched = Some(long_ago);
+        }
+        assert!(v.stale_signing_key("k1", Algorithm::RS256, "test").await.is_none());
+    }
+
+    #[test]
+    fn token_type_rules() {
+        let with = |k: &str| HashMap::from([(k.to_string(), serde_json::json!("x"))]);
+        assert!(check_token_type(Some("at+jwt"), &HashMap::new()).is_ok());
+        assert!(check_token_type(Some("application/at+JWT"), &HashMap::new()).is_ok());
+        for claim in ["scp", "scope", "roles"] {
+            assert!(check_token_type(Some("JWT"), &with(claim)).is_ok(), "{claim}");
+            assert!(check_token_type(None, &with(claim)).is_ok(), "{claim}");
+        }
+        assert!(check_token_type(None, &with("sub")).is_err(), "an ID token shape");
+        assert!(check_token_type(Some("dpop+jwt"), &with("scope")).is_err());
+    }
+
+    #[test]
+    fn scopes_are_read_from_scp_and_scope() {
+        let mut m = HashMap::new();
+        m.insert("scp".to_string(), serde_json::json!("read write"));
+        m.insert("scope".to_string(), serde_json::json!(["write", "admin"]));
+        assert_eq!(extract_claims(&m).scopes, vec!["read", "write", "admin"]);
+    }
+
+    #[test]
+    fn a_key_only_verifies_its_own_algorithm_family() {
+        let rsa = rsa_cached_key();
+        assert!(rsa.fits(Algorithm::RS256) && rsa.fits(Algorithm::RS512));
+        assert!(!rsa.fits(Algorithm::ES256));
+        let p256 = JwksCachedKey::Ec {
+            x: String::new(),
+            y: String::new(),
+            crv: "P-256".to_string(),
+        };
+        assert!(p256.fits(Algorithm::ES256));
+        assert!(!p256.fits(Algorithm::ES384) && !p256.fits(Algorithm::RS256));
+        let mut cache = JwksCache::new();
+        cache.update(HashMap::from([("k".to_string(), rsa_cached_key())]));
+        assert!(cache.get_key("k", Algorithm::ES256).is_none());
+        assert!(cache.get_key("k", Algorithm::RS256).is_some());
     }
 }

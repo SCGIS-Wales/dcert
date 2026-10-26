@@ -60,6 +60,13 @@ impl DcertMcpServer {
     }
 }
 
+/// Whether the operator lets tool calls disable certificate verification
+/// (`DCERT_MCP_ALLOW_NO_VERIFY=1`). The caller is not the party who should
+/// decide that the server may talk to an unverified peer.
+pub(crate) fn no_verify_allowed() -> bool {
+    std::env::var("DCERT_MCP_ALLOW_NO_VERIFY").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+}
+
 /// Exit codes `kb explain` returns that are answers rather than failures.
 ///
 /// The CLI exits 2 both when nothing matched (with an empty JSON list on
@@ -775,6 +782,12 @@ impl DcertMcpServer {
             args.push("--show-body".to_string());
         }
         if params.no_verify {
+            if !no_verify_allowed() {
+                return ok_error(
+                    "no_verify is not permitted by the server policy (set DCERT_MCP_ALLOW_NO_VERIFY=1 on the server to allow it)"
+                        .to_string(),
+                );
+            }
             args.push("--no-verify".to_string());
         }
         // A failed probe is the expected input for a diagnosis, so exit

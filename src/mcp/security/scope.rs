@@ -90,6 +90,21 @@ impl ToolScopePolicy {
         &self.read
     }
 
+    /// Check a request against the policy. With any rule configured, a
+    /// request whose tool cannot be determined is refused (fail closed).
+    pub fn authorize_request(&self, request: &ToolRequest, claims: &TokenClaims) -> Result<(), String> {
+        match request {
+            ToolRequest::Call { tool, .. } => self.authorize(tool, claims),
+            ToolRequest::NotACall => Ok(()),
+            ToolRequest::Undetermined if self.is_empty() => Ok(()),
+            ToolRequest::Undetermined => Err(
+                "per tool authorization is configured and the tool cannot be determined \
+                 (batch, non object or malformed request)"
+                    .to_string(),
+            ),
+        }
+    }
+
     /// Check a token against the policy for `tool`.
     pub fn authorize(&self, tool: &str, claims: &TokenClaims) -> Result<(), String> {
         let required = self.required_for(tool);
@@ -119,6 +134,75 @@ fn split_list(raw: &str) -> Vec<String> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect()
+}
+
+/// What a JSON-RPC request body asks for, as far as per tool authorization
+/// is concerned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolRequest {
+    /// A `tools/call` naming this tool.
+    Call {
+        /// The tool name.
+        tool: String,
+        /// The `target` argument (or `target_a`), redacted for logging.
+        target: Option<String>,
+    },
+    /// Any other single method (`initialize`, `tools/list`, ...).
+    NotACall,
+    /// A batch, a non object body, unparsable JSON or a `tools/call` without
+    /// a tool name. A per tool policy cannot be applied, so it fails closed.
+    Undetermined,
+}
+
+/// Classify a request body for per tool authorization.
+pub fn classify_request(body: &[u8]) -> ToolRequest {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return ToolRequest::Undetermined;
+    };
+    let Some(object) = value.as_object() else {
+        return ToolRequest::Undetermined;
+    };
+    if object.get("method").and_then(serde_json::Value::as_str) != Some("tools/call") {
+        return ToolRequest::NotACall;
+    }
+    match tool_name_from_request(&value) {
+        Some(tool) => {
+            let arguments = value.get("params").and_then(|p| p.get("arguments"));
+            let target = ["target", "target_a"]
+                .iter()
+                .find_map(|k| arguments.and_then(|a| a.get(*k)).and_then(serde_json::Value::as_str))
+                .map(redact_target);
+            ToolRequest::Call {
+                tool: tool.to_string(),
+                target,
+            }
+        }
+        None => ToolRequest::Undetermined,
+    }
+}
+
+/// A probe target reduced to what an audit log may keep: scheme, host and
+/// port of a URL (no credentials, path or query), the host of `host:port`,
+/// and `<file>` for a local path.
+pub fn redact_target(target: &str) -> String {
+    const MAX: usize = 255;
+    if target.contains("://") {
+        return url::Url::parse(target)
+            .ok()
+            .and_then(|u| {
+                let host = u.host_str()?.to_string();
+                Some(match u.port() {
+                    Some(port) => format!("{}://{host}:{port}", u.scheme()),
+                    None => format!("{}://{host}", u.scheme()),
+                })
+            })
+            .unwrap_or_else(|| "<unparsable url>".to_string());
+    }
+    if target.contains('/') || target.contains('\\') {
+        return "<file>".to_string();
+    }
+    let host = target.rsplit_once('@').map_or(target, |(_, h)| h);
+    host.chars().take(MAX).collect()
 }
 
 /// Extract the tool name from a JSON-RPC request body, for `tools/call` only.
@@ -236,5 +320,53 @@ mod tests {
 
         let batch = serde_json::json!([{"method": "tools/call", "params": {"name": "x"}}]);
         assert_eq!(tool_name_from_request(&batch), None);
+    }
+
+    #[test]
+    fn classify_request_finds_the_tool_and_redacts_the_target() {
+        let body = serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "analyze_certificate",
+                       "arguments": {"target": "https://user:pw@api.example.com:8443/x?token=abc"}}
+        });
+        assert_eq!(
+            classify_request(body.to_string().as_bytes()),
+            ToolRequest::Call {
+                tool: "analyze_certificate".to_string(),
+                target: Some("https://api.example.com:8443".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn classify_request_cannot_determine_batches_and_odd_bodies() {
+        for body in [
+            r#"[{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"vault_revoke"}}]"#,
+            r#""tools/call""#,
+            "not json",
+            r#"{"method":"tools/call","params":{}}"#,
+        ] {
+            assert_eq!(classify_request(body.as_bytes()), ToolRequest::Undetermined, "{body}");
+        }
+        assert_eq!(classify_request(br#"{"method":"tools/list"}"#), ToolRequest::NotACall);
+    }
+
+    #[test]
+    fn authorize_request_fails_closed_only_when_a_policy_exists() {
+        let claims = claims_with(&["pki.admin"], &[]);
+        let strict = policy(&[("DCERT_MCP_SCOPE_WRITE", "pki.write")]);
+        assert!(strict.authorize_request(&ToolRequest::Undetermined, &claims).is_err());
+        assert!(strict.authorize_request(&ToolRequest::NotACall, &claims).is_ok());
+        let open = ToolScopePolicy::default();
+        assert!(open.authorize_request(&ToolRequest::Undetermined, &claims).is_ok());
+    }
+
+    #[test]
+    fn redact_target_keeps_only_what_an_audit_log_may_hold() {
+        assert_eq!(redact_target("https://u:p@h.example/p?q=1"), "https://h.example");
+        assert_eq!(redact_target("/etc/secret.pem"), "<file>");
+        assert_eq!(redact_target("certs\\a.pem"), "<file>");
+        assert_eq!(redact_target("api.example.com:443"), "api.example.com:443");
+        assert_eq!(redact_target("user@host.example"), "host.example");
     }
 }

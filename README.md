@@ -1458,6 +1458,9 @@ OIDC tokens are validated against JWKS (JSON Web Key Sets) with automatic key ro
 | `DCERT_MCP_ALLOWED_HOSTS` | Comma-separated `Host` header allowlist (default: loopback names and the bind address) |
 | `DCERT_MCP_SCOPE_WRITE` / `_READ` / `_<TOOL>` | Scopes or roles required per tool (see above) |
 | `DCERT_MCP_JWKS_TTL` | How long JWKS keys stay cached, in seconds (default: 3600) |
+| `DCERT_MCP_JWKS_MAX_STALE` | Longest a cached key is served past its TTL while the identity provider is unreachable, in seconds (default: 86400) |
+| `DCERT_MCP_ALLOW_NO_VERIFY` | Set to `1` to let `diagnose_endpoint` disable certificate verification (refused by default) |
+| `DCERT_MCP_BEHIND_TLS` | Set to `1` to confirm TLS terminates in front of a non loopback bind (silences the plaintext bearer warning) |
 | `DCERT_MCP_MAX_CONCURRENT_REQUESTS` | Concurrent in-flight HTTP requests (default: 64) |
 | `DCERT_MCP_REQUEST_TIMEOUT` | Per-request timeout in seconds (default: 120) |
 | `DCERT_MCP_MAX_BODY_BYTES` | Maximum request body size (default: 1048576) |

@@ -404,7 +404,8 @@ pub(crate) struct DiagnoseEndpointParams {
     /// Include the captured response body excerpt in the output even when no finding cites it (default: false)
     #[serde(default)]
     pub(crate) show_body: bool,
-    /// Accept the server certificate without verification so the HTTP layer can still be probed (default: false)
+    /// Accept the server certificate without verification so the HTTP layer can still be probed
+    /// (default: false). Refused unless the server sets DCERT_MCP_ALLOW_NO_VERIFY=1.
     #[serde(default)]
     pub(crate) no_verify: bool,
     /// mTLS client identity and custom CA
