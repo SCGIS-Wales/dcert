@@ -98,9 +98,8 @@ jobs:
   # and the Docker image runs it on debian trixie (OpenSSL 3.5). This job
   # reproduces that pairing against a loopback ML-KEM server and asserts the
   # negotiated group is named.
-  # Tracking: plan PR 2.6 (docs/plans/2026-10-tls-policy-hardening.md) resolves
-  # the group name at runtime. Until it lands the assertion fails, so the
-  # step is allowed to fail; PR 2.6 removes continue-on-error.
+  # The binary resolves SSL_get0_group_name at run time (plan PR 2.6), so
+  # this pairing must name the group; the job is required.
   pq-shipped-binary:
     name: Shipped binary on OpenSSL 3.5 (debian trixie)
     runs-on: ubuntu-22.04
@@ -119,21 +118,21 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config libssl-dev
 
-      - name: Cache cargo
+      # Only the registry is cached: a restored target/ once handed this job a
+      # binary that did not contain the commit under test.
+      - name: Cache cargo registry
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-22.04-x86_64-unknown-linux-gnu-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-22.04-x86_64-unknown-linux-gnu-cargo-
+          key: ${{ runner.os }}-22.04-pq-shipped-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-22.04-pq-shipped-registry-
 
       - name: Build the release binary as build-linux does
         run: cargo build --release --bin dcert
 
       - name: Probe a loopback ML-KEM server inside debian:trixie
-        continue-on-error: true
         run: |
           docker run --rm \
             -v "$PWD/target/release/dcert:/usr/local/bin/dcert:ro" \

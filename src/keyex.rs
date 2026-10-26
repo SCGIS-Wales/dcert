@@ -116,10 +116,21 @@ pub fn openssl_supports_mlkem() -> bool {
     openssl::version::number() >= OPENSSL_MLKEM_MIN
 }
 
-/// Whether the linked OpenSSL reports the negotiated group name
-/// (`SSL_get0_group_name`, 3.2.0 or later).
+/// Whether the OpenSSL in use reports the negotiated group name
+/// (`SSL_get0_group_name`, 3.2.0 or later), compiled in or found at run time.
 pub fn openssl_reports_group_name() -> bool {
-    cfg!(dcert_ossl320)
+    crate::tls::group_name_available()
+}
+
+/// `OPENSSL_VERSION_NUMBER` of the headers this binary was built against,
+/// when the build saw it.
+pub fn build_openssl_number() -> Option<u64> {
+    option_env!("DCERT_OPENSSL_BUILD_VERSION").and_then(|v| u64::from_str_radix(v, 16).ok())
+}
+
+/// `major.minor.patch` of an `OPENSSL_VERSION_NUMBER` (0xMNN00PP0).
+pub fn format_openssl_number(n: u64) -> String {
+    format!("{}.{}.{}", n >> 28, (n >> 20) & 0xff, (n >> 4) & 0xff)
 }
 
 /// One line describing the linked OpenSSL and its post quantum capability,
@@ -130,7 +141,12 @@ pub fn openssl_summary() -> String {
     } else {
         "post quantum key exchange: not available (needs OpenSSL 3.5 or later)"
     };
-    format!("{} ({pq})", openssl::version::version())
+    let runtime = u64::try_from(openssl::version::number()).unwrap_or(0);
+    let built = match build_openssl_number() {
+        Some(b) if b >> 4 != runtime >> 4 => format!("; built against OpenSSL {}", format_openssl_number(b)),
+        _ => String::new(),
+    };
+    format!("{} ({pq}){built}", openssl::version::version())
 }
 
 /// OpenSSL group list offering only the RFC 10024 hybrids, used by `--pq-probe`.
@@ -334,6 +350,20 @@ pub fn validate_groups_list(groups: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn group_name_support_follows_the_loaded_library() {
+        // Compiled in on 3.2+ headers, otherwise found at run time on Unix:
+        // either way it matches what the loaded libssl can do.
+        let runtime = openssl::version::number() >= 0x3020_0000;
+        assert_eq!(openssl_reports_group_name(), runtime || cfg!(dcert_ossl320));
+    }
+
+    #[test]
+    fn openssl_numbers_format_as_dotted_versions() {
+        assert_eq!(format_openssl_number(0x3000_00d0), "3.0.13");
+        assert_eq!(format_openssl_number(0x3050_0070), "3.5.7");
+    }
     use super::*;
     use crate::cli::TlsVersionArg;
 

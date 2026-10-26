@@ -16,6 +16,9 @@ fn main() {
     let Ok(version) = u64::from_str_radix(raw.trim(), 16) else {
         return;
     };
+    // `dcert --version` names the build headers when they differ from the
+    // library loaded at run time.
+    println!("cargo:rustc-env=DCERT_OPENSSL_BUILD_VERSION={version:x}");
     // OPENSSL_VERSION_NUMBER layout: 0xMNN00PP0 (major, minor, patch).
     if version >= 0x3020_0000 {
         println!("cargo:rustc-cfg=dcert_ossl320");
