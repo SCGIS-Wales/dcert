@@ -2668,3 +2668,43 @@ fn bearer_tls_warning_only_for_authenticated_non_loopback_binds_without_confirma
     assert!(!bearer_needs_tls_warning(true, true, None));
     assert!(!bearer_needs_tls_warning(false, false, None));
 }
+
+// ---------------------------------------------------------------
+// Plan PR 2.4: bounded waits and input ranges
+// ---------------------------------------------------------------
+
+#[tokio::test]
+async fn waiting_for_a_subprocess_slot_is_bounded() {
+    let full = tokio::sync::Semaphore::new(0);
+    let err = acquire_within(&full, Duration::from_millis(100))
+        .await
+        .expect_err("no slot ever frees");
+    assert!(err.contains("server busy"), "{err}");
+    let free = tokio::sync::Semaphore::new(1);
+    assert!(acquire_within(&free, Duration::from_millis(100)).await.is_ok());
+}
+
+#[test]
+fn http_tls_timeouts_use_the_shared_ranges() {
+    let params = HttpTlsParams {
+        timeout: Some(0),
+        ..Default::default()
+    };
+    assert!(params.validate().unwrap_err().contains("between 1 and 300"));
+    let params = HttpTlsParams {
+        read_timeout: Some(301),
+        ..Default::default()
+    };
+    assert!(params.validate().is_err());
+}
+
+#[tokio::test]
+async fn issuer_timeout_out_of_range_is_refused() {
+    let err = call_tool_error(
+        "analyze_certificate",
+        serde_json::json!({"target": "https://example.invalid", "issuer_timeout": 0}),
+    )
+    .await
+    .expect("refused");
+    assert!(err.contains("issuer_timeout"), "{err}");
+}

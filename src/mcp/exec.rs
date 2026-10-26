@@ -17,6 +17,28 @@ pub(crate) const MAX_CONCURRENT_SUBPROCESSES: usize = 10;
 pub(crate) static SUBPROCESS_SEMAPHORE: std::sync::LazyLock<Arc<Semaphore>> =
     std::sync::LazyLock::new(|| Arc::new(Semaphore::new(MAX_CONCURRENT_SUBPROCESSES)));
 
+/// Take a subprocess slot, waiting at most the subprocess timeout. Without
+/// the bound a burst of calls would queue behind slow probes indefinitely;
+/// with it the caller gets a clear "busy" answer instead.
+pub(crate) async fn acquire_permit(config: &McpConfig) -> Result<tokio::sync::SemaphorePermit<'static>, String> {
+    acquire_within(&SUBPROCESS_SEMAPHORE, config.subprocess_timeout).await
+}
+
+/// Take a permit from `semaphore`, waiting at most `wait`.
+pub(crate) async fn acquire_within(
+    semaphore: &Semaphore,
+    wait: std::time::Duration,
+) -> Result<tokio::sync::SemaphorePermit<'_>, String> {
+    match tokio::time::timeout(wait, semaphore.acquire()).await {
+        Ok(Ok(permit)) => Ok(permit),
+        Ok(Err(_)) => Err("Subprocess semaphore closed".to_string()),
+        Err(_) => Err(format!(
+            "server busy: every subprocess slot stayed taken for {}s; retry later",
+            wait.as_secs_f32()
+        )),
+    }
+}
+
 /// Truncate subprocess output if it exceeds the maximum allowed size.
 /// Walks back to a UTF-8 char boundary so the truncated output never splits a
 /// multi-byte character.
@@ -171,10 +193,7 @@ pub(crate) async fn run_dcert_with_env(
     config: &McpConfig,
     env_vars: Option<&[(&str, &str)]>,
 ) -> Result<(String, String, i32), String> {
-    let _permit = SUBPROCESS_SEMAPHORE
-        .acquire()
-        .await
-        .map_err(|_| "Subprocess semaphore closed".to_string())?;
+    let _permit = acquire_permit(config).await?;
 
     let full_args = inject_flags(
         args,
@@ -206,10 +225,7 @@ pub(crate) async fn run_dcert_raw(
     // of MCP tool calls cannot exhaust the host's process table. All
     // parameter validation (paths, passwords, aliases) happens in the
     // caller before we get here, so failed validation never holds a permit.
-    let _permit = SUBPROCESS_SEMAPHORE
-        .acquire()
-        .await
-        .map_err(|_| "Subprocess semaphore closed".to_string())?;
+    let _permit = acquire_permit(config).await?;
 
     let mut child = spawn_dcert(config, args, env_vars.unwrap_or(&[]))?;
     run_child_with_timeout(&mut child, config).await

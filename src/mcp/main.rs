@@ -17,19 +17,22 @@ use std::time::Duration;
 #[command(long_version = dcert_mcp_long_version())]
 struct McpCli {
     /// Subprocess timeout in seconds (max time for a single dcert invocation)
-    #[arg(long, env = "DCERT_MCP_TIMEOUT", default_value_t = DEFAULT_SUBPROCESS_TIMEOUT)]
+    #[arg(long, env = "DCERT_MCP_TIMEOUT", default_value_t = DEFAULT_SUBPROCESS_TIMEOUT,
+          value_parser = clap::value_parser!(u64).range(dcert::limits::SUBPROCESS_TIMEOUT_RANGE))]
     timeout: u64,
 
     /// Connection timeout in seconds passed to the dcert subprocess (TCP connect timeout)
-    #[arg(long, env = "DCERT_MCP_CONNECTION_TIMEOUT", default_value_t = DEFAULT_CONNECTION_TIMEOUT)]
+    #[arg(long, env = "DCERT_MCP_CONNECTION_TIMEOUT", default_value_t = DEFAULT_CONNECTION_TIMEOUT,
+          value_parser = clap::value_parser!(u64).range(dcert::limits::TIMEOUT_RANGE))]
     connection_timeout: u64,
 
     /// Read timeout in seconds passed to the dcert subprocess (time to wait for server response)
-    #[arg(long, env = "DCERT_MCP_READ_TIMEOUT", default_value_t = DEFAULT_READ_TIMEOUT)]
+    #[arg(long, env = "DCERT_MCP_READ_TIMEOUT", default_value_t = DEFAULT_READ_TIMEOUT,
+          value_parser = clap::value_parser!(u64).range(dcert::limits::READ_TIMEOUT_RANGE))]
     read_timeout: u64,
 
     /// Transport mode: "stdio" (default) or "http"
-    #[arg(long, env = "DCERT_MCP_MODE", default_value = "stdio")]
+    #[arg(long, env = "DCERT_MCP_MODE", default_value = "stdio", value_parser = ["stdio", "http"])]
     mode: String,
 
     /// HTTP bind address (http mode only). Defaults to loopback; binding a

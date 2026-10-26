@@ -17,6 +17,7 @@ pub mod dns;
 pub mod http;
 pub mod kbref;
 pub mod keyex;
+pub mod limits;
 pub mod mtls;
 pub mod netpolicy;
 pub mod ocsp;

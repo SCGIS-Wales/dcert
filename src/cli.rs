@@ -469,7 +469,8 @@ pub struct CheckArgs {
 
     /// TCP connect timeout in seconds — how long to wait to *establish* the
     /// connection. Does not bound the response wait (see --read-timeout).
-    #[arg(long, default_value_t = 10)]
+    #[arg(long, value_name = "SECONDS", default_value_t = crate::limits::DEFAULT_TIMEOUT_SECS,
+          value_parser = clap::value_parser!(u64).range(crate::limits::TIMEOUT_RANGE))]
     pub timeout: u64,
 
     /// Read timeout in seconds — how long each read may wait for the server.
@@ -477,7 +478,8 @@ pub struct CheckArgs {
     /// handshake and the HTTP exchange) also shares one wall clock budget of
     /// --timeout plus --read-timeout, so a server that trickles bytes cannot
     /// hold a probe open.
-    #[arg(long, default_value_t = 5)]
+    #[arg(long, value_name = "SECONDS", default_value_t = crate::limits::DEFAULT_READ_TIMEOUT_SECS,
+          value_parser = clap::value_parser!(u64).range(crate::limits::READ_TIMEOUT_RANGE))]
     pub read_timeout: u64,
 
     /// Override SNI hostname for TLS handshake
@@ -531,7 +533,7 @@ pub struct CheckArgs {
     pub diff: bool,
 
     /// Periodically re-check targets at the given interval in seconds (minimum 1)
-    #[arg(long, value_name = "SECONDS", value_parser = clap::value_parser!(u64).range(1..))]
+    #[arg(long, value_name = "SECONDS", value_parser = clap::value_parser!(u64).range(crate::limits::WATCH_RANGE))]
     pub watch: Option<u64>,
 
     /// Check certificate revocation status via OCSP
@@ -589,7 +591,8 @@ pub struct CheckArgs {
     /// Short connect/read timeout (seconds) for issuer (--resolve-issuers) and
     /// public-root refresh fetches. Kept low so batches of many certificates
     /// fail fast instead of stalling on per-host timeouts.
-    #[arg(long, value_name = "SECONDS", default_value_t = 2)]
+    #[arg(long, value_name = "SECONDS", default_value_t = crate::limits::DEFAULT_ISSUER_TIMEOUT_SECS,
+          value_parser = clap::value_parser!(u64).range(crate::limits::ISSUER_TIMEOUT_RANGE))]
     pub issuer_timeout: u64,
 
     /// Refresh the embedded Mozilla/CCADB public root set from the upstream

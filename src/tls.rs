@@ -121,9 +121,9 @@ pub struct HttpHeader {
 }
 
 /// Default number of body bytes captured for diagnostics.
-pub const DEFAULT_BODY_LIMIT: usize = 16 * 1024;
+pub use crate::limits::DEFAULT_BODY_LIMIT;
 /// Upper bound accepted for `--body-limit`.
-pub const MAX_BODY_LIMIT: usize = 1024 * 1024;
+pub use crate::limits::MAX_BODY_LIMIT;
 
 /// Parsed HTTP/1.x response head plus a bounded body excerpt.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

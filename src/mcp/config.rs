@@ -46,10 +46,10 @@ pub(crate) fn dcert_mcp_long_version() -> &'static str {
 pub(crate) const DEFAULT_SUBPROCESS_TIMEOUT: u64 = 60;
 
 /// Default TCP connection timeout (seconds) passed to the dcert subprocess via --timeout.
-pub(crate) const DEFAULT_CONNECTION_TIMEOUT: u64 = 10;
+pub(crate) const DEFAULT_CONNECTION_TIMEOUT: u64 = dcert::limits::DEFAULT_TIMEOUT_SECS;
 
 /// Default read timeout (seconds) passed to the dcert subprocess via --read-timeout.
-pub(crate) const DEFAULT_READ_TIMEOUT: u64 = 5;
+pub(crate) const DEFAULT_READ_TIMEOUT: u64 = dcert::limits::DEFAULT_READ_TIMEOUT_SECS;
 
 /// Default number of failed authentication attempts one client address may
 /// make within the failure window before it is answered with `429`.
