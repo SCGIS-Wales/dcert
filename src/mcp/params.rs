@@ -164,7 +164,8 @@ pub(crate) struct HttpTlsParams {
     #[serde(default)]
     pub(crate) resolve: Option<OneOrMany>,
     /// Forward proxy URL for this request, overriding the HTTPS_PROXY/HTTP_PROXY
-    /// environment variables the server inherited. Must be http:// or https://;
+    /// environment variables the server inherited. Must be http:// (https://
+    /// proxies are refused until TLS to the proxy is implemented);
     /// credentials may be embedded (http://user:pass@proxy.corp:3128). Pass an
     /// empty string to force a direct connection. Note that `connect_to` and
     /// `resolve` always bypass the proxy.

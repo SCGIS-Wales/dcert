@@ -35,6 +35,32 @@ pub struct HttpClientOptions<'a> {
     /// Maximum redirects to follow. `None` keeps reqwest's default (10);
     /// `Some(0)` refuses to follow any redirect.
     pub max_redirects: Option<usize>,
+    /// Follow redirects only within the origin (scheme, host and port) of
+    /// the original request. Clients that send credentials (Vault) set this,
+    /// so a redirect can never carry a token to another server.
+    pub same_origin_redirects: bool,
+}
+
+/// Default redirect limit, matching reqwest's.
+const DEFAULT_MAX_REDIRECTS: usize = 10;
+
+/// Whether a redirect from a chain that started at `first` may go to `next`
+/// after `hops` redirects already followed: same scheme, host and port, and
+/// fewer than `limit` hops.
+pub fn same_origin_redirect_allowed(first: &url::Url, next: &url::Url, hops: usize, limit: usize) -> bool {
+    hops < limit && first.origin() == next.origin()
+}
+
+/// A redirect policy that stays on the original request's origin.
+pub fn same_origin_redirect_policy(limit: usize) -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(move |attempt| {
+        let hops = attempt.previous().len();
+        let allowed = attempt
+            .previous()
+            .first()
+            .is_some_and(|first| same_origin_redirect_allowed(first, attempt.url(), hops, limit));
+        if allowed { attempt.follow() } else { attempt.stop() }
+    })
 }
 
 /// Number of CA certificates loaded from a directory by [`blocking_client`].
@@ -61,7 +87,11 @@ pub fn blocking_client_with_summary(opts: &HttpClientOptions<'_>) -> Result<(req
     } else if let Some(c) = opts.connect_timeout {
         builder = builder.connect_timeout(c);
     }
-    if let Some(n) = opts.max_redirects {
+    if opts.same_origin_redirects {
+        builder = builder.redirect(same_origin_redirect_policy(
+            opts.max_redirects.unwrap_or(DEFAULT_MAX_REDIRECTS),
+        ));
+    } else if let Some(n) = opts.max_redirects {
         builder = builder.redirect(reqwest::redirect::Policy::limited(n));
     }
 
@@ -143,6 +173,22 @@ fn is_ca_file(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn same_origin_redirects_stay_on_scheme_host_and_port() {
+        let first = url::Url::parse("https://vault.corp:8200/v1/a").unwrap();
+        let ok = url::Url::parse("https://vault.corp:8200/v1/b").unwrap();
+        assert!(same_origin_redirect_allowed(&first, &ok, 0, 10));
+        assert!(!same_origin_redirect_allowed(&first, &ok, 10, 10), "hop limit");
+        for other in [
+            "http://vault.corp:8200/v1/b",
+            "https://evil.example:8200/v1/b",
+            "https://vault.corp:8201/v1/b",
+        ] {
+            let next = url::Url::parse(other).unwrap();
+            assert!(!same_origin_redirect_allowed(&first, &next, 0, 10), "{other}");
+        }
+    }
     use super::*;
 
     #[test]

@@ -128,6 +128,9 @@ impl VaultTlsSettings {
             accept_invalid_certs: self.skip_verify,
             ca_file: self.cacert.as_deref(),
             ca_dir: self.capath.as_deref(),
+            // Every Vault request carries a token: never follow a redirect
+            // to another server.
+            same_origin_redirects: true,
             ..Default::default()
         })
     }
@@ -3079,6 +3082,46 @@ mod tests {
         assert!(
             err.contains("--role") && err.contains("api") && err.contains("web"),
             "{err}"
+        );
+    }
+
+    /// A server that answers every request with a redirect to `location`.
+    fn redirecting_server(location: String) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 307 Temporary Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[test]
+    fn vault_requests_never_follow_a_redirect_to_another_origin() {
+        let reached = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = reached.clone();
+        let elsewhere = fake_vault(move |_, _| {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            (200, r#"{"data":{}}"#.to_string())
+        });
+        let addr = redirecting_server(format!("{elsewhere}/v1/secret/data/app"));
+        let client = test_client(&addr);
+        assert!(
+            client.get_optional("secret/data/app").is_err(),
+            "a 307 must not be followed"
+        );
+        assert_eq!(
+            reached.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the token must never reach another server"
         );
     }
 }

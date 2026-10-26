@@ -8,6 +8,13 @@ summary is written.
 
 ### Security
 
+- `https://` proxy URLs (from `--proxy`, `DCERT_PROXY` or `HTTPS_PROXY`) are
+  refused with a clear error instead of being spoken to in plaintext, which
+  exposed the CONNECT request and proxy credentials. TLS to the proxy is a
+  recorded follow up.
+- Vault and OIDC HTTP clients follow redirects only within the original
+  origin, so a redirect can never carry a Vault token or move JWKS
+  retrieval to another server.
 - Secrets off argv and out of `--help`: the MCP server passes headers and
   request bodies to the CLI through private 0600 files (new
   `--headers-file`, existing `--data-file`), which also lifts the 128 KiB
