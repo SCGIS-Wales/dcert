@@ -257,7 +257,7 @@ jobs:
         run: mypy
 
       - name: Mypy (build scripts)
-        run: mypy --strict ../scripts/build_wheels.py ../scripts/sync_defaults.py
+        run: mypy --strict ../scripts/build_wheels.py ../scripts/sync_defaults.py ../scripts/gen_cipher_table.py
 
       - name: Defaults in step with src/limits.rs
         run: python ../scripts/sync_defaults.py --check
@@ -317,7 +317,37 @@ jobs:
         run: pip install pytest pyyaml click
 
       - name: Run wheel builder tests
-        run: pytest -v scripts/test_build_wheels.py scripts/test_sync_defaults.py
+        run: >-
+          pytest -v scripts/test_build_wheels.py scripts/test_sync_defaults.py
+          scripts/test_gen_cipher_table.py
+
+  # src/ciphers_table.rs is generated from the vendored IANA registry. The
+  # table must regenerate byte for byte; a newer registry on iana.org is
+  # reported (with a copy in the log) but does not block unrelated changes.
+  cipher-table:
+    name: Cipher table
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install generator dependencies
+        run: pip install pyyaml click
+
+      - name: Vendored IANA registry matches iana.org
+        continue-on-error: true
+        run: |
+          python scripts/gen_cipher_table.py fetch --check --print-copy \
+            || { echo "::warning::scripts/data/tls-parameters-4.csv is behind iana.org; run gen_cipher_table.py fetch and generate"; exit 1; }
+
+      - name: Table regenerates from the vendored registry
+        run: python scripts/gen_cipher_table.py generate --check
 
   # Functional test: build a platform wheel, install it in a venv,
   # and verify that dcert, dcert-mcp, and dcert-python commands work.
@@ -445,7 +475,7 @@ jobs:
   auto-tag:
     name: Auto-tag release
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    needs: [ test, test-post-quantum, security-audit, msrv ]
+    needs: [ test, test-post-quantum, security-audit, msrv, cipher-table ]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

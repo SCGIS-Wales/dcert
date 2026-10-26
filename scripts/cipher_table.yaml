@@ -1,0 +1,10 @@
+# Inputs and outputs of scripts/gen_cipher_table.py, relative to the
+# repository root. The IANA registry is vendored so the table regenerates
+# offline and reproducibly; `fetch --check` compares it with the live copy.
+iana_url: https://www.iana.org/assignments/tls-parameters/tls-parameters-4.csv
+iana_csv: scripts/data/tls-parameters-4.csv
+openssl_names: scripts/cipher_openssl_names.yaml
+table: src/ciphers_table.rs
+# Upper bound on the downloaded registry; the real file is about 30 KiB.
+max_download_bytes: 1048576
+download_timeout_seconds: 30

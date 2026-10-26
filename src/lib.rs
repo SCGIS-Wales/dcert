@@ -5,6 +5,7 @@
 //! place instead of being duplicated per binary.
 
 pub mod cert;
+pub mod ciphers;
 pub mod cli;
 pub mod compliance;
 pub mod connect;

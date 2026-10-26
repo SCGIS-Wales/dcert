@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import base64
+import gzip
 import importlib.util
+import io
 import sys
 from pathlib import Path
 from typing import Any
+
+import click
+import pytest
+from click.testing import CliRunner
 
 HERE = Path(__file__).resolve().parent
 _spec = importlib.util.spec_from_file_location("gen_cipher_table", HERE / "gen_cipher_table.py")
@@ -38,6 +45,8 @@ def test_tls12_aead_suite() -> None:
     assert r.pfs
     assert r.fips
     assert not r.export
+    assert not r.recommended
+    assert rows()["TLS_AES_128_GCM_SHA256"].recommended
 
 
 def test_ccm_suites_keep_their_mode() -> None:
@@ -83,3 +92,66 @@ def test_openssl_listing_parser() -> None:
         "ECDHE-RSA-AES128-GCM-SHA256 TLSv1.2 Kx=ECDH Au=RSA Enc=AESGCM(128) Mac=AEAD\n"
     )
     assert gen.parse_openssl_listing(listing) == NAMES
+
+
+def test_config_paths_resolve_against_the_repository() -> None:
+    config = gen.load_config()
+    assert config["iana_url"].startswith("https://www.iana.org/")
+    assert config["table"] == gen.PROJECT_ROOT / "src" / "ciphers_table.rs"
+    assert config["iana_csv"].is_relative_to(gen.PROJECT_ROOT)
+
+
+class FakeResponse(io.BytesIO):
+    def __enter__(self) -> FakeResponse:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+
+def serve(monkeypatch: pytest.MonkeyPatch, body: bytes) -> None:
+    monkeypatch.setattr(gen.urllib.request, "urlopen", lambda *_a, **_k: FakeResponse(body))
+
+
+def test_download_refuses_plain_http_and_oversized_bodies(monkeypatch: pytest.MonkeyPatch) -> None:
+    serve(monkeypatch, b"x" * 11)
+    with pytest.raises(click.ClickException, match="non https"):
+        gen.download("http://example.test/a.csv", 10, 1)
+    with pytest.raises(click.ClickException, match="larger than 10 bytes"):
+        gen.download("https://example.test/a.csv", 10, 1)
+    assert gen.download("https://example.test/a.csv", 11, 1) == b"x" * 11
+
+
+def with_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    vendored = tmp_path / "data" / "tls-parameters-4.csv"
+    config = {
+        "iana_url": "https://example.test/tls-parameters-4.csv",
+        "iana_csv": vendored,
+        "max_download_bytes": 1 << 20,
+        "download_timeout_seconds": 1,
+    }
+    monkeypatch.setattr(gen, "load_config", lambda: config)
+    return vendored
+
+
+def test_fetch_check_fails_on_a_difference_and_prints_a_faithful_copy(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    vendored = with_config(monkeypatch, tmp_path)
+    live = SAMPLE.encode()
+    serve(monkeypatch, live)
+    result = CliRunner().invoke(gen.main, ["fetch", "--check", "--print-copy"])
+    assert result.exit_code == 1
+    payload = result.stdout.split("gzip then base64:\n", 1)[1]
+    assert gzip.decompress(base64.b64decode(payload)) == live
+    assert not vendored.exists()
+
+
+def test_fetch_refreshes_the_vendored_copy(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    vendored = with_config(monkeypatch, tmp_path)
+    serve(monkeypatch, SAMPLE.encode())
+    assert CliRunner().invoke(gen.main, ["fetch"]).exit_code == 0
+    assert vendored.read_text(encoding="utf-8") == SAMPLE
+    result = CliRunner().invoke(gen.main, ["fetch", "--check"])
+    assert result.exit_code == 0
+    assert "matches" in result.stdout
