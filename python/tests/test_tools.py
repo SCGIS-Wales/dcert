@@ -290,6 +290,12 @@ CASES = [
         "create_truststore",
         {"cert_paths": ["ca.pem"], "output_path": "t.p12"},
     ),
+    (
+        create_truststore,
+        {"cert_paths": ["leaf.pem"], "output_path": "t.p12", "allow_non_ca": True},
+        "create_truststore",
+        {"cert_paths": ["leaf.pem"], "output_path": "t.p12", "allow_non_ca": True},
+    ),
 ]
 
 

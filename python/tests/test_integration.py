@@ -189,8 +189,13 @@ async def test_create_truststore_from_exported_pem(session, temp_file):
     pem_path = temp_file(".pem")
     p12_path = temp_file(".p12")
     await export_pem(target=TEST_TARGET, output_path=pem_path, session=session)
+    # A served chain starts with the leaf, which is refused unless allowed.
     result = await create_truststore(
-        cert_paths=[pem_path], output_path=p12_path, password="testpass", session=session
+        cert_paths=[pem_path],
+        output_path=p12_path,
+        password="testpass",
+        allow_non_ca=True,
+        session=session,
     )
     assert result is not None
     assert Path(p12_path).stat().st_size > 0

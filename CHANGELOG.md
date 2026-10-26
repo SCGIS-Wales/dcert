@@ -19,7 +19,8 @@ summary is written.
 - MCP `explain_edge_term` treats the CLI's "nothing matched" exit code (2,
   with an empty list) as an answer rather than a failure.
 - MCP `create_truststore` refuses leaf certificates by default
-  (`allow_non_ca: false`), matching the CLI.
+  (`allow_non_ca: false`), matching the CLI. The Python
+  `create_truststore()` gains an `allow_non_ca` argument.
 - MCP tools always name the subcommand (`check`, `diagnose`, `verify-key`)
   and pass the target after `--`, so a target can never be parsed as a
   subcommand or flag.
