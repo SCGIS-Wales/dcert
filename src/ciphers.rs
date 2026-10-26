@@ -213,7 +213,15 @@ impl Cipher {
     /// Whether the linked OpenSSL can offer this suite at its default
     /// security level.
     pub fn offerable(&self) -> bool {
-        offerable_codes().contains(&self.code)
+        offerable_codes(false).contains(&self.code)
+    }
+
+    /// Whether the linked OpenSSL can offer this suite at all, at security
+    /// level 0. OpenSSL 3.2 and later count `TLS_AES_128_CCM_8_SHA256` as 64
+    /// bit security, so only this level offers it; a policy test needs it to
+    /// show that a server rejects such suites.
+    pub fn implemented(&self) -> bool {
+        offerable_codes(true).contains(&self.code)
     }
 }
 
@@ -480,13 +488,19 @@ fn expand(expression: &str) -> Result<Vec<&'static Cipher>, CipherParseError> {
 }
 
 /// Code points the linked OpenSSL offers when every cipher is enabled, at
-/// the library's default security level. Computed once.
-fn offerable_codes() -> &'static HashSet<u16> {
-    static CODES: OnceLock<HashSet<u16>> = OnceLock::new();
-    CODES.get_or_init(|| {
+/// the library's default security level or at level 0. Computed once each.
+fn offerable_codes(any_level: bool) -> &'static HashSet<u16> {
+    static DEFAULT: OnceLock<HashSet<u16>> = OnceLock::new();
+    static LEVEL_0: OnceLock<HashSet<u16>> = OnceLock::new();
+    let (cell, cipher_list) = if any_level {
+        (&LEVEL_0, "ALL:COMPLEMENTOFALL:@SECLEVEL=0")
+    } else {
+        (&DEFAULT, "ALL:COMPLEMENTOFALL")
+    };
+    cell.get_or_init(|| {
         let build = || -> Result<HashSet<u16>, openssl::error::ErrorStack> {
             let mut builder = SslContext::builder(SslMethod::tls_client())?;
-            builder.set_cipher_list("ALL:COMPLEMENTOFALL")?;
+            builder.set_cipher_list(cipher_list)?;
             let suites: Vec<&str> = all()
                 .iter()
                 .filter(|c| c.protocol == Protocol::Tls13)
@@ -722,5 +736,18 @@ mod tests {
             assert!(Cipher::by_code(code).unwrap().offerable(), "{iana}");
         }
         assert!(!Cipher::parse("TLS_NULL_WITH_NULL_NULL").unwrap().offerable());
+    }
+
+    #[test]
+    fn implemented_covers_what_level_0_unlocks() {
+        for cipher in all() {
+            if cipher.offerable() {
+                assert!(cipher.implemented(), "{}", cipher.iana);
+            }
+        }
+        // CCM_8 exists in every OpenSSL 3 build, whatever the default level.
+        assert!(Cipher::parse("TLS_AES_128_CCM_8_SHA256").unwrap().implemented());
+        // No OpenSSL name means no build can offer it.
+        assert!(!Cipher::parse("TLS_RSA_WITH_RC4_128_MD5").unwrap().implemented());
     }
 }

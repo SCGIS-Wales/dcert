@@ -175,7 +175,13 @@ fn tls13_1_2_res_pq_tls13_conformant() {
     let (report, _) = policy_test(&server, RES_PQ, &["--versions", "1.3"], 0);
     assert_eq!(report["verdict"], faithful_verdict(), "{report}");
     assert_eq!(outcomes(&report, "tls13_suite"), ["pass", "pass", "pass"]);
-    assert!(outcomes(&report, "tls13_excluded").iter().all(|o| *o == "pass"));
+    // CCM_8 needs security level 0 on OpenSSL 3.2 and later; it is still
+    // offered and rejected.
+    assert!(
+        outcomes(&report, "tls13_excluded").iter().all(|o| *o == "pass"),
+        "{report}"
+    );
+    assert_eq!(check(&report, "TLS_AES_128_CCM_8_SHA256")["outcome"], "pass");
 }
 
 #[test]
@@ -185,12 +191,12 @@ fn tls13_1_2_res_pq_tls12_conformant() {
     assert_eq!(report["verdict"], faithful_verdict(), "{report}");
     assert_eq!(report["key_types"], serde_json::json!(["rsa", "ecdsa"]));
     assert_eq!(outcomes(&report, "tls12_cipher"), ["pass", "pass", "pass", "pass"]);
+    // Every excluded cipher is tested: those the linked OpenSSL cannot
+    // offer (RC4, 3DES) are left out rather than made not testable.
     let excluded = outcomes(&report, "tls12_excluded");
     assert!(!excluded.is_empty());
-    assert!(
-        excluded.iter().all(|o| *o == "pass" || *o == "not_testable"),
-        "{excluded:?}"
-    );
+    assert!(excluded.iter().all(|o| *o == "pass"), "{excluded:?}");
+    assert!(!report.to_string().contains("RC4"), "{report}");
     assert!(pretty.contains("ECDHE-ECDSA-AES128-GCM-SHA256 (TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, 0xC02B)"));
 
     let rsa_only = emulate_policy(RES_PQ, Identity::Rsa).spawn();
