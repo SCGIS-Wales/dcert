@@ -74,6 +74,13 @@ summary is written.
 
 ### Fixed
 
+- Numeric options have ranges defined once in `src/limits.rs` and enforced
+  by both the CLI and the MCP server: `--timeout` and `--read-timeout`
+  1 to 300 seconds, `--issuer-timeout` 1 to 60, `--watch` 1 to 86400,
+  `--body-limit` up to 1 MiB. `DCERT_MCP_TIMEOUT=0` and an unknown
+  `--mode` are refused at startup, waiting for a subprocess slot is bounded
+  by the subprocess timeout ("server busy"), and HTTP shutdown gives
+  in-flight requests at most 10 seconds to drain.
 - OCSP requests honour the run's proxy settings (an `http://` proxy that
   does not bypass the responder carries the request in absolute URI form)
   and use `--timeout` instead of a fixed five seconds; failing to set a

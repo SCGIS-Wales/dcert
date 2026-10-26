@@ -477,16 +477,35 @@ pub(crate) async fn run_http_mode(config: McpConfig, addr: &str) -> Result<(), B
 
     // ConnectInfo gives the middleware the TCP peer address, which keys the
     // failure limiter and is what the audit log records as the client.
-    axum::serve(
+    let server = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
     .with_graceful_shutdown(shutdown_signal)
-    .await?;
+    .into_future();
+    tokio::pin!(server);
+    // In-flight requests get DRAIN_DEADLINE to finish after a signal; a
+    // request stuck on a slow peer must not keep the process alive forever.
+    let drain_expired = async {
+        shutdown.cancelled().await;
+        tokio::time::sleep(DRAIN_DEADLINE).await;
+    };
+    tokio::select! {
+        result = &mut server => result?,
+        () = drain_expired => {
+            tracing::warn!(
+                deadline_secs = DRAIN_DEADLINE.as_secs(),
+                "drain deadline passed; exiting with requests still in flight"
+            );
+        }
+    }
 
     tracing::info!("dcert-mcp HTTP server stopped");
     Ok(())
 }
+
+/// How long in-flight requests may run after a shutdown signal.
+pub(crate) const DRAIN_DEADLINE: Duration = Duration::from_secs(10);
 
 /// Resolve when the process is asked to stop: Ctrl+C on any platform, or
 /// SIGTERM on Unix (how a container runtime asks a process to exit).

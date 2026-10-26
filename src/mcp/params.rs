@@ -4,6 +4,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::validate::{reject_flag_like, validate_arg, validate_path};
+use dcert::limits::{READ_TIMEOUT_RANGE, TIMEOUT_RANGE, check_range};
 
 // -- Parameter types --
 
@@ -382,15 +383,11 @@ impl HttpTlsParams {
                 data.len()
             ));
         }
-        if let Some(t) = self.timeout
-            && !(1..=300).contains(&t)
-        {
-            return Err("timeout must be between 1 and 300 seconds".to_string());
+        if let Some(t) = self.timeout {
+            check_range("timeout", t, &TIMEOUT_RANGE)?;
         }
-        if let Some(t) = self.read_timeout
-            && !(1..=300).contains(&t)
-        {
-            return Err("read_timeout must be between 1 and 300 seconds".to_string());
+        if let Some(t) = self.read_timeout {
+            check_range("read_timeout", t, &READ_TIMEOUT_RANGE)?;
         }
         Ok(())
     }

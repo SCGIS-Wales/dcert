@@ -364,3 +364,57 @@ fn localhost_reaches_an_ipv4_only_server_even_when_ipv6_resolves_first() {
         "{parsed}"
     );
 }
+
+// ---------------------------------------------------------------
+// Plan PR 2.4: numeric options have ranges, on both surfaces
+// ---------------------------------------------------------------
+
+#[test]
+fn cli_rejects_out_of_range_numeric_options() {
+    for (flag, value) in [
+        ("--timeout", "0"),
+        ("--read-timeout", "301"),
+        ("--issuer-timeout", "61"),
+        ("--watch", "0"),
+        ("--body-limit", "2000000"),
+    ] {
+        let output = dcert_bin()
+            .args(["https://example.invalid", flag, value])
+            .output()
+            .expect("failed to run dcert");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{flag} {value}: {stderr}");
+        assert!(stderr.contains(flag), "{flag}: {stderr}");
+    }
+}
+
+fn mcp_bin() -> std::process::Command {
+    std::process::Command::new(env!("CARGO_BIN_EXE_dcert-mcp"))
+}
+
+#[test]
+fn mcp_refuses_a_zero_subprocess_timeout_at_startup() {
+    let output = mcp_bin()
+        .env("DCERT_MCP_TIMEOUT", "0")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("failed to run dcert-mcp");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(
+        stderr.contains("--timeout") || stderr.contains("DCERT_MCP_TIMEOUT"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn mcp_refuses_an_unknown_mode() {
+    let output = mcp_bin()
+        .args(["--mode", "grpc"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("failed to run dcert-mcp");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(stderr.contains("grpc"), "{stderr}");
+}

@@ -110,6 +110,11 @@ impl DcertMcpServer {
         if params.resolve_issuers {
             args.push("--resolve-issuers".to_string());
         }
+        if let Some(t) = params.issuer_timeout
+            && let Err(e) = dcert::limits::check_range("issuer_timeout", t, &dcert::limits::ISSUER_TIMEOUT_RANGE)
+        {
+            return ok_error(e);
+        }
         if let Some(t) = params.issuer_timeout {
             args.push("--issuer-timeout".to_string());
             args.push(t.to_string());

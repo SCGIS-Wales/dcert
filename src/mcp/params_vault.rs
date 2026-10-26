@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::config::McpConfig;
-use crate::exec::{SUBPROCESS_SEMAPHORE, run_child_with_timeout, spawn_dcert};
+use crate::exec::{acquire_permit, run_child_with_timeout, spawn_dcert};
 use crate::params::{
     default_cert_key_name, default_key_key_name, default_kv_version, default_ttl, default_vault_mount,
 };
@@ -329,10 +329,7 @@ pub(crate) async fn run_dcert_vault(
     config: &McpConfig,
     extra_env: &[(&str, &str)],
 ) -> Result<(String, String, i32), String> {
-    let _permit = SUBPROCESS_SEMAPHORE
-        .acquire()
-        .await
-        .map_err(|_| "Subprocess semaphore closed".to_string())?;
+    let _permit = acquire_permit(config).await?;
 
     // The address policy decides whether the server's own token may be used,
     // so it is checked before any token is resolved.
