@@ -35,7 +35,8 @@ PAGE = """
       <td><img alt="Yes"></td><td><img alt="Yes"></td></tr>
 </table>
 <h3>Ciphers</h3>
-<table><tr><td>ECDHE-RSA-AES128-GCM-SHA256<br>TLS_AES_128_GCM_SHA256</td></tr></table>
+<table><tr><td><p>ECDHE-RSA-AES128-GCM-SHA256</p><p>TLS_AES_<b>128</b>_GCM_SHA256</p></td>
+<td><code>A</code><code>B</code><br>C</td></tr></table>
 <table></table>
 </body></html>
 """
@@ -51,7 +52,7 @@ def test_tables_keep_headings_context_and_image_alt_text() -> None:
     assert protocols["rows"][1] == ["ELBSecurityPolicy-TLS13-1-3-PQ-2025-09", "Yes", ""]
     assert protocols["rows"][2][1:] == ["Yes", "Yes"]
     assert ciphers["heading"] == "Ciphers"
-    assert ciphers["rows"] == [["ECDHE-RSA-AES128-GCM-SHA256 TLS_AES_128_GCM_SHA256"]]
+    assert ciphers["rows"] == [["ECDHE-RSA-AES128-GCM-SHA256 TLS_AES_128_GCM_SHA256", "A B C"]]
 
 
 def test_json_sources_are_kept_as_json() -> None:

@@ -11,5 +11,4 @@ sources:
   aws_nlb: https://docs.aws.amazon.com/elasticloadbalancing/latest/network/describe-ssl-policies.html
   aws_cloudfront: https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/secure-connections-supported-viewer-protocols-ciphers.html
   aws_api_gateway: https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-security-policies-list.html
-  aws_api_gateway_custom_domain: https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-custom-domain-tls-version.html
   mozilla: https://ssl-config.mozilla.org/guidelines/latest.json

@@ -34,6 +34,9 @@ import yaml
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_FILE = PROJECT_ROOT / "scripts" / "tls_policies.yaml"
 HEADINGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
+#: Tags that only style text; every other tag boundary inside a cell separates
+#: items (the AWS pages put each cipher and policy name in its own element).
+INLINE = {"a", "b", "i", "em", "strong", "sup", "sub", "abbr"}
 #: A table is kept with this many characters of the text before it.
 CONTEXT_CHARS = 400
 
@@ -84,7 +87,7 @@ class TableExtractor(HTMLParser):
             alt = attributes.get("alt") or attributes.get("title") or ""
             if alt:
                 self._cell.append(f" {alt} ")
-        elif tag == "br" and self._cell is not None:
+        elif self._cell is not None and tag not in INLINE:
             self._cell.append(" ")
 
     def handle_endtag(self, tag: str) -> None:
@@ -101,6 +104,8 @@ class TableExtractor(HTMLParser):
             if self._row:
                 self._stack[-1]["rows"].append(self._row)
             self._row = None
+        elif self._cell is not None and tag not in INLINE and tag != "table":
+            self._cell.append(" ")
         elif tag == "table" and self._stack:
             table = self._stack.pop()
             if table["rows"]:
