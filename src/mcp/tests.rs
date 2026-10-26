@@ -2082,3 +2082,61 @@ async fn vault_tools_reject_kv_version_outside_one_and_two() {
     .expect("kv_version 3 must be refused");
     assert!(err.contains("kv_version must be 1 or 2"), "{err}");
 }
+
+// ---------------------------------------------------------------
+// Plan PR 0.3 regressions: argument order, exit codes, defaults
+// ---------------------------------------------------------------
+
+#[test]
+fn target_args_names_the_subcommand_and_ends_with_the_target() {
+    let args = target_args("check", vec!["--format".into(), "json".into()], "kb");
+    assert_eq!(args, ["check", "--format", "json", "--", "kb"]);
+}
+
+#[test]
+fn injected_flags_land_before_the_target_separator() {
+    let full = inject_flags(&["check", "--format", "json", "--", "example.com"], true, "10", "5");
+    assert_eq!(
+        full,
+        [
+            "check",
+            "--format",
+            "json",
+            "--debug",
+            "--timeout",
+            "10",
+            "--read-timeout",
+            "5",
+            "--",
+            "example.com"
+        ]
+    );
+}
+
+#[test]
+fn injected_flags_respect_caller_values_and_work_without_separator() {
+    let full = inject_flags(&["kb", "explain", "403", "--timeout", "3"], false, "10", "5");
+    assert_eq!(full, ["kb", "explain", "403", "--timeout", "3", "--read-timeout", "5"]);
+}
+
+#[test]
+fn explain_exit_2_with_empty_list_is_an_answer() {
+    assert_eq!(cert::explain_ok_codes(2, "[]\n"), &[0, 2]);
+    assert_eq!(cert::explain_ok_codes(0, "[{\"x\":1}]"), &[0]);
+}
+
+#[test]
+fn explain_exit_2_without_output_is_an_error() {
+    assert_eq!(cert::explain_ok_codes(2, ""), &[0]);
+    assert_eq!(cert::explain_ok_codes(1, "[]"), &[0]);
+}
+
+#[test]
+fn create_truststore_refuses_leaves_by_default_like_the_cli() {
+    let params: CreateTruststoreParams = serde_json::from_value(serde_json::json!({
+        "cert_paths": ["ca.pem"],
+        "output_path": "trust.p12"
+    }))
+    .expect("params");
+    assert!(!params.allow_non_ca);
+}

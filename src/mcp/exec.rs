@@ -91,6 +91,39 @@ pub(crate) fn spawn_dcert(
         .map_err(|e| format!("Failed to run dcert at {}: {}", config.dcert_binary.display(), e))
 }
 
+/// Argument vector for a subcommand that takes a target: the subcommand
+/// first, then `options`, then `--` and the target. The explicit subcommand
+/// means a target can never be routed as one (a host called `kb`), and `--`
+/// means it can never be parsed as a flag.
+pub(crate) fn target_args(subcommand: &str, options: Vec<String>, target: &str) -> Vec<String> {
+    let mut args = Vec::with_capacity(options.len() + 3);
+    args.push(subcommand.to_string());
+    args.extend(options);
+    args.push("--".to_string());
+    args.push(target.to_string());
+    args
+}
+
+/// Add `--debug` (when `debug`), `--timeout` and `--read-timeout` unless the
+/// caller already set them. They go before any `--`, after which every
+/// argument is a target.
+pub(crate) fn inject_flags(args: &[&str], debug: bool, timeout: &str, read_timeout: &str) -> Vec<String> {
+    let split = args.iter().position(|a| *a == "--").unwrap_or(args.len());
+    let (options, targets) = args.split_at(split);
+    let mut full: Vec<String> = options.iter().map(|a| (*a).to_string()).collect();
+    if debug && !options.contains(&"--debug") {
+        full.push("--debug".to_string());
+    }
+    for (flag, value) in [("--timeout", timeout), ("--read-timeout", read_timeout)] {
+        if !options.contains(&flag) {
+            full.push(flag.to_string());
+            full.push(value.to_string());
+        }
+    }
+    full.extend(targets.iter().map(|a| (*a).to_string()));
+    full
+}
+
 /// Run dcert with given arguments and return (stdout, stderr, exit_code).
 ///
 /// Passes `--debug` when `DCERT_MCP_DEBUG` is truthy so MCP tool responses include diagnostic info.
@@ -119,23 +152,13 @@ pub(crate) async fn run_dcert_with_env(
         .await
         .map_err(|_| "Subprocess semaphore closed".to_string())?;
 
-    let mut full_args: Vec<&str> = Vec::with_capacity(args.len() + 5);
-    full_args.extend_from_slice(args);
-    if debug_enabled() && !full_args.contains(&"--debug") {
-        full_args.push("--debug");
-    }
-
-    // Pass connection and read timeouts to the dcert subprocess
-    let timeout_str = config.connection_timeout.to_string();
-    let read_timeout_str = config.read_timeout.to_string();
-    if !full_args.contains(&"--timeout") {
-        full_args.push("--timeout");
-        full_args.push(&timeout_str);
-    }
-    if !full_args.contains(&"--read-timeout") {
-        full_args.push("--read-timeout");
-        full_args.push(&read_timeout_str);
-    }
+    let full_args = inject_flags(
+        args,
+        debug_enabled(),
+        &config.connection_timeout.to_string(),
+        &config.read_timeout.to_string(),
+    );
+    let full_args: Vec<&str> = full_args.iter().map(String::as_str).collect();
 
     let mut child = spawn_dcert(config, &full_args, env_vars.unwrap_or(&[]))?;
     run_child_with_timeout(&mut child, config).await

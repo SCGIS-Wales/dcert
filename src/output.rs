@@ -390,6 +390,8 @@ pub struct TargetResult {
     pub conn_info: Option<TlsConnectionInfo>,
     pub infos: Vec<CertInfo>,
     pub pem_data: String,
+    /// The chain `--export-pem -` asked to include in the output.
+    pub pem_export: Option<String>,
     pub compliance_report: Option<ChainComplianceReport>,
     pub root_trust: Option<RootTrustInfo>,
     /// Proxy, TLS, mTLS and platform findings, earliest layer first.
@@ -418,6 +420,9 @@ pub struct StructuredOutput {
     pub platforms: Vec<PlatformHint>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub context: Vec<crate::kbref::Note>,
+    /// PEM chain, present only with `--export-pem -`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pem_data: Option<String>,
 }
 
 impl From<&TargetResult> for StructuredOutput {
@@ -430,7 +435,46 @@ impl From<&TargetResult> for StructuredOutput {
             diagnosis: result.diagnosis.clone(),
             platforms: result.platforms.clone(),
             context: result.context.clone(),
+            pem_data: result.pem_export.clone(),
         }
+    }
+}
+
+/// The client certificate configured on the command line, if any.
+fn client_identity(args: &CheckArgs) -> ClientIdentity<'_> {
+    ClientIdentity {
+        client_cert_path: args.client_cert.as_deref(),
+        client_key_path: args.client_key.as_deref(),
+        pkcs12_path: args.pkcs12.as_deref(),
+        cert_password: args.cert_password.as_deref(),
+    }
+}
+
+/// Split a STARTTLS target into host and port.
+///
+/// The target parser prepends `https://` to bare hostnames, and a user may
+/// paste a URL, so any scheme, path, query and userinfo are dropped first.
+/// IPv6 literals keep working in their bracketed form (`[::1]:587`). A
+/// missing or unparsable port falls back to the protocol default.
+pub fn starttls_host_port(target: &str, default_port: u16) -> (String, u16) {
+    let rest = target.split_once("://").map_or(target, |(_, r)| r);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    let authority = authority.rsplit_once('@').map_or(authority, |(_, a)| a);
+    if let Some(inner) = authority.strip_prefix('[')
+        && let Some((host, tail)) = inner.split_once(']')
+    {
+        let port = tail
+            .strip_prefix(':')
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(default_port);
+        return (host.to_string(), port);
+    }
+    match authority.rsplit_once(':') {
+        Some((host, port)) if !host.contains(':') => match port.parse() {
+            Ok(p) => (host.to_string(), p),
+            Err(_) => (host.to_string(), default_port),
+        },
+        _ => (authority.to_string(), default_port),
     }
 }
 
@@ -478,25 +522,11 @@ pub fn process_target(
             .to_string();
         (pem, None)
     } else if let Some(protocol) = args.starttls {
-        // STARTTLS mode: target is host[:port]
-        let (host, port) = if let Some(colon_pos) = target.rfind(':') {
-            let port_str = &target[colon_pos + 1..];
-            if let Ok(p) = port_str.parse::<u16>() {
-                (&target[..colon_pos], p)
-            } else {
-                (target, protocol.default_port())
-            }
-        } else {
-            (target, protocol.default_port())
-        };
-
-        if args.no_verify {
-            eprintln!(
-                "{} TLS certificate verification is disabled (--no-verify). \
-                 Chain validation errors will be suppressed.",
-                "Warning:".yellow().bold()
-            );
-        }
+        // STARTTLS mode: target is host[:port]. The target parser adds
+        // `https://` to bare hostnames, so the scheme is stripped here.
+        let (host, port) = starttls_host_port(target, protocol.default_port());
+        let host = host.as_str();
+        let identity = client_identity(args);
 
         let probe = probe_options(args, connect_overrides, &tls_settings);
         let mut conn = fetch_tls_chain_starttls(&StarttlsFetchOptions {
@@ -504,6 +534,7 @@ pub fn process_target(
             host,
             port,
             protocol,
+            identity,
         })?;
         if args.pq_probe {
             conn.post_quantum_probe = Some(probe_post_quantum(
@@ -512,7 +543,7 @@ pub fn process_target(
                     port,
                     transport: ProbeTransport::Starttls(protocol),
                     proxy_config: None,
-                    identity: ClientIdentity::default(),
+                    identity,
                     alpn: None,
                 },
                 &probe,
@@ -521,21 +552,9 @@ pub fn process_target(
         let pem = conn.pem_data.clone();
         (pem, Some(conn))
     } else if target.starts_with("https://") {
-        if args.no_verify {
-            eprintln!(
-                "{} TLS certificate verification is disabled (--no-verify). \
-                 Chain validation errors will be suppressed.",
-                "Warning:".yellow().bold()
-            );
-        }
         let method_str = args.method.to_string();
         let probe = probe_options(args, connect_overrides, &tls_settings);
-        let identity = ClientIdentity {
-            client_cert_path: args.client_cert.as_deref(),
-            client_key_path: args.client_key.as_deref(),
-            pkcs12_path: args.pkcs12.as_deref(),
-            cert_password: args.cert_password.as_deref(),
-        };
+        let identity = client_identity(args);
         let mut conn = fetch_tls_chain_openssl(&TlsFetchOptions {
             probe,
             endpoint: target,
@@ -640,6 +659,7 @@ pub fn process_target(
         conn_info,
         infos,
         pem_data,
+        pem_export: None,
         compliance_report,
         root_trust,
         diagnosis: Vec::new(),
@@ -757,43 +777,46 @@ pub fn diff_field(name: &str, a: &str, b: &str) {
     }
 }
 
-/// Export PEM chain to a file, optionally excluding expired certs.
-pub fn export_pem_chain(pem_data: &str, export_path: &str, exclude_expired: bool) -> Result<()> {
-    let export_data = if exclude_expired {
-        let blocks = pem::parse_many(pem_data).map_err(|e| anyhow::anyhow!("Failed to parse PEM for export: {e}"))?;
-        let now = OffsetDateTime::now_utc();
-        let mut filtered_pem = String::new();
-
-        for block in blocks {
-            if block.tag() != "CERTIFICATE" {
-                continue;
-            }
-            if let Ok((_, cert)) = X509Certificate::from_der(block.contents()) {
-                let not_after: OffsetDateTime = cert.validity().not_after.to_datetime();
-                if not_after >= now {
-                    let pem_str = pem_rfc7468::encode_string("CERTIFICATE", LineEnding::LF, block.contents())
-                        .map_err(|e| anyhow::anyhow!("PEM encoding failed: {e}"))?;
-                    filtered_pem.push_str(&pem_str);
-                    if !filtered_pem.ends_with('\n') {
-                        filtered_pem.push('\n');
-                    }
+/// The PEM text `--export-pem` writes: the chain as fetched, or only the
+/// unexpired certificates with `exclude_expired`. `None` when every
+/// certificate was filtered out.
+pub fn export_pem_text(pem_data: &str, exclude_expired: bool) -> Result<Option<String>> {
+    if !exclude_expired {
+        return Ok(Some(pem_data.to_string()));
+    }
+    let blocks = pem::parse_many(pem_data).map_err(|e| anyhow::anyhow!("Failed to parse PEM for export: {e}"))?;
+    let now = OffsetDateTime::now_utc();
+    let mut filtered_pem = String::new();
+    for block in blocks {
+        if block.tag() != "CERTIFICATE" {
+            continue;
+        }
+        if let Ok((_, cert)) = X509Certificate::from_der(block.contents()) {
+            let not_after: OffsetDateTime = cert.validity().not_after.to_datetime();
+            if not_after >= now {
+                let pem_str = pem_rfc7468::encode_string("CERTIFICATE", LineEnding::LF, block.contents())
+                    .map_err(|e| anyhow::anyhow!("PEM encoding failed: {e}"))?;
+                filtered_pem.push_str(&pem_str);
+                if !filtered_pem.ends_with('\n') {
+                    filtered_pem.push('\n');
                 }
             }
         }
+    }
+    Ok((!filtered_pem.is_empty()).then_some(filtered_pem))
+}
 
-        if filtered_pem.is_empty() {
-            eprintln!("Warning: All certificates were expired. No certificates exported to {export_path}");
-            return Ok(());
-        }
-
-        filtered_pem
-    } else {
-        pem_data.to_string()
+/// Export PEM chain to a file, optionally excluding expired certs.
+///
+/// The confirmation goes to stderr so it never corrupts JSON or YAML on stdout.
+pub fn export_pem_chain(pem_data: &str, export_path: &str, exclude_expired: bool) -> Result<()> {
+    let Some(export_data) = export_pem_text(pem_data, exclude_expired)? else {
+        eprintln!("Warning: All certificates were expired. No certificates exported to {export_path}");
+        return Ok(());
     };
-
     write_public_file(export_path, export_data.as_bytes())
         .with_context(|| format!("Failed to write PEM file: {export_path}"))?;
-    println!("PEM chain exported to {export_path}");
+    eprintln!("PEM chain exported to {export_path}");
     Ok(())
 }
 
@@ -893,6 +916,9 @@ pub fn output_results(
         if !result.context.is_empty() {
             let mut out = std::io::stdout().lock();
             let _ = write_context(&mut out, &result.context);
+        }
+        if let Some(pem) = &result.pem_export {
+            print!("{pem}");
         }
     })
 }
@@ -1122,6 +1148,43 @@ pub fn print_compliance_pretty(report: &ChainComplianceReport) {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn starttls_target_strips_the_scheme_the_parser_added() {
+        assert_eq!(
+            starttls_host_port("https://mail.example.com", 587),
+            ("mail.example.com".to_string(), 587)
+        );
+        assert_eq!(
+            starttls_host_port("https://mail.example.com:2525", 587),
+            ("mail.example.com".to_string(), 2525)
+        );
+    }
+
+    #[test]
+    fn starttls_target_accepts_bare_hosts_paths_and_ipv6() {
+        assert_eq!(starttls_host_port("127.0.0.1:25", 587), ("127.0.0.1".to_string(), 25));
+        assert_eq!(
+            starttls_host_port("smtp://user@mx.example.com:465/x?y", 25),
+            ("mx.example.com".to_string(), 465)
+        );
+        assert_eq!(starttls_host_port("[::1]:143", 993), ("::1".to_string(), 143));
+        assert_eq!(starttls_host_port("[::1]", 993), ("::1".to_string(), 993));
+        assert_eq!(starttls_host_port("::1", 993), ("::1".to_string(), 993));
+        assert_eq!(starttls_host_port("host:notaport", 110), ("host".to_string(), 110));
+    }
+
+    #[test]
+    fn export_pem_text_keeps_the_chain_unless_filtering() {
+        let pem = "-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----\n";
+        assert_eq!(export_pem_text(pem, false).expect("export").as_deref(), Some(pem));
+    }
+
+    #[test]
+    fn export_pem_text_drops_unparsable_and_expired_when_filtering() {
+        let pem = "-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----\n";
+        assert_eq!(export_pem_text(pem, true).expect("export"), None);
+    }
     use super::*;
     use crate::cert::tests::make_test_cert;
     use crate::cert::{CertProcessOpts, parse_cert_infos_from_pem};
