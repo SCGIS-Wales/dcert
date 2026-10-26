@@ -5,7 +5,7 @@ use std::time::Duration;
 use url::Url;
 
 use crate::debug::debug_log;
-use crate::tls::{read_http_response, resolve_host};
+use crate::tls::read_http_response;
 
 /// Determine whether an OCSP responder host is safe to contact.
 ///
@@ -99,18 +99,17 @@ pub fn check_ocsp_status(cert_der: &[u8], issuer_der: Option<&[u8]>, ocsp_url: &
     // Resolve first and check the answer before any packet goes out, so a
     // name pointing at an internal service is refused without connecting
     // (connecting first would turn dcert into a port scan oracle).
-    let addr = match resolve_host(&host, port) {
-        Ok((addr, _dns_ms)) => addr,
+    let addrs = match crate::dns::resolve_all(&host, port, OCSP_TIMEOUT) {
+        Ok((addrs, _dns_ms)) => addrs,
         Err(e) => return format!("unknown (could not resolve OCSP responder {host}: {e})"),
     };
-    if !is_safe_ocsp_host(&addr.ip().to_string()) {
+    if addrs.iter().any(|a| !is_safe_ocsp_host(&a.ip().to_string())) {
         return "unknown (OCSP responder rejected: address is private, loopback or otherwise internal)".to_string();
     }
-    if let Err(e) = crate::netpolicy::enforce_addr(&host, &addr) {
-        return format!("unknown (OCSP responder rejected: {e})");
-    }
-    let tcp_stream = match std::net::TcpStream::connect_timeout(&addr, OCSP_TIMEOUT) {
-        Ok(s) => {
+    let tcp_stream = match crate::dns::connect_first(&host, port, &addrs, OCSP_TIMEOUT, |a| {
+        crate::netpolicy::enforce_addr(&host, a)
+    }) {
+        Ok((s, _)) => {
             debug_log!(debug, "OCSP responder connected: {}:{}", host, port);
             s
         }

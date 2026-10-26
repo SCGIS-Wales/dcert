@@ -1,7 +1,7 @@
 use anyhow::Result;
 use std::env;
 use std::io::Write;
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::TcpStream;
 use std::time::Duration;
 use url::Url;
 
@@ -206,17 +206,10 @@ pub fn connect_through_proxy(
         .ok_or_else(|| anyhow::anyhow!("Proxy URL must include a host"))?;
     let proxy_port = proxy.port().unwrap_or(8080);
 
-    // Connect to proxy
-    let proxy_addr = format!("{proxy_host}:{proxy_port}")
-        .to_socket_addrs()
-        .map_err(|e| anyhow::anyhow!("Failed to resolve proxy {proxy_host}: {e}"))?
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("No valid address found for proxy {proxy_host}"))?;
-
-    debug_log!(debug, "Proxy resolved: {} -> {}", proxy_host, proxy_addr);
-
-    let mut stream = TcpStream::connect_timeout(&proxy_addr, connect_timeout)
+    // Connect to the proxy: bounded resolution, every address tried.
+    let (mut stream, _dns_ms, proxy_addr) = crate::tls::direct_tcp_connect(proxy_host, proxy_port, connect_timeout)
         .map_err(|e| anyhow::anyhow!("Failed to connect to proxy: {e}"))?;
+    debug_log!(debug, "Proxy resolved: {} -> {}", proxy_host, proxy_addr);
 
     stream
         .set_read_timeout(Some(Duration::from_secs(read_timeout_secs.max(1))))
