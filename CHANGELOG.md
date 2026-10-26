@@ -28,6 +28,15 @@ summary is written.
   `verify_key_match` now honours the server's connection timeouts. Vault
   tools no longer force `--debug` into their output. Every tool builds its
   arguments through the same builder; no hand written flag pushes remain.
+- Single sources: every default and range (timeouts, expiry warning,
+  truststore password, keystore alias, Vault TTL, mounts, KV version and
+  key names) lives in `src/limits.rs` and feeds clap, the MCP parameters and
+  the Python `config.yaml` (written by `scripts/sync_defaults.py`, checked
+  in CI). `ProxyConfig::from_env` is the only proxy environment reader; it
+  honours `DCERT_PROXY` and `DCERT_NOPROXY` with the meaning of `--proxy`
+  and `--noproxy`, and the MCP server and the diagnostics use it. MCP enum
+  parameters are checked with the CLI's own `ValueEnum` types and list the
+  accepted values when one is refused.
 
 ### Security
 
@@ -97,6 +106,9 @@ summary is written.
 
 ### Fixed
 
+- The MCP `check_expiry.days` limit matches `--expiry-warn` (0 to 36500)
+  instead of stopping at 3650, and the MCP server's proxy report follows the
+  CLI's precedence (HTTPS traffic is never shown as using `HTTP_PROXY`).
 - `--method` is case insensitive, so `POST` works on the CLI and the MCP
   `method: "POST"` the tool schema documents is no longer rejected.
 

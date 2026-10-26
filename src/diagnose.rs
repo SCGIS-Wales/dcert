@@ -620,10 +620,11 @@ fn add_hint(hints: &mut Vec<PlatformHint>, platform: Platform, reason: String) {
     }
 }
 
+/// HTTP_PROXY is set but nothing routes HTTPS through a proxy, read with
+/// the same precedence the probe itself applies.
 fn https_proxy_missing_http_set() -> bool {
-    let set = |n: &str| std::env::var(n).map(|v| !v.is_empty()).unwrap_or(false);
-    (set("HTTP_PROXY") || set("http_proxy"))
-        && !(set("HTTPS_PROXY") || set("https_proxy") || set("ALL_PROXY") || set("all_proxy"))
+    let config = ProxyConfig::from_env();
+    config.http_proxy.is_some() && config.https_proxy.is_none()
 }
 
 // ---------------------------------------------------------------------------

@@ -32,6 +32,37 @@ const _: () = assert!(DEFAULT_BODY_LIMIT <= MAX_BODY_LIMIT);
 /// `DCERT_MCP_TIMEOUT`: subprocess timeout in seconds for the MCP server.
 pub const SUBPROCESS_TIMEOUT_RANGE: RangeInclusive<u64> = 1..=3600;
 
+/// `--expiry-warn` and the MCP `check_expiry.days` default, in days.
+pub const DEFAULT_EXPIRY_WARN_DAYS: u64 = 30;
+/// Accepted `--expiry-warn` values (up to one hundred years).
+pub const EXPIRY_WARN_RANGE: RangeInclusive<u64> = 0..=36_500;
+
+/// Directory converted PEM files are written to when none is given.
+pub const DEFAULT_OUTPUT_DIR: &str = ".";
+/// Alias of the key entry in a new PKCS12 keystore.
+pub const DEFAULT_KEYSTORE_ALIAS: &str = "server";
+/// Password of a new PKCS12 truststore (the Java convention).
+pub const DEFAULT_TRUSTSTORE_PASSWORD: &str = "changeit";
+
+/// Vault certificate TTL.
+pub const DEFAULT_VAULT_TTL: &str = "8760h";
+/// Vault PKI secrets engine mount.
+pub const DEFAULT_VAULT_PKI_MOUNT: &str = "vault_intermediate";
+/// Vault authentication method.
+pub const DEFAULT_VAULT_AUTH_METHOD: &str = "token";
+/// Vault LDAP auth mount.
+pub const DEFAULT_VAULT_LDAP_MOUNT: &str = "ldap";
+/// Vault AppRole auth mount.
+pub const DEFAULT_VAULT_APPROLE_MOUNT: &str = "approle";
+/// Vault KV secrets engine version.
+pub const DEFAULT_KV_VERSION: u8 = 1;
+/// Accepted Vault KV versions.
+pub const KV_VERSION_RANGE: RangeInclusive<u8> = 1..=2;
+/// Field of a Vault KV secret that holds the certificate.
+pub const DEFAULT_KV_CERT_KEY: &str = "cert";
+/// Field of a Vault KV secret that holds the private key.
+pub const DEFAULT_KV_KEY_KEY: &str = "key";
+
 /// Check `value` against `range`, naming the option in the error.
 pub fn check_range(name: &str, value: u64, range: &RangeInclusive<u64>) -> Result<u64, String> {
     if range.contains(&value) {
@@ -56,6 +87,8 @@ mod tests {
         let err = check_range("--timeout", 0, &TIMEOUT_RANGE).expect_err("zero");
         assert!(err.contains("--timeout") && err.contains("between 1 and 300"), "{err}");
         assert!(check_range("--watch", 86_401, &WATCH_RANGE).is_err());
+        assert!(EXPIRY_WARN_RANGE.contains(&DEFAULT_EXPIRY_WARN_DAYS));
+        assert!(KV_VERSION_RANGE.contains(&DEFAULT_KV_VERSION));
     }
 
     #[test]

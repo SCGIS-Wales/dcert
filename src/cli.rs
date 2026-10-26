@@ -425,7 +425,7 @@ pub struct CheckArgs {
     pub extensions: bool,
 
     /// Warn if any certificate expires within the given number of days (exit code 1)
-    #[arg(long, value_name = "DAYS", value_parser = clap::value_parser!(u64).range(0..=36_500))]
+    #[arg(long, value_name = "DAYS", value_parser = clap::value_parser!(u64).range(crate::limits::EXPIRY_WARN_RANGE))]
     pub expiry_warn: Option<u64>,
 
     /// Compare certificates between exactly two targets
@@ -531,7 +531,7 @@ pub enum ConvertMode {
         #[arg(long, env = "DCERT_CERT_PASSWORD", hide_env_values = true)]
         password: Secret,
         /// Output directory for PEM files (cert.pem, key.pem, ca.pem)
-        #[arg(short, long, default_value = ".")]
+        #[arg(short, long, default_value = crate::limits::DEFAULT_OUTPUT_DIR)]
         output_dir: String,
     },
 
@@ -571,7 +571,7 @@ pub enum ConvertMode {
         #[arg(long, env = "DCERT_KEYSTORE_PASSWORD", hide_env_values = true)]
         password: Secret,
         /// Alias for the key entry
-        #[arg(long, default_value = "server")]
+        #[arg(long, default_value = crate::limits::DEFAULT_KEYSTORE_ALIAS)]
         alias: String,
         /// Print a beginner primer explaining what a keystore is before
         /// creating it. Aimed at users new to Java keystore/truststore
@@ -594,7 +594,7 @@ pub enum ConvertMode {
             long,
             env = "DCERT_TRUSTSTORE_PASSWORD",
             hide_env_values = true,
-            default_value = "changeit"
+            default_value = crate::limits::DEFAULT_TRUSTSTORE_PASSWORD
         )]
         password: String,
         /// Allow non-CA (leaf/server) certificates in the truststore. By
@@ -781,7 +781,7 @@ pub struct VaultArgs {
     pub debug: bool,
 
     /// Authentication method: "token" (default), "ldap", or "approle"
-    #[arg(long, global = true, value_name = "METHOD", default_value = "token")]
+    #[arg(long, global = true, value_name = "METHOD", default_value = crate::limits::DEFAULT_VAULT_AUTH_METHOD)]
     pub auth_method: String,
 
     /// LDAP username (required when auth_method is "ldap"). Also: DCERT_LDAP_USERNAME
@@ -805,7 +805,7 @@ pub struct VaultArgs {
     pub ldap_password: Option<Secret>,
 
     /// LDAP auth mount point (default: "ldap")
-    #[arg(long, global = true, value_name = "PATH", default_value = "ldap")]
+    #[arg(long, global = true, value_name = "PATH", default_value = crate::limits::DEFAULT_VAULT_LDAP_MOUNT)]
     pub ldap_mount: String,
 
     /// AppRole role_id (required when auth_method is "approle"). Also: DCERT_APPROLE_ROLE_ID
@@ -829,7 +829,7 @@ pub struct VaultArgs {
     pub approle_secret_id: Option<Secret>,
 
     /// AppRole auth mount point (default: "approle")
-    #[arg(long, global = true, value_name = "PATH", default_value = "approle")]
+    #[arg(long, global = true, value_name = "PATH", default_value = crate::limits::DEFAULT_VAULT_APPROLE_MOUNT)]
     pub approle_mount: String,
 
     #[command(subcommand)]
@@ -883,7 +883,7 @@ pub struct VaultIssueArgs {
     pub ip_san: Vec<String>,
 
     /// Certificate TTL (e.g., 8760h for 1 year)
-    #[arg(long, default_value = "8760h")]
+    #[arg(long, default_value = crate::limits::DEFAULT_VAULT_TTL)]
     pub ttl: String,
 
     /// Vault PKI role name
@@ -891,7 +891,7 @@ pub struct VaultIssueArgs {
     pub role: Option<String>,
 
     /// Vault PKI mount point
-    #[arg(long, default_value = "vault_intermediate")]
+    #[arg(long, default_value = crate::limits::DEFAULT_VAULT_PKI_MOUNT)]
     pub mount: String,
 
     /// Output file base name (without extension). Defaults to sanitised CN.
@@ -911,7 +911,8 @@ pub struct VaultIssueArgs {
     pub store_path: Option<String>,
 
     /// Vault KV version (1 or 2) for --store-path
-    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=2))]
+    #[arg(long, default_value_t = crate::limits::DEFAULT_KV_VERSION,
+          value_parser = clap::value_parser!(u8).range(1..=2))]
     pub kv_version: u8,
 }
 
@@ -934,7 +935,7 @@ pub struct VaultSignArgs {
     pub ip_san: Vec<String>,
 
     /// Certificate TTL
-    #[arg(long, default_value = "8760h")]
+    #[arg(long, default_value = crate::limits::DEFAULT_VAULT_TTL)]
     pub ttl: String,
 
     /// Vault PKI role name
@@ -942,7 +943,7 @@ pub struct VaultSignArgs {
     pub role: Option<String>,
 
     /// Vault PKI mount point
-    #[arg(long, default_value = "vault_intermediate")]
+    #[arg(long, default_value = crate::limits::DEFAULT_VAULT_PKI_MOUNT)]
     pub mount: String,
 
     /// Output file base name
@@ -962,7 +963,8 @@ pub struct VaultSignArgs {
     pub store_path: Option<String>,
 
     /// Vault KV version (1 or 2) for --store-path
-    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=2))]
+    #[arg(long, default_value_t = crate::limits::DEFAULT_KV_VERSION,
+          value_parser = clap::value_parser!(u8).range(1..=2))]
     pub kv_version: u8,
 }
 
@@ -977,14 +979,14 @@ pub struct VaultRevokeArgs {
     pub cert_file: Option<String>,
 
     /// Vault PKI mount point
-    #[arg(long, default_value = "vault_intermediate")]
+    #[arg(long, default_value = crate::limits::DEFAULT_VAULT_PKI_MOUNT)]
     pub mount: String,
 }
 
 #[derive(Args, Debug)]
 pub struct VaultListArgs {
     /// Vault PKI mount point
-    #[arg(long, default_value = "vault_intermediate")]
+    #[arg(long, default_value = crate::limits::DEFAULT_VAULT_PKI_MOUNT)]
     pub mount: String,
 
     /// Output format
@@ -1022,15 +1024,16 @@ pub struct VaultStoreArgs {
     pub path: String,
 
     /// Key name for the certificate in Vault KV
-    #[arg(long, default_value = "cert")]
+    #[arg(long, default_value = crate::limits::DEFAULT_KV_CERT_KEY)]
     pub cert_key: String,
 
     /// Key name for the private key in Vault KV
-    #[arg(long, default_value = "key")]
+    #[arg(long, default_value = crate::limits::DEFAULT_KV_KEY_KEY)]
     pub key_key: String,
 
     /// Vault KV version (1 or 2). KV v1 uses flat paths; v2 uses /data/ prefix.
-    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=2))]
+    #[arg(long, default_value_t = crate::limits::DEFAULT_KV_VERSION,
+          value_parser = clap::value_parser!(u8).range(1..=2))]
     pub kv_version: u8,
 }
 
@@ -1040,15 +1043,16 @@ pub struct VaultValidateArgs {
     pub path: String,
 
     /// Key name for the certificate in Vault KV
-    #[arg(long, default_value = "cert")]
+    #[arg(long, default_value = crate::limits::DEFAULT_KV_CERT_KEY)]
     pub cert_key: String,
 
     /// Key name for the private key in Vault KV
-    #[arg(long, default_value = "key")]
+    #[arg(long, default_value = crate::limits::DEFAULT_KV_KEY_KEY)]
     pub key_key: String,
 
     /// Vault KV version (1 or 2)
-    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=2))]
+    #[arg(long, default_value_t = crate::limits::DEFAULT_KV_VERSION,
+          value_parser = clap::value_parser!(u8).range(1..=2))]
     pub kv_version: u8,
 
     /// Output format
@@ -1066,23 +1070,24 @@ pub struct VaultRenewArgs {
     pub role: Option<String>,
 
     /// Vault PKI mount point
-    #[arg(long, default_value = "vault_intermediate")]
+    #[arg(long, default_value = crate::limits::DEFAULT_VAULT_PKI_MOUNT)]
     pub mount: String,
 
     /// TTL for the new certificate
-    #[arg(long, default_value = "8760h")]
+    #[arg(long, default_value = crate::limits::DEFAULT_VAULT_TTL)]
     pub ttl: String,
 
     /// Key name for the certificate in Vault KV
-    #[arg(long, default_value = "cert")]
+    #[arg(long, default_value = crate::limits::DEFAULT_KV_CERT_KEY)]
     pub cert_key: String,
 
     /// Key name for the private key in Vault KV
-    #[arg(long, default_value = "key")]
+    #[arg(long, default_value = crate::limits::DEFAULT_KV_KEY_KEY)]
     pub key_key: String,
 
     /// Vault KV version (1 or 2)
-    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=2))]
+    #[arg(long, default_value_t = crate::limits::DEFAULT_KV_VERSION,
+          value_parser = clap::value_parser!(u8).range(1..=2))]
     pub kv_version: u8,
 
     /// Additional Subject Alternative Names (override existing SANs if provided)

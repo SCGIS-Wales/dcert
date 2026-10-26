@@ -1323,7 +1323,7 @@ async fn test_mcp_check_expiry_rejects_excessive_days() {
             CallToolRequestParams::new("check_expiry").with_arguments(
                 serde_json::json!({
                     "target": "example.com",
-                    "days": 9999
+                    "days": 40000
                 })
                 .as_object()
                 .unwrap()
@@ -1341,7 +1341,10 @@ async fn test_mcp_check_expiry_rejects_excessive_days() {
         .and_then(|c| c.as_text())
         .map(|t| t.text.as_str())
         .unwrap_or("");
-    assert!(text.contains("at most 3650"), "Error should mention days limit: {text}");
+    assert!(
+        text.contains("between 0 and 36500"),
+        "Error should mention days limit: {text}"
+    );
 
     client.cancel().await.unwrap();
     server_handle.abort();
@@ -2060,6 +2063,31 @@ fn validate_tls_version_parses_into_the_cli_enum_and_orders() {
     assert!(v12 < v13);
     assert!(validate_tls_version("1.1").is_err());
     assert!(validate_tls_version("TLS1.2").is_err());
+}
+
+#[test]
+fn enumerated_parameters_use_the_cli_enums() {
+    let typo = HttpTlsParams {
+        starttls: Some("smpt".to_string()),
+        ..Default::default()
+    };
+    let err = typo.validate().expect_err("unknown protocol");
+    assert!(err.contains("\"smtp\"") && err.contains("\"imap\""), "{err}");
+    let upper_method = HttpTlsParams {
+        method: Some("POST".to_string()),
+        ..Default::default()
+    };
+    assert!(
+        upper_method.validate().is_ok(),
+        "--method ignores case, so the parameter does too"
+    );
+    let upper_protocol = HttpTlsParams {
+        http_protocol: Some("HTTP2".to_string()),
+        ..Default::default()
+    };
+    assert!(upper_protocol.validate().is_err(), "--http-protocol is case sensitive");
+    assert!(validate_key_algorithm("ecdsa-p256").is_ok());
+    assert!(validate_key_algorithm("dsa").unwrap_err().contains("\"ed25519\""));
 }
 
 #[test]
