@@ -87,6 +87,7 @@ class Row:
     anonymous: bool
     fips: bool
     recommended: bool
+    discouraged: bool
 
 
 def split_kx_au(kxau: str) -> tuple[str, str]:
@@ -99,8 +100,12 @@ def split_kx_au(kxau: str) -> tuple[str, str]:
     return kxau, kxau
 
 
-def classify(code: int, iana: str, openssl: str | None, recommended: bool = False) -> Row | None:
-    """Derive a table row from the code point, standard name and IANA status."""
+def classify(code: int, iana: str, openssl: str | None, status: str = "N") -> Row | None:
+    """Derive a table row from the code point, standard name and IANA status.
+
+    ``status`` is the registry's Recommended column: ``Y``, ``N`` or ``D``
+    (discouraged).
+    """
     if code >> 8 == 0x13:
         match = TLS13_RE.match(iana)
         if not match:
@@ -142,7 +147,8 @@ def classify(code: int, iana: str, openssl: str | None, recommended: bool = Fals
         null=enc == "NULL",
         anonymous=anonymous,
         fips=fips,
-        recommended=recommended,
+        recommended=status == "Y",
+        discouraged=status == "D",
     )
 
 
@@ -155,8 +161,8 @@ def parse_registry(text: str, openssl_names: Mapping[str, str]) -> list[Row]:
         if not match or not name.startswith("TLS_"):
             continue
         code = int(match.group(1) + match.group(2), 16)
-        recommended = (record.get("Recommended") or "").strip() == "Y"
-        row = classify(code, name, openssl_names.get(name), recommended)
+        status = (record.get("Recommended") or "N").strip()
+        row = classify(code, name, openssl_names.get(name), status)
         if row is not None:
             rows.append(row)
     return sorted(rows, key=lambda r: r.code)
@@ -186,7 +192,8 @@ def render(rows: Iterable[Row], source_digest: str) -> str:
             f"aead: {str(r.aead).lower()}, pfs: {str(r.pfs).lower()}, "
             f"export: {str(r.export).lower()}, null: {str(r.null).lower()}, "
             f"anonymous: {str(r.anonymous).lower()}, fips: {str(r.fips).lower()}, "
-            f"recommended: {str(r.recommended).lower()} }},"
+            f"recommended: {str(r.recommended).lower()}, "
+            f"discouraged: {str(r.discouraged).lower()} }},"
         )
     lines.append("];")
     return "\n".join(lines) + "\n"

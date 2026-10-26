@@ -11,7 +11,8 @@ summary is written.
 - A cipher suite model (`src/ciphers.rs`) with one table generated from the
   IANA TLS Cipher Suites registry: code point, IANA and OpenSSL names,
   protocol, key exchange, authentication, encryption, MAC and the AEAD,
-  forward secrecy, export, NULL, anonymous, FIPS and IANA recommended flags.
+  forward secrecy, export, NULL, anonymous and FIPS flags, and the IANA
+  recommended or discouraged status.
   It parses any notation (`TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256`,
   `ECDHE-RSA-AES128-GCM-SHA256`, `0xC02F`, `C02F`, `0xC0,0x2F`), suggests
   near misses for typos, expands OpenSSL keywords such as `ECDHE+AESGCM` and

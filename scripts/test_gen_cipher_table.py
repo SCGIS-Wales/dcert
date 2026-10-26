@@ -47,6 +47,7 @@ def test_tls12_aead_suite() -> None:
     assert not r.export
     assert not r.recommended
     assert rows()["TLS_AES_128_GCM_SHA256"].recommended
+    assert gen.classify(0x0001, "TLS_RSA_WITH_NULL_MD5", None, "D").discouraged
 
 
 def test_ccm_suites_keep_their_mode() -> None:

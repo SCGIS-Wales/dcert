@@ -52,6 +52,8 @@ pub struct Cipher {
     pub fips: bool,
     /// Marked `Y` in the registry's Recommended column.
     pub recommended: bool,
+    /// Marked `D` (discouraged) in the registry's Recommended column.
+    pub discouraged: bool,
 }
 
 /// Why a cipher suite did not parse.
