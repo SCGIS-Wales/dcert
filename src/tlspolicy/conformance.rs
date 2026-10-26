@@ -220,15 +220,17 @@ pub fn observe(req: &PqProbeRequest<'_>, base: &TlsProbeOptions<'_>, plan: &Obse
                 reason: format!("{name} is not in the cipher table"),
             };
         };
-        let Some(openssl) = cipher.openssl.filter(|_| cipher.offerable()) else {
+        let Some(openssl) = cipher.openssl.filter(|_| cipher.implemented()) else {
             return Probe::NotTestable {
                 reason: format!("the linked {} cannot offer {name}", openssl::version::version()),
             };
         };
+        // Security level 0, so the client can offer weak suites and see
+        // whether the server rejects them.
         let (cipher_list, cipher_suites) = if version == TlsVersionArg::Tls1_3 {
-            (broad_cipher_list(version).to_string(), openssl.to_string())
+            ("ALL:@SECLEVEL=0".to_string(), openssl.to_string())
         } else {
-            (openssl.to_string(), suites.clone())
+            (format!("{openssl}:@SECLEVEL=0"), suites.clone())
         };
         handshake(
             req,
@@ -598,6 +600,9 @@ pub fn evaluate(
             .iter()
             .flat_map(|p| p.tls12_ciphers.iter())
             .filter(|c| !policy.tls12_ciphers.contains(c))
+            // A suite the linked OpenSSL cannot offer says nothing about the
+            // server, so it is left out rather than made not testable.
+            .filter(|c| Cipher::parse(c).is_ok_and(|c| c.openssl.is_some() && c.implemented()))
             .collect();
         for name in others {
             suite_check(CheckKind::Tls12Excluded, name, Expected::Reject, "1.2", &obs.tls12);
