@@ -362,6 +362,8 @@ dcert https://api.example.com --noproxy '*'
 
 # Note: --resolve/--connect-to always bypass the proxy — they exist to reach one
 # specific endpoint, and going via a proxy would hand that choice back to it.
+# The proxy is spoken to in plaintext HTTP CONNECT, so only http:// proxy URLs
+# are accepted; an https:// proxy is refused with an explanation.
 
 # Skip TLS verification (self-signed certs)
 dcert https://localhost:8443 --no-verify

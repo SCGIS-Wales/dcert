@@ -122,6 +122,9 @@ impl OidcValidator {
         config.validate()?;
         let http_client = Client::builder()
             .timeout(Duration::from_secs(10))
+            // Discovery and JWKS answers decide which keys are trusted, so a
+            // redirect may not move them to another origin.
+            .redirect(dcert::http::same_origin_redirect_policy(5))
             .build()
             .map_err(|e| format!("failed to create HTTP client: {e}"))?;
 

@@ -140,6 +140,13 @@ impl ProxyConfig {
     }
 }
 
+/// Why an `https://` proxy is refused. dcert speaks HTTP CONNECT to the proxy
+/// in plaintext; accepting an `https://` URL and then talking plaintext to it
+/// would silently expose the CONNECT request (and any proxy credentials).
+pub const HTTPS_PROXY_UNSUPPORTED: &str = "https:// proxy URLs are not supported yet: dcert speaks HTTP CONNECT to the proxy in plaintext, \
+     so an https:// proxy would receive the CONNECT request and any credentials unencrypted. \
+     Use the proxy's http:// address";
+
 /// Reject proxy URLs we cannot actually tunnel through, so the failure lands at
 /// argument-handling time rather than mid-connection.
 fn validate_proxy_url(proxy: &str) -> Result<()> {
@@ -150,10 +157,13 @@ fn validate_proxy_url(proxy: &str) -> Result<()> {
         )
     })?;
     match url.scheme() {
-        "http" | "https" => {}
+        "http" => {}
+        "https" => {
+            return Err(anyhow::anyhow!("{HTTPS_PROXY_UNSUPPORTED}"));
+        }
         other => {
             return Err(anyhow::anyhow!(
-                "Unsupported --proxy scheme '{other}': dcert tunnels over HTTP CONNECT, so the proxy URL must be http:// or https://"
+                "Unsupported --proxy scheme '{other}': dcert tunnels over HTTP CONNECT, so the proxy URL must be http://"
             ));
         }
     }
@@ -182,6 +192,14 @@ pub fn connect_through_proxy(
 ) -> Result<TcpStream> {
     let proxy =
         Url::parse(proxy_url).map_err(|e| anyhow::anyhow!("Invalid proxy URL {}: {e}", sanitize_url(proxy_url)))?;
+    if proxy.scheme() != "http" {
+        // Covers proxies taken from HTTPS_PROXY and friends, which are not
+        // validated at argument time.
+        return Err(anyhow::anyhow!(
+            "{HTTPS_PROXY_UNSUPPORTED} (got {})",
+            sanitize_url(proxy_url)
+        ));
+    }
 
     let proxy_host = proxy
         .host_str()
@@ -417,8 +435,16 @@ mod tests {
     #[test]
     fn test_validate_proxy_url() {
         assert!(validate_proxy_url("http://proxy.corp:3128").is_ok());
-        assert!(validate_proxy_url("https://proxy.corp:3128").is_ok());
         assert!(validate_proxy_url("http://user:pass@proxy.corp:3128").is_ok());
+
+        let err = validate_proxy_url("https://user:pass@proxy.corp:3128")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("not supported yet") && err.contains("http://"),
+            "got: {err}"
+        );
+        assert!(!err.contains("pass@"), "credentials must not be echoed: {err}");
 
         let err = validate_proxy_url("socks5://proxy.corp:1080").unwrap_err().to_string();
         assert!(err.contains("Unsupported --proxy scheme"), "got: {err}");

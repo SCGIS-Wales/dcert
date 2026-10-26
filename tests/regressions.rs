@@ -298,3 +298,43 @@ fn proxy_errors_mask_credentials() {
     assert!(!output.status.success());
     assert!(!stderr.contains("hunter2"), "{stderr}");
 }
+
+// ---------------------------------------------------------------
+// Plan PR 1.6: https:// proxies are refused rather than spoken to in plaintext
+// ---------------------------------------------------------------
+
+#[test]
+fn https_proxy_flag_is_refused_with_a_clear_error() {
+    let output = dcert_bin()
+        .args(["https://example.invalid", "--proxy", "https://user:pw@proxy.corp:3128"])
+        .output()
+        .expect("failed to run dcert");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(stderr.contains("not supported yet"), "{stderr}");
+    assert!(!stderr.contains(":pw@"), "{stderr}");
+}
+
+#[test]
+fn https_proxy_from_the_environment_gets_no_plaintext_connect() {
+    use std::io::Read as _;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    listener.set_nonblocking(true).expect("nonblocking");
+    let output = dcert_bin()
+        .env("HTTPS_PROXY", format!("https://127.0.0.1:{port}"))
+        .args(["https://example.invalid", "--no-verify"])
+        .output()
+        .expect("failed to run dcert");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(stderr.contains("not supported yet"), "{stderr}");
+    if let Ok((mut stream, _)) = listener.accept() {
+        let mut buf = Vec::new();
+        let _ = stream.read_to_end(&mut buf);
+        assert!(
+            !String::from_utf8_lossy(&buf).contains("CONNECT"),
+            "plaintext CONNECT was sent"
+        );
+    }
+}
