@@ -14,6 +14,7 @@ use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value, json};
 
+use crate::cliargs::ToCliArgs;
 use crate::params::*;
 
 /// `check` flags no probe tool sends, and why.
@@ -50,6 +51,7 @@ fn sample(property: &str) -> Map<String, Value> {
         | "pq_probe"
         | "allow_legacy_tls" => json!(true),
         "issuer_timeout" => json!(3),
+        "max_handshakes" => json!(50),
         "days" => json!(10),
         "timeout" => json!(7),
         "read_timeout" => json!(4),
@@ -99,14 +101,14 @@ fn properties<T: JsonSchema>() -> Vec<String> {
         .collect()
 }
 
-/// The long flag `check` reads from environment variable `var`.
-fn flag_for_env(var: &str) -> String {
+/// The long flag `subcommand` reads from environment variable `var`.
+fn flag_for_env(subcommand: &str, var: &str) -> String {
     let cmd = Cli::command();
-    let check = cmd.find_subcommand("check").expect("check subcommand");
-    let arg = check
+    let sub = cmd.find_subcommand(subcommand).expect("subcommand");
+    let arg = sub
         .get_arguments()
         .find(|a| a.get_env().is_some_and(|e| e == var))
-        .unwrap_or_else(|| panic!("no check flag reads {var}"));
+        .unwrap_or_else(|| panic!("no {subcommand} flag reads {var}"));
     format!("--{}", arg.get_long().expect("long flag"))
 }
 
@@ -123,7 +125,10 @@ fn tool_argv<T: DeserializeOwned + ProbeParams>(props: &Map<String, Value>) -> V
     };
     let (mut args, env) = params.cli_args();
     args.extend(file_args);
-    args.extend(env.iter().map(|(var, value)| format!("{}={value}", flag_for_env(var))));
+    args.extend(
+        env.iter()
+            .map(|(var, value)| format!("{}={value}", flag_for_env(T::SUBCOMMAND, var))),
+    );
 
     let mut argv = vec!["dcert".to_string(), T::SUBCOMMAND.to_string()];
     argv.extend(args.iter().cloned());
@@ -187,5 +192,38 @@ fn every_probe_tool_property_maps_to_a_flag_the_cli_accepts() {
             "CLI_ONLY names `{name}`, which check no longer has"
         );
         assert!(!sent.contains(*name), "CLI_ONLY names `{name}`, which a tool now sends");
+    }
+}
+
+/// The argv a tls_scan call with `props` produces, after checking that
+/// `dcert tls-scan` accepts it.
+fn scan_argv(props: &Map<String, Value>) -> Vec<String> {
+    let mut object = props.clone();
+    object.insert("target".to_string(), json!(TARGET));
+    let params: TlsScanParams = serde_json::from_value(Value::Object(object)).expect("params deserialise");
+    params.routing().validate().expect("valid routing");
+    let (mut args, env) = params.cli_args();
+    args.extend(
+        env.iter()
+            .map(|(var, value)| format!("{}={value}", flag_for_env("tls-scan", var))),
+    );
+    let mut argv = vec!["dcert".to_string(), "tls-scan".to_string()];
+    argv.extend(args.iter().cloned());
+    argv.extend(["--".to_string(), TARGET.to_string()]);
+    if let Err(e) = Cli::try_parse_from(&argv) {
+        panic!("tls-scan rejects {argv:?}: {e}");
+    }
+    args
+}
+
+#[test]
+fn every_tls_scan_property_maps_to_a_flag_tls_scan_accepts() {
+    let base = scan_argv(&Map::new());
+    for property in properties::<TlsScanParams>() {
+        let args = scan_argv(&sample(&property));
+        assert_ne!(
+            args, base,
+            "tls_scan: property `{property}` does not reach the command line"
+        );
     }
 }

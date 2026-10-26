@@ -389,6 +389,78 @@ pub(crate) struct ExplainEdgeTermParams {
     pub(crate) service: Option<String>,
 }
 
+/// Parameters for the tls_scan tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct TlsScanParams {
+    /// HTTPS URL or hostname to scan (host[:port] with `starttls`)
+    pub(crate) target: String,
+    /// Also test TLS 1.0 and 1.1 (deprecated by RFC 8996) at OpenSSL security level 0 (default: false)
+    #[serde(default)]
+    pub(crate) allow_legacy_tls: Option<bool>,
+    /// Most handshakes the scan may make, 1 to 2000 (default: 120); the report says when it stopped early
+    #[serde(default)]
+    pub(crate) max_handshakes: Option<u64>,
+    /// Override the SNI hostname
+    #[serde(default)]
+    pub(crate) sni: Option<String>,
+    /// STARTTLS protocol: "smtp", "imap", "pop3", "ftp". When set, target is treated as host[:port]
+    #[serde(default)]
+    pub(crate) starttls: Option<String>,
+    /// Redirect the connection while keeping the target hostname for SNI: a
+    /// bare IP or curl's 'HOST1:PORT1:HOST2:PORT2'. A string or a list.
+    #[serde(default)]
+    pub(crate) connect_to: Option<OneOrMany>,
+    /// Pin 'HOST:PORT:ADDRESS' to an IP address like curl's --resolve. A string or a list.
+    #[serde(default)]
+    pub(crate) resolve: Option<OneOrMany>,
+    /// Forward proxy URL (http:// only); an empty string forces a direct connection
+    #[serde(default)]
+    pub(crate) proxy: Option<String>,
+    /// Comma-separated hosts that bypass the proxy; "*" bypasses it entirely
+    #[serde(default)]
+    pub(crate) noproxy: Option<String>,
+    /// Connection timeout in seconds per handshake (default: 10)
+    #[serde(default)]
+    pub(crate) timeout: Option<u64>,
+    /// Read timeout in seconds per handshake (default: 5)
+    #[serde(default)]
+    pub(crate) read_timeout: Option<u64>,
+}
+
+impl TlsScanParams {
+    /// The routing and TLS settings as the probe tools carry them, so they
+    /// are validated and checked against the destination policy the same way.
+    pub(crate) fn routing(&self) -> HttpTlsParams {
+        HttpTlsParams {
+            sni: self.sni.clone(),
+            starttls: self.starttls.clone(),
+            connect_to: self.connect_to.clone(),
+            resolve: self.resolve.clone(),
+            proxy: self.proxy.clone(),
+            noproxy: self.noproxy.clone(),
+            timeout: self.timeout,
+            read_timeout: self.read_timeout,
+            allow_legacy_tls: self.allow_legacy_tls,
+            ..HttpTlsParams::default()
+        }
+    }
+}
+
+impl ToCliArgs for TlsScanParams {
+    fn write_args<'a>(&'a self, out: &mut ArgBuilder<'a>) {
+        out.flag("allow-legacy-tls", self.allow_legacy_tls == Some(true))
+            .value("max-handshakes", self.max_handshakes)
+            .value("sni", self.sni.as_deref())
+            .value("starttls", self.starttls.as_deref())
+            .repeat("connect-to", self.connect_to.iter().flat_map(OneOrMany::values))
+            .repeat("resolve", self.resolve.iter().flat_map(OneOrMany::values))
+            .value("timeout", self.timeout)
+            .value("read-timeout", self.read_timeout)
+            .env(dcert::proxy::DCERT_PROXY_ENV, self.proxy.as_deref())
+            .env(dcert::proxy::DCERT_NOPROXY_ENV, self.noproxy.as_deref());
+    }
+}
+
 /// Parameters for the list_cipher_suites tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct ListCipherSuitesParams {

@@ -291,6 +291,52 @@ pub enum Command {
     /// Look up TLS cipher suites in any notation (offline)
     #[command(name = "ciphers")]
     Ciphers(CiphersArgs),
+
+    /// Enumerate the TLS versions, cipher suites and groups a server accepts
+    #[command(name = "tls-scan")]
+    TlsScan(Box<TlsScanArgs>),
+}
+
+/// `dcert tls-scan` arguments.
+#[derive(Args, Debug)]
+#[command(after_help = "\x1b[1mExamples:\x1b[0m
+  dcert tls-scan example.com                     Versions, suites and groups
+  dcert tls-scan example.com -f json             Structured report
+  dcert tls-scan legacy.example.com --allow-legacy-tls
+  dcert tls-scan mail.example.com:587 --starttls smtp")]
+pub struct TlsScanArgs {
+    /// HTTPS URL or hostname (host[:port] with --starttls)
+    #[arg(value_parser = validate_target)]
+    pub target: String,
+
+    /// Also test TLS 1.0 and 1.1 (deprecated by RFC 8996) at OpenSSL
+    /// security level 0
+    #[arg(long)]
+    pub allow_legacy_tls: bool,
+
+    /// Most handshakes the scan may make; the report says when it stopped early
+    #[arg(long, value_name = "N", default_value_t = crate::limits::DEFAULT_MAX_HANDSHAKES,
+          value_parser = clap::value_parser!(u64).range(crate::limits::MAX_HANDSHAKES_RANGE))]
+    pub max_handshakes: u64,
+
+    /// Override the SNI hostname
+    #[arg(long)]
+    pub sni: Option<String>,
+
+    /// Negotiate STARTTLS first (mail and FTP servers); the target is host[:port]
+    #[arg(long, value_enum, value_name = "PROTOCOL")]
+    pub starttls: Option<StarttlsProtocol>,
+
+    #[command(flatten)]
+    pub connection: crate::tlsopts::ConnectionOptions,
+
+    /// Output format
+    #[arg(short, long, value_enum, default_value_t = OutputFormat::Pretty)]
+    pub format: OutputFormat,
+
+    /// Print every handshake's OpenSSL details to stderr
+    #[arg(long)]
+    pub debug: bool,
 }
 
 /// `dcert ciphers` arguments.
@@ -410,6 +456,7 @@ pub const KNOWN_SUBCOMMANDS: &[&str] = &[
     "dx",
     "kb",
     "ciphers",
+    "tls-scan",
 ];
 
 // -- Check subcommand (default) --

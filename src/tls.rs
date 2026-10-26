@@ -1674,10 +1674,67 @@ pub fn probe_post_quantum(req: &PqProbeRequest<'_>, probe: &TlsProbeOptions<'_>)
     }
 }
 
-/// Run the probe handshake and return the negotiated group, if any. A server
-/// that demands a client certificate still reveals its chosen group in the
-/// ServerHello, so that failure is read as a result rather than an error.
+/// Run the probe handshake and return the negotiated group, if any.
 fn pq_handshake(req: &PqProbeRequest<'_>, probe: &TlsProbeOptions<'_>) -> Result<Option<String>> {
+    scan_handshake(req, probe).map(|h| h.group)
+}
+
+/// What one handshake negotiated: version, suite in every notation, key
+/// exchange group and the type of the server's leaf key.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ScanHandshake {
+    pub version: String,
+    pub cipher: crate::ciphers::NegotiatedCipher,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub leaf_key: Option<String>,
+}
+
+impl ScanHandshake {
+    fn read(ssl: &openssl::ssl::SslRef) -> Self {
+        let cipher = ssl
+            .current_cipher()
+            .map_or_else(crate::ciphers::NegotiatedCipher::unknown, |c| {
+                crate::ciphers::NegotiatedCipher::new(
+                    c.name(),
+                    c.standard_name(),
+                    Some(u16::from_be_bytes(c.protocol_id())),
+                )
+            });
+        Self {
+            version: ssl.version_str().to_string(),
+            cipher,
+            group: negotiated_group_name(ssl),
+            leaf_key: ssl.peer_certificate().as_deref().and_then(leaf_key_type),
+        }
+    }
+}
+
+/// `RSA 2048`, `EC prime256v1`, `ED25519`: the algorithm and size or curve.
+fn leaf_key_type(cert: &openssl::x509::X509Ref) -> Option<String> {
+    let key = cert.public_key().ok()?;
+    Some(match key.id() {
+        openssl::pkey::Id::RSA => format!("RSA {}", key.bits()),
+        openssl::pkey::Id::EC => {
+            let curve = key
+                .ec_key()
+                .ok()
+                .and_then(|ec| ec.group().curve_name())
+                .and_then(|nid| nid.short_name().ok().map(str::to_string))
+                .unwrap_or_else(|| "unknown curve".to_string());
+            format!("EC {curve}")
+        }
+        openssl::pkey::Id::ED25519 => "ED25519".to_string(),
+        openssl::pkey::Id::ED448 => "ED448".to_string(),
+        other => format!("{other:?} {}", key.bits()),
+    })
+}
+
+/// One handshake with `probe`'s settings, reporting what was negotiated.
+/// A server that demands a client certificate has already chosen the
+/// version, suite and group, so that failure is read as a result.
+pub fn scan_handshake(req: &PqProbeRequest<'_>, probe: &TlsProbeOptions<'_>) -> Result<ScanHandshake> {
     let proxy = match req.transport {
         ProbeTransport::Tls => req.proxy_config,
         ProbeTransport::Starttls(_) => None,
@@ -1689,9 +1746,9 @@ fn pq_handshake(req: &PqProbeRequest<'_>, probe: &TlsProbeOptions<'_>) -> Result
     let (connector, _capture) = build_connector(&ConnectorOptions::from_probe(probe, req.identity, req.alpn))?;
     let sni_host = probe.sni_override.unwrap_or(req.host);
     match connector.connect(sni_host, stream) {
-        Ok(ssl_stream) => Ok(negotiated_group_name(ssl_stream.ssl())),
+        Ok(ssl_stream) => Ok(ScanHandshake::read(ssl_stream.ssl())),
         Err(openssl::ssl::HandshakeError::Failure(mid)) if is_client_auth_required(&mid.error().to_string()) => {
-            Ok(negotiated_group_name(mid.ssl()))
+            Ok(ScanHandshake::read(mid.ssl()))
         }
         Err(e) => Err(anyhow::anyhow!("{e}")),
     }

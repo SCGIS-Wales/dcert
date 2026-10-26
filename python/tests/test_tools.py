@@ -41,6 +41,7 @@ from dcert.tools import (
     extract_text,
     list_cipher_suites,
     tls_connection_info,
+    tls_scan,
     verify_key_match,
 )
 
@@ -306,6 +307,23 @@ CASES = [
         {"protocol": "1.3", "offerable": True},
     ),
     (explain_cipher_suite, {"suite": "C02F"}, "explain_cipher_suite", {"suite": "C02F"}),
+    (tls_scan, {"target": "e"}, "tls_scan", {"target": "e"}),
+    (
+        tls_scan,
+        {
+            "target": "e",
+            "allow_legacy_tls": True,
+            "max_handshakes": 50,
+            "resolve": ["e:443:10.0.0.1"],
+        },
+        "tls_scan",
+        {
+            "target": "e",
+            "allow_legacy_tls": True,
+            "max_handshakes": 50,
+            "resolve": ["e:443:10.0.0.1"],
+        },
+    ),
 ]
 
 
@@ -385,7 +403,7 @@ async def test_input_validation(open_session):
 
 
 def test_all_tool_functions_present():
-    assert len(TOOL_FUNCTIONS) == 13
+    assert len(TOOL_FUNCTIONS) == 14
     # inspect, not asyncio: asyncio.iscoroutinefunction is deprecated from 3.14.
     assert all(inspect.iscoroutinefunction(f) for f in TOOL_FUNCTIONS)
 

@@ -727,6 +727,52 @@ async def create_truststore(
     return await call_tool("create_truststore", arguments, session=session, timeout=timeout)
 
 
+async def tls_scan(
+    *,
+    target: str,
+    allow_legacy_tls: bool = False,
+    max_handshakes: int | None = None,
+    sni: str | None = None,
+    starttls: str | None = None,
+    connect_to: str | list[str] | None = None,
+    resolve: str | list[str] | None = None,
+    proxy: str | None = None,
+    noproxy: str | None = None,
+    session: Session | None = None,
+    timeout: float | None = None,
+) -> ToolResponse:
+    """Enumerate the TLS versions, cipher suites and groups *target* accepts.
+
+    Args:
+        target: HTTPS URL or hostname (``host[:port]`` with *starttls*).
+        allow_legacy_tls: Also test TLS 1.0 and 1.1.
+        max_handshakes: Most handshakes the scan may make (server default 120).
+        sni: Override the SNI hostname.
+        starttls: ``"smtp"``, ``"imap"``, ``"pop3"`` or ``"ftp"``.
+        connect_to: Redirect the connection while keeping the target hostname.
+        resolve: Pin ``HOST:PORT:ADDRESS`` like curl's ``--resolve``.
+        proxy: Forward proxy URL; ``""`` forces a direct connection.
+        noproxy: Comma separated hosts bypassing the proxy.
+        session: Session to use; the shared default when ``None``.
+        timeout: Per call timeout in seconds.
+    """
+    arguments = build_arguments(
+        "tls_scan",
+        {"target": target},
+        {
+            "max_handshakes": max_handshakes,
+            "sni": sni,
+            "starttls": starttls,
+            "connect_to": connect_to,
+            "resolve": resolve,
+            "proxy": proxy,
+            "noproxy": noproxy,
+        },
+        defaulted={"allow_legacy_tls": (allow_legacy_tls, False)},
+    )
+    return await call_tool("tls_scan", arguments, session=session, timeout=timeout)
+
+
 async def list_cipher_suites(
     *,
     protocol: str | None = None,
@@ -783,4 +829,5 @@ TOOL_FUNCTIONS: tuple[Callable[..., Awaitable[ToolResponse]], ...] = (
     create_truststore,
     list_cipher_suites,
     explain_cipher_suite,
+    tls_scan,
 )

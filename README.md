@@ -28,6 +28,7 @@
   - [dcert diagnose -- TLS, mTLS, Gateway, CDN and Proxy Diagnostics](#dcert-diagnose--tls-mtls-gateway-cdn-and-proxy-diagnostics)
   - [dcert kb -- Diagnostics and Reference Knowledge Bases](#dcert-kb--diagnostics-and-reference-knowledge-bases)
   - [dcert ciphers -- Cipher Suite Lookup](#dcert-ciphers--cipher-suite-lookup)
+  - [dcert tls-scan -- Version, Cipher and Group Enumeration](#dcert-tls-scan--version-cipher-and-group-enumeration)
 - [MCP Server (AI IDE Integration)](#mcp-server-ai-ide-integration)
   - [Proxy and Timeout Configuration](#proxy-and-timeout-configuration)
   - [Troubleshooting](#troubleshooting)
@@ -157,6 +158,7 @@ dcert verify-key <target> --key <KEY>  # Key-certificate matching (single pair)
 dcert diagnose <target> [OPTIONS]      # TLS, mTLS, gateway, CDN and forward proxy diagnostics
 dcert kb <list|show|validate|schema>   # Inspect the diagnostics knowledge base
 dcert ciphers <list|explain>           # Look up cipher suites in any notation (offline)
+dcert tls-scan <target> [OPTIONS]      # Enumerate accepted TLS versions, cipher suites and groups
 dcert verify-key [--dir <DIR>]         # Auto-discover and verify all cert/key pairs
 dcert vault issue [OPTIONS]            # Issue a TLS certificate from Vault PKI
 dcert vault sign [OPTIONS]             # Sign a CSR using Vault PKI
@@ -1155,6 +1157,30 @@ dcert ciphers list --offerable -f json       # what this build can offer
 
 A misspelt name is an error that suggests the nearest known names.
 
+### dcert tls-scan -- Version, Cipher and Group Enumeration
+
+Asks the server, one handshake at a time, what it accepts: each protocol
+version on its own, then every cipher suite the linked OpenSSL can offer for
+each accepted version, then each key exchange group (post quantum hybrids,
+pure ML-KEM, classical curves and finite field groups) at the newest
+accepted version. Each handshake records the suite in every notation, the
+group, the leaf key type (`RSA 2048`, `EC prime256v1`) and the alert on
+rejection, so a server with RSA and ECDSA certificates shows which suites
+each key serves.
+
+```bash
+dcert tls-scan example.com
+dcert tls-scan example.com -f json --max-handshakes 300
+dcert tls-scan legacy.example.com --allow-legacy-tls        # adds TLS 1.0 and 1.1
+dcert tls-scan mail.example.com:587 --starttls smtp
+dcert tls-scan api.example.com --resolve api.example.com:443:10.0.0.5
+```
+
+Handshakes run four at a time and stop at `--max-handshakes` (default 120);
+the report says when the budget ran out. Certificate verification is
+skipped, since the question is what the server negotiates. The exit code is
+0 when at least one version was accepted and 2 when none was.
+
 ---
 
 ## MCP Server (AI IDE Integration)
@@ -1176,6 +1202,7 @@ It implements the current MCP specification revision (**2025-11-25**) via the `r
 | `create_csr` | Create a PKCS#10 CSR and private key. Supports RSA/ECDSA, OU metadata, and encrypted keys. Compliant with CA/B Forum, DigiCert, and X9 standards. |
 | `validate_csr` | Validate a CSR for compliance with CA/B Forum Baseline Requirements, DigiCert, and X9 standards. Returns findings with severity levels. |
 | `diagnose_endpoint` | Diagnose why an endpoint fails: TLS and mTLS on any server, Apigee, Envoy/Istio and nginx errors, CloudFront edge and origin errors, API Gateway gateway responses, forward proxy failures and TLS interception. Returns findings ordered earliest layer first with confidence, evidence and remediation, the `platforms` the probe fingerprinted, and context notes explaining CloudFront and API Gateway responses. |
+| `tls_scan` | Enumerate the TLS versions, cipher suites (with leaf key type) and key exchange groups a server accepts, one handshake at a time within a handshake budget. |
 | `list_cipher_suites` | List TLS cipher suites from the IANA registry with every notation and property; filter by protocol family or by what the linked OpenSSL can offer. No network access. |
 | `explain_cipher_suite` | Explain one cipher suite given as an IANA name, OpenSSL name or code point. No network access. |
 | `explain_edge_term` | Look up what a CloudFront or API Gateway status code, header, error name, gateway response type or topic (viewer mTLS modes, origin mTLS, truststores, security policies, limits) means, from the built-in reference knowledge base. No network access. |

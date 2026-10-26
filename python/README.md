@@ -79,6 +79,7 @@ Leaving out `session` uses a shared default session that is created on first use
 | `convert_pem_to_pfx()` | Convert PEM cert and key to PKCS12/PFX |
 | `create_keystore()` | Create a PKCS12 keystore (Java compatible) |
 | `create_truststore()` | Create a PKCS12 truststore from CA certs |
+| `tls_scan()` | Enumerate the TLS versions, cipher suites and groups a server accepts |
 | `list_cipher_suites()` | List TLS cipher suites from the IANA registry (offline) |
 | `explain_cipher_suite()` | Explain one cipher suite in any notation (offline) |
 

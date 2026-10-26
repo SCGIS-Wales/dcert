@@ -21,6 +21,30 @@ pub const RFC10024_HYBRID_GROUPS: &[&str] = &["X25519MLKEM768", "SecP256r1MLKEM7
 /// Pure ML-KEM group names (draft-ietf-tls-mlkem).
 pub const PURE_MLKEM_GROUPS: &[&str] = &["MLKEM512", "MLKEM768", "MLKEM1024"];
 
+/// Classical groups `dcert tls-scan` tries one at a time, strongest first
+/// within each family.
+pub const SCAN_CLASSICAL_GROUPS: &[&str] = &[
+    "X25519",
+    "X448",
+    "secp256r1",
+    "secp384r1",
+    "secp521r1",
+    "ffdhe2048",
+    "ffdhe3072",
+    "ffdhe4096",
+    "ffdhe6144",
+    "ffdhe8192",
+];
+
+/// Every group `dcert tls-scan` tries: post quantum first, then classical.
+pub fn scan_groups() -> impl Iterator<Item = &'static str> {
+    RFC10024_HYBRID_GROUPS
+        .iter()
+        .chain(PURE_MLKEM_GROUPS)
+        .chain(SCAN_CLASSICAL_GROUPS)
+        .copied()
+}
+
 /// Pre standard hybrid names and what replaced them.
 pub const OBSOLETE_PQ_GROUPS: &[(&str, &str)] = &[
     ("X25519Kyber768Draft00", "X25519MLKEM768 (RFC 10024)"),
