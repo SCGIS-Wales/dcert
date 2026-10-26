@@ -123,7 +123,10 @@ pub fn check_ocsp_status(cert_der: &[u8], issuer_der: Option<&[u8]>, ocsp_url: &
             );
         }
     };
-    if let Err(e) = tcp_stream.set_read_timeout(Some(OCSP_TIMEOUT)) {
+    if let Err(e) = tcp_stream
+        .set_read_timeout(Some(OCSP_TIMEOUT))
+        .and_then(|()| tcp_stream.set_write_timeout(Some(OCSP_TIMEOUT)))
+    {
         eprintln!("Warning: failed to set OCSP read timeout: {e}");
     }
 

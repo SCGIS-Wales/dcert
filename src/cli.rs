@@ -472,8 +472,11 @@ pub struct CheckArgs {
     #[arg(long, default_value_t = 10)]
     pub timeout: u64,
 
-    /// Read timeout in seconds — how long to wait for the server's response
-    /// *after* the connection and TLS handshake succeed.
+    /// Read timeout in seconds — how long each read may wait for the server.
+    /// Everything after the TCP connect (proxy CONNECT, STARTTLS, the TLS
+    /// handshake and the HTTP exchange) also shares one wall clock budget of
+    /// --timeout plus --read-timeout, so a server that trickles bytes cannot
+    /// hold a probe open.
     #[arg(long, default_value_t = 5)]
     pub read_timeout: u64,
 

@@ -934,12 +934,14 @@ pub struct TlsFetchOptions<'a> {
 }
 
 /// How a probe reached its peer (layers 3 and 4).
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct DialInfo {
     dns_latency: u128,
     l4_latency: u128,
     peer_address: Option<String>,
     connect_override: Option<String>,
+    /// Wall clock bound on everything after the TCP connect.
+    deadline: crate::deadline::DeadlineGuard,
 }
 
 /// Layers 3 and 4: reach `host:port` through a `--resolve`/`--connect-to`
@@ -989,9 +991,15 @@ fn dial(
         (s, dns, Some(addr))
     };
 
+    let io_timeout = Some(Duration::from_secs(probe.read_timeout_secs.max(1)));
     stream
-        .set_read_timeout(Some(Duration::from_secs(probe.read_timeout_secs)))
-        .map_err(|e| anyhow::anyhow!("Failed to set read timeout: {e}"))?;
+        .set_read_timeout(io_timeout)
+        .and_then(|()| stream.set_write_timeout(io_timeout))
+        .map_err(|e| anyhow::anyhow!("Failed to set socket timeouts: {e}"))?;
+    // One budget for the whole probe: per read timeouts alone would let a
+    // peer that drips a byte at a time hold the connection forever.
+    let budget = crate::deadline::probe_budget(probe.timeout_secs, probe.read_timeout_secs);
+    let deadline = crate::deadline::DeadlineGuard::arm(&stream, l4_start + budget, budget);
 
     let l4_latency = l4_start.elapsed().as_millis();
     dbg_section(debug, "Layer 4 (Transport)");
@@ -1004,6 +1012,7 @@ fn dial(
             l4_latency,
             peer_address: peer_address.map(|a| a.to_string()),
             connect_override,
+            deadline,
         },
     ))
 }
@@ -1184,6 +1193,9 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
     let mut ssl_stream = match connector.connect(sni_host, stream) {
         Ok(s) => s,
         Err(e) => {
+            if dialled.deadline.expired() {
+                return Err(dialled.deadline.timeout_error("the TLS handshake"));
+            }
             let err_str = e.to_string();
             let request = verify.cert_request.get();
             // Surface mTLS-required failures to the caller with the chain we
@@ -1270,6 +1282,9 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
         Ok(()) => read_http_response_checked(&mut ssl_stream, probe.read_timeout_secs, opts.body_limit),
         Err(e) => (Vec::new(), Some(e)),
     };
+    if response_buffer.is_empty() && dialled.deadline.expired() {
+        return Err(dialled.deadline.timeout_error("the HTTP exchange"));
+    }
     let request = verify.cert_request.get();
     let l7_latency = l7_start.elapsed().as_millis();
 
@@ -1349,26 +1364,45 @@ fn read_line_from_stream(stream: &mut TcpStream) -> Result<String> {
                     return Err(anyhow::anyhow!("STARTTLS: server response line too long"));
                 }
             }
-            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => break,
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
+                return Err(anyhow::anyhow!(
+                    "STARTTLS: timed out waiting for the server's response (--read-timeout)"
+                ));
+            }
             Err(e) => return Err(anyhow::anyhow!("STARTTLS: read error: {e}")),
         }
     }
     String::from_utf8(buf).map_err(|e| anyhow::anyhow!("STARTTLS: invalid UTF-8 response: {e}"))
 }
 
+/// Most lines a multi line STARTTLS reply may have.
+const MAX_RESPONSE_LINES: usize = 64;
+/// Most bytes a multi line STARTTLS reply may have.
+const MAX_RESPONSE_BYTES: usize = 64 * 1024;
+
 /// Read a full multi-line response (for SMTP which uses continuation lines like "250-...").
 fn read_response(stream: &mut TcpStream) -> Result<String> {
     let mut full_response = String::new();
-    loop {
+    for _ in 0..MAX_RESPONSE_LINES {
         let line = read_line_from_stream(stream)?;
+        if line.is_empty() {
+            return Err(anyhow::anyhow!("STARTTLS: server closed the connection mid reply"));
+        }
         full_response.push_str(&line);
+        if full_response.len() > MAX_RESPONSE_BYTES {
+            return Err(anyhow::anyhow!(
+                "STARTTLS: server reply exceeds {MAX_RESPONSE_BYTES} bytes"
+            ));
+        }
         // SMTP multi-line: lines with "-" after code continue, space after code ends
         // For other protocols, single line responses are expected
         if line.len() < 4 || line.as_bytes().get(3) != Some(&b'-') {
-            break;
+            return Ok(full_response);
         }
     }
-    Ok(full_response)
+    Err(anyhow::anyhow!(
+        "STARTTLS: server reply exceeds {MAX_RESPONSE_LINES} lines"
+    ))
 }
 
 /// Perform STARTTLS negotiation on a plain TCP stream.
@@ -1466,16 +1500,26 @@ pub fn fetch_tls_chain_starttls(opts: &StarttlsFetchOptions<'_>) -> Result<TlsCo
     let (mut stream, dialled) = dial(opts.host, opts.port, probe, None)?;
 
     dbg_section(debug, "STARTTLS Negotiation");
-    negotiate_starttls(&mut stream, opts.protocol, debug)?;
+    negotiate_starttls(&mut stream, opts.protocol, debug).map_err(|e| {
+        if dialled.deadline.expired() {
+            dialled.deadline.timeout_error("the STARTTLS exchange")
+        } else {
+            e
+        }
+    })?;
 
     // TLS handshake on the upgraded stream
     let l7_start = std::time::Instant::now();
     let (connector, capture) = build_connector(&ConnectorOptions::from_probe(probe, opts.identity, None))?;
 
     let sni_host = probe.sni_override.unwrap_or(opts.host);
-    let ssl_stream = connector
-        .connect(sni_host, stream)
-        .map_err(|e| capture.handshake_error(&e, probe.ca_cert_path.is_some()))?;
+    let ssl_stream = connector.connect(sni_host, stream).map_err(|e| {
+        if dialled.deadline.expired() {
+            dialled.deadline.timeout_error("the TLS handshake")
+        } else {
+            capture.handshake_error(&e, probe.ca_cert_path.is_some())
+        }
+    })?;
 
     log_tls_session_debug(ssl_stream.ssl(), sni_host, probe.no_verify, debug);
 

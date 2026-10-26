@@ -220,7 +220,8 @@ pub fn connect_through_proxy(
 
     stream
         .set_read_timeout(Some(Duration::from_secs(read_timeout_secs.max(1))))
-        .map_err(|e| anyhow::anyhow!("Failed to set proxy read timeout: {e}"))?;
+        .and_then(|()| stream.set_write_timeout(Some(Duration::from_secs(read_timeout_secs.max(1)))))
+        .map_err(|e| anyhow::anyhow!("Failed to set proxy socket timeouts: {e}"))?;
 
     // Build Proxy-Authorization header if credentials are present in the proxy URL
     let auth_header = match (proxy.username(), proxy.password()) {

@@ -453,7 +453,7 @@ Options:
                                        [smtp, imap, pop3, ftp]
       --no-verify                      Disable TLS verification (insecure)
       --timeout <SECONDS>              Connection timeout (default: 10)
-      --read-timeout <SECONDS>         Read timeout (default: 5)
+      --read-timeout <SECONDS>         Read timeout per read (default: 5); --timeout + --read-timeout also bounds the whole probe
       --sni <HOSTNAME>                 Override SNI hostname
       --resolve <HOST:PORT:ADDRESS>    Pin HOST:PORT to an IP instead of using DNS
                                        (like curl --resolve; repeatable)

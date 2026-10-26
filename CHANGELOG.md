@@ -74,6 +74,13 @@ summary is written.
 
 ### Fixed
 
+- Deadlines everywhere: every probe now has one wall clock budget of
+  `--timeout` plus `--read-timeout` covering the proxy CONNECT, STARTTLS,
+  the TLS handshake and the HTTP exchange, enforced by a watchdog that shuts
+  the socket down; a server that drips one byte at a time can no longer hold
+  a probe open. Sockets get write timeouts as well as read timeouts.
+  STARTTLS replies are capped at 64 lines and 64 KiB, and a silent STARTTLS
+  server is reported as a timeout instead of an "unexpected banner".
 - `--starttls` with a bare host (`mail.example.com:587`) dialled the
   `https://` URL the target parser had added; the scheme is now stripped and
   IPv6 literals in brackets are understood. STARTTLS probes also present the
