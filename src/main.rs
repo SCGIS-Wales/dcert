@@ -115,6 +115,13 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
 
     warn_secret_on_argv("--cert-password", "DCERT_CERT_PASSWORD", args.cert_password.is_some());
 
+    // Headers from --headers-file join the --header values.
+    if let Some(ref path) = args.headers_file {
+        let text = std::fs::read_to_string(path).with_context(|| format!("Failed to read headers file: {path}"))?;
+        let extra = cli::parse_headers_file(&text).map_err(|e| anyhow::anyhow!("--headers-file {path}: {e}"))?;
+        args.header.extend(extra);
+    }
+
     // Resolve request body from --data or --data-file
     let body_data: Option<Vec<u8>> = if let Some(ref data) = args.data {
         Some(data.as_bytes().to_vec())

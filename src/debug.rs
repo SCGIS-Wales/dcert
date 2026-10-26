@@ -7,6 +7,11 @@ const SENSITIVE_HEADERS: &[&str] = &[
     "cookie",
     "set-cookie",
     "x-api-key",
+    "x-vault-token",
+    "x-auth-token",
+    "api-key",
+    "ocp-apim-subscription-key",
+    "x-amz-security-token",
 ];
 
 /// Check if a header name is sensitive and its value should be masked.
@@ -40,7 +45,22 @@ pub fn sanitize_url(url_str: &str) -> String {
             }
             u.to_string()
         }
-        Err(_) => url_str.to_string(),
+        // A string that does not parse may still carry `user:pass@`; mask
+        // the whole userinfo rather than echo it in an error.
+        Err(_) => mask_userinfo(url_str),
+    }
+}
+
+/// Replace the userinfo of `scheme://userinfo@host...` with `****`, without
+/// parsing the rest. Text without userinfo is returned unchanged.
+fn mask_userinfo(text: &str) -> String {
+    let Some(start) = text.find("://").map(|i| i + 3) else {
+        return text.to_string();
+    };
+    let authority_end = text[start..].find(['/', '?', '#']).map_or(text.len(), |i| start + i);
+    match text[start..authority_end].rfind('@') {
+        Some(at) => format!("{}****{}", &text[..start], &text[start + at..]),
+        None => text.to_string(),
     }
 }
 
@@ -95,6 +115,30 @@ pub use crate::debug_log;
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn sanitize_url_masks_userinfo_even_when_the_url_does_not_parse() {
+        assert_eq!(
+            sanitize_url("http://user:hunter2@proxy.corp:3128"),
+            "http://user:****@proxy.corp:3128/"
+        );
+        let masked = sanitize_url("http://user:hunter2@[bad");
+        assert!(!masked.contains("hunter2"), "{masked}");
+        assert_eq!(sanitize_url("not a url"), "not a url");
+    }
+
+    #[test]
+    fn new_sensitive_headers_are_masked() {
+        for name in [
+            "X-Vault-Token",
+            "x-auth-token",
+            "api-key",
+            "Ocp-Apim-Subscription-Key",
+            "X-Amz-Security-Token",
+        ] {
+            assert!(is_sensitive_header(name), "{name}");
+        }
+    }
     use super::*;
 
     #[test]

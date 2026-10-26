@@ -198,21 +198,35 @@ pub(crate) struct HttpTlsParams {
     pub(crate) starttls: Option<String>,
 }
 
-/// Upper bound on the request body a tool call may send (1 MiB). The body is
-/// passed to the subprocess as one argv entry, so it has to stay well under
-/// the platform's argument length limit and must not let a client make the
-/// server allocate without bound.
+/// Upper bound on the request body a tool call may send (1 MiB), so a client
+/// cannot make the server allocate or write without bound. The body reaches
+/// the subprocess through a private file, not argv.
 pub(crate) const MAX_DATA_LEN: usize = 1024 * 1024;
+
+/// Write `contents` to a new temporary file readable only by this user.
+fn private_file(kind: &str, contents: &[u8]) -> Result<tempfile::NamedTempFile, String> {
+    use std::io::Write as _;
+    let mut file = tempfile::Builder::new()
+        .prefix(&format!("dcert-mcp-{kind}-"))
+        .tempfile()
+        .map_err(|e| format!("cannot create the {kind} file: {e}"))?;
+    file.write_all(contents)
+        .and_then(|()| file.flush())
+        .map_err(|e| format!("cannot write the {kind} file: {e}"))?;
+    Ok(file)
+}
+
+/// The file's path as an argument.
+fn path_arg(file: &tempfile::NamedTempFile) -> Result<String, String> {
+    file.path()
+        .to_str()
+        .map(str::to_string)
+        .ok_or_else(|| "temporary file path is not valid UTF-8".to_string())
+}
 
 impl HttpTlsParams {
     pub(crate) fn to_args(&self) -> Vec<String> {
         let mut args = Vec::new();
-        if let Some(ref headers) = self.headers {
-            for h in headers {
-                args.push("--header".to_string());
-                args.push(h.clone());
-            }
-        }
         if let Some(ref v) = self.cipher_list {
             args.push("--cipher-list".to_string());
             args.push(v.clone());
@@ -256,10 +270,6 @@ impl HttpTlsParams {
             args.push("--method".to_string());
             args.push(v.clone());
         }
-        if let Some(ref v) = self.data {
-            args.push("--data".to_string());
-            args.push(v.clone());
-        }
         if let Some(ref v) = self.http_protocol {
             args.push("--http-protocol".to_string());
             args.push(v.clone());
@@ -273,6 +283,30 @@ impl HttpTlsParams {
             args.push(v.clone());
         }
         args
+    }
+
+    /// Headers and the request body travel in private temporary files
+    /// (mode 0600 on Unix) passed as `--headers-file` and `--data-file`,
+    /// never in argv: argv is readable by every local user through `ps` and
+    /// `/proc`, and a single argument is capped at 128 KiB on Linux. The
+    /// returned files must outlive the child, so the caller keeps them.
+    pub(crate) fn secret_files(&self) -> Result<(Vec<String>, Vec<tempfile::NamedTempFile>), String> {
+        let mut args = Vec::new();
+        let mut files = Vec::new();
+        let headers = self.headers.as_deref().unwrap_or_default();
+        if !headers.is_empty() {
+            let mut text = headers.join("\n");
+            text.push('\n');
+            let file = private_file("headers", text.as_bytes())?;
+            args.extend(["--headers-file".to_string(), path_arg(&file)?]);
+            files.push(file);
+        }
+        if let Some(ref data) = self.data {
+            let file = private_file("data", data.as_bytes())?;
+            args.extend(["--data-file".to_string(), path_arg(&file)?]);
+            files.push(file);
+        }
+        Ok((args, files))
     }
 
     /// Proxy settings travel as environment variables rather than argv: a proxy
@@ -337,16 +371,15 @@ impl HttpTlsParams {
                 validate_arg(v, name)?;
             }
         }
+        // The body travels in a file, so any content is safe; only its size
+        // is bounded.
         if let Some(ref data) = self.data
-            && !data.is_empty()
+            && data.len() > MAX_DATA_LEN
         {
-            reject_flag_like(data, "data")?;
-            if data.len() > MAX_DATA_LEN {
-                return Err(format!(
-                    "data is too large ({} bytes, maximum {MAX_DATA_LEN})",
-                    data.len()
-                ));
-            }
+            return Err(format!(
+                "data is too large ({} bytes, maximum {MAX_DATA_LEN})",
+                data.len()
+            ));
         }
         if let Some(t) = self.timeout
             && !(1..=300).contains(&t)

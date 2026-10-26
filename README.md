@@ -433,6 +433,7 @@ Options:
       --sort-expiry <ORDER>            Sort by expiry [asc, desc]
       --method <METHOD>                HTTP method [get, post, head, options] (default: get)
       --header <KEY:VALUE>             Custom HTTP headers (repeatable)
+      --headers-file <FILE>            Headers from a file, one Key: Value per line (keeps tokens off the process list)
   -d, --data <DATA>                    Request body (implies POST)
       --data-file <FILE>               Request body from file (implies POST)
       --http-protocol <PROTO>          HTTP protocol [http1-1, http2] (default: http1-1)
