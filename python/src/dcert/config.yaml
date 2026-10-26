@@ -25,6 +25,11 @@ download:
   max_bytes: 104857600
   chunk_size: 65536
   lock_file_name: ".dcert-install.lock"
+  # Written beside the binaries after an install: the package version, the
+  # archive digest and each binary's digest. A version change, an archive
+  # digest that no longer matches the embedded checksums, or a binary whose
+  # digest changed on disk triggers a fresh download.
+  install_record_file_name: ".install-record.json"
   # Interval between attempts to take the install lock on Windows, whose
   # file locks have no indefinitely blocking mode.
   lock_poll_seconds: 0.1

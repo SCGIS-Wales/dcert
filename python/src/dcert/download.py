@@ -16,6 +16,9 @@ Supply chain safeguards:
   :func:`get_install_dir`), never into pip's scripts directory, so a
   download can never replace a console script wrapper.
 - Concurrent installs are serialised with a lock file.
+- An install record beside the binaries (package version, archive digest,
+  binary digests) makes a stale or modified binary download afresh, and the
+  install directory is created readable by its owner only (``0700``).
 """
 
 from __future__ import annotations
@@ -131,8 +134,83 @@ def get_install_dir() -> Path:
             f"Install directory {value!r} is not absolute after expansion; "
             f"set {cfg.env_override} to an absolute path"
         )
-    path.mkdir(parents=True, exist_ok=True)
+    # Only the final directory is created private; an existing directory or
+    # its parents keep whatever mode the user chose.
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
     return path
+
+
+def file_sha256(path: Path) -> str:
+    """Return the hex SHA256 digest of *path*."""
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
+def install_record_path(install_dir: Path) -> Path:
+    """Return where the install record of *install_dir* lives."""
+    return install_dir / load_config().download.install_record_file_name
+
+
+def read_install_record(install_dir: Path) -> dict[str, Any] | None:
+    """Return the install record, or ``None`` when absent or unreadable."""
+    try:
+        with install_record_path(install_dir).open("rb") as handle:
+            record = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    return record if isinstance(record, dict) else None
+
+
+def write_install_record(install_dir: Path, record: dict[str, Any]) -> None:
+    """Write the install record atomically."""
+    target = install_record_path(install_dir)
+    fd, tmp_name = tempfile.mkstemp(dir=install_dir, prefix=".install-record.")
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            json.dump(record, out, indent=2, sort_keys=True)
+            out.write("\n")
+        os.replace(tmp_path, target)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
+def build_install_record(
+    version: str, archive_name: str, archive_sha256: str, binaries: dict[str, Path]
+) -> dict[str, Any]:
+    """Describe a fresh install: version, archive and each binary's digest."""
+    return {
+        "version": version,
+        "archive": archive_name,
+        "archive_sha256": archive_sha256.lower(),
+        "binaries": {name: file_sha256(path) for name, path in sorted(binaries.items())},
+    }
+
+
+def is_current(target: Path, install_dir: Path, version: str, archive_sha256: str) -> bool:
+    """Return ``True`` when *target* is the binary this package version expects.
+
+    The install record must name the same package version and the archive
+    digest embedded in this package, and every recorded binary must still
+    have its recorded digest, so a version upgrade, a changed checksum or a
+    binary modified on disk all lead to a fresh download.
+    """
+    if not _is_installed(target):
+        return False
+    record = read_install_record(install_dir)
+    if record is None:
+        return False
+    if record.get("version") != version or record.get("archive_sha256") != archive_sha256.lower():
+        return False
+    binaries = record.get("binaries")
+    if not isinstance(binaries, dict) or target.name not in binaries:
+        return False
+    for name, digest in binaries.items():
+        path = install_dir / str(name)
+        if not path.is_file() or file_sha256(path) != digest:
+            return False
+    return True
 
 
 def verify_checksum(file_path: Path, expected_sha256: str) -> bool:
@@ -332,13 +410,18 @@ def iter_archive_members(archive_path: Path, wanted: set[str]) -> Iterator[tuple
 
 
 def extract_binaries(archive_path: Path, install_dir: Path) -> Path:
+    """Install the binaries from a verified archive; see :func:`install_binaries`."""
+    return install_binaries(archive_path, install_dir)[binary_filename("dcert-mcp")]
+
+
+def install_binaries(archive_path: Path, install_dir: Path) -> dict[str, Path]:
     """Install ``dcert`` and ``dcert-mcp`` from a verified archive.
 
     Member names are flattened to their basename, so a crafted path such as
     ``../../bin/dcert`` cannot escape *install_dir*.
 
     Returns:
-        Path to the installed ``dcert-mcp`` binary.
+        The installed binaries by file name.
 
     Raises:
         RuntimeError: If ``dcert-mcp`` is not present in the archive.
@@ -351,7 +434,7 @@ def extract_binaries(archive_path: Path, install_dir: Path) -> Path:
     }
     if mcp_name not in installed:
         raise RuntimeError("dcert-mcp binary not found in archive")
-    return installed[mcp_name]
+    return installed
 
 
 def _is_installed(path: Path) -> bool:
@@ -359,7 +442,9 @@ def _is_installed(path: Path) -> bool:
     return path.is_file() and os.access(path, os.X_OK) and not is_wrapper(str(path))
 
 
-def _download_and_install(url: str, archive_name: str, expected: str, install_dir: Path) -> Path:
+def _download_and_install(
+    url: str, archive_name: str, expected: str, install_dir: Path
+) -> dict[str, Path]:
     """Download *url* into *install_dir*, verify it and extract the binaries."""
     cfg = load_config()
     fd, tmp_name = tempfile.mkstemp(dir=install_dir, prefix=".dcert-")
@@ -380,7 +465,7 @@ def _download_and_install(url: str, archive_name: str, expected: str, install_di
                 f"Checksum mismatch for {archive_name}. The downloaded archive does not "
                 "match the expected hash. This could indicate a tampered download."
             )
-        return extract_binaries(tmp_path, install_dir)
+        return install_binaries(tmp_path, install_dir)
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -405,28 +490,31 @@ def ensure_binary(version: str, notify: Notify | None = None) -> str | None:
     cfg = load_config()
     install_dir = get_install_dir()
     target = install_dir / binary_filename("dcert-mcp")
-    if _is_installed(target):
-        return str(target)
 
     archive_name = get_archive_name()
-    if archive_name is None:
-        logger.debug("Unsupported platform %s/%s", platform.system(), platform.machine())
-        return None
-    expected = load_checksums().get("archives", {}).get(archive_name)
+    expected = load_checksums().get("archives", {}).get(archive_name) if archive_name else None
     if not expected:
-        logger.debug("No checksum for %s, skipping automatic download", archive_name)
-        return None
+        # Without an embedded checksum nothing can be downloaded or verified;
+        # an installed binary is used as it is.
+        logger.debug("No checksum for %s/%s", platform.system(), platform.machine())
+        return str(target) if _is_installed(target) else None
+    if is_current(target, install_dir, version, expected):
+        return str(target)
 
     def report(message: str) -> None:
         logger.info(message)
         if notify is not None:
             notify(message)
 
+    assert archive_name is not None  # noqa: S101 (narrowing: expected implies a name)
     url = cfg.release.url_template.format(version=version, archive_name=archive_name)
     with install_lock(install_dir / cfg.download.lock_file_name):
-        if _is_installed(target):
+        if is_current(target, install_dir, version, expected):
             return str(target)
         report(f"Downloading dcert binaries from {url}")
-        mcp_path = _download_and_install(url, archive_name, expected, install_dir)
+        installed = _download_and_install(url, archive_name, expected, install_dir)
+        write_install_record(
+            install_dir, build_install_record(version, archive_name, expected, installed)
+        )
         report(f"Installed dcert binaries to {install_dir}")
-        return str(mcp_path)
+        return str(installed[binary_filename("dcert-mcp")])

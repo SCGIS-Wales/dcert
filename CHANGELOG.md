@@ -74,6 +74,11 @@ summary is written.
 
 ### Fixed
 
+- Python package: the downloader writes an install record (package
+  version, archive digest, binary digests) and downloads again when the
+  package version or embedded checksum changes or an installed binary was
+  modified, instead of running an old binary after `pip install -U`. The
+  install directory is created `0700`.
 - Numeric options have ranges defined once in `src/limits.rs` and enforced
   by both the CLI and the MCP server: `--timeout` and `--read-timeout`
   1 to 300 seconds, `--issuer-timeout` 1 to 60, `--watch` 1 to 86400,
