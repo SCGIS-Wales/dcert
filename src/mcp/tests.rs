@@ -2560,18 +2560,25 @@ async fn headers_and_body_never_reach_the_child_command_line() {
         .lines()
         .find(|l| l.starts_with("CMDLINE:"))
         .expect("cmdline line");
-    assert!(!cmdline.contains("sekrit-token"), "{cmdline}");
+    // The messages never echo the child's output: it carries the header value.
+    assert!(
+        !cmdline.contains("sekrit-token"),
+        "the header value must not be on argv"
+    );
     assert!(!cmdline.contains("BBBB"), "body must not be on argv");
     assert!(
         cmdline.contains("--headers-file") && cmdline.contains("--data-file"),
-        "{cmdline}"
+        "headers and body must be passed as files"
     );
     assert!(
         stdout.contains("HEADERS:Authorization: Bearer sekrit-token"),
-        "{stdout}"
+        "the headers file must carry the header"
     );
-    assert!(stdout.contains("MODE:600"), "{stdout}");
-    assert!(stdout.contains(&format!("DATA_BYTES:{}", 200 * 1024)), "{stdout}");
+    assert!(stdout.contains("MODE:600"), "the files must be private (0600)");
+    assert!(
+        stdout.contains(&format!("DATA_BYTES:{}", 200 * 1024)),
+        "the data file must carry the whole body"
+    );
 }
 
 #[cfg(unix)]
@@ -2591,8 +2598,14 @@ async fn server_settings_are_stripped_from_the_child_environment() {
         spawn_dcert(&config, &[], &[]).expect("spawn env")
     };
     let (stdout, _stderr, _code) = run_child_with_timeout(&mut child, &config).await.expect("env");
-    assert!(!stdout.contains("server-only-secret"), "{stdout}");
-    assert!(!stdout.contains("DCERT_MCP_OIDC_ISSUER"), "{stdout}");
+    assert!(
+        !stdout.contains("server-only-secret"),
+        "DCERT_MCP_AUTH_TOKEN reached the child"
+    );
+    assert!(
+        !stdout.contains("DCERT_MCP_OIDC_ISSUER"),
+        "DCERT_MCP_OIDC_ISSUER reached the child"
+    );
 }
 
 #[test]
