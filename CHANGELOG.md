@@ -6,6 +6,16 @@ summary is written.
 
 ## Unreleased
 
+### CI
+
+- The main test job runs `cargo test` and `cargo clippy --all-targets` without
+  `--all-features`, so the system OpenSSL code path that ships is tested; the
+  vendored OpenSSL job is unchanged.
+- New jobs: MSRV check on Rust 1.91, `pip-audit` for the Python package, and
+  the ubuntu 22.04 built binary probing an ML-KEM loopback server inside
+  `debian:trixie` (allowed to fail until plan PR 2.6).
+- Every GitHub Action is pinned to a commit SHA.
+
 ### Testing
 
 - Hermetic TLS test harness shared by unit and integration tests
