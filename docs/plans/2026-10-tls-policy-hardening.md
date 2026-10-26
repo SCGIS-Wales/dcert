@@ -194,7 +194,7 @@ Exit criteria: no High or Medium security finding from section 1.3 remains; `SEC
 - [x] **PR 2.4 Input ranges.** `value_parser` ranges for `--timeout`, `--read-timeout`, `--issuer-timeout`, `--watch`, `--body-limit` in clap and the same ranges in MCP params (single source: constants in `src/limits.rs`). `DCERT_MCP_TIMEOUT=0` is rejected at startup. Semaphore acquisition is bounded by the subprocess timeout. Unknown `--mode` is an error. Graceful shutdown has a 10 s drain deadline.
 - [x] **PR 2.5 Python binary freshness.** The downloader records the version and digest of the installed binary in a sidecar JSON and re downloads when the package version changes or the digest no longer matches the embedded checksums; the install directory is created `0700`.
 - [x] **PR 2.6 Post quantum on the shipped binaries.** Build the Linux release and the Docker binary against OpenSSL 3.5 or later: either build in a `debian:trixie` container (glibc 2.41, document the new minimum) or, to keep the ubuntu 22.04 glibc floor, resolve `SSL_get0_group_name` at runtime with `dlsym` when the compile time cfg is off. Prefer the `dlsym` route because it keeps the published glibc requirement. Flip the PR 0.2 trixie job to required. `dcert --version` prints both the compile time and the runtime OpenSSL versions when they differ.
-- [ ] **PR 2.7 IMAP STARTTLS and Windows signals.** IMAP response reader tolerates untagged lines before the tagged `OK`; `dcert-mcp` handles `Ctrl+Break` and console close on Windows with `tokio::signal::windows`.
+- [x] **PR 2.7 IMAP STARTTLS and Windows signals.** IMAP response reader tolerates untagged lines before the tagged `OK`; `dcert-mcp` handles `Ctrl+Break` and console close on Windows with `tokio::signal::windows`.
 
 Exit criteria: a drip server test for every network path passes; `--pq-probe` names the group from the Docker image; all timeouts have tests.
 
@@ -338,3 +338,4 @@ Keep one line per session: date, PR, state, next action.
 - 2026-10-26: PR 2.4 input ranges (`src/limits.rs`), bounded semaphore wait, mode validation, 10 s drain deadline. Next: PR 2.5.
 - 2026-10-26: PR 2.5 install record and 0700 install directory. Next: PR 2.6.
 - 2026-10-26: PR 2.6 runtime `SSL_get0_group_name` via dlsym, build header version in `--version`, trixie job required. Next: PR 2.7.
+- 2026-10-26: PR 2.7 IMAP tagged reply reader and Windows Ctrl+Break, close and shutdown handling. Next: phase 2 exit check, then PR 3.1.

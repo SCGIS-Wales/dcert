@@ -1455,6 +1455,34 @@ fn read_response(stream: &mut TcpStream) -> Result<String> {
     ))
 }
 
+/// Read IMAP lines until the one carrying `tag` (RFC 9051 section 2.2.2):
+/// a server may send untagged `*` lines (capabilities, alerts) first. The
+/// line count is bounded like other STARTTLS replies.
+fn read_imap_tagged(stream: &mut TcpStream, tag: &str) -> Result<String> {
+    let prefix = format!("{tag} ");
+    for _ in 0..MAX_RESPONSE_LINES {
+        let line = read_line_from_stream(stream)?;
+        if line.is_empty() {
+            return Err(anyhow::anyhow!(
+                "IMAP: server closed the connection before answering {tag}"
+            ));
+        }
+        if line.starts_with(&prefix) {
+            return Ok(line);
+        }
+    }
+    Err(anyhow::anyhow!(
+        "IMAP: no tagged reply to {tag} within {MAX_RESPONSE_LINES} lines"
+    ))
+}
+
+/// Whether a tagged IMAP reply is `OK` (case insensitive per RFC 9051).
+fn imap_tagged_ok(line: &str, tag: &str) -> bool {
+    line.strip_prefix(tag)
+        .map(str::trim_start)
+        .is_some_and(|rest| rest.get(..2).is_some_and(|s| s.eq_ignore_ascii_case("OK")))
+}
+
 /// Perform STARTTLS negotiation on a plain TCP stream.
 fn negotiate_starttls(stream: &mut TcpStream, protocol: StarttlsProtocol, debug: bool) -> Result<()> {
     match protocol {
@@ -1492,9 +1520,9 @@ fn negotiate_starttls(stream: &mut TcpStream, protocol: StarttlsProtocol, debug:
             // Send STARTTLS
             stream.write_all(b"a001 STARTTLS\r\n")?;
             stream.flush()?;
-            let resp = read_line_from_stream(stream)?;
+            let resp = read_imap_tagged(stream, "a001")?;
             debug_log!(debug, "IMAP STARTTLS response: {}", resp.trim());
-            if !resp.contains("a001 OK") {
+            if !imap_tagged_ok(&resp, "a001") {
                 return Err(anyhow::anyhow!("IMAP: STARTTLS rejected: {}", resp.trim()));
             }
         }
@@ -1663,6 +1691,31 @@ fn pq_handshake(req: &PqProbeRequest<'_>, probe: &TlsProbeOptions<'_>) -> Result
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn imap_tagged_ok_matches_only_the_tagged_ok() {
+        assert!(super::imap_tagged_ok("a001 OK Begin TLS negotiation now\r\n", "a001"));
+        assert!(super::imap_tagged_ok("a001 ok go\r\n", "a001"));
+        assert!(!super::imap_tagged_ok("a001 NO STARTTLS disabled\r\n", "a001"));
+        assert!(!super::imap_tagged_ok("* OK still here\r\n", "a001"));
+    }
+
+    #[test]
+    fn imap_reader_skips_untagged_lines_before_the_tagged_reply() {
+        use std::io::Write as _;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        std::thread::spawn(move || {
+            if let Ok((mut s, _)) = listener.accept() {
+                let _ = s
+                    .write_all(b"* CAPABILITY IMAP4rev2 STARTTLS\r\n* OK [ALERT] maintenance\r\na001 OK Begin TLS\r\n");
+            }
+        });
+        let mut stream = std::net::TcpStream::connect(addr).expect("connect");
+        stream.set_read_timeout(Some(Duration::from_secs(5))).expect("timeout");
+        let line = super::read_imap_tagged(&mut stream, "a001").expect("tagged reply");
+        assert!(line.starts_with("a001 OK"), "{line}");
+    }
 
     /// The run time lookup finds libssl symbols the binary already links,
     /// which proves it will find SSL_get0_group_name where it exists.
