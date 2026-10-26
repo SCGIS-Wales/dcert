@@ -2245,3 +2245,139 @@ fn create_truststore_refuses_leaves_by_default_like_the_cli() {
     .expect("params");
     assert!(!params.allow_non_ca);
 }
+
+// ---------------------------------------------------------------
+// Plan PR 1.2: the server's Vault token only goes to a trusted Vault
+// ---------------------------------------------------------------
+
+const VAULT_POLICY_VARS: &[&str] = &["VAULT_ADDR", "DCERT_MCP_VAULT_ADDR_ALLOWLIST", "VAULT_TOKEN"];
+
+#[test]
+fn vault_addr_matching_server_vault_addr_is_operator_configured() {
+    let mut env = EnvGuard::unset_all(VAULT_POLICY_VARS);
+    env.set("VAULT_ADDR", "https://vault.corp:8200/");
+    assert_eq!(
+        check_vault_addr_policy("https://VAULT.corp:8200"),
+        Ok(AddrTrust::OperatorConfigured)
+    );
+    assert!(check_vault_addr_policy("https://evil.example").is_err());
+}
+
+#[test]
+fn vault_addr_in_allowlist_is_operator_configured() {
+    let mut env = EnvGuard::unset_all(VAULT_POLICY_VARS);
+    env.set(
+        "DCERT_MCP_VAULT_ADDR_ALLOWLIST",
+        "https://a.corp:8200, https://b.corp:8200",
+    );
+    assert_eq!(
+        check_vault_addr_policy("https://b.corp:8200"),
+        Ok(AddrTrust::OperatorConfigured)
+    );
+    assert!(check_vault_addr_policy("https://c.corp:8200").is_err());
+}
+
+#[test]
+fn vault_addr_without_operator_configuration_is_caller_chosen() {
+    let _env = EnvGuard::unset_all(VAULT_POLICY_VARS);
+    assert_eq!(
+        check_vault_addr_policy("https://anywhere.example:8200"),
+        Ok(AddrTrust::CallerChosen)
+    );
+}
+
+#[test]
+fn token_source_explicit_token_is_used_for_any_permitted_address() {
+    for trust in [AddrTrust::OperatorConfigured, AddrTrust::CallerChosen] {
+        assert_eq!(
+            resolve_token_source("token", Some("hvs.x"), trust),
+            Ok(TokenSource::Explicit)
+        );
+    }
+}
+
+#[test]
+fn token_source_inherits_only_for_an_operator_configured_address() {
+    assert_eq!(
+        resolve_token_source("token", None, AddrTrust::OperatorConfigured),
+        Ok(TokenSource::Inherited)
+    );
+    let err = resolve_token_source("token", None, AddrTrust::CallerChosen).expect_err("must refuse");
+    assert!(
+        err.contains("VAULT_ADDR") && err.contains("DCERT_MCP_VAULT_ADDR_ALLOWLIST"),
+        "{err}"
+    );
+}
+
+#[test]
+fn token_source_treats_an_empty_token_as_absent() {
+    assert!(resolve_token_source("token", Some("  "), AddrTrust::CallerChosen).is_err());
+}
+
+#[test]
+fn token_source_login_methods_never_inherit() {
+    for method in ["ldap", "approle"] {
+        assert_eq!(
+            resolve_token_source(method, None, AddrTrust::CallerChosen),
+            Ok(TokenSource::Login)
+        );
+    }
+}
+
+/// Run `run_dcert_vault` against a stand in binary that prints the token it
+/// was given, with the environment held for the whole call.
+#[cfg(unix)]
+fn vault_child_token(env: &[(&'static str, &str)], params: &VaultParams) -> Result<String, String> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = dir.path().join("fake-dcert");
+    std::fs::write(&script, "#!/bin/sh\necho \"TOKEN=${VAULT_TOKEN:-unset}\"\n").expect("write script");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let config = test_config(script);
+    let mut guards = EnvGuard::unset_all(VAULT_POLICY_VARS);
+    for (name, value) in env {
+        guards.set(name, value);
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    runtime
+        .block_on(run_dcert_vault(&["list"], params, &config, &[]))
+        .map(|(stdout, _, _)| stdout.trim().to_string())
+}
+
+#[cfg(unix)]
+#[test]
+fn server_token_is_not_sent_to_a_caller_chosen_vault() {
+    let mut params = VaultParams::default();
+    params.vault_addr = Some("https://attacker.example:8200".to_string());
+    let err = vault_child_token(&[("VAULT_TOKEN", "server-secret")], &params).expect_err("refused");
+    assert!(err.contains("explicit vault_token"), "{err}");
+}
+
+#[cfg(unix)]
+#[test]
+fn server_token_is_inherited_for_the_server_vault_addr() {
+    let mut params = VaultParams::default();
+    params.vault_addr = Some("https://vault.corp:8200".to_string());
+    let out = vault_child_token(
+        &[
+            ("VAULT_TOKEN", "server-secret"),
+            ("VAULT_ADDR", "https://vault.corp:8200"),
+        ],
+        &params,
+    )
+    .expect("allowed");
+    assert_eq!(out, "TOKEN=server-secret");
+}
+
+#[cfg(unix)]
+#[test]
+fn explicit_token_replaces_the_server_token_for_a_caller_chosen_vault() {
+    let mut params = VaultParams::default();
+    params.vault_addr = Some("https://mine.example:8200".to_string());
+    params.vault_token = Some("caller-token".to_string());
+    let out = vault_child_token(&[("VAULT_TOKEN", "server-secret")], &params).expect("allowed");
+    assert_eq!(out, "TOKEN=caller-token");
+}

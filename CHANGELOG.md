@@ -8,6 +8,11 @@ summary is written.
 
 ### Security
 
+- MCP Vault tools no longer send the server's own token (`VAULT_TOKEN` or
+  `~/.vault-token`) to a caller chosen `vault_addr`. The inherited token is
+  used only for the server's `VAULT_ADDR` or an address in
+  `DCERT_MCP_VAULT_ADDR_ALLOWLIST`; other addresses need an explicit
+  `vault_token` (S2).
 - MCP file root confinement (`DCERT_MCP_FILE_ROOT`): a relative path could
   escape the root because it was validated against the root but resolved by
   the child against the server's working directory. Tools now pass the
