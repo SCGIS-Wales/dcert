@@ -21,8 +21,10 @@ use crate::validate::validate_path;
 /// The MCP server handles Vault authentication so that MCP clients (AI-powered IDEs)
 /// don't need to manage Vault tokens. Three auth methods are supported:
 ///
-/// 1. **Token** (default): Uses `vault_token` parameter, or inherits `VAULT_TOKEN`
-///    env var / `~/.vault-token` file from the MCP server process.
+/// 1. **Token** (default): Uses the `vault_token` parameter. The server's own
+///    `VAULT_TOKEN` env var or `~/.vault-token` file is used only when the
+///    address is the server's `VAULT_ADDR` or is listed in
+///    `DCERT_MCP_VAULT_ADDR_ALLOWLIST`.
 ///
 /// 2. **LDAP**: The MCP server authenticates with Vault via
 ///    `POST /v1/auth/{ldap_mount}/login/{username}` and extracts a short-lived token.
@@ -42,8 +44,10 @@ pub(crate) struct VaultParams {
     #[serde(default)]
     pub(crate) vault_addr: Option<String>,
 
-    /// Vault token for authentication. If omitted, inherits from VAULT_TOKEN env var
-    /// or ~/.vault-token file. Ignored when auth_method is "ldap" or "approle".
+    /// Vault token for authentication. If omitted, the server's VAULT_TOKEN or
+    /// ~/.vault-token is used, but only for the server's VAULT_ADDR or an
+    /// address in DCERT_MCP_VAULT_ADDR_ALLOWLIST. Ignored when auth_method is
+    /// "ldap" or "approle".
     #[serde(default)]
     pub(crate) vault_token: Option<String>,
 
@@ -158,6 +162,19 @@ impl VaultParams {
     }
 }
 
+/// Whether a Vault address was configured by the operator or chosen by the
+/// MCP caller. Only an operator configured address may receive the server's
+/// own Vault credentials.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AddrTrust {
+    /// The address equals the server's `VAULT_ADDR` or is listed in
+    /// `DCERT_MCP_VAULT_ADDR_ALLOWLIST`.
+    OperatorConfigured,
+    /// Neither variable is set (or no address is known), so the address is
+    /// whatever the caller asked for.
+    CallerChosen,
+}
+
 /// Operator policy for which Vault servers tool calls may contact.
 ///
 /// `DCERT_MCP_VAULT_ADDR_ALLOWLIST` is a comma separated list of origins
@@ -167,8 +184,9 @@ impl VaultParams {
 /// request name an arbitrary address, and then only over https (or plain
 /// http to loopback). This closes the request forgery path where an MCP
 /// client points the server, with the caller's credentials, at an internal
-/// host of its choosing.
-pub(crate) fn check_vault_addr_policy(addr: &str) -> Result<(), String> {
+/// host of its choosing. The returned [`AddrTrust`] says whether the address
+/// may receive the server's own token (see [`resolve_token_source`]).
+pub(crate) fn check_vault_addr_policy(addr: &str) -> Result<AddrTrust, String> {
     dcert::vault::validate_vault_addr(addr).map_err(|e| e.to_string())?;
     let normalise = |s: &str| s.trim().trim_end_matches('/').to_ascii_lowercase();
     let wanted = normalise(addr);
@@ -181,20 +199,61 @@ pub(crate) fn check_vault_addr_policy(addr: &str) -> Result<(), String> {
             .filter(|s| !s.is_empty())
             .any(|s| s == wanted);
         return if allowed {
-            Ok(())
+            Ok(AddrTrust::OperatorConfigured)
         } else {
             Err(format!("vault_addr '{addr}' is not in DCERT_MCP_VAULT_ADDR_ALLOWLIST"))
         };
     }
     if let Ok(server_addr) = std::env::var("VAULT_ADDR")
         && !server_addr.trim().is_empty()
-        && normalise(&server_addr) != wanted
     {
-        return Err(format!(
-            "vault_addr '{addr}' differs from the server's VAULT_ADDR; set DCERT_MCP_VAULT_ADDR_ALLOWLIST to permit other servers"
-        ));
+        return if normalise(&server_addr) == wanted {
+            Ok(AddrTrust::OperatorConfigured)
+        } else {
+            Err(format!(
+                "vault_addr '{addr}' differs from the server's VAULT_ADDR; set DCERT_MCP_VAULT_ADDR_ALLOWLIST to permit other servers"
+            ))
+        };
     }
-    Ok(())
+    Ok(AddrTrust::CallerChosen)
+}
+
+/// Where the Vault token handed to the child comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TokenSource {
+    /// The caller passed `vault_token`.
+    Explicit,
+    /// LDAP or AppRole login performed by the server.
+    Login,
+    /// The child may use the server's `VAULT_TOKEN` or `~/.vault-token`.
+    Inherited,
+}
+
+/// Decide which token the child may use (S2).
+///
+/// The server's own token (`VAULT_TOKEN` or `~/.vault-token`) is a
+/// credential of the operator, so it is only ever sent to an operator
+/// configured Vault. Against a caller chosen address, token auth needs an
+/// explicit `vault_token`; otherwise the request is refused with a message
+/// naming the two variables that configure a trusted address. An empty
+/// `vault_token` counts as absent, because the CLI would fall back to the
+/// token file for it.
+pub(crate) fn resolve_token_source(
+    method: &str,
+    explicit_token: Option<&str>,
+    trust: AddrTrust,
+) -> Result<TokenSource, String> {
+    match method {
+        "ldap" | "approle" => Ok(TokenSource::Login),
+        _ if explicit_token.is_some_and(|t| !t.trim().is_empty()) => Ok(TokenSource::Explicit),
+        _ if trust == AddrTrust::OperatorConfigured => Ok(TokenSource::Inherited),
+        _ => Err(
+            "token auth needs an explicit vault_token for this Vault address: the server's own token \
+             (VAULT_TOKEN or ~/.vault-token) is only used for the address in VAULT_ADDR or one listed in \
+             DCERT_MCP_VAULT_ADDR_ALLOWLIST on the server"
+                .to_string(),
+        ),
+    }
 }
 
 /// `skip_verify: true` in a tool call is honoured only when the operator has
@@ -275,17 +334,21 @@ pub(crate) async fn run_dcert_vault(
         .await
         .map_err(|_| "Subprocess semaphore closed".to_string())?;
 
-    // Resolve vault token: explicit param → LDAP/AppRole auth → inherited from env
+    // The address policy decides whether the server's own token may be used,
+    // so it is checked before any token is resolved.
+    let trust = match vault_params.resolve_addr() {
+        Some(addr) => check_vault_addr_policy(&addr)?,
+        None => AddrTrust::CallerChosen,
+    };
     let method = vault_params.auth_method.as_deref().unwrap_or("token");
     // Wrapped in `Zeroizing` so the token buffer is wiped once it has been
     // handed to the subprocess environment below.
-    let resolved_token: Option<zeroize::Zeroizing<String>> = match method {
-        "ldap" | "approle" => Some(vault_authenticate(vault_params).await?),
-        _ => vault_params.vault_token.clone().map(zeroize::Zeroizing::new),
-    };
-    if let Some(addr) = vault_params.resolve_addr() {
-        check_vault_addr_policy(&addr)?;
-    }
+    let resolved_token: Option<zeroize::Zeroizing<String>> =
+        match resolve_token_source(method, vault_params.vault_token.as_deref(), trust)? {
+            TokenSource::Login => Some(vault_authenticate(vault_params).await?),
+            TokenSource::Explicit => vault_params.vault_token.clone().map(zeroize::Zeroizing::new),
+            TokenSource::Inherited => None,
+        };
     let skip_verify = effective_skip_verify(vault_params.skip_verify)?;
 
     // Build CLI args: "vault" <subcommand> [flags] --format json

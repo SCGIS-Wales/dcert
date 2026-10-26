@@ -112,6 +112,7 @@ Every authentication failure returns the same bare `401 Unauthorized` with a `WW
 ### Vault Access Policy
 
 - `DCERT_MCP_VAULT_ADDR_ALLOWLIST` names the Vault servers a tool call may target. When unset, a request must use the server's own `VAULT_ADDR`. Only when neither is set may a request name an arbitrary address, and then only over HTTPS (or HTTP to loopback). This closes the request-forgery path where a client points the server, with the caller's credentials, at an internal host of its choosing
+- The server's own Vault token (`VAULT_TOKEN` or `~/.vault-token`) is an operator credential and is only used for an operator configured address: the server's `VAULT_ADDR` or one listed in `DCERT_MCP_VAULT_ADDR_ALLOWLIST`. With token auth against any other address the request must carry an explicit `vault_token`; otherwise it is refused before a child process starts, so the server's token can never be sent to a Vault the caller chose.
 - `skip_verify` in a tool call is refused unless the operator sets `DCERT_MCP_VAULT_ALLOW_SKIP_VERIFY=1`: whether Vault's certificate is checked is an operator decision, not a client one
 - Vault authentication goes through the same library code as the CLI, so `vault_cacert`, `VAULT_CACERT` and `VAULT_CAPATH` are honoured on the login request, not only on the session that follows
 
