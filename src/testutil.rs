@@ -242,6 +242,7 @@ pub struct TlsServerBuilder {
     identity: Identity,
     connections: usize,
     preamble: Preamble,
+    drip: Option<Duration>,
     respond: Responder,
 }
 
@@ -280,6 +281,7 @@ impl TlsServer {
             identity: Identity::Fixture,
             connections: 1,
             preamble: Preamble::None,
+            drip: None,
             respond: Box::new(|_| HTTP_200.to_vec()),
         }
     }
@@ -369,6 +371,13 @@ impl TlsServerBuilder {
         self
     }
 
+    /// Send the reply one byte at a time, `interval` apart, as a slow or
+    /// hostile peer would.
+    pub fn drip(mut self, interval: Duration) -> Self {
+        self.drip = Some(interval);
+        self
+    }
+
     /// Reply produced from the request head of each accepted connection.
     pub fn respond(mut self, respond: impl Fn(&[u8]) -> Vec<u8> + Send + 'static) -> Self {
         self.respond = Box::new(respond);
@@ -383,6 +392,7 @@ impl TlsServerBuilder {
         let (tx, rx) = channel();
         let connections = self.connections;
         let preamble = self.preamble;
+        let drip = self.drip;
         let respond = self.respond;
         std::thread::spawn(move || {
             for _ in 0..connections {
@@ -393,7 +403,7 @@ impl TlsServerBuilder {
                     let _ = tx.send(Observation::Rejected("SMTP STARTTLS exchange failed".into()));
                     continue;
                 }
-                serve_one(&acceptor, stream, &respond, &tx);
+                serve_one(&acceptor, stream, &respond, drip, &tx);
             }
         });
         TlsServer { port, observations: rx }
@@ -526,7 +536,13 @@ fn smtp_starttls(stream: &mut TcpStream) -> std::io::Result<()> {
     stream.write_all(b"220 ready to start TLS\r\n")
 }
 
-fn serve_one(acceptor: &SslAcceptor, stream: TcpStream, respond: &Responder, tx: &Sender<Observation>) {
+fn serve_one(
+    acceptor: &SslAcceptor,
+    stream: TcpStream,
+    respond: &Responder,
+    drip: Option<Duration>,
+    tx: &Sender<Observation>,
+) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
     match acceptor.accept(stream) {
@@ -534,7 +550,20 @@ fn serve_one(acceptor: &SslAcceptor, stream: TcpStream, respond: &Responder, tx:
             let _ = tx.send(describe(tls.ssl()));
             let mut req = [0u8; 4096];
             let n = tls.read(&mut req).unwrap_or(0);
-            let _ = tls.write_all(&respond(&req[..n]));
+            let reply = respond(&req[..n]);
+            match drip {
+                None => {
+                    let _ = tls.write_all(&reply);
+                }
+                Some(interval) => {
+                    for byte in reply {
+                        if tls.write_all(&[byte]).and_then(|()| tls.flush()).is_err() {
+                            return;
+                        }
+                        std::thread::sleep(interval);
+                    }
+                }
+            }
             let _ = tls.shutdown();
         }
         Err(e) => {
@@ -552,6 +581,33 @@ pub fn spawn_fake_proxy(response: &'static [u8]) -> u16 {
             let mut req = [0u8; 4096];
             let _ = stream.read(&mut req);
             let _ = stream.write_all(response);
+        }
+    });
+    port
+}
+
+/// A raw TCP server for one connection that writes `prefix` and then one
+/// `filler` byte every `interval` until the peer goes away (at most 60
+/// seconds), so every individual read succeeds but the exchange never ends.
+pub fn spawn_drip_server(prefix: &'static [u8], filler: u8, interval: Duration) -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let port = listener.local_addr().expect("local addr").port();
+    std::thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
+        };
+        let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
+        let mut buf = [0u8; 4096];
+        let _ = stream.read(&mut buf);
+        if stream.write_all(prefix).is_err() {
+            return;
+        }
+        let started = std::time::Instant::now();
+        while started.elapsed() < Duration::from_secs(60) {
+            if stream.write_all(&[filler]).and_then(|()| stream.flush()).is_err() {
+                return;
+            }
+            std::thread::sleep(interval);
         }
     });
     port

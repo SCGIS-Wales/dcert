@@ -10,6 +10,7 @@ pub mod compliance;
 pub mod connect;
 pub mod convert;
 pub mod csr;
+pub mod deadline;
 pub mod debug;
 pub mod diagnose;
 pub mod http;
