@@ -884,6 +884,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: [ build-linux ]
+    # auto-tag is skipped on pull requests, and the implicit success() would
+    # skip this job with it; scan whenever the Linux build produced a binary.
+    if: ${{ !cancelled() && needs.build-linux.result == 'success' }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
