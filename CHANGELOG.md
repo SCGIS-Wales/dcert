@@ -98,6 +98,9 @@ summary is written.
 
 ### CI
 
+- The Chocolatey install test picks the newest release that already carries
+  the Windows zip, instead of the newest tag, so it no longer fails while a
+  release is still uploading its assets.
 - The main test job runs `cargo test` and `cargo clippy --all-targets` without
   `--all-features`, so the system OpenSSL code path that ships is tested; the
   vendored OpenSSL job is unchanged.

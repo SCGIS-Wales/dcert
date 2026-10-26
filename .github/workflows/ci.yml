@@ -1328,13 +1328,24 @@ jobs:
         with:
           fetch-depth: 0
 
+      # The newest release that already carries the Windows zip. A tag alone
+      # is not enough: the release pipeline pushes the tag before it uploads
+      # the assets, and a run that starts in between would download nothing.
       - name: Resolve latest released version
         id: ver
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $tag = git tag --sort=-v:refname |
-            Where-Object { $_ -match '^v\d+\.\d+\.\d+$' } |
-            Select-Object -First 1
+          $tag = $null
+          $releases = gh release list --repo "${{ github.repository }}" --limit 10 --exclude-drafts --json tagName |
+            ConvertFrom-Json
+          foreach ($release in $releases) {
+            if ($release.tagName -notmatch '^v\d+\.\d+\.\d+$') { continue }
+            $assets = (gh release view $release.tagName --repo "${{ github.repository }}" --json assets |
+              ConvertFrom-Json).assets.name
+            if ($assets -contains 'dcert-x86_64-pc-windows-msvc.zip') { $tag = $release.tagName; break }
+          }
           if (-not $tag) {
             Write-Host "::notice::No release tag found — skipping Chocolatey install test."
             "skip=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
