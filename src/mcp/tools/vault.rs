@@ -4,19 +4,10 @@ use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use rmcp::{tool, tool_router};
 
-use super::{DcertMcpServer, ok_error, ok_text};
-use crate::exec::format_tool_output;
+use super::{DcertMcpServer, ok_error, reply};
+use crate::cliargs::{ArgBuilder, ToCliArgs};
 use crate::params_vault::*;
 use crate::validate::*;
-
-/// Reply to a Vault tool call with the subprocess output, or with the reason
-/// it could not run.
-fn vault_reply(outcome: Result<(String, String, i32), String>) -> Result<CallToolResult, rmcp::ErrorData> {
-    match outcome {
-        Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "debug/stderr", &[0])),
-        Err(e) => ok_error(e),
-    }
-}
 
 /// Check a Vault KV path parameter with the same rules the CLI applies, so a
 /// path such as `secret/../sys/policies/acl/root` is refused here rather than
@@ -59,30 +50,16 @@ struct PkiArgs<'a> {
     kv_version: u8,
 }
 
-/// Append `--role`, `--san`, `--ip-san`, `--output` and, when a store path
-/// is given, `--store-path` with its `--kv-version`.
-fn push_pki_args(args: &mut Vec<String>, pki: &PkiArgs<'_>) {
-    if let Some(role) = pki.role {
-        args.push("--role".to_string());
-        args.push(role.to_string());
-    }
-    for san in pki.sans {
-        args.push("--san".to_string());
-        args.push(san.clone());
-    }
-    for ip in pki.ip_sans {
-        args.push("--ip-san".to_string());
-        args.push(ip.clone());
-    }
-    if let Some(output) = pki.output {
-        args.push("--output".to_string());
-        args.push(output.to_string());
-    }
-    if let Some(store_path) = pki.store_path {
-        args.push("--store-path".to_string());
-        args.push(store_path.to_string());
-        args.push("--kv-version".to_string());
-        args.push(pki.kv_version.to_string());
+/// `--role`, `--san`, `--ip-san`, `--output` and, when a store path is
+/// given, `--store-path` with its `--kv-version`.
+impl ToCliArgs for PkiArgs<'_> {
+    fn write_args<'a>(&'a self, out: &mut ArgBuilder<'a>) {
+        out.value("role", self.role)
+            .repeat("san", self.sans)
+            .repeat("ip-san", self.ip_sans)
+            .value("output", self.output)
+            .value("store-path", self.store_path)
+            .value("kv-version", self.store_path.map(|_| self.kv_version));
     }
 }
 
@@ -131,36 +108,29 @@ impl DcertMcpServer {
             return ok_error(e);
         }
 
-        let mut args: Vec<String> = vec![
-            "issue".to_string(),
-            "--cn".to_string(),
-            params.common_name.clone(),
-            "--mount".to_string(),
-            params.mount.clone(),
-            "--ttl".to_string(),
-            params.ttl.clone(),
-            "--format".to_string(),
-            "json".to_string(),
-        ];
-        push_pki_args(
-            &mut args,
-            &PkiArgs {
-                role: params.role.as_deref(),
-                sans: &params.sans,
-                ip_sans: &params.ip_sans,
-                output: params.output.as_deref(),
-                store_path: params.store_path.as_deref(),
-                kv_version: params.kv_version,
-            },
-        );
-        // The PFX passphrase travels in the environment, never in argv.
-        let mut extra_env: Vec<(&str, &str)> = Vec::new();
-        if let Some(ref pfx_pw) = params.pfx_password {
-            extra_env.push(("DCERT_CERT_PASSWORD", pfx_pw.as_str()));
-        }
-
-        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        vault_reply(run_dcert_vault(&args_refs, &params.vault, &self.config, &extra_env).await)
+        let pki = PkiArgs {
+            role: params.role.as_deref(),
+            sans: &params.sans,
+            ip_sans: &params.ip_sans,
+            output: params.output.as_deref(),
+            store_path: params.store_path.as_deref(),
+            kv_version: params.kv_version,
+        };
+        let mut b = ArgBuilder::new();
+        b.positional(["issue"])
+            .value("cn", Some(&params.common_name))
+            .value("mount", Some(&params.mount))
+            .value("ttl", Some(&params.ttl))
+            .value("format", Some("json"))
+            .extend(&pki)
+            // The PFX passphrase travels in the environment, never in argv.
+            .env("DCERT_CERT_PASSWORD", params.pfx_password.as_deref());
+        let (args, env) = b.into_parts();
+        reply(
+            run_dcert_vault(args, &params.vault, &self.config, &env).await,
+            "debug/stderr",
+            &[0],
+        )
     }
 
     /// Sign a Certificate Signing Request (CSR) using Vault PKI.
@@ -204,35 +174,28 @@ impl DcertMcpServer {
             return ok_error(e);
         }
 
-        let mut args: Vec<String> = vec![
-            "sign".to_string(),
-            "--csr-file".to_string(),
-            params.csr_file.clone(),
-            "--mount".to_string(),
-            params.mount.clone(),
-            "--ttl".to_string(),
-            params.ttl.clone(),
-            "--format".to_string(),
-            "json".to_string(),
-        ];
-        if let Some(ref cn) = params.common_name {
-            args.push("--cn".to_string());
-            args.push(cn.clone());
-        }
-        push_pki_args(
-            &mut args,
-            &PkiArgs {
-                role: params.role.as_deref(),
-                sans: &params.sans,
-                ip_sans: &params.ip_sans,
-                output: params.output.as_deref(),
-                store_path: params.store_path.as_deref(),
-                kv_version: params.kv_version,
-            },
-        );
-
-        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        vault_reply(run_dcert_vault(&args_refs, &params.vault, &self.config, &[]).await)
+        let pki = PkiArgs {
+            role: params.role.as_deref(),
+            sans: &params.sans,
+            ip_sans: &params.ip_sans,
+            output: params.output.as_deref(),
+            store_path: params.store_path.as_deref(),
+            kv_version: params.kv_version,
+        };
+        let mut b = ArgBuilder::new();
+        b.positional(["sign"])
+            .value("csr-file", Some(&params.csr_file))
+            .value("mount", Some(&params.mount))
+            .value("ttl", Some(&params.ttl))
+            .value("format", Some("json"))
+            .value("cn", params.common_name.as_deref())
+            .extend(&pki);
+        let (args, _) = b.into_parts();
+        reply(
+            run_dcert_vault(args, &params.vault, &self.config, &[]).await,
+            "debug/stderr",
+            &[0],
+        )
     }
 
     /// Revoke a certificate in Vault PKI by serial number or PEM file.
@@ -263,23 +226,23 @@ impl DcertMcpServer {
             return ok_error("Either serial or cert_file must be provided".to_string());
         }
 
-        let mut args: Vec<String> = vec!["revoke".to_string(), "--mount".to_string(), params.mount];
-        if let Some(ref serial) = params.serial {
-            args.push("--serial".to_string());
-            args.push(serial.clone());
-        }
-        if let Some(ref cert) = params.cert_file {
+        if let Some(cert) = params.cert_file.as_mut() {
             match validate_path(cert, "cert_file") {
-                Ok(cert) => {
-                    args.push("--cert-file".to_string());
-                    args.push(cert);
-                }
+                Ok(canonical) => *cert = canonical,
                 Err(e) => return ok_error(e),
             }
         }
-
-        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        vault_reply(run_dcert_vault(&args_refs, &params.vault, &self.config, &[]).await)
+        let mut b = ArgBuilder::new();
+        b.positional(["revoke"])
+            .value("mount", Some(&params.mount))
+            .value("serial", params.serial.as_deref())
+            .value("cert-file", params.cert_file.as_deref());
+        let (args, _) = b.into_parts();
+        reply(
+            run_dcert_vault(args, &params.vault, &self.config, &[]).await,
+            "debug/stderr",
+            &[0],
+        )
     }
 
     /// List all certificates issued by Vault PKI.
@@ -304,34 +267,26 @@ impl DcertMcpServer {
             return ok_error(e);
         }
 
-        let mut args: Vec<String> = vec![
-            "list".to_string(),
-            "--mount".to_string(),
-            params.mount,
-            "--format".to_string(),
-            "json".to_string(),
-        ];
-        if params.show_details {
-            args.push("--show-details".to_string());
-        }
-        if params.expired_only {
-            args.push("--expired-only".to_string());
-        }
-        if params.valid_only {
-            args.push("--valid-only".to_string());
-        }
-        if let Some(ref export) = params.export {
+        if let Some(export) = params.export.as_mut() {
             match validate_path(export, "export") {
-                Ok(export) => {
-                    args.push("--export".to_string());
-                    args.push(export);
-                }
+                Ok(canonical) => *export = canonical,
                 Err(e) => return ok_error(e),
             }
         }
-
-        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        vault_reply(run_dcert_vault(&args_refs, &params.vault, &self.config, &[]).await)
+        let mut b = ArgBuilder::new();
+        b.positional(["list"])
+            .value("mount", Some(&params.mount))
+            .value("format", Some("json"))
+            .flag("show-details", params.show_details)
+            .flag("expired-only", params.expired_only)
+            .flag("valid-only", params.valid_only)
+            .value("export", params.export.as_deref());
+        let (args, _) = b.into_parts();
+        reply(
+            run_dcert_vault(args, &params.vault, &self.config, &[]).await,
+            "debug/stderr",
+            &[0],
+        )
     }
 
     /// Store a local certificate and private key in Vault KV.
@@ -367,23 +322,21 @@ impl DcertMcpServer {
             return ok_error(e);
         }
 
-        let kv_version_str = params.kv_version.to_string();
-        let args: Vec<&str> = vec![
-            "store",
-            "--cert-file",
-            &params.cert_file,
-            "--key-file",
-            &params.key_file,
-            &params.path,
-            "--cert-key",
-            &params.cert_key,
-            "--key-key",
-            &params.key_key,
-            "--kv-version",
-            &kv_version_str,
-        ];
+        let mut b = ArgBuilder::new();
+        b.positional(["store"])
+            .value("cert-file", Some(&params.cert_file))
+            .value("key-file", Some(&params.key_file))
+            .positional([&params.path])
+            .value("cert-key", Some(&params.cert_key))
+            .value("key-key", Some(&params.key_key))
+            .value("kv-version", Some(params.kv_version));
+        let (args, _) = b.into_parts();
 
-        vault_reply(run_dcert_vault(&args, &params.vault, &self.config, &[]).await)
+        reply(
+            run_dcert_vault(args, &params.vault, &self.config, &[]).await,
+            "debug/stderr",
+            &[0],
+        )
     }
 
     /// Read and validate a certificate stored in Vault KV.
@@ -415,19 +368,18 @@ impl DcertMcpServer {
             return ok_error(e);
         }
 
-        let kv_version_str = params.kv_version.to_string();
-        let args: Vec<&str> = vec![
-            "validate",
-            &params.path,
-            "--cert-key",
-            &params.cert_key,
-            "--key-key",
-            &params.key_key,
-            "--kv-version",
-            &kv_version_str,
-        ];
+        let mut b = ArgBuilder::new();
+        b.positional(["validate", params.path.as_str()])
+            .value("cert-key", Some(&params.cert_key))
+            .value("key-key", Some(&params.key_key))
+            .value("kv-version", Some(params.kv_version));
+        let (args, _) = b.into_parts();
 
-        vault_reply(run_dcert_vault(&args, &params.vault, &self.config, &[]).await)
+        reply(
+            run_dcert_vault(args, &params.vault, &self.config, &[]).await,
+            "debug/stderr",
+            &[0],
+        )
     }
 
     /// Renew an existing certificate in Vault KV by re-issuing from Vault PKI.
@@ -464,33 +416,27 @@ impl DcertMcpServer {
             return ok_error(e);
         }
 
-        let mut args: Vec<String> = vec![
-            "renew".to_string(),
-            params.path.clone(),
-            "--mount".to_string(),
-            params.mount.clone(),
-            "--ttl".to_string(),
-            params.ttl.clone(),
-            "--cert-key".to_string(),
-            params.cert_key.clone(),
-            "--key-key".to_string(),
-            params.key_key.clone(),
-            "--kv-version".to_string(),
-            params.kv_version.to_string(),
-        ];
-        push_pki_args(
-            &mut args,
-            &PkiArgs {
-                role: params.role.as_deref(),
-                sans: &params.sans,
-                ip_sans: &params.ip_sans,
-                output: None,
-                store_path: None,
-                kv_version: params.kv_version,
-            },
-        );
-
-        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        vault_reply(run_dcert_vault(&args_refs, &params.vault, &self.config, &[]).await)
+        let pki = PkiArgs {
+            role: params.role.as_deref(),
+            sans: &params.sans,
+            ip_sans: &params.ip_sans,
+            output: None,
+            store_path: None,
+            kv_version: params.kv_version,
+        };
+        let mut b = ArgBuilder::new();
+        b.positional(["renew", params.path.as_str()])
+            .value("mount", Some(&params.mount))
+            .value("ttl", Some(&params.ttl))
+            .value("cert-key", Some(&params.cert_key))
+            .value("key-key", Some(&params.key_key))
+            .value("kv-version", Some(params.kv_version))
+            .extend(&pki);
+        let (args, _) = b.into_parts();
+        reply(
+            run_dcert_vault(args, &params.vault, &self.config, &[]).await,
+            "debug/stderr",
+            &[0],
+        )
     }
 }

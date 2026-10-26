@@ -4,23 +4,11 @@ use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use rmcp::{tool, tool_router};
 
-use super::{DcertMcpServer, ok_error, ok_text};
-use crate::exec::{format_tool_output, run_dcert, run_dcert_raw, run_dcert_with_env, target_args};
+use super::{DcertMcpServer, ok_error, ok_text, reply};
+use crate::cliargs::ArgBuilder;
+use crate::exec::{Invocation, RunOutcome, run_dcert, target_args};
 use crate::params::*;
 use crate::validate::*;
-
-/// What a dcert run produced: stdout, stderr and the exit code, or why it
-/// could not run at all.
-type RunOutcome = Result<(String, String, i32), String>;
-
-/// Turn a run outcome into the tool reply: the formatted output on success,
-/// an error result when the subprocess could not be run.
-fn tool_reply(outcome: RunOutcome, banner: &str, ok_codes: &[i32]) -> Result<CallToolResult, rmcp::ErrorData> {
-    match outcome {
-        Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, banner, ok_codes)),
-        Err(e) => ok_error(e),
-    }
-}
 
 impl DcertMcpServer {
     /// The prologue every network probe shares: validate the target and the
@@ -42,8 +30,7 @@ impl DcertMcpServer {
         let (mut options, env_refs) = params.cli_args();
         options.extend(file_args);
         let args = target_args(P::SUBCOMMAND, options, &target);
-        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        run_dcert_with_env(&args_refs, &self.config, Some(&env_refs)).await
+        run_dcert(Invocation::new(args).env(&env_refs), &self.config).await
     }
 }
 
@@ -87,7 +74,7 @@ impl DcertMcpServer {
             return ok_error(e);
         }
         let outcome = self.run_probe(&mut params).await;
-        tool_reply(outcome, "debug/stderr", &[0])
+        reply(outcome, "debug/stderr", &[0])
     }
 
     /// Check if TLS certificates for a target expire within a specified number of days.
@@ -118,7 +105,7 @@ impl DcertMcpServer {
             };
             (format!("expiry_status: {status}\n\n{stdout}"), stderr, code)
         });
-        tool_reply(outcome, "warnings", &[0, 1, 4])
+        reply(outcome, "warnings", &[0, 1, 4])
     }
 
     /// Check the OCSP revocation status of TLS certificates.
@@ -144,7 +131,7 @@ impl DcertMcpServer {
             };
             (prefixed, stderr, code)
         });
-        tool_reply(outcome, "stderr", &[0, 5, 8])
+        reply(outcome, "stderr", &[0, 5, 8])
     }
 
     /// Compare TLS certificates between two targets and show differences.
@@ -185,10 +172,10 @@ impl DcertMcpServer {
         let options = || vec!["--format".to_string(), "json".to_string(), "--fingerprint".to_string()];
         let args_a = target_args("check", options(), &params.target_a);
         let args_b = target_args("check", options(), &params.target_b);
-        let refs_a: Vec<&str> = args_a.iter().map(String::as_str).collect();
-        let refs_b: Vec<&str> = args_b.iter().map(String::as_str).collect();
-
-        let (result_a, result_b) = tokio::join!(run_dcert(&refs_a, &self.config), run_dcert(&refs_b, &self.config));
+        let (result_a, result_b) = tokio::join!(
+            run_dcert(Invocation::new(args_a), &self.config),
+            run_dcert(Invocation::new(args_b), &self.config)
+        );
 
         match (result_a, result_b) {
             (Ok((stdout_a, _, _)), Ok((stdout_b, _, _))) => {
@@ -254,7 +241,7 @@ impl DcertMcpServer {
             return ok_error(format!("min_tls ({min}) must not be greater than max_tls ({max})"));
         }
         let outcome = self.run_probe(&mut params).await;
-        tool_reply(outcome, "debug/stderr", &[0])
+        reply(outcome, "debug/stderr", &[0])
     }
 
     /// Export the PEM certificate chain from an HTTPS endpoint.
@@ -286,7 +273,7 @@ impl DcertMcpServer {
             };
             (prefixed, stderr, code)
         });
-        tool_reply(outcome, "debug/stderr", &[0])
+        reply(outcome, "debug/stderr", &[0])
     }
 
     /// Verify that a private key matches a certificate.
@@ -322,12 +309,7 @@ impl DcertMcpServer {
             ],
             &params.target,
         );
-        let args: Vec<&str> = args.iter().map(String::as_str).collect();
-
-        match run_dcert_raw(&args, &self.config, None).await {
-            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "stderr", &[0, 7])),
-            Err(e) => ok_error(e),
-        }
+        reply(run_dcert(Invocation::new(args), &self.config).await, "stderr", &[0, 7])
     }
 
     /// Scan a directory for matching certificate/key pairs and verify they match.
@@ -352,10 +334,7 @@ impl DcertMcpServer {
 
         let args = vec!["verify-key", "--dir", params.dir.as_str(), "--format", "json"];
 
-        match run_dcert_raw(&args, &self.config, None).await {
-            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "stderr", &[0, 7])),
-            Err(e) => ok_error(e),
-        }
+        reply(run_dcert(Invocation::new(args), &self.config).await, "stderr", &[0, 7])
     }
 
     /// Convert a PKCS12/PFX file to PEM certificate and key files.
@@ -396,10 +375,11 @@ impl DcertMcpServer {
         // Pass password via env var to avoid exposure in process listings
         let env_vars = [("DCERT_CERT_PASSWORD", params.password.as_str())];
 
-        match run_dcert_raw(&args, &self.config, Some(&env_vars)).await {
-            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "stderr", &[0])),
-            Err(e) => ok_error(e),
-        }
+        reply(
+            run_dcert(Invocation::new(args).env(&env_vars), &self.config).await,
+            "stderr",
+            &[0],
+        )
     }
 
     /// Convert PEM certificate and key to a PKCS12/PFX file.
@@ -439,30 +419,20 @@ impl DcertMcpServer {
             }
         }
 
-        let mut args = vec![
-            "convert".to_string(),
-            "--format".to_string(),
-            "json".to_string(),
-            "pem-to-pfx".to_string(),
-            "--cert".to_string(),
-            params.cert_path.clone(),
-            "--key".to_string(),
-            params.key_path.clone(),
-            "--output".to_string(),
-            params.output_path.clone(),
-        ];
-        if let Some(ref ca) = params.ca_path {
-            args.push("--ca".to_string());
-            args.push(ca.clone());
-        }
-        // Pass password via env var to avoid exposure in process listings
-        let env_vars = [("DCERT_CERT_PASSWORD", params.password.as_str())];
-
-        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        match run_dcert_raw(&args_refs, &self.config, Some(&env_vars)).await {
-            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "stderr", &[0])),
-            Err(e) => ok_error(e),
-        }
+        let mut b = ArgBuilder::new();
+        b.positional(["convert", "--format=json", "pem-to-pfx"])
+            .value("cert", Some(&params.cert_path))
+            .value("key", Some(&params.key_path))
+            .value("output", Some(&params.output_path))
+            .value("ca", params.ca_path.as_deref())
+            // The password travels in the environment, never in argv.
+            .env("DCERT_CERT_PASSWORD", Some(params.password.as_str()));
+        let (args, env) = b.into_parts();
+        reply(
+            run_dcert(Invocation::new(args).env(&env), &self.config).await,
+            "stderr",
+            &[0],
+        )
     }
 
     /// Create a PKCS12 keystore from a private key and certificate.
@@ -516,10 +486,11 @@ impl DcertMcpServer {
         // Pass password via env var to avoid exposure in process listings
         let env_vars = [("DCERT_KEYSTORE_PASSWORD", params.password.as_str())];
 
-        match run_dcert_raw(&args, &self.config, Some(&env_vars)).await {
-            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "stderr", &[0])),
-            Err(e) => ok_error(e),
-        }
+        reply(
+            run_dcert(Invocation::new(args).env(&env_vars), &self.config).await,
+            "stderr",
+            &[0],
+        )
     }
 
     /// Create a new Certificate Signing Request (CSR) with a private key.
@@ -586,62 +557,32 @@ impl DcertMcpServer {
             return ok_error(e);
         }
 
-        let mut args: Vec<String> = vec![
-            "csr".to_string(),
-            "create".to_string(),
-            "--cn".to_string(),
-            params.common_name.clone(),
-            "--key-algo".to_string(),
-            params.key_algorithm.clone(),
-            "--csr-out".to_string(),
-            params.csr_output_path.clone(),
-            "--key-out".to_string(),
-            params.key_output_path.clone(),
-            "--format".to_string(),
-            "json".to_string(),
-        ];
-        if let Some(ref org) = params.organization {
-            args.push("--org".to_string());
-            args.push(org.clone());
-        }
-        for ou in &params.organizational_units {
-            args.push("--ou".to_string());
-            args.push(ou.clone());
-        }
-        if let Some(ref country) = params.country {
-            args.push("--country".to_string());
-            args.push(country.clone());
-        }
-        if let Some(ref state) = params.state {
-            args.push("--state".to_string());
-            args.push(state.clone());
-        }
-        if let Some(ref locality) = params.locality {
-            args.push("--locality".to_string());
-            args.push(locality.clone());
-        }
-        if let Some(ref email) = params.email {
-            args.push("--email".to_string());
-            args.push(email.clone());
-        }
-        for san in &params.subject_alternative_names {
-            args.push("--san".to_string());
-            args.push(san.clone());
-        }
-        // The passphrase travels in the environment, never in argv.
-        let mut env_refs: Vec<(&str, &str)> = Vec::new();
-        if params.encrypt_key {
-            args.push("--encrypt-key".to_string());
-            if let Some(ref pw) = params.key_password {
-                env_refs.push(("DCERT_KEY_PASSWORD", pw.as_str()));
-            }
-        }
-
-        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        match run_dcert_raw(&args_refs, &self.config, Some(&env_refs)).await {
-            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "notes", &[0])),
-            Err(e) => ok_error(e),
-        }
+        let mut b = ArgBuilder::new();
+        b.positional(["csr", "create"])
+            .value("cn", Some(&params.common_name))
+            .value("key-algo", Some(&params.key_algorithm))
+            .value("csr-out", Some(&params.csr_output_path))
+            .value("key-out", Some(&params.key_output_path))
+            .value("format", Some("json"))
+            .value("org", params.organization.as_deref())
+            .repeat("ou", &params.organizational_units)
+            .value("country", params.country.as_deref())
+            .value("state", params.state.as_deref())
+            .value("locality", params.locality.as_deref())
+            .value("email", params.email.as_deref())
+            .repeat("san", &params.subject_alternative_names)
+            .flag("encrypt-key", params.encrypt_key)
+            // The passphrase travels in the environment, never in argv.
+            .env(
+                "DCERT_KEY_PASSWORD",
+                params.key_password.as_deref().filter(|_| params.encrypt_key),
+            );
+        let (args, env_refs) = b.into_parts();
+        reply(
+            run_dcert(Invocation::new(args).env(&env_refs), &self.config).await,
+            "notes",
+            &[0],
+        )
     }
 
     /// Validate a PEM-encoded CSR for compliance with industry standards.
@@ -664,22 +605,12 @@ impl DcertMcpServer {
             Err(e) => return ok_error(e),
         }
 
-        let mut args: Vec<String> = vec![
-            "csr".to_string(),
-            "validate".to_string(),
-            params.csr_file,
-            "--format".to_string(),
-            "json".to_string(),
-        ];
-        if params.strict {
-            args.push("--warnings-as-errors".to_string());
-        }
-
-        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        match run_dcert_raw(&args_refs, &self.config, None).await {
-            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "notes", &[0])),
-            Err(e) => ok_error(e),
-        }
+        let mut b = ArgBuilder::new();
+        b.positional(["csr", "validate", params.csr_file.as_str()])
+            .value("format", Some("json"))
+            .flag("warnings-as-errors", params.strict);
+        let (args, _) = b.into_parts();
+        reply(run_dcert(Invocation::new(args), &self.config).await, "notes", &[0])
     }
 
     /// Diagnose TLS, mTLS, gateway, CDN and forward proxy failures for an endpoint.
@@ -706,7 +637,7 @@ impl DcertMcpServer {
         // A failed probe is the expected input for a diagnosis, so exit
         // codes are reported inline rather than treated as tool errors.
         let outcome = self.run_probe(&mut params).await;
-        tool_reply(outcome, "stderr", &[0])
+        reply(outcome, "stderr", &[0])
     }
 
     /// Explain a CloudFront or API Gateway status code, header, error name or topic.
@@ -732,18 +663,17 @@ impl DcertMcpServer {
         {
             return ok_error(e);
         }
-        let mut args = vec!["kb", "explain", params.query.as_str(), "--format", "json"];
-        if let Some(service) = params.service.as_deref() {
-            args.push("--service");
-            args.push(service);
-        }
-        match run_dcert_raw(&args, &self.config, None).await {
-            Ok((stdout, stderr, code)) => {
-                let ok_codes = explain_ok_codes(code, &stdout);
-                ok_text(format_tool_output(stdout, &stderr, code, "stderr", ok_codes))
-            }
-            Err(e) => ok_error(e),
-        }
+        let mut b = ArgBuilder::new();
+        b.positional(["kb", "explain", params.query.as_str()])
+            .value("format", Some("json"))
+            .value("service", params.service.as_deref());
+        let (args, _) = b.into_parts();
+        let outcome = run_dcert(Invocation::new(args), &self.config).await;
+        let ok_codes = match &outcome {
+            Ok((stdout, _, code)) => explain_ok_codes(*code, stdout),
+            Err(_) => &[0],
+        };
+        reply(outcome, "stderr", ok_codes)
     }
 
     /// Validate TLS certificates against industry standards and report compliance status.
@@ -762,7 +692,7 @@ impl DcertMcpServer {
         Parameters(mut params): Parameters<ValidateCertificateParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let outcome = self.run_probe(&mut params).await;
-        tool_reply(outcome, "debug/stderr", &[0])
+        reply(outcome, "debug/stderr", &[0])
     }
 
     /// Create a PKCS12 truststore from CA certificates.
@@ -806,27 +736,18 @@ impl DcertMcpServer {
 
         // Force --format json so the subprocess output is parseable, regardless
         // of the CLI default (which is `pretty` for human users).
-        let mut args: Vec<String> = vec![
-            "convert".to_string(),
-            "--format".to_string(),
-            "json".to_string(),
-            "create-truststore".to_string(),
-        ];
-        for path in &params.cert_paths {
-            args.push(path.clone());
-        }
-        args.push("--output".to_string());
-        args.push(params.output_path.clone());
-        if params.allow_non_ca {
-            args.push("--allow-non-ca".to_string());
-        }
-        // The password travels in the environment, never in argv.
-        let env_refs: Vec<(&str, &str)> = vec![("DCERT_TRUSTSTORE_PASSWORD", params.password.as_str())];
-
-        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        match run_dcert_raw(&args_refs, &self.config, Some(&env_refs)).await {
-            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "stderr", &[0])),
-            Err(e) => ok_error(e),
-        }
+        let mut b = ArgBuilder::new();
+        b.positional(["convert", "--format=json", "create-truststore"])
+            .positional(&params.cert_paths)
+            .value("output", Some(&params.output_path))
+            .flag("allow-non-ca", params.allow_non_ca)
+            // The password travels in the environment, never in argv.
+            .env("DCERT_TRUSTSTORE_PASSWORD", Some(params.password.as_str()));
+        let (args, env_refs) = b.into_parts();
+        reply(
+            run_dcert(Invocation::new(args).env(&env_refs), &self.config).await,
+            "stderr",
+            &[0],
+        )
     }
 }

@@ -22,6 +22,12 @@ summary is written.
   A parity test checks that every probe tool property reaches a flag the CLI
   accepts, and that every `check` flag is sent by a tool or listed as CLI
   only with its reason.
+- One subprocess runner (`run_dcert(Invocation)`) and one reply path for
+  every MCP tool. `--debug` (when `DCERT_MCP_DEBUG` is set), `--timeout`
+  and `--read-timeout` are injected wherever the subcommand takes them, so
+  `verify_key_match` now honours the server's connection timeouts. Vault
+  tools no longer force `--debug` into their output. Every tool builds its
+  arguments through the same builder; no hand written flag pushes remain.
 
 ### Security
 

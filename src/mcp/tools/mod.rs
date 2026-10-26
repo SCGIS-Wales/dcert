@@ -27,6 +27,20 @@ pub(crate) fn ok_error(msg: String) -> Result<CallToolResult, ErrorData> {
     Ok(CallToolResult::error(vec![ContentBlock::text(msg)]))
 }
 
+/// The one reply path for a dcert run: the formatted output (with stderr
+/// under `banner`, and exit codes outside `ok_codes` flagged), or an error
+/// result when the subprocess could not run.
+pub(crate) fn reply(
+    outcome: crate::exec::RunOutcome,
+    banner: &str,
+    ok_codes: &[i32],
+) -> Result<CallToolResult, ErrorData> {
+    match outcome {
+        Ok((stdout, stderr, code)) => ok_text(crate::exec::format_tool_output(stdout, &stderr, code, banner, ok_codes)),
+        Err(e) => ok_error(e),
+    }
+}
+
 // -- MCP Server Handler --
 
 /// dcert MCP server handler.

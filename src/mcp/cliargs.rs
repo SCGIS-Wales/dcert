@@ -44,6 +44,14 @@ impl<'a> ArgBuilder<'a> {
         self
     }
 
+    /// Bare arguments: subcommand names, or positional values the caller
+    /// has validated (canonical absolute paths, checked KV paths), which
+    /// therefore cannot start with `-`.
+    pub(crate) fn positional<T: Display>(&mut self, values: impl IntoIterator<Item = T>) -> &mut Self {
+        self.args.extend(values.into_iter().map(|v| v.to_string()));
+        self
+    }
+
     /// A secret or credential carrying setting, passed as the environment
     /// variable the CLI reads for it.
     pub(crate) fn env(&mut self, var: &'static str, value: Option<&'a str>) -> &mut Self {
