@@ -64,6 +64,8 @@ from dcert.tools import (
     explain_cipher_suite,
     export_pem,
     list_cipher_suites,
+    list_tls_policies,
+    show_tls_policy,
     tls_connection_info,
     tls_scan,
     verify_key_match,
@@ -117,4 +119,6 @@ __all__ = [
     "list_cipher_suites",
     "explain_cipher_suite",
     "tls_scan",
+    "list_tls_policies",
+    "show_tls_policy",
 ]

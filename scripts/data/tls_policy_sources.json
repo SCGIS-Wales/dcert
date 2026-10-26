@@ -1,0 +1,2952 @@
+{
+ "aws_alb": {
+  "tables": [
+   {
+    "context": "The following table describes the protocols that each TLS security policy supports.",
+    "heading": "Protocols by policy",
+    "rows": [
+     [
+      "Security policies",
+      "TLS 1.3",
+      "TLS 1.2",
+      "TLS 1.1",
+      "TLS 1.0"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-3-2021-06",
+      "Yes",
+      "No",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-3-PQ-2025-09",
+      "Yes",
+      "No",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-2021-06",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-PQ-2025-09",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Res-2021-06",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Ext1-2021-06",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Ext1-PQ-2025-09",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-1-2021-06",
+      "Yes",
+      "Yes",
+      "Yes",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-0-2021-06",
+      "Yes",
+      "Yes",
+      "Yes",
+      "Yes"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-0-PQ-2025-09",
+      "Yes",
+      "Yes",
+      "Yes",
+      "Yes"
+     ],
+     [
+      "ELBSecurityPolicy-TLS-1-2-Ext-2018-06",
+      "No",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS-1-2-2017-01",
+      "No",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS-1-1-2017-01",
+      "No",
+      "Yes",
+      "Yes",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-2016-08",
+      "No",
+      "Yes",
+      "Yes",
+      "Yes"
+     ]
+    ]
+   },
+   {
+    "context": "The following table describes the ciphers that each TLS security policy supports.",
+    "heading": "Ciphers by policy",
+    "rows": [
+     [
+      "Security policy",
+      "Ciphers"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-3-2021-06 ELBSecurityPolicy-TLS13-1-3-PQ-2025-09",
+      "TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 TLS_CHACHA20_POLY1305_SHA256"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-2021-06 ELBSecurityPolicy-TLS13-1-2-PQ-2025-09",
+      "TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 TLS_CHACHA20_POLY1305_SHA256 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Res-2021-06 ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09",
+      "TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 TLS_CHACHA20_POLY1305_SHA256 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09",
+      "TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 TLS_CHACHA20_POLY1305_SHA256 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES128-SHA ECDHE-RSA-AES128-SHA ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 ECDHE-ECDSA-AES256-SHA ECDHE-RSA-AES256-SHA AES128-GCM-SHA256 AES128-SHA256 AES128-SHA AES256-GCM-SHA384 AES256-SHA256 AES256-SHA"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Ext1-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext1-PQ-2025-09",
+      "TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 TLS_CHACHA20_POLY1305_SHA256 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 AES128-GCM-SHA256 AES128-SHA256 AES256-GCM-SHA384 AES256-SHA256"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-1-2021-06",
+      "TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 TLS_CHACHA20_POLY1305_SHA256 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES128-SHA ECDHE-RSA-AES128-SHA ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 ECDHE-ECDSA-AES256-SHA ECDHE-RSA-AES256-SHA AES128-GCM-SHA256 AES128-SHA256 AES128-SHA AES256-GCM-SHA384 AES256-SHA256 AES256-SHA"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09",
+      "TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 TLS_CHACHA20_POLY1305_SHA256 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES128-SHA ECDHE-RSA-AES128-SHA ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 ECDHE-ECDSA-AES256-SHA ECDHE-RSA-AES256-SHA AES128-GCM-SHA256 AES128-SHA256 AES128-SHA AES256-GCM-SHA384 AES256-SHA256 AES256-SHA"
+     ],
+     [
+      "ELBSecurityPolicy-TLS-1-2-Ext-2018-06",
+      "ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES128-SHA ECDHE-RSA-AES128-SHA ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 ECDHE-ECDSA-AES256-SHA ECDHE-RSA-AES256-SHA AES128-GCM-SHA256 AES128-SHA256 AES128-SHA AES256-GCM-SHA384 AES256-SHA256 AES256-SHA"
+     ],
+     [
+      "ELBSecurityPolicy-TLS-1-2-2017-01",
+      "ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 AES128-GCM-SHA256 AES128-SHA256 AES256-GCM-SHA384 AES256-SHA256"
+     ],
+     [
+      "ELBSecurityPolicy-TLS-1-1-2017-01",
+      "ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES128-SHA ECDHE-RSA-AES128-SHA ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 ECDHE-ECDSA-AES256-SHA ECDHE-RSA-AES256-SHA AES128-GCM-SHA256 AES128-SHA256 AES128-SHA AES256-GCM-SHA384 AES256-SHA256 AES256-SHA"
+     ],
+     [
+      "ELBSecurityPolicy-2016-08",
+      "ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES128-SHA ECDHE-RSA-AES128-SHA ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 ECDHE-ECDSA-AES256-SHA ECDHE-RSA-AES256-SHA AES128-GCM-SHA256 AES128-SHA256 AES128-SHA AES256-GCM-SHA384 AES256-SHA256 AES256-SHA"
+     ]
+    ]
+   },
+   {
+    "context": "The following table describes the TLS security policies that support each cipher.",
+    "heading": "Policies by cipher",
+    "rows": [
+     [
+      "Cipher name",
+      "Security policies",
+      "Cipher suite"
+     ],
+     [
+      "OpenSSL – TLS_AES_128_GCM_SHA256 IANA – TLS_AES_128_GCM_SHA256",
+      "ELBSecurityPolicy-TLS13-1-3-2021-06 ELBSecurityPolicy-TLS13-1-3-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-2021-06 ELBSecurityPolicy-TLS13-1-2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Res-2021-06 ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext1-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09",
+      "1301"
+     ],
+     [
+      "OpenSSL – TLS_AES_256_GCM_SHA384 IANA – TLS_AES_256_GCM_SHA384",
+      "ELBSecurityPolicy-TLS13-1-3-2021-06 ELBSecurityPolicy-TLS13-1-3-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-2021-06 ELBSecurityPolicy-TLS13-1-2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Res-2021-06 ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext1-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09",
+      "1302"
+     ],
+     [
+      "OpenSSL – TLS_CHACHA20_POLY1305_SHA256 IANA – TLS_CHACHA20_POLY1305_SHA256",
+      "ELBSecurityPolicy-TLS13-1-3-2021-06 ELBSecurityPolicy-TLS13-1-3-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-2021-06 ELBSecurityPolicy-TLS13-1-2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Res-2021-06 ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext1-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09",
+      "1303"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES128-GCM-SHA256 IANA – TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-2021-06 ELBSecurityPolicy-TLS13-1-2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Res-2021-06 ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext1-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09 ELBSecurityPolicy-TLS-1-2-Ext-2018-06 ELBSecurityPolicy-TLS-1-2-2017-01 ELBSecurityPolicy-TLS-1-1-2017-01 ELBSecurityPolicy-2016-08",
+      "c02b"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES128-GCM-SHA256 IANA – TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-2021-06 ELBSecurityPolicy-TLS13-1-2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Res-2021-06 ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext1-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09 ELBSecurityPolicy-TLS-1-2-Ext-2018-06 ELBSecurityPolicy-TLS-1-2-2017-01 ELBSecurityPolicy-TLS-1-1-2017-01 ELBSecurityPolicy-2016-08",
+      "c02f"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES128-SHA256 IANA – TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-2021-06 ELBSecurityPolicy-TLS13-1-2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext1-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09 ELBSecurityPolicy-TLS-1-2-Ext-2018-06 ELBSecurityPolicy-TLS-1-2-2017-01 ELBSecurityPolicy-TLS-1-1-2017-01 ELBSecurityPolicy-2016-08",
+      "c023"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES128-SHA256 IANA – TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-2021-06 ELBSecurityPolicy-TLS13-1-2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext1-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09 ELBSecurityPolicy-TLS-1-2-Ext-2018-06 ELBSecurityPolicy-TLS-1-2-2017-01 ELBSecurityPolicy-TLS-1-1-2017-01 ELBSecurityPolicy-2016-08",
+      "c027"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES128-SHA IANA – TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09 ELBSecurityPolicy-TLS-1-2-Ext-2018-06 ELBSecurityPolicy-TLS-1-1-2017-01 ELBSecurityPolicy-2016-08",
+      "c009"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES128-SHA IANA – TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09 ELBSecurityPolicy-TLS-1-2-Ext-2018-06 ELBSecurityPolicy-TLS-1-1-2017-01 ELBSecurityPolicy-2016-08",
+      "c013"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES256-GCM-SHA384 IANA – TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
+      "ELBSecurityPolicy-TLS13-1-2-2021-06 ELBSecurityPolicy-TLS13-1-2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Res-2021-06 ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext1-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09 ELBSecurityPolicy-TLS-1-2-Ext-2018-06 ELBSecurityPolicy-TLS-1-2-2017-01 ELBSecurityPolicy-TLS-1-1-2017-01 ELBSecurityPolicy-2016-08",
+      "c02c"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES256-GCM-SHA384 IANA – TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+      "ELBSecurityPolicy-TLS13-1-2-2021-06 ELBSecurityPolicy-TLS13-1-2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Res-2021-06 ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext1-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09 ELBSecurityPolicy-TLS-1-2-Ext-2018-06 ELBSecurityPolicy-TLS-1-2-2017-01 ELBSecurityPolicy-TLS-1-1-2017-01 ELBSecurityPolicy-2016-08",
+      "c030"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES256-SHA384 IANA – TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA384",
+      "ELBSecurityPolicy-TLS13-1-2-2021-06 ELBSecurityPolicy-TLS13-1-2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext1-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09 ELBSecurityPolicy-TLS-1-2-Ext-2018-06 ELBSecurityPolicy-TLS-1-2-2017-01 ELBSecurityPolicy-TLS-1-1-2017-01 ELBSecurityPolicy-2016-08",
+      "c024"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES256-SHA384 IANA – TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384",
+      "ELBSecurityPolicy-TLS13-1-2-2021-06 ELBSecurityPolicy-TLS13-1-2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext1-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09 ELBSecurityPolicy-TLS-1-2-Ext-2018-06 ELBSecurityPolicy-TLS-1-2-2017-01 ELBSecurityPolicy-TLS-1-1-2017-01 ELBSecurityPolicy-2016-08",
+      "c028"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES256-SHA IANA – TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09 ELBSecurityPolicy-TLS-1-2-Ext-2018-06 ELBSecurityPolicy-TLS-1-1-2017-01 ELBSecurityPolicy-2016-08",
+      "c00a"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES256-SHA IANA – TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09 ELBSecurityPolicy-TLS-1-2-Ext-2018-06 ELBSecurityPolicy-TLS-1-1-2017-01 ELBSecurityPolicy-2016-08",
+      "c014"
+     ],
+     [
+      "OpenSSL – AES128-GCM-SHA256 IANA – TLS_RSA_WITH_AES_128_GCM_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext1-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09 ELBSecurityPolicy-TLS-1-2-Ext-2018-06 ELBSecurityPolicy-TLS-1-2-2017-01 ELBSecurityPolicy-TLS-1-1-2017-01 ELBSecurityPolicy-2016-08",
+      "9c"
+     ],
+     [
+      "OpenSSL – AES128-SHA256 IANA – TLS_RSA_WITH_AES_128_CBC_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext1-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09 ELBSecurityPolicy-TLS-1-2-Ext-2018-06 ELBSecurityPolicy-TLS-1-2-2017-01 ELBSecurityPolicy-TLS-1-1-2017-01 ELBSecurityPolicy-2016-08",
+      "3c"
+     ],
+     [
+      "OpenSSL – AES128-SHA IANA – TLS_RSA_WITH_AES_128_CBC_SHA",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09 ELBSecurityPolicy-TLS-1-2-Ext-2018-06 ELBSecurityPolicy-TLS-1-1-2017-01 ELBSecurityPolicy-2016-08",
+      "2f"
+     ],
+     [
+      "OpenSSL – AES256-GCM-SHA384 IANA – TLS_RSA_WITH_AES_256_GCM_SHA384",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext1-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09 ELBSecurityPolicy-TLS-1-2-Ext-2018-06 ELBSecurityPolicy-TLS-1-2-2017-01 ELBSecurityPolicy-TLS-1-1-2017-01 ELBSecurityPolicy-2016-08",
+      "9d"
+     ],
+     [
+      "OpenSSL – AES256-SHA256 IANA – TLS_RSA_WITH_AES_256_CBC_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext1-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09 ELBSecurityPolicy-TLS-1-2-Ext-2018-06 ELBSecurityPolicy-TLS-1-2-2017-01 ELBSecurityPolicy-TLS-1-1-2017-01 ELBSecurityPolicy-2016-08",
+      "3d"
+     ],
+     [
+      "OpenSSL – AES256-SHA IANA – TLS_RSA_WITH_AES_256_CBC_SHA",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09 ELBSecurityPolicy-TLS-1-2-Ext-2018-06 ELBSecurityPolicy-TLS-1-1-2017-01 ELBSecurityPolicy-2016-08",
+      "35"
+     ]
+    ]
+   },
+   {
+    "context": "The following table describes the protocols that each FIPS security policy supports.",
+    "heading": "Protocols by policy",
+    "rows": [
+     [
+      "Security policies",
+      "TLS 1.3",
+      "TLS 1.2",
+      "TLS 1.1",
+      "TLS 1.0"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-3-FIPS-2023-04",
+      "Yes",
+      "No",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-3-FIPS-PQ-2025-09",
+      "Yes",
+      "No",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-FIPS-PQ-2025-09",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Res-FIPS-2023-04",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Res-FIPS-PQ-2025-09",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-2023-04",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-PQ-2025-09",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-2023-04",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-PQ-2025-09",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04",
+      "Yes",
+      "Yes",
+      "Yes",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04",
+      "Yes",
+      "Yes",
+      "Yes",
+      "Yes"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "Yes",
+      "Yes",
+      "Yes",
+      "Yes"
+     ]
+    ]
+   },
+   {
+    "context": "The following table describes the ciphers that each FIPS security policy supports.",
+    "heading": "Ciphers by policy",
+    "rows": [
+     [
+      "Security policy",
+      "Ciphers"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-3-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-3-FIPS-PQ-2025-09",
+      "TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-FIPS-PQ-2025-09",
+      "TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Res-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Res-FIPS-PQ-2025-09",
+      "TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09",
+      "TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES128-SHA ECDHE-RSA-AES128-SHA ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 ECDHE-RSA-AES256-SHA ECDHE-ECDSA-AES256-SHA AES128-GCM-SHA256 AES128-SHA256 AES128-SHA AES256-GCM-SHA384 AES256-SHA256 AES256-SHA"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-PQ-2025-09",
+      "TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 AES128-GCM-SHA256 AES128-SHA256 AES256-GCM-SHA384 AES256-SHA256"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-PQ-2025-09",
+      "TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES128-SHA ECDHE-RSA-AES128-SHA ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 ECDHE-RSA-AES256-SHA ECDHE-ECDSA-AES256-SHA"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04",
+      "TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES128-SHA ECDHE-RSA-AES128-SHA ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 ECDHE-RSA-AES256-SHA ECDHE-ECDSA-AES256-SHA AES128-GCM-SHA256 AES128-SHA256 AES128-SHA AES256-GCM-SHA384 AES256-SHA256 AES256-SHA"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES128-SHA ECDHE-RSA-AES128-SHA ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 ECDHE-RSA-AES256-SHA ECDHE-ECDSA-AES256-SHA AES128-GCM-SHA256 AES128-SHA256 AES128-SHA AES256-GCM-SHA384 AES256-SHA256 AES256-SHA"
+     ]
+    ]
+   },
+   {
+    "context": "The following table describes the FIPS security policies that support each cipher.",
+    "heading": "Policies by cipher",
+    "rows": [
+     [
+      "Cipher name",
+      "Security policies",
+      "Cipher suite"
+     ],
+     [
+      "OpenSSL – TLS_AES_128_GCM_SHA256 IANA – TLS_AES_128_GCM_SHA256",
+      "ELBSecurityPolicy-TLS13-1-3-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-3-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Res-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Res-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "1301"
+     ],
+     [
+      "OpenSSL – TLS_AES_256_GCM_SHA384 IANA – TLS_AES_256_GCM_SHA384",
+      "ELBSecurityPolicy-TLS13-1-3-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-3-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Res-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Res-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "1302"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES128-GCM-SHA256 IANA – TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-Res-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Res-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "c02b"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES128-GCM-SHA256 IANA – TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-Res-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Res-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "c02f"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES128-SHA256 IANA – TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "c023"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES128-SHA256 IANA – TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "c027"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES128-SHA IANA – TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "c009"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES128-SHA IANA – TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "c013"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES256-GCM-SHA384 IANA – TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
+      "ELBSecurityPolicy-TLS13-1-2-Res-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Res-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "c02c"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES256-GCM-SHA384 IANA – TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+      "ELBSecurityPolicy-TLS13-1-2-Res-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Res-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "c030"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES256-SHA384 IANA – TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA384",
+      "ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "c024"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES256-SHA384 IANA – TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384",
+      "ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "c028"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES256-SHA IANA – TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "c00a"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES256-SHA IANA – TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "c014"
+     ],
+     [
+      "OpenSSL – AES128-GCM-SHA256 IANA – TLS_RSA_WITH_AES_128_GCM_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "9c"
+     ],
+     [
+      "OpenSSL – AES128-SHA256 IANA – TLS_RSA_WITH_AES_128_CBC_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "3c"
+     ],
+     [
+      "OpenSSL – AES128-SHA IANA – TLS_RSA_WITH_AES_128_CBC_SHA",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "2f"
+     ],
+     [
+      "OpenSSL – AES256-GCM-SHA384 IANA – TLS_RSA_WITH_AES_256_GCM_SHA384",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "9d"
+     ],
+     [
+      "OpenSSL – AES256-SHA256 IANA – TLS_RSA_WITH_AES_256_CBC_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "3d"
+     ],
+     [
+      "OpenSSL – AES256-SHA IANA – TLS_RSA_WITH_AES_256_CBC_SHA",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "35"
+     ]
+    ]
+   },
+   {
+    "context": "The following table describes the protocols that each RFC 9151 security policy supports.",
+    "heading": "Protocols by policy",
+    "rows": [
+     [
+      "Security policies",
+      "TLS 1.3",
+      "TLS 1.2",
+      "TLS 1.1",
+      "TLS 1.0"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-3-RFC9151-FIPS-2023-07",
+      "Yes",
+      "No",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-FIPS-2023-07",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Ext0-RFC9151-FIPS-2023-07",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP1-FIPS-2023-07",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP2-FIPS-2023-07",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP3-FIPS-2023-07",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ]
+    ]
+   },
+   {
+    "context": "The following table describes the ciphers that each RFC 9151 security policy supports.",
+    "heading": "Ciphers by policy",
+    "rows": [
+     [
+      "Security policy",
+      "Ciphers"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-3-RFC9151-FIPS-2023-07",
+      "TLS_AES_256_GCM_SHA384"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-FIPS-2023-07",
+      "TLS_AES_256_GCM_SHA384 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Ext0-RFC9151-FIPS-2023-07",
+      "TLS_AES_256_GCM_SHA384 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 AES256-GCM-SHA384"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP1-FIPS-2023-07",
+      "TLS_AES_256_GCM_SHA384 TLS_AES_128_GCM_SHA256 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP2-FIPS-2023-07",
+      "TLS_AES_256_GCM_SHA384 TLS_AES_128_GCM_SHA256 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP3-FIPS-2023-07",
+      "TLS_AES_256_GCM_SHA384 TLS_AES_128_GCM_SHA256 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 ECDHE-ECDSA-AES256-SHA ECDHE-RSA-AES256-SHA ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES128-SHA ECDHE-RSA-AES128-SHA"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "TLS_AES_256_GCM_SHA384 TLS_AES_128_GCM_SHA256 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 ECDHE-ECDSA-AES256-SHA ECDHE-RSA-AES256-SHA ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES128-SHA ECDHE-RSA-AES128-SHA AES256-GCM-SHA384 AES256-SHA256 AES256-SHA AES128-GCM-SHA256 AES128-SHA256 AES128-SHA"
+     ]
+    ]
+   },
+   {
+    "context": "The following table describes the RFC 9151 security policies that support each cipher.",
+    "heading": "Policies by cipher",
+    "rows": [
+     [
+      "Cipher name",
+      "Security policies",
+      "Cipher suite"
+     ],
+     [
+      "OpenSSL – TLS_AES_256_GCM_SHA384 IANA – TLS_AES_256_GCM_SHA384",
+      "ELBSecurityPolicy-TLS13-1-3-RFC9151-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-Ext0-RFC9151-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP1-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP2-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP3-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "1302"
+     ],
+     [
+      "OpenSSL – TLS_AES_128_GCM_SHA256 IANA – TLS_AES_128_GCM_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP1-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP2-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP3-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "1301"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES256-GCM-SHA384 IANA – TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-Ext0-RFC9151-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP1-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP2-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP3-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "c02c"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES256-GCM-SHA384 IANA – TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-Ext0-RFC9151-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP1-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP2-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP3-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "c030"
+     ],
+     [
+      "OpenSSL – AES256-GCM-SHA384 IANA – TLS_RSA_WITH_AES_256_GCM_SHA384",
+      "ELBSecurityPolicy-TLS13-1-2-Ext0-RFC9151-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "9d"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES128-GCM-SHA256 IANA – TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP1-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP2-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP3-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "c02b"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES128-GCM-SHA256 IANA – TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP1-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP2-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP3-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "c02f"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES256-SHA384 IANA – TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA384",
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP2-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP3-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "c024"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES256-SHA384 IANA – TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384",
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP2-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP3-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "c028"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES128-SHA256 IANA – TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP2-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP3-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "c023"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES128-SHA256 IANA – TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP2-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP3-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "c027"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES256-SHA IANA – TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA",
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP3-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "c00a"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES256-SHA IANA – TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA",
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP3-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "c014"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES128-SHA IANA – TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA",
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP3-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "c009"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES128-SHA IANA – TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA",
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP3-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "c013"
+     ],
+     [
+      "OpenSSL – AES256-SHA256 IANA – TLS_RSA_WITH_AES_256_CBC_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "3d"
+     ],
+     [
+      "OpenSSL – AES256-SHA IANA – TLS_RSA_WITH_AES_256_CBC_SHA",
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "35"
+     ],
+     [
+      "OpenSSL – AES128-GCM-SHA256 IANA – TLS_RSA_WITH_AES_128_GCM_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "9c"
+     ],
+     [
+      "OpenSSL – AES128-SHA256 IANA – TLS_RSA_WITH_AES_128_CBC_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "3c"
+     ],
+     [
+      "OpenSSL – AES128-SHA IANA – TLS_RSA_WITH_AES_128_CBC_SHA",
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "2f"
+     ]
+    ]
+   },
+   {
+    "context": "The following table describes the protocols that each FS supported security policy supports.",
+    "heading": "Protocols by policy",
+    "rows": [
+     [
+      "Security policies",
+      "TLS 1.3",
+      "TLS 1.2",
+      "TLS 1.1",
+      "TLS 1.0"
+     ],
+     [
+      "ELBSecurityPolicy-FS-1-2-Res-2020-10",
+      "No",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-FS-1-2-Res-2019-08",
+      "No",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-FS-1-2-2019-08",
+      "No",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-FS-1-1-2019-08",
+      "No",
+      "Yes",
+      "Yes",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-FS-2018-06",
+      "No",
+      "Yes",
+      "Yes",
+      "Yes"
+     ]
+    ]
+   },
+   {
+    "context": "The following table describes the ciphers that each FS supported security policy supports.",
+    "heading": "Ciphers by policy",
+    "rows": [
+     [
+      "Security policy",
+      "Ciphers"
+     ],
+     [
+      "ELBSecurityPolicy-FS-1-2-Res-2020-10",
+      "ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384"
+     ],
+     [
+      "ELBSecurityPolicy-FS-1-2-Res-2019-08",
+      "ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384"
+     ],
+     [
+      "ELBSecurityPolicy-FS-1-2-2019-08",
+      "ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES128-SHA ECDHE-RSA-AES128-SHA ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 ECDHE-RSA-AES256-SHA ECDHE-ECDSA-AES256-SHA"
+     ],
+     [
+      "ELBSecurityPolicy-FS-1-1-2019-08",
+      "ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES128-SHA ECDHE-RSA-AES128-SHA ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 ECDHE-RSA-AES256-SHA ECDHE-ECDSA-AES256-SHA"
+     ],
+     [
+      "ELBSecurityPolicy-FS-2018-06",
+      "ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES128-SHA ECDHE-RSA-AES128-SHA ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 ECDHE-RSA-AES256-SHA ECDHE-ECDSA-AES256-SHA"
+     ]
+    ]
+   },
+   {
+    "context": "The following table describes the FS supported security policies that support each cipher.",
+    "heading": "Policies by cipher",
+    "rows": [
+     [
+      "Cipher name",
+      "Security policies",
+      "Cipher suite"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES128-GCM-SHA256 IANA – TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+      "ELBSecurityPolicy-FS-1-2-Res-2020-10 ELBSecurityPolicy-FS-1-2-Res-2019-08 ELBSecurityPolicy-FS-1-2-2019-08 ELBSecurityPolicy-FS-1-1-2019-08 ELBSecurityPolicy-FS-2018-06",
+      "c02b"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES128-GCM-SHA256 IANA – TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+      "ELBSecurityPolicy-FS-1-2-Res-2020-10 ELBSecurityPolicy-FS-1-2-Res-2019-08 ELBSecurityPolicy-FS-1-2-2019-08 ELBSecurityPolicy-FS-1-1-2019-08 ELBSecurityPolicy-FS-2018-06",
+      "c02f"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES128-SHA256 IANA – TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256",
+      "ELBSecurityPolicy-FS-1-2-Res-2019-08 ELBSecurityPolicy-FS-1-2-2019-08 ELBSecurityPolicy-FS-1-1-2019-08 ELBSecurityPolicy-FS-2018-06",
+      "c023"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES128-SHA256 IANA – TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256",
+      "ELBSecurityPolicy-FS-1-2-Res-2019-08 ELBSecurityPolicy-FS-1-2-2019-08 ELBSecurityPolicy-FS-1-1-2019-08 ELBSecurityPolicy-FS-2018-06",
+      "c027"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES128-SHA IANA – TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA",
+      "ELBSecurityPolicy-FS-1-2-2019-08 ELBSecurityPolicy-FS-1-1-2019-08 ELBSecurityPolicy-FS-2018-06",
+      "c009"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES128-SHA IANA – TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA",
+      "ELBSecurityPolicy-FS-1-2-2019-08 ELBSecurityPolicy-FS-1-1-2019-08 ELBSecurityPolicy-FS-2018-06",
+      "c013"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES256-GCM-SHA384 IANA – TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
+      "ELBSecurityPolicy-FS-1-2-Res-2020-10 ELBSecurityPolicy-FS-1-2-Res-2019-08 ELBSecurityPolicy-FS-1-2-2019-08 ELBSecurityPolicy-FS-1-1-2019-08 ELBSecurityPolicy-FS-2018-06",
+      "c02c"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES256-GCM-SHA384 IANA – TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+      "ELBSecurityPolicy-FS-1-2-Res-2020-10 ELBSecurityPolicy-FS-1-2-Res-2019-08 ELBSecurityPolicy-FS-1-2-2019-08 ELBSecurityPolicy-FS-1-1-2019-08 ELBSecurityPolicy-FS-2018-06",
+      "c030"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES256-SHA384 IANA – TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA384",
+      "ELBSecurityPolicy-FS-1-2-Res-2019-08 ELBSecurityPolicy-FS-1-2-2019-08 ELBSecurityPolicy-FS-1-1-2019-08 ELBSecurityPolicy-FS-2018-06",
+      "c024"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES256-SHA384 IANA – TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384",
+      "ELBSecurityPolicy-FS-1-2-Res-2019-08 ELBSecurityPolicy-FS-1-2-2019-08 ELBSecurityPolicy-FS-1-1-2019-08 ELBSecurityPolicy-FS-2018-06",
+      "c028"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES256-SHA IANA – TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA",
+      "ELBSecurityPolicy-FS-1-2-2019-08 ELBSecurityPolicy-FS-1-1-2019-08 ELBSecurityPolicy-FS-2018-06",
+      "c00a"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES256-SHA IANA – TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA",
+      "ELBSecurityPolicy-FS-1-2-2019-08 ELBSecurityPolicy-FS-1-1-2019-08 ELBSecurityPolicy-FS-2018-06",
+      "c014"
+     ]
+    ]
+   }
+  ],
+  "url": "https://docs.aws.amazon.com/elasticloadbalancing/latest/application/describe-ssl-policies.html"
+ },
+ "aws_api_gateway": {
+  "tables": [
+   {
+    "context": "When you create a new REST API or custom domain, the resource is assigned a default security policy. The following table shows the default security policy for these resources.",
+    "heading": "Default security policies",
+    "rows": [
+     [
+      "Resource",
+      "Default security policy name"
+     ],
+     [
+      "Regional APIs",
+      "TLS_1_0"
+     ],
+     [
+      "Edge-optimized APIs",
+      "TLS_1_0"
+     ],
+     [
+      "Private APIs",
+      "TLS_1_2"
+     ],
+     [
+      "Regional domain",
+      "TLS_1_2"
+     ],
+     [
+      "Edge-optimized domain",
+      "TLS_1_2"
+     ],
+     [
+      "Private domain",
+      "TLS_1_2"
+     ]
+    ]
+   },
+   {
+    "context": "The following table describes the security policies that can be specified for Regional and private APIs and custom domain names:",
+    "heading": "Supported security policies for Regional and private APIs and custom domain names",
+    "rows": [
+     [
+      "Security policy",
+      "Supported TLS versions",
+      "Supported ciphers"
+     ],
+     [
+      "SecurityPolicy_TLS13_1_3_2025_09",
+      "TLS1.3",
+      "TLS1.3 TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 TLS_CHACHA20_POLY1305_SHA256"
+     ],
+     [
+      "SecurityPolicy_TLS13_1_3_FIPS_2025_09",
+      "TLS1.3",
+      "TLS1.3 TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384"
+     ],
+     [
+      "SecurityPolicy_TLS13_1_2_FIPS_PFS_PQ_2025_09",
+      "TLS1.3 TLS1.2",
+      "TLS1.3 TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 TLS1.2 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384"
+     ],
+     [
+      "SecurityPolicy_TLS13_1_2_PFS_PQ_2025_09",
+      "TLS1.3 TLS1.2",
+      "TLS1.3 TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 TLS_CHACHA20_POLY1305_SHA256 TLS1.2 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384"
+     ],
+     [
+      "SecurityPolicy_TLS13_1_2_PQ_2025_09",
+      "TLS1.3 TLS1.2",
+      "TLS1.3 TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 TLS_CHACHA20_POLY1305_SHA256 TLS1.2 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 AES128-GCM-SHA256 AES128-SHA256 AES256-GCM-SHA384 AES256-SHA256"
+     ],
+     [
+      "SecurityPolicy_TLS13_1_2_2021_06",
+      "TLS1.3 TLS1.2",
+      "TLS1.3 TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 TLS_CHACHA20_POLY1305_SHA256 TLS1.2 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 AES128-GCM-SHA256 AES128-SHA256 AES256-GCM-SHA384 AES256-SHA256"
+     ],
+     [
+      "TLS_1_2",
+      "TLS1.3 TLS1.2",
+      "TLS1.3 TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 TLS_CHACHA20_POLY1305_SHA256 TLS1.2 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 AES128-GCM-SHA256 AES128-SHA256 AES256-GCM-SHA384 AES256-SHA256"
+     ],
+     [
+      "TLS_1_0",
+      "TLS1.3 TLS1.2 TLS1.1 TLS1.0",
+      "TLS1.3 TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 TLS_CHACHA20_POLY1305_SHA256 TLS1.0-TLS1.2 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES128-SHA ECDHE-RSA-AES128-SHA ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 ECDHE-ECDSA-AES256-SHA ECDHE-RSA-AES256-SHA AES128-GCM-SHA256 AES128-SHA256 AES128-SHA AES256-GCM-SHA384 AES256-SHA256 AES256-SHA"
+     ]
+    ]
+   },
+   {
+    "context": "The following table describes the security policies that can be specified for edge-optimized APIs and edge-optimized custom domain names:",
+    "heading": "Supported security policies for edge-optimized APIs and custom domain names",
+    "rows": [
+     [
+      "Security policy name",
+      "Supported TLS versions",
+      "Supported ciphers"
+     ],
+     [
+      "SecurityPolicy_TLS13_2025_EDGE",
+      "TLS1.3",
+      "TLS1.3 TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 TLS_CHACHA20_POLY1305_SHA256"
+     ],
+     [
+      "SecurityPolicy_TLS12_PFS_2025_EDGE",
+      "TLS1.3 TLS1.2",
+      "TLS1.3 TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 TLS_CHACHA20_POLY1305_SHA256 TLS1.2 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-ECDSA-CHACHA20-POLY1305 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-RSA-CHACHA20-POLY1305"
+     ],
+     [
+      "SecurityPolicy_TLS12_2018_EDGE",
+      "TLS1.3 TLS1.2",
+      "TLS1.3 TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 TLS_CHACHA20_POLY1305_SHA256 TLS1.2 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-ECDSA-CHACHA20-POLY1305 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-RSA-CHACHA20-POLY1305 ECDHE-RSA-AES256-SHA384"
+     ],
+     [
+      "TLS_1_2 (edge-optimized custom domain names only)",
+      "TLS1.3 TLS1.2",
+      "TLS1.3 TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 TLS_CHACHA20_POLY1305_SHA256 TLS1.2 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-ECDSA-CHACHA20-POLY1305 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-RSA-CHACHA20-POLY1305 ECDHE-RSA-AES256-SHA384 AES128-GCM-SHA256 AES256-GCM-SHA384 AES128-SHA256"
+     ],
+     [
+      "TLS_1_0",
+      "TLS1.3 TLS1.2 TLS1.1 TLS1.0",
+      "TLS1.3 TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 TLS_CHACHA20_POLY1305_SHA256 TLS1.0-TLS1.2 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES128-SHA ECDHE-RSA-AES128-SHA ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 ECDHE-ECDSA-AES256-SHA ECDHE-RSA-AES256-SHA AES256-SHA256 AES256-SHA"
+     ]
+    ]
+   },
+   {
+    "context": "OpenSSL and IETF RFC 5246 use different names for the same ciphers. The following table maps the OpenSSL name to the RFC name for each cipher. For more information, see ciphers in the OpenSSL Documentation.",
+    "heading": "OpenSSL and RFC cipher names",
+    "rows": [
+     [
+      "OpenSSL cipher name",
+      "RFC cipher name"
+     ],
+     [
+      "TLS_AES_128_GCM_SHA256",
+      "TLS_AES_128_GCM_SHA256"
+     ],
+     [
+      "TLS_AES_256_GCM_SHA384",
+      "TLS_AES_256_GCM_SHA384"
+     ],
+     [
+      "TLS_CHACHA20_POLY1305_SHA256",
+      "TLS_CHACHA20_POLY1305_SHA256"
+     ],
+     [
+      "ECDHE-RSA-AES128-GCM-SHA256",
+      "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
+     ],
+     [
+      "ECDHE-RSA-AES128-SHA256",
+      "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256"
+     ],
+     [
+      "ECDHE-RSA-AES128-SHA",
+      "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA"
+     ],
+     [
+      "ECDHE-RSA-AES256-GCM-SHA384",
+      "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"
+     ],
+     [
+      "ECDHE-RSA-AES256-SHA384",
+      "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384"
+     ],
+     [
+      "ECDHE-RSA-AES256-SHA",
+      "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA"
+     ],
+     [
+      "AES128-GCM-SHA256",
+      "TLS_RSA_WITH_AES_128_GCM_SHA256"
+     ],
+     [
+      "AES256-GCM-SHA384",
+      "TLS_RSA_WITH_AES_256_GCM_SHA384"
+     ],
+     [
+      "AES128-SHA256",
+      "TLS_RSA_WITH_AES_128_CBC_SHA256"
+     ],
+     [
+      "AES256-SHA",
+      "TLS_RSA_WITH_AES_256_CBC_SHA"
+     ],
+     [
+      "AES128-SHA",
+      "TLS_RSA_WITH_AES_128_CBC_SHA"
+     ],
+     [
+      "DES-CBC3-SHA",
+      "TLS_RSA_WITH_3DES_EDE_CBC_SHA"
+     ]
+    ]
+   }
+  ],
+  "url": "https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-security-policies-list.html"
+ },
+ "aws_cloudfront": {
+  "tables": [
+   {
+    "context": " for Security policy (minimum SSL/TLS version). The following table lists the protocols and ciphers that CloudFront can use for each security policy.A viewer must support at least one of the supported ciphers to establish an HTTPS connection with CloudFront. CloudFront chooses a cipher in the listed order from among the ciphers that the viewer supports. See also OpenSSL, s2n, and RFC cipher names.",
+    "heading": "Supported protocols and ciphers between viewers and CloudFront",
+    "rows": [
+     [
+      "",
+      "Security policy"
+     ],
+     [
+      "",
+      "SSLv3",
+      "TLSv1",
+      "TLSv1_2016",
+      "TLSv1.1_2016",
+      "TLSv1.2_2018",
+      "TLSv1.2_2019",
+      "TLSv1.2_2021",
+      "TLSv1.2_2025",
+      "TLSv1.3_2025"
+     ],
+     [
+      "Supported SSL/TLS protocols"
+     ],
+     [
+      "TLSv1.3",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦"
+     ],
+     [
+      "TLSv1.2",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      ""
+     ],
+     [
+      "TLSv1.1",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "",
+      "",
+      "",
+      "",
+      ""
+     ],
+     [
+      "TLSv1",
+      "♦",
+      "♦",
+      "♦",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+     ],
+     [
+      "SSLv3",
+      "♦",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+     ],
+     [
+      "Supported TLSv1.3 ciphers"
+     ],
+     [
+      "TLS_AES_128_GCM_SHA256",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦"
+     ],
+     [
+      "TLS_AES_256_GCM_SHA384",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦"
+     ],
+     [
+      "TLS_CHACHA20_POLY1305_SHA256",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "",
+      "♦"
+     ],
+     [
+      "Supported ECDSA ciphers"
+     ],
+     [
+      "ECDHE-ECDSA-AES128-GCM-SHA256",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      ""
+     ],
+     [
+      "ECDHE-ECDSA-AES128-SHA256",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "",
+      "",
+      ""
+     ],
+     [
+      "ECDHE-ECDSA-AES128-SHA",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "",
+      "",
+      "",
+      "",
+      ""
+     ],
+     [
+      "ECDHE-ECDSA-AES256-GCM-SHA384",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      ""
+     ],
+     [
+      "ECDHE-ECDSA-CHACHA20-POLY1305",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "",
+      ""
+     ],
+     [
+      "ECDHE-ECDSA-AES256-SHA384",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "",
+      "",
+      ""
+     ],
+     [
+      "ECDHE-ECDSA-AES256-SHA",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "",
+      "",
+      "",
+      "",
+      ""
+     ],
+     [
+      "Supported RSA ciphers"
+     ],
+     [
+      "ECDHE-RSA-AES128-GCM-SHA256",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      ""
+     ],
+     [
+      "ECDHE-RSA-AES128-SHA256",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "",
+      "",
+      ""
+     ],
+     [
+      "ECDHE-RSA-AES128-SHA",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "",
+      "",
+      "",
+      "",
+      ""
+     ],
+     [
+      "ECDHE-RSA-AES256-GCM-SHA384",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      ""
+     ],
+     [
+      "ECDHE-RSA-CHACHA20-POLY1305",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "",
+      ""
+     ],
+     [
+      "ECDHE-RSA-AES256-SHA384",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "",
+      "",
+      ""
+     ],
+     [
+      "ECDHE-RSA-AES256-SHA",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "",
+      "",
+      "",
+      "",
+      ""
+     ],
+     [
+      "AES128-GCM-SHA256",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "",
+      "",
+      "",
+      ""
+     ],
+     [
+      "AES256-GCM-SHA384",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "",
+      "",
+      "",
+      ""
+     ],
+     [
+      "AES128-SHA256",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "",
+      "",
+      "",
+      ""
+     ],
+     [
+      "AES256-SHA",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "",
+      "",
+      "",
+      "",
+      ""
+     ],
+     [
+      "AES128-SHA",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "",
+      "",
+      "",
+      "",
+      ""
+     ],
+     [
+      "DES-CBC3-SHA",
+      "♦",
+      "♦",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+     ],
+     [
+      "RC4-MD5",
+      "♦",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+     ]
+    ]
+   },
+   {
+    "context": "fe key exchanges are only supported with TLS 1.3. TLS 1.2 and earlier versions do not support quantum-safe key exchanges. For more information, see the following topics: Post-Quantum Cryptography Cryptography algorithms and AWS services Hybrid key exchange in TLS 1.3 For more information about certificate requirements for CloudFront, see Requirements for using SSL/TLS certificates with CloudFront.",
+    "heading": "Note",
+    "rows": [
+     [
+      "OpenSSL and s2n cipher name",
+      "RFC cipher name"
+     ],
+     [
+      "Supported TLSv1.3 ciphers"
+     ],
+     [
+      "TLS_AES_128_GCM_SHA256",
+      "TLS_AES_128_GCM_SHA256"
+     ],
+     [
+      "TLS_AES_256_GCM_SHA384",
+      "TLS_AES_256_GCM_SHA384"
+     ],
+     [
+      "TLS_CHACHA20_POLY1305_SHA256",
+      "TLS_CHACHA20_POLY1305_SHA256"
+     ],
+     [
+      "Supported ECDSA ciphers"
+     ],
+     [
+      "ECDHE-ECDSA-AES128-GCM-SHA256",
+      "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256"
+     ],
+     [
+      "ECDHE-ECDSA-AES128-SHA256",
+      "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256"
+     ],
+     [
+      "ECDHE-ECDSA-AES128-SHA",
+      "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA"
+     ],
+     [
+      "ECDHE-ECDSA-AES256-GCM-SHA384",
+      "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384"
+     ],
+     [
+      "ECDHE-ECDSA-CHACHA20-POLY1305",
+      "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256"
+     ],
+     [
+      "ECDHE-ECDSA-AES256-SHA384",
+      "TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA384"
+     ],
+     [
+      "ECDHE-ECDSA-AES256-SHA",
+      "TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA"
+     ],
+     [
+      "Supported RSA ciphers"
+     ],
+     [
+      "ECDHE-RSA-AES128-GCM-SHA256",
+      "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
+     ],
+     [
+      "ECDHE-RSA-AES128-SHA256",
+      "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256"
+     ],
+     [
+      "ECDHE-RSA-AES128-SHA",
+      "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA"
+     ],
+     [
+      "ECDHE-RSA-AES256-GCM-SHA384",
+      "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"
+     ],
+     [
+      "ECDHE-RSA-CHACHA20-POLY1305",
+      "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256"
+     ],
+     [
+      "ECDHE-RSA-AES256-SHA384",
+      "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384"
+     ],
+     [
+      "ECDHE-RSA-AES256-SHA",
+      "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA"
+     ],
+     [
+      "AES128-GCM-SHA256",
+      "TLS_RSA_WITH_AES_128_GCM_SHA256"
+     ],
+     [
+      "AES256-GCM-SHA384",
+      "TLS_RSA_WITH_AES_256_GCM_SHA384"
+     ],
+     [
+      "AES128-SHA256",
+      "TLS_RSA_WITH_AES_128_CBC_SHA256"
+     ],
+     [
+      "AES256-SHA",
+      "TLS_RSA_WITH_AES_256_CBC_SHA"
+     ],
+     [
+      "AES128-SHA",
+      "TLS_RSA_WITH_AES_128_CBC_SHA"
+     ],
+     [
+      "DES-CBC3-SHA",
+      "TLS_RSA_WITH_3DES_EDE_CBC_SHA"
+     ],
+     [
+      "RC4-MD5",
+      "TLS_RSA_WITH_RC4_128_MD5"
+     ]
+    ]
+   },
+   {
+    "context": "CloudFront supports the following signature schemes for connections between viewers and CloudFront.",
+    "heading": "Supported signature schemes between viewers and CloudFront",
+    "rows": [
+     [
+      "",
+      "Security policy"
+     ],
+     [
+      "Signature schemes",
+      "SSLv3",
+      "TLSv1",
+      "TLSv1_2016",
+      "TLSv1.1_2016",
+      "TLSv1.2_2018",
+      "TLSv1.2_2019",
+      "TLSv1.2_2021",
+      "TLSv1.2_2025",
+      "TLSv1.3_2025"
+     ],
+     [
+      "TLS_SIGNATURE_SCHEME_RSA_PSS_PSS_SHA256",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦"
+     ],
+     [
+      "TLS_SIGNATURE_SCHEME_RSA_PSS_PSS_SHA384",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦"
+     ],
+     [
+      "TLS_SIGNATURE_SCHEME_RSA_PSS_PSS_SHA512",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦"
+     ],
+     [
+      "TLS_SIGNATURE_SCHEME_RSA_PSS_RSAE_SHA256",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦"
+     ],
+     [
+      "TLS_SIGNATURE_SCHEME_RSA_PSS_RSAE_SHA384",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦"
+     ],
+     [
+      "TLS_SIGNATURE_SCHEME_RSA_PSS_RSAE_SHA512",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦"
+     ],
+     [
+      "TLS_SIGNATURE_SCHEME_RSA_PKCS1_SHA256",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦"
+     ],
+     [
+      "TLS_SIGNATURE_SCHEME_RSA_PKCS1_SHA384",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦"
+     ],
+     [
+      "TLS_SIGNATURE_SCHEME_RSA_PKCS1_SHA512",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦"
+     ],
+     [
+      "TLS_SIGNATURE_SCHEME_RSA_PKCS1_SHA224",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "",
+      ""
+     ],
+     [
+      "TLS_SIGNATURE_SCHEME_ECDSA_SHA256",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦"
+     ],
+     [
+      "TLS_SIGNATURE_SCHEME_ECDSA_SHA384",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦"
+     ],
+     [
+      "TLS_SIGNATURE_SCHEME_ECDSA_SHA512",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦"
+     ],
+     [
+      "TLS_SIGNATURE_SCHEME_ECDSA_SHA224",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "",
+      ""
+     ],
+     [
+      "TLS_SIGNATURE_SCHEME_ECDSA_SECP256R1_SHA256",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦"
+     ],
+     [
+      "TLS_SIGNATURE_SCHEME_ECDSA_SECP384R1_SHA384",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "♦"
+     ],
+     [
+      "TLS_SIGNATURE_SCHEME_RSA_PKCS1_SHA1",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "",
+      "",
+      "",
+      "",
+      ""
+     ],
+     [
+      "TLS_SIGNATURE_SCHEME_ECDSA_SHA1",
+      "♦",
+      "♦",
+      "♦",
+      "♦",
+      "",
+      "",
+      "",
+      "",
+      ""
+     ]
+    ]
+   }
+  ],
+  "url": "https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/secure-connections-supported-viewer-protocols-ciphers.html"
+ },
+ "aws_nlb": {
+  "tables": [
+   {
+    "context": "The following table describes the protocols that each TLS security policy supports.",
+    "heading": "Protocols by policy",
+    "rows": [
+     [
+      "Security policies",
+      "TLS 1.3",
+      "TLS 1.2",
+      "TLS 1.1",
+      "TLS 1.0"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-3-2021-06",
+      "Yes",
+      "No",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-3-PQ-2025-09",
+      "Yes",
+      "No",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-2021-06",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-PQ-2025-09",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Res-2021-06",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Ext1-2021-06",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Ext1-PQ-2025-09",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-1-2021-06",
+      "Yes",
+      "Yes",
+      "Yes",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-0-2021-06",
+      "Yes",
+      "Yes",
+      "Yes",
+      "Yes"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-0-PQ-2025-09",
+      "Yes",
+      "Yes",
+      "Yes",
+      "Yes"
+     ],
+     [
+      "ELBSecurityPolicy-TLS-1-2-Ext-2018-06",
+      "No",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS-1-2-2017-01",
+      "No",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS-1-1-2017-01",
+      "No",
+      "Yes",
+      "Yes",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-2016-08",
+      "No",
+      "Yes",
+      "Yes",
+      "Yes"
+     ],
+     [
+      "ELBSecurityPolicy-2015-05",
+      "No",
+      "Yes",
+      "Yes",
+      "Yes"
+     ]
+    ]
+   },
+   {
+    "context": "The following table describes the ciphers that each TLS security policy supports.",
+    "heading": "Ciphers by policy",
+    "rows": [
+     [
+      "Security policy",
+      "Ciphers"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-3-2021-06 ELBSecurityPolicy-TLS13-1-3-PQ-2025-09",
+      "TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 TLS_CHACHA20_POLY1305_SHA256"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-2021-06 ELBSecurityPolicy-TLS13-1-2-PQ-2025-09",
+      "TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 TLS_CHACHA20_POLY1305_SHA256 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Res-2021-06 ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09",
+      "TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 TLS_CHACHA20_POLY1305_SHA256 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09",
+      "TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 TLS_CHACHA20_POLY1305_SHA256 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES128-SHA ECDHE-RSA-AES128-SHA ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 ECDHE-ECDSA-AES256-SHA ECDHE-RSA-AES256-SHA AES128-GCM-SHA256 AES128-SHA256 AES128-SHA AES256-GCM-SHA384 AES256-SHA256 AES256-SHA"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Ext1-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext1-PQ-2025-09",
+      "TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 TLS_CHACHA20_POLY1305_SHA256 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 AES128-GCM-SHA256 AES128-SHA256 AES256-GCM-SHA384 AES256-SHA256"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-1-2021-06",
+      "TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 TLS_CHACHA20_POLY1305_SHA256 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES128-SHA ECDHE-RSA-AES128-SHA ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 ECDHE-ECDSA-AES256-SHA ECDHE-RSA-AES256-SHA AES128-GCM-SHA256 AES128-SHA256 AES128-SHA AES256-GCM-SHA384 AES256-SHA256 AES256-SHA"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09",
+      "TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 TLS_CHACHA20_POLY1305_SHA256 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES128-SHA ECDHE-RSA-AES128-SHA ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 ECDHE-ECDSA-AES256-SHA ECDHE-RSA-AES256-SHA AES128-GCM-SHA256 AES128-SHA256 AES128-SHA AES256-GCM-SHA384 AES256-SHA256 AES256-SHA"
+     ],
+     [
+      "ELBSecurityPolicy-TLS-1-2-Ext-2018-06",
+      "ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES128-SHA ECDHE-RSA-AES128-SHA ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 ECDHE-ECDSA-AES256-SHA ECDHE-RSA-AES256-SHA AES128-GCM-SHA256 AES128-SHA256 AES128-SHA AES256-GCM-SHA384 AES256-SHA256 AES256-SHA"
+     ],
+     [
+      "ELBSecurityPolicy-TLS-1-2-2017-01",
+      "ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 AES128-GCM-SHA256 AES128-SHA256 AES256-GCM-SHA384 AES256-SHA256"
+     ],
+     [
+      "ELBSecurityPolicy-TLS-1-1-2017-01",
+      "ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES128-SHA ECDHE-RSA-AES128-SHA ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 ECDHE-ECDSA-AES256-SHA ECDHE-RSA-AES256-SHA AES128-GCM-SHA256 AES128-SHA256 AES128-SHA AES256-GCM-SHA384 AES256-SHA256 AES256-SHA"
+     ],
+     [
+      "ELBSecurityPolicy-2016-08",
+      "ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES128-SHA ECDHE-RSA-AES128-SHA ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 ECDHE-ECDSA-AES256-SHA ECDHE-RSA-AES256-SHA AES128-GCM-SHA256 AES128-SHA256 AES128-SHA AES256-GCM-SHA384 AES256-SHA256 AES256-SHA"
+     ],
+     [
+      "ELBSecurityPolicy-2015-05",
+      "ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES128-SHA ECDHE-RSA-AES128-SHA ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 ECDHE-ECDSA-AES256-SHA ECDHE-RSA-AES256-SHA AES128-GCM-SHA256 AES128-SHA256 AES128-SHA AES256-GCM-SHA384 AES256-SHA256 AES256-SHA"
+     ]
+    ]
+   },
+   {
+    "context": "The following table describes the TLS security policies that support each cipher.",
+    "heading": "Policies by cipher",
+    "rows": [
+     [
+      "Cipher name",
+      "Security policies",
+      "Cipher suite"
+     ],
+     [
+      "OpenSSL – TLS_AES_128_GCM_SHA256 IANA – TLS_AES_128_GCM_SHA256",
+      "ELBSecurityPolicy-TLS13-1-3-2021-06 ELBSecurityPolicy-TLS13-1-3-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-2021-06 ELBSecurityPolicy-TLS13-1-2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Res-2021-06 ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext1-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09",
+      "1301"
+     ],
+     [
+      "OpenSSL – TLS_AES_256_GCM_SHA384 IANA – TLS_AES_256_GCM_SHA384",
+      "ELBSecurityPolicy-TLS13-1-3-2021-06 ELBSecurityPolicy-TLS13-1-3-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-2021-06 ELBSecurityPolicy-TLS13-1-2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Res-2021-06 ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext1-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09",
+      "1302"
+     ],
+     [
+      "OpenSSL – TLS_CHACHA20_POLY1305_SHA256 IANA – TLS_CHACHA20_POLY1305_SHA256",
+      "ELBSecurityPolicy-TLS13-1-3-2021-06 ELBSecurityPolicy-TLS13-1-3-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-2021-06 ELBSecurityPolicy-TLS13-1-2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Res-2021-06 ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext1-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09",
+      "1303"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES128-GCM-SHA256 IANA – TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-2021-06 ELBSecurityPolicy-TLS13-1-2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Res-2021-06 ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext1-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09 ELBSecurityPolicy-TLS-1-2-Ext-2018-06 ELBSecurityPolicy-TLS-1-2-2017-01 ELBSecurityPolicy-TLS-1-1-2017-01 ELBSecurityPolicy-2016-08",
+      "c02b"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES128-GCM-SHA256 IANA – TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-2021-06 ELBSecurityPolicy-TLS13-1-2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Res-2021-06 ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext1-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09 ELBSecurityPolicy-TLS-1-2-Ext-2018-06 ELBSecurityPolicy-TLS-1-2-2017-01 ELBSecurityPolicy-TLS-1-1-2017-01 ELBSecurityPolicy-2016-08",
+      "c02f"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES128-SHA256 IANA – TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-2021-06 ELBSecurityPolicy-TLS13-1-2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext1-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09 ELBSecurityPolicy-TLS-1-2-Ext-2018-06 ELBSecurityPolicy-TLS-1-2-2017-01 ELBSecurityPolicy-TLS-1-1-2017-01 ELBSecurityPolicy-2016-08",
+      "c023"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES128-SHA256 IANA – TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-2021-06 ELBSecurityPolicy-TLS13-1-2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext1-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09 ELBSecurityPolicy-TLS-1-2-Ext-2018-06 ELBSecurityPolicy-TLS-1-2-2017-01 ELBSecurityPolicy-TLS-1-1-2017-01 ELBSecurityPolicy-2016-08",
+      "c027"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES128-SHA IANA – TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09 ELBSecurityPolicy-TLS-1-2-Ext-2018-06 ELBSecurityPolicy-TLS-1-1-2017-01 ELBSecurityPolicy-2016-08",
+      "c009"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES128-SHA IANA – TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09 ELBSecurityPolicy-TLS-1-2-Ext-2018-06 ELBSecurityPolicy-TLS-1-1-2017-01 ELBSecurityPolicy-2016-08",
+      "c013"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES256-GCM-SHA384 IANA – TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
+      "ELBSecurityPolicy-TLS13-1-2-2021-06 ELBSecurityPolicy-TLS13-1-2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Res-2021-06 ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext1-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09 ELBSecurityPolicy-TLS-1-2-Ext-2018-06 ELBSecurityPolicy-TLS-1-2-2017-01 ELBSecurityPolicy-TLS-1-1-2017-01 ELBSecurityPolicy-2016-08",
+      "c02c"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES256-GCM-SHA384 IANA – TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+      "ELBSecurityPolicy-TLS13-1-2-2021-06 ELBSecurityPolicy-TLS13-1-2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Res-2021-06 ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext1-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09 ELBSecurityPolicy-TLS-1-2-Ext-2018-06 ELBSecurityPolicy-TLS-1-2-2017-01 ELBSecurityPolicy-TLS-1-1-2017-01 ELBSecurityPolicy-2016-08",
+      "c030"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES256-SHA384 IANA – TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA384",
+      "ELBSecurityPolicy-TLS13-1-2-2021-06 ELBSecurityPolicy-TLS13-1-2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext1-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09 ELBSecurityPolicy-TLS-1-2-Ext-2018-06 ELBSecurityPolicy-TLS-1-2-2017-01 ELBSecurityPolicy-TLS-1-1-2017-01 ELBSecurityPolicy-2016-08",
+      "c024"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES256-SHA384 IANA – TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384",
+      "ELBSecurityPolicy-TLS13-1-2-2021-06 ELBSecurityPolicy-TLS13-1-2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext1-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09 ELBSecurityPolicy-TLS-1-2-Ext-2018-06 ELBSecurityPolicy-TLS-1-2-2017-01 ELBSecurityPolicy-TLS-1-1-2017-01 ELBSecurityPolicy-2016-08",
+      "c028"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES256-SHA IANA – TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09 ELBSecurityPolicy-TLS-1-2-Ext-2018-06 ELBSecurityPolicy-TLS-1-1-2017-01 ELBSecurityPolicy-2016-08",
+      "c00a"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES256-SHA IANA – TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09 ELBSecurityPolicy-TLS-1-2-Ext-2018-06 ELBSecurityPolicy-TLS-1-1-2017-01 ELBSecurityPolicy-2016-08",
+      "c014"
+     ],
+     [
+      "OpenSSL – AES128-GCM-SHA256 IANA – TLS_RSA_WITH_AES_128_GCM_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext1-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09 ELBSecurityPolicy-TLS-1-2-Ext-2018-06 ELBSecurityPolicy-TLS-1-2-2017-01 ELBSecurityPolicy-TLS-1-1-2017-01 ELBSecurityPolicy-2016-08",
+      "9c"
+     ],
+     [
+      "OpenSSL – AES128-SHA256 IANA – TLS_RSA_WITH_AES_128_CBC_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext1-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09 ELBSecurityPolicy-TLS-1-2-Ext-2018-06 ELBSecurityPolicy-TLS-1-2-2017-01 ELBSecurityPolicy-TLS-1-1-2017-01 ELBSecurityPolicy-2016-08",
+      "3c"
+     ],
+     [
+      "OpenSSL – AES128-SHA IANA – TLS_RSA_WITH_AES_128_CBC_SHA",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09 ELBSecurityPolicy-TLS-1-2-Ext-2018-06 ELBSecurityPolicy-TLS-1-1-2017-01 ELBSecurityPolicy-2016-08",
+      "2f"
+     ],
+     [
+      "OpenSSL – AES256-GCM-SHA384 IANA – TLS_RSA_WITH_AES_256_GCM_SHA384",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext1-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09 ELBSecurityPolicy-TLS-1-2-Ext-2018-06 ELBSecurityPolicy-TLS-1-2-2017-01 ELBSecurityPolicy-TLS-1-1-2017-01 ELBSecurityPolicy-2016-08",
+      "9d"
+     ],
+     [
+      "OpenSSL – AES256-SHA256 IANA – TLS_RSA_WITH_AES_256_CBC_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext1-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09 ELBSecurityPolicy-TLS-1-2-Ext-2018-06 ELBSecurityPolicy-TLS-1-2-2017-01 ELBSecurityPolicy-TLS-1-1-2017-01 ELBSecurityPolicy-2016-08",
+      "3d"
+     ],
+     [
+      "OpenSSL – AES256-SHA IANA – TLS_RSA_WITH_AES_256_CBC_SHA",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 ELBSecurityPolicy-TLS13-1-2-Ext2-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-2021-06 ELBSecurityPolicy-TLS13-1-0-2021-06 ELBSecurityPolicy-TLS13-1-0-PQ-2025-09 ELBSecurityPolicy-TLS-1-2-Ext-2018-06 ELBSecurityPolicy-TLS-1-1-2017-01 ELBSecurityPolicy-2016-08",
+      "35"
+     ]
+    ]
+   },
+   {
+    "context": "The following table describes the protocols that each FIPS security policy supports.",
+    "heading": "Protocols by policy",
+    "rows": [
+     [
+      "Security policies",
+      "TLS 1.3",
+      "TLS 1.2",
+      "TLS 1.1",
+      "TLS 1.0"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-3-FIPS-2023-04",
+      "Yes",
+      "No",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-3-FIPS-PQ-2025-09",
+      "Yes",
+      "No",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-FIPS-PQ-2025-09",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Res-FIPS-2023-04",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Res-FIPS-PQ-2025-09",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-2023-04",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-PQ-2025-09",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-2023-04",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-PQ-2025-09",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04",
+      "Yes",
+      "Yes",
+      "Yes",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04",
+      "Yes",
+      "Yes",
+      "Yes",
+      "Yes"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "Yes",
+      "Yes",
+      "Yes",
+      "Yes"
+     ]
+    ]
+   },
+   {
+    "context": "The following table describes the ciphers that each FIPS security policy supports.",
+    "heading": "Ciphers by policy",
+    "rows": [
+     [
+      "Security policy",
+      "Ciphers"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-3-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-3-FIPS-PQ-2025-09",
+      "TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-FIPS-PQ-2025-09",
+      "TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Res-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Res-FIPS-PQ-2025-09",
+      "TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09",
+      "TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES128-SHA ECDHE-RSA-AES128-SHA ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 ECDHE-RSA-AES256-SHA ECDHE-ECDSA-AES256-SHA AES128-GCM-SHA256 AES128-SHA256 AES128-SHA AES256-GCM-SHA384 AES256-SHA256 AES256-SHA"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-PQ-2025-09",
+      "TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 AES128-GCM-SHA256 AES128-SHA256 AES256-GCM-SHA384 AES256-SHA256"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-PQ-2025-09",
+      "TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES128-SHA ECDHE-RSA-AES128-SHA ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 ECDHE-RSA-AES256-SHA ECDHE-ECDSA-AES256-SHA"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04",
+      "TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES128-SHA ECDHE-RSA-AES128-SHA ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 ECDHE-RSA-AES256-SHA ECDHE-ECDSA-AES256-SHA AES128-GCM-SHA256 AES128-SHA256 AES128-SHA AES256-GCM-SHA384 AES256-SHA256 AES256-SHA"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES128-SHA ECDHE-RSA-AES128-SHA ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 ECDHE-RSA-AES256-SHA ECDHE-ECDSA-AES256-SHA AES128-GCM-SHA256 AES128-SHA256 AES128-SHA AES256-GCM-SHA384 AES256-SHA256 AES256-SHA"
+     ]
+    ]
+   },
+   {
+    "context": "The following table describes the FIPS security policies that support each cipher.",
+    "heading": "Policies by cipher",
+    "rows": [
+     [
+      "Cipher name",
+      "Security policies",
+      "Cipher suite"
+     ],
+     [
+      "OpenSSL – TLS_AES_128_GCM_SHA256 IANA – TLS_AES_128_GCM_SHA256",
+      "ELBSecurityPolicy-TLS13-1-3-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-3-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Res-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Res-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04",
+      "1301"
+     ],
+     [
+      "OpenSSL – TLS_AES_256_GCM_SHA384 IANA – TLS_AES_256_GCM_SHA384",
+      "ELBSecurityPolicy-TLS13-1-3-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-3-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Res-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Res-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "1302"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES128-GCM-SHA256 IANA – TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-Res-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Res-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "c02b"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES128-GCM-SHA256 IANA – TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-Res-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Res-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "c02f"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES128-SHA256 IANA – TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04",
+      "c023"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES128-SHA256 IANA – TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "c027"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES128-SHA IANA – TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "c009"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES128-SHA IANA – TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "c013"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES256-GCM-SHA384 IANA – TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
+      "ELBSecurityPolicy-TLS13-1-2-Res-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Res-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "c02c"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES256-GCM-SHA384 IANA – TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+      "ELBSecurityPolicy-TLS13-1-2-Res-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Res-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "c030"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES256-SHA384 IANA – TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA384",
+      "ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "c024"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES256-SHA384 IANA – TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384",
+      "ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "c028"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES256-SHA IANA – TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "c00a"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES256-SHA IANA – TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04",
+      "c014"
+     ],
+     [
+      "OpenSSL – AES128-GCM-SHA256 IANA – TLS_RSA_WITH_AES_128_GCM_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext0-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "9c"
+     ],
+     [
+      "OpenSSL – AES128-SHA256 IANA – TLS_RSA_WITH_AES_128_CBC_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "3c"
+     ],
+     [
+      "OpenSSL – AES128-SHA IANA – TLS_RSA_WITH_AES_128_CBC_SHA",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "2f"
+     ],
+     [
+      "OpenSSL – AES256-GCM-SHA384 IANA – TLS_RSA_WITH_AES_256_GCM_SHA384",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "9d"
+     ],
+     [
+      "OpenSSL – AES256-SHA256 IANA – TLS_RSA_WITH_AES_256_CBC_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext1-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "3d"
+     ],
+     [
+      "OpenSSL – AES256-SHA IANA – TLS_RSA_WITH_AES_256_CBC_SHA",
+      "ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-2-Ext2-FIPS-PQ-2025-09 ELBSecurityPolicy-TLS13-1-1-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-2023-04 ELBSecurityPolicy-TLS13-1-0-FIPS-PQ-2025-09",
+      "35"
+     ]
+    ]
+   },
+   {
+    "context": "The following table describes the protocols that each RFC 9151 security policy supports.",
+    "heading": "Protocols by policy",
+    "rows": [
+     [
+      "Security policies",
+      "TLS 1.3",
+      "TLS 1.2",
+      "TLS 1.1",
+      "TLS 1.0"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-3-RFC9151-FIPS-2023-07",
+      "Yes",
+      "No",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-FIPS-2023-07",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Ext0-RFC9151-FIPS-2023-07",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP1-FIPS-2023-07",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP2-FIPS-2023-07",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP3-FIPS-2023-07",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "Yes",
+      "Yes",
+      "No",
+      "No"
+     ]
+    ]
+   },
+   {
+    "context": "The following table describes the ciphers that each RFC 9151 security policy supports.",
+    "heading": "Ciphers by policy",
+    "rows": [
+     [
+      "Security policy",
+      "Ciphers"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-3-RFC9151-FIPS-2023-07",
+      "TLS_AES_256_GCM_SHA384"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-FIPS-2023-07",
+      "TLS_AES_256_GCM_SHA384 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-Ext0-RFC9151-FIPS-2023-07",
+      "TLS_AES_256_GCM_SHA384 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 AES256-GCM-SHA384"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP1-FIPS-2023-07",
+      "TLS_AES_256_GCM_SHA384 TLS_AES_128_GCM_SHA256 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP2-FIPS-2023-07",
+      "TLS_AES_256_GCM_SHA384 TLS_AES_128_GCM_SHA256 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP3-FIPS-2023-07",
+      "TLS_AES_256_GCM_SHA384 TLS_AES_128_GCM_SHA256 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 ECDHE-ECDSA-AES256-SHA ECDHE-RSA-AES256-SHA ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES128-SHA ECDHE-RSA-AES128-SHA"
+     ],
+     [
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "TLS_AES_256_GCM_SHA384 TLS_AES_128_GCM_SHA256 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 ECDHE-ECDSA-AES256-SHA ECDHE-RSA-AES256-SHA ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES128-SHA ECDHE-RSA-AES128-SHA AES256-GCM-SHA384 AES256-SHA256 AES256-SHA AES128-GCM-SHA256 AES128-SHA256 AES128-SHA"
+     ]
+    ]
+   },
+   {
+    "context": "The following table describes the RFC 9151 security policies that support each cipher.",
+    "heading": "Policies by cipher",
+    "rows": [
+     [
+      "Cipher name",
+      "Security policies",
+      "Cipher suite"
+     ],
+     [
+      "OpenSSL – TLS_AES_256_GCM_SHA384 IANA – TLS_AES_256_GCM_SHA384",
+      "ELBSecurityPolicy-TLS13-1-3-RFC9151-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-Ext0-RFC9151-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP1-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP2-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP3-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "1302"
+     ],
+     [
+      "OpenSSL – TLS_AES_128_GCM_SHA256 IANA – TLS_AES_128_GCM_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP1-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP2-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP3-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "1301"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES256-GCM-SHA384 IANA – TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-Ext0-RFC9151-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP1-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP2-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP3-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "c02c"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES256-GCM-SHA384 IANA – TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-Ext0-RFC9151-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP1-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP2-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP3-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "c030"
+     ],
+     [
+      "OpenSSL – AES256-GCM-SHA384 IANA – TLS_RSA_WITH_AES_256_GCM_SHA384",
+      "ELBSecurityPolicy-TLS13-1-2-Ext0-RFC9151-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "9d"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES128-GCM-SHA256 IANA – TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP1-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP2-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP3-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "c02b"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES128-GCM-SHA256 IANA – TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP1-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP2-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP3-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "c02f"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES256-SHA384 IANA – TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA384",
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP2-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP3-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "c024"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES256-SHA384 IANA – TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384",
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP2-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP3-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "c028"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES128-SHA256 IANA – TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP2-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP3-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "c023"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES128-SHA256 IANA – TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP2-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP3-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "c027"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES256-SHA IANA – TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA",
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP3-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "c00a"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES256-SHA IANA – TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA",
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP3-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "c014"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES128-SHA IANA – TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA",
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP3-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "c009"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES128-SHA IANA – TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA",
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP3-FIPS-2023-07 ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "c013"
+     ],
+     [
+      "OpenSSL – AES256-SHA256 IANA – TLS_RSA_WITH_AES_256_CBC_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "3d"
+     ],
+     [
+      "OpenSSL – AES256-SHA IANA – TLS_RSA_WITH_AES_256_CBC_SHA",
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "35"
+     ],
+     [
+      "OpenSSL – AES128-GCM-SHA256 IANA – TLS_RSA_WITH_AES_128_GCM_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "9c"
+     ],
+     [
+      "OpenSSL – AES128-SHA256 IANA – TLS_RSA_WITH_AES_128_CBC_SHA256",
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "3c"
+     ],
+     [
+      "OpenSSL – AES128-SHA IANA – TLS_RSA_WITH_AES_128_CBC_SHA",
+      "ELBSecurityPolicy-TLS13-1-2-RFC9151-INTEROP4-FIPS-2023-07",
+      "2f"
+     ]
+    ]
+   },
+   {
+    "context": "The following table describes the protocols that each FS supported security policy supports.",
+    "heading": "Protocols by policy",
+    "rows": [
+     [
+      "Security policies",
+      "TLS 1.3",
+      "TLS 1.2",
+      "TLS 1.1",
+      "TLS 1.0"
+     ],
+     [
+      "ELBSecurityPolicy-FS-1-2-Res-2020-10",
+      "No",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-FS-1-2-Res-2019-08",
+      "No",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-FS-1-2-2019-08",
+      "No",
+      "Yes",
+      "No",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-FS-1-1-2019-08",
+      "No",
+      "Yes",
+      "Yes",
+      "No"
+     ],
+     [
+      "ELBSecurityPolicy-FS-2018-06",
+      "No",
+      "Yes",
+      "Yes",
+      "Yes"
+     ]
+    ]
+   },
+   {
+    "context": "The following table describes the ciphers that each FS supported security policy supports.",
+    "heading": "Ciphers by policy",
+    "rows": [
+     [
+      "Security policy",
+      "Ciphers"
+     ],
+     [
+      "ELBSecurityPolicy-FS-1-2-Res-2020-10",
+      "ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384"
+     ],
+     [
+      "ELBSecurityPolicy-FS-1-2-Res-2019-08",
+      "ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384"
+     ],
+     [
+      "ELBSecurityPolicy-FS-1-2-2019-08",
+      "ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES128-SHA ECDHE-RSA-AES128-SHA ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 ECDHE-RSA-AES256-SHA ECDHE-ECDSA-AES256-SHA"
+     ],
+     [
+      "ELBSecurityPolicy-FS-1-1-2019-08",
+      "ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES128-SHA ECDHE-RSA-AES128-SHA ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 ECDHE-RSA-AES256-SHA ECDHE-ECDSA-AES256-SHA"
+     ],
+     [
+      "ELBSecurityPolicy-FS-2018-06",
+      "ECDHE-ECDSA-AES128-GCM-SHA256 ECDHE-RSA-AES128-GCM-SHA256 ECDHE-ECDSA-AES128-SHA256 ECDHE-RSA-AES128-SHA256 ECDHE-ECDSA-AES128-SHA ECDHE-RSA-AES128-SHA ECDHE-ECDSA-AES256-GCM-SHA384 ECDHE-RSA-AES256-GCM-SHA384 ECDHE-ECDSA-AES256-SHA384 ECDHE-RSA-AES256-SHA384 ECDHE-RSA-AES256-SHA ECDHE-ECDSA-AES256-SHA"
+     ]
+    ]
+   },
+   {
+    "context": "The following table describes the FS supported security policies that support each cipher.",
+    "heading": "Policies by cipher",
+    "rows": [
+     [
+      "Cipher name",
+      "Security policies",
+      "Cipher suite"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES128-GCM-SHA256 IANA – TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+      "ELBSecurityPolicy-FS-1-2-Res-2020-10 ELBSecurityPolicy-FS-1-2-Res-2019-08 ELBSecurityPolicy-FS-1-2-2019-08 ELBSecurityPolicy-FS-1-1-2019-08 ELBSecurityPolicy-FS-2018-06",
+      "c02b"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES128-GCM-SHA256 IANA – TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+      "ELBSecurityPolicy-FS-1-2-Res-2020-10 ELBSecurityPolicy-FS-1-2-Res-2019-08 ELBSecurityPolicy-FS-1-2-2019-08 ELBSecurityPolicy-FS-1-1-2019-08 ELBSecurityPolicy-FS-2018-06",
+      "c02f"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES128-SHA256 IANA – TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256",
+      "ELBSecurityPolicy-FS-1-2-Res-2019-08 ELBSecurityPolicy-FS-1-2-2019-08 ELBSecurityPolicy-FS-1-1-2019-08 ELBSecurityPolicy-FS-2018-06",
+      "c023"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES128-SHA256 IANA – TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256",
+      "ELBSecurityPolicy-FS-1-2-Res-2019-08 ELBSecurityPolicy-FS-1-2-2019-08 ELBSecurityPolicy-FS-1-1-2019-08 ELBSecurityPolicy-FS-2018-06",
+      "c027"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES128-SHA IANA – TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA",
+      "ELBSecurityPolicy-FS-1-2-2019-08 ELBSecurityPolicy-FS-1-1-2019-08 ELBSecurityPolicy-FS-2018-06",
+      "c009"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES128-SHA IANA – TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA",
+      "ELBSecurityPolicy-FS-1-2-2019-08 ELBSecurityPolicy-FS-1-1-2019-08 ELBSecurityPolicy-FS-2018-06",
+      "c013"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES256-GCM-SHA384 IANA – TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
+      "ELBSecurityPolicy-FS-1-2-Res-2020-10 ELBSecurityPolicy-FS-1-2-Res-2019-08 ELBSecurityPolicy-FS-1-2-2019-08 ELBSecurityPolicy-FS-1-1-2019-08 ELBSecurityPolicy-FS-2018-06",
+      "c02c"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES256-GCM-SHA384 IANA – TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+      "ELBSecurityPolicy-FS-1-2-Res-2020-10 ELBSecurityPolicy-FS-1-2-Res-2019-08 ELBSecurityPolicy-FS-1-2-2019-08 ELBSecurityPolicy-FS-1-1-2019-08 ELBSecurityPolicy-FS-2018-06",
+      "c030"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES256-SHA384 IANA – TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA384",
+      "ELBSecurityPolicy-FS-1-2-Res-2019-08 ELBSecurityPolicy-FS-1-2-2019-08 ELBSecurityPolicy-FS-1-1-2019-08 ELBSecurityPolicy-FS-2018-06",
+      "c024"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES256-SHA384 IANA – TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384",
+      "ELBSecurityPolicy-FS-1-2-Res-2019-08 ELBSecurityPolicy-FS-1-2-2019-08 ELBSecurityPolicy-FS-1-1-2019-08 ELBSecurityPolicy-FS-2018-06",
+      "c028"
+     ],
+     [
+      "OpenSSL – ECDHE-ECDSA-AES256-SHA IANA – TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA",
+      "ELBSecurityPolicy-FS-1-2-2019-08 ELBSecurityPolicy-FS-1-1-2019-08 ELBSecurityPolicy-FS-2018-06",
+      "c00a"
+     ],
+     [
+      "OpenSSL – ECDHE-RSA-AES256-SHA IANA – TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA",
+      "ELBSecurityPolicy-FS-1-2-2019-08 ELBSecurityPolicy-FS-1-1-2019-08 ELBSecurityPolicy-FS-2018-06",
+      "c014"
+     ]
+    ]
+   }
+  ],
+  "url": "https://docs.aws.amazon.com/elasticloadbalancing/latest/network/describe-ssl-policies.html"
+ },
+ "mozilla": {
+  "json": {
+   "configurations": {
+    "intermediate": {
+     "certificate_curves": [
+      "prime256v1",
+      "secp384r1"
+     ],
+     "certificate_signatures": [
+      "sha256WithRSAEncryption",
+      "ecdsa-with-SHA256",
+      "ecdsa-with-SHA384",
+      "ecdsa-with-SHA512"
+     ],
+     "certificate_types": [
+      "ecdsa",
+      "rsa"
+     ],
+     "ciphers": {
+      "iana": [
+       "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+       "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+       "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
+       "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+       "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256",
+       "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256"
+      ],
+      "openssl": [
+       "ECDHE-ECDSA-AES128-GCM-SHA256",
+       "ECDHE-RSA-AES128-GCM-SHA256",
+       "ECDHE-ECDSA-AES256-GCM-SHA384",
+       "ECDHE-RSA-AES256-GCM-SHA384",
+       "ECDHE-ECDSA-CHACHA20-POLY1305",
+       "ECDHE-RSA-CHACHA20-POLY1305"
+      ]
+     },
+     "ciphersuites": [
+      "TLS_AES_128_GCM_SHA256",
+      "TLS_AES_256_GCM_SHA384",
+      "TLS_CHACHA20_POLY1305_SHA256"
+     ],
+     "dh_param_size": 2048,
+     "ecdh_param_size": 256,
+     "hsts_min_age": 63072000,
+     "maximum_certificate_lifespan": 366,
+     "ocsp_staple": true,
+     "oldest_clients": [
+      "Firefox 31.3.0",
+      "Android 4.4.2",
+      "Chrome 49",
+      "Edge 15 on Windows 10",
+      "IE 11 on Windows 10",
+      "Java 8u161",
+      "OpenSSL 1.0.1l",
+      "Opera 20",
+      "Safari 9"
+     ],
+     "recommended_certificate_lifespan": 90,
+     "rsa_key_size": 2048,
+     "server_preferred_order": false,
+     "tls_curves": [
+      "X25519MLKEM768",
+      "X25519",
+      "prime256v1",
+      "secp384r1"
+     ],
+     "tls_versions": [
+      "TLSv1.2",
+      "TLSv1.3"
+     ]
+    },
+    "modern": {
+     "certificate_curves": [
+      "prime256v1",
+      "secp384r1"
+     ],
+     "certificate_signatures": [
+      "ecdsa-with-SHA256",
+      "ecdsa-with-SHA384",
+      "ecdsa-with-SHA512"
+     ],
+     "certificate_types": [
+      "ecdsa"
+     ],
+     "ciphers": {
+      "iana": [],
+      "openssl": []
+     },
+     "ciphersuites": [
+      "TLS_AES_128_GCM_SHA256",
+      "TLS_AES_256_GCM_SHA384",
+      "TLS_CHACHA20_POLY1305_SHA256"
+     ],
+     "dh_param_size": null,
+     "ecdh_param_size": 256,
+     "hsts_min_age": 63072000,
+     "maximum_certificate_lifespan": 90,
+     "ocsp_staple": true,
+     "oldest_clients": [
+      "Firefox 63",
+      "Android 10.0",
+      "Chrome 70",
+      "Edge 75",
+      "Java 11",
+      "OpenSSL 1.1.1",
+      "Opera 57",
+      "Safari 12.1"
+     ],
+     "recommended_certificate_lifespan": 90,
+     "rsa_key_size": null,
+     "server_preferred_order": false,
+     "tls_curves": [
+      "X25519MLKEM768",
+      "X25519",
+      "prime256v1",
+      "secp384r1"
+     ],
+     "tls_versions": [
+      "TLSv1.3"
+     ]
+    }
+   },
+   "href": "https://ssl-config.mozilla.org/guidelines/6.0.json",
+   "version": 6.0
+  },
+  "url": "https://ssl-config.mozilla.org/guidelines/latest.json"
+ }
+}

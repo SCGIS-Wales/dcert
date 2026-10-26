@@ -1117,7 +1117,97 @@ fn run() -> Result<i32> {
         Command::Kb(args) => run_kb(args),
         Command::Ciphers(args) => run_ciphers(args),
         Command::TlsScan(args) => run_tls_scan(*args),
+        Command::Policy(args) => run_policy(args),
     }
+}
+
+/// `dcert policy`: list, show and describe the TLS policy catalogue.
+fn run_policy(args: cli::PolicyArgs) -> Result<i32> {
+    use dcert::tlspolicy::{PolicyCatalogue, TlsPolicy};
+    let catalogue = PolicyCatalogue::builtin()?;
+    match args.mode {
+        cli::PolicyMode::List { provider, format } => {
+            let policies: Vec<&TlsPolicy> = catalogue.by_provider(provider).collect();
+            print_structured(format, &policies, || {
+                println!("{} policies", policies.len());
+                for p in &policies {
+                    let mut tags: Vec<&str> = Vec::new();
+                    if p.post_quantum {
+                        tags.push("PQ");
+                    }
+                    if p.fips {
+                        tags.push("FIPS");
+                    }
+                    println!(
+                        "  {:<16} {:<52} TLS {:<15} {}",
+                        p.provider.label(),
+                        p.id,
+                        p.protocols.join(", "),
+                        tags.join(" ")
+                    );
+                }
+            })?;
+            Ok(exit_code::SUCCESS)
+        }
+        cli::PolicyMode::Show { id, provider, format } => {
+            let found = catalogue.find(&id, provider);
+            if found.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "no catalogued TLS policy named '{id}'; `dcert policy list` shows them"
+                ));
+            }
+            print_structured(format, &found, || {
+                for p in &found {
+                    print_policy_pretty(p);
+                }
+            })?;
+            Ok(exit_code::SUCCESS)
+        }
+        cli::PolicyMode::Schema => {
+            println!("{}", serde_json::to_string_pretty(&PolicyCatalogue::json_schema())?);
+            Ok(exit_code::SUCCESS)
+        }
+    }
+}
+
+/// One policy, with each suite in every notation.
+fn print_policy_pretty(p: &dcert::tlspolicy::TlsPolicy) {
+    println!("{} ({})", p.id.bold(), p.provider.label());
+    println!("  Protocols : TLS {}", p.protocols.join(", TLS "));
+    let suite_line = |name: &str| match dcert::ciphers::Cipher::parse(name) {
+        Ok(c) => format!("{}  {:<44} {}", c.code_point(), c.iana, c.openssl.unwrap_or("-")),
+        Err(_) => name.to_string(),
+    };
+    if !p.tls13_suites.is_empty() {
+        println!("  TLS 1.3 suites:");
+        for s in &p.tls13_suites {
+            println!("    {}", suite_line(s));
+        }
+    }
+    if !p.tls12_ciphers.is_empty() {
+        println!("  TLS 1.2 ciphers:");
+        for s in &p.tls12_ciphers {
+            println!("    {}", suite_line(s));
+        }
+    }
+    let mut groups = p.groups.join(", ");
+    if p.unspecified_classical {
+        groups = if groups.is_empty() {
+            "not listed by the provider".to_string()
+        } else {
+            format!("{groups}, plus classical groups the provider does not list")
+        };
+    }
+    println!("  Groups    : {groups}");
+    println!("  FIPS      : {}", if p.fips { "yes" } else { "no" });
+    println!("  Post quantum: {}", if p.post_quantum { "yes" } else { "no" });
+    if !p.default_for.is_empty() {
+        println!("  Default for: {}", p.default_for.join(", "));
+    }
+    if let Some(notes) = &p.notes {
+        println!("  Notes     : {notes}");
+    }
+    println!("  Source    : {} (retrieved {})", p.source_url, p.retrieved);
 }
 
 /// `dcert tls-scan`: enumerate versions, suites and groups.

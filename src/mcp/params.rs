@@ -461,6 +461,24 @@ impl ToCliArgs for TlsScanParams {
     }
 }
 
+/// Parameters for the list_tls_policies tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct ListTlsPoliciesParams {
+    /// Only policies of this provider: "aws_alb", "aws_nlb", "aws_cloudfront", "aws_api_gateway" or "mozilla"
+    #[serde(default)]
+    pub(crate) provider: Option<String>,
+}
+
+/// Parameters for the show_tls_policy tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct ShowTlsPolicyParams {
+    /// Policy id, e.g. "ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09" (case insensitive)
+    pub(crate) id: String,
+    /// The provider, when several publish the same id (ALB and NLB do): "aws_alb", "aws_nlb", "aws_cloudfront", "aws_api_gateway" or "mozilla"
+    #[serde(default)]
+    pub(crate) provider: Option<String>,
+}
+
 /// Parameters for the list_cipher_suites tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct ListCipherSuitesParams {

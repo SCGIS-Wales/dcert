@@ -30,6 +30,16 @@ summary is written.
   only limits the handshake to that version. `--cipher-list` and
   `--cipher-suites` stay as raw OpenSSL passthrough. The MCP probe tools take
   the same values as `cipher`.
+- A catalogue of named TLS security policies, `kb/tls_policies.yaml` with
+  `kb/tls_policies.schema.json`: 113 policies from the ALB, NLB, CloudFront
+  and API Gateway documentation and Mozilla's guidelines 6.0, each with
+  protocols, suites and ciphers by IANA name, groups where named, FIPS and
+  post quantum flags, defaults, source and retrieval date.
+  `dcert policy list|show|schema`, the MCP tools `list_tls_policies` and
+  `show_tls_policy`, and Python wrappers of the same names.
+  `scripts/fetch_aws_tls_policies.py` (click) snapshots the source pages and
+  regenerates the catalogue offline; a CI job fails on a stale catalogue and
+  reports when a source page changes.
 - `dcert tls-scan <target>` and the MCP tool `tls_scan` (Python `tls_scan()`):
   each protocol version on its own, then every suite the linked OpenSSL can
   offer per accepted version, then each key exchange group, recording the

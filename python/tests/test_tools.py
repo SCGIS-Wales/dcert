@@ -40,6 +40,8 @@ from dcert.tools import (
     export_pem,
     extract_text,
     list_cipher_suites,
+    list_tls_policies,
+    show_tls_policy,
     tls_connection_info,
     tls_scan,
     verify_key_match,
@@ -308,6 +310,14 @@ CASES = [
     ),
     (explain_cipher_suite, {"suite": "C02F"}, "explain_cipher_suite", {"suite": "C02F"}),
     (tls_scan, {"target": "e"}, "tls_scan", {"target": "e"}),
+    (list_tls_policies, {}, "list_tls_policies", {}),
+    (list_tls_policies, {"provider": "aws_alb"}, "list_tls_policies", {"provider": "aws_alb"}),
+    (
+        show_tls_policy,
+        {"policy_id": "P", "provider": "aws_nlb"},
+        "show_tls_policy",
+        {"id": "P", "provider": "aws_nlb"},
+    ),
     (
         tls_scan,
         {
@@ -403,7 +413,7 @@ async def test_input_validation(open_session):
 
 
 def test_all_tool_functions_present():
-    assert len(TOOL_FUNCTIONS) == 14
+    assert len(TOOL_FUNCTIONS) == 16
     # inspect, not asyncio: asyncio.iscoroutinefunction is deprecated from 3.14.
     assert all(inspect.iscoroutinefunction(f) for f in TOOL_FUNCTIONS)
 
