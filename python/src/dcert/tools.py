@@ -696,6 +696,7 @@ async def create_truststore(
     cert_paths: list[str],
     output_path: str,
     password: str | None = None,
+    allow_non_ca: bool = False,
     session: Session | None = None,
     timeout: float | None = None,
 ) -> ToolResponse:
@@ -705,6 +706,8 @@ async def create_truststore(
         cert_paths: PEM files containing the CA certificates to trust.
         output_path: Output PKCS12 truststore file path.
         password: Truststore password (configured default when ``None``).
+        allow_non_ca: Include leaf (non CA) certificates instead of refusing
+            them, as the CLI's ``--allow-non-ca`` does.
         session: Session to use; the shared default when ``None``.
         timeout: Per call timeout in seconds.
 
@@ -716,7 +719,10 @@ async def create_truststore(
     arguments = build_arguments(
         "create_truststore",
         {"cert_paths": cert_paths, "output_path": output_path},
-        defaulted={"password": (password, load_config().tools.truststore_password)},
+        defaulted={
+            "password": (password, load_config().tools.truststore_password),
+            "allow_non_ca": (allow_non_ca, False),
+        },
     )
     return await call_tool("create_truststore", arguments, session=session, timeout=timeout)
 

@@ -5,7 +5,7 @@ use rmcp::model::CallToolResult;
 use rmcp::{tool, tool_router};
 
 use super::{DcertMcpServer, ok_error, ok_text};
-use crate::exec::{format_tool_output, run_dcert, run_dcert_raw, run_dcert_with_env};
+use crate::exec::{format_tool_output, run_dcert, run_dcert_raw, run_dcert_with_env, target_args};
 use crate::params::*;
 use crate::validate::*;
 
@@ -30,8 +30,9 @@ impl DcertMcpServer {
     /// Tools with no HTTP/TLS options (`validate_certificate`) pass `None`.
     async fn run_probe(
         &self,
+        subcommand: &str,
         target: &str,
-        mut args: Vec<String>,
+        options: Vec<String>,
         mtls: &MtlsParams,
         http_tls: Option<&HttpTlsParams>,
     ) -> RunOutcome {
@@ -40,15 +41,27 @@ impl DcertMcpServer {
         if let Some(http_tls) = http_tls {
             http_tls.validate()?;
         }
-        args.extend(mtls.to_args());
+        let mut options = options;
+        options.extend(mtls.to_args());
         let mut env_refs = mtls.env_vars();
         if let Some(http_tls) = http_tls {
-            args.extend(http_tls.to_args());
+            options.extend(http_tls.to_args());
             env_refs.extend(http_tls.env_vars());
         }
+        let args = target_args(subcommand, options, target);
         let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         run_dcert_with_env(&args_refs, &self.config, Some(&env_refs)).await
     }
+}
+
+/// Exit codes `kb explain` returns that are answers rather than failures.
+///
+/// The CLI exits 2 both when nothing matched (with an empty JSON list on
+/// stdout) and on a real error such as an unknown service (no stdout), so
+/// 2 only counts as an answer when the empty list is there.
+pub(crate) fn explain_ok_codes(code: i32, stdout: &str) -> &'static [i32] {
+    let empty_list = serde_json::from_str::<Vec<serde_json::Value>>(stdout.trim()).is_ok_and(|v| v.is_empty());
+    if code == 2 && empty_list { &[0, 2] } else { &[0] }
 }
 
 #[tool_router(router = cert_tool_router, vis = "pub(crate)")]
@@ -68,7 +81,7 @@ impl DcertMcpServer {
         &self,
         Parameters(params): Parameters<AnalyzeCertificateParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let mut args = vec![params.target.clone(), "--format".to_string(), "json".to_string()];
+        let mut args = vec!["--format".to_string(), "json".to_string()];
         if params.fingerprint {
             args.push("--fingerprint".to_string());
         }
@@ -92,7 +105,7 @@ impl DcertMcpServer {
             args.push("--refresh-public-roots".to_string());
         }
         let outcome = self
-            .run_probe(&params.target, args, &params.mtls, Some(&params.http_tls))
+            .run_probe("check", &params.target, args, &params.mtls, Some(&params.http_tls))
             .await;
         tool_reply(outcome, "debug/stderr", &[0])
     }
@@ -117,7 +130,6 @@ impl DcertMcpServer {
         }
 
         let args = vec![
-            params.target.clone(),
             "--format".to_string(),
             "json".to_string(),
             "--fingerprint".to_string(),
@@ -125,7 +137,7 @@ impl DcertMcpServer {
             params.days.to_string(),
         ];
         let outcome = self
-            .run_probe(&params.target, args, &params.mtls, Some(&params.http_tls))
+            .run_probe("check", &params.target, args, &params.mtls, Some(&params.http_tls))
             .await
             .map(|(stdout, stderr, code)| {
                 let status = match code {
@@ -155,14 +167,13 @@ impl DcertMcpServer {
         Parameters(params): Parameters<CheckRevocationParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let args = vec![
-            params.target.clone(),
             "--format".to_string(),
             "json".to_string(),
             "--check-revocation".to_string(),
             "--extensions".to_string(),
         ];
         let outcome = self
-            .run_probe(&params.target, args, &params.mtls, Some(&params.http_tls))
+            .run_probe("check", &params.target, args, &params.mtls, Some(&params.http_tls))
             .await
             .map(|(stdout, stderr, code)| {
                 let prefixed = match code {
@@ -197,10 +208,13 @@ impl DcertMcpServer {
             return ok_error(e);
         }
 
-        let args_a = vec![params.target_a.as_str(), "--format", "json", "--fingerprint"];
-        let args_b = vec![params.target_b.as_str(), "--format", "json", "--fingerprint"];
+        let options = || vec!["--format".to_string(), "json".to_string(), "--fingerprint".to_string()];
+        let args_a = target_args("check", options(), &params.target_a);
+        let args_b = target_args("check", options(), &params.target_b);
+        let refs_a: Vec<&str> = args_a.iter().map(String::as_str).collect();
+        let refs_b: Vec<&str> = args_b.iter().map(String::as_str).collect();
 
-        let (result_a, result_b) = tokio::join!(run_dcert(&args_a, &self.config), run_dcert(&args_b, &self.config));
+        let (result_a, result_b) = tokio::join!(run_dcert(&refs_a, &self.config), run_dcert(&refs_b, &self.config));
 
         match (result_a, result_b) {
             (Ok((stdout_a, _, _)), Ok((stdout_b, _, _))) => {
@@ -250,7 +264,6 @@ impl DcertMcpServer {
         Parameters(params): Parameters<TlsConnectionInfoParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let mut args = vec![
-            params.target.clone(),
             "--format".to_string(),
             "json".to_string(),
             "--fingerprint".to_string(),
@@ -279,7 +292,7 @@ impl DcertMcpServer {
             return ok_error(format!("min_tls ({min}) must not be greater than max_tls ({max})"));
         }
         let outcome = self
-            .run_probe(&params.target, args, &params.mtls, Some(&params.http_tls))
+            .run_probe("check", &params.target, args, &params.mtls, Some(&params.http_tls))
             .await;
         tool_reply(outcome, "debug/stderr", &[0])
     }
@@ -305,16 +318,19 @@ impl DcertMcpServer {
             return ok_error(e);
         }
 
-        let mut args = vec![params.target.clone(), "--format".to_string(), "json".to_string()];
-        if let Some(ref output) = params.output_path {
-            args.push("--export-pem".to_string());
-            args.push(output.clone());
-        }
+        // Without an output file the chain comes back in the JSON as
+        // `pem_data` (`--export-pem -`).
+        let mut args = vec![
+            "--format".to_string(),
+            "json".to_string(),
+            "--export-pem".to_string(),
+            params.output_path.clone().unwrap_or_else(|| "-".to_string()),
+        ];
         if params.exclude_expired {
             args.push("--exclude-expired".to_string());
         }
         let outcome = self
-            .run_probe(&params.target, args, &params.mtls, Some(&params.http_tls))
+            .run_probe("check", &params.target, args, &params.mtls, Some(&params.http_tls))
             .await
             .map(|(stdout, stderr, code)| {
                 let prefixed = match &params.output_path {
@@ -348,14 +364,17 @@ impl DcertMcpServer {
             return ok_error(e);
         }
 
-        let args = vec![
+        let args = target_args(
             "verify-key",
-            params.target.as_str(),
-            "--key",
-            params.key_path.as_str(),
-            "--format",
-            "json",
-        ];
+            vec![
+                "--key".to_string(),
+                params.key_path.clone(),
+                "--format".to_string(),
+                "json".to_string(),
+            ],
+            &params.target,
+        );
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
 
         match run_dcert_raw(&args, &self.config, None).await {
             Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "stderr", &[0, 7])),
@@ -718,12 +737,7 @@ impl DcertMcpServer {
         &self,
         Parameters(params): Parameters<DiagnoseEndpointParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let mut args = vec![
-            "diagnose".to_string(),
-            params.target.clone(),
-            "--format".to_string(),
-            "json".to_string(),
-        ];
+        let mut args = vec!["--format".to_string(), "json".to_string()];
         if params.show_body {
             args.push("--show-body".to_string());
         }
@@ -733,7 +747,7 @@ impl DcertMcpServer {
         // A failed probe is the expected input for a diagnosis, so exit
         // codes are reported inline rather than treated as tool errors.
         let outcome = self
-            .run_probe(&params.target, args, &params.mtls, Some(&params.http_tls))
+            .run_probe("diagnose", &params.target, args, &params.mtls, Some(&params.http_tls))
             .await;
         tool_reply(outcome, "stderr", &[0])
     }
@@ -767,8 +781,10 @@ impl DcertMcpServer {
             args.push(service);
         }
         match run_dcert_raw(&args, &self.config, None).await {
-            // Exit code 1 means "nothing matched", which is an answer, not a failure.
-            Ok((stdout, stderr, code)) => ok_text(format_tool_output(stdout, &stderr, code, "stderr", &[0, 1])),
+            Ok((stdout, stderr, code)) => {
+                let ok_codes = explain_ok_codes(code, &stdout);
+                ok_text(format_tool_output(stdout, &stderr, code, "stderr", ok_codes))
+            }
             Err(e) => ok_error(e),
         }
     }
@@ -788,20 +804,15 @@ impl DcertMcpServer {
         &self,
         Parameters(params): Parameters<ValidateCertificateParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let args = vec![
-            params.target.clone(),
-            "--format".to_string(),
-            "json".to_string(),
-            "--compliance".to_string(),
-        ];
-        let outcome = self.run_probe(&params.target, args, &params.mtls, None).await;
+        let args = vec!["--format".to_string(), "json".to_string(), "--compliance".to_string()];
+        let outcome = self.run_probe("check", &params.target, args, &params.mtls, None).await;
         tool_reply(outcome, "debug/stderr", &[0])
     }
 
     /// Create a PKCS12 truststore from CA certificates.
     #[tool(
         title = "Create PKCS12 Truststore",
-        description = "Create a PKCS12 truststore from CA certificate PEM files. Java-compatible since JDK 9. Bundles multiple CA certificates into a single truststore file. Returns warnings about leaf certs, duplicates, expired CAs, and CA-rotation cases (same subject, different fingerprint). Set `allow_non_ca: false` to refuse leaves with a beginner-friendly explanation; the default `true` preserves prior MCP behaviour.",
+        description = "Create a PKCS12 truststore from CA certificate PEM files. Java-compatible since JDK 9. Bundles multiple CA certificates into a single truststore file. Returns warnings about leaf certs, duplicates, expired CAs, and CA-rotation cases (same subject, different fingerprint). Leaf (non CA) certificates are refused with a beginner friendly explanation, as in the CLI; set `allow_non_ca: true` to include them anyway.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,

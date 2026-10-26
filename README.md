@@ -206,7 +206,7 @@ dcert https://example.com --check-revocation
 # Compare certificates between two targets
 dcert --diff https://staging.example.com https://prod.example.com
 
-# Monitor certificates every 60 seconds
+# Monitor certificates every 60 seconds (Ctrl+C stops after the current check)
 dcert --watch 60 https://example.com
 
 # Export certificate chain to PEM file
@@ -214,6 +214,12 @@ dcert https://www.google.com --export-pem chain.pem
 
 # Export excluding expired certificates
 dcert https://www.google.com --export-pem chain.pem --exclude-expired
+
+# Include the chain in the output instead of a file (`pem_data` in JSON and YAML)
+dcert https://www.google.com --export-pem - --format json
+
+# STARTTLS takes a bare host, optionally with a port
+dcert mail.example.com:587 --starttls smtp
 
 # Sort by expiry date
 dcert certificates.pem --sort-expiry asc
@@ -422,7 +428,7 @@ Arguments:
 Options:
   -f, --format <FORMAT>                Output format [pretty, json, yaml] (default: pretty)
       --expired-only                   Show only expired certificates
-      --export-pem <FILE>              Export fetched PEM chain to a file
+      --export-pem <PATH|->            Export fetched PEM chain to a file, or - for the output
       --exclude-expired                Exclude expired certs from export
       --sort-expiry <ORDER>            Sort by expiry [asc, desc]
       --method <METHOD>                HTTP method [get, post, head, options] (default: get)
@@ -1120,7 +1126,7 @@ It implements the current MCP specification revision (**2025-11-25**) via the `r
 | `check_revocation` | Check OCSP revocation status via the certificate's OCSP responder. Supports mTLS. |
 | `compare_certificates` | Compare certificates between two targets side-by-side. |
 | `tls_connection_info` | Get TLS connection details: protocol, cipher, ALPN, latency, verification, diagnostics. Supports mTLS. |
-| `export_pem` | Export TLS certificate chain from an HTTPS endpoint as PEM. Optionally saves to file and can exclude expired certs. Supports mTLS. |
+| `export_pem` | Export TLS certificate chain from an HTTPS endpoint as PEM. Saves to `output_path`, or returns the chain as `pem_data` in the JSON when no path is given. Can exclude expired certs. Supports mTLS. |
 | `create_csr` | Create a PKCS#10 CSR and private key. Supports RSA/ECDSA, OU metadata, and encrypted keys. Compliant with CA/B Forum, DigiCert, and X9 standards. |
 | `validate_csr` | Validate a CSR for compliance with CA/B Forum Baseline Requirements, DigiCert, and X9 standards. Returns findings with severity levels. |
 | `diagnose_endpoint` | Diagnose why an endpoint fails: TLS and mTLS on any server, Apigee, Envoy/Istio and nginx errors, CloudFront edge and origin errors, API Gateway gateway responses, forward proxy failures and TLS interception. Returns findings ordered earliest layer first with confidence, evidence and remediation, the `platforms` the probe fingerprinted, and context notes explaining CloudFront and API Gateway responses. |
@@ -1131,7 +1137,7 @@ It implements the current MCP specification revision (**2025-11-25**) via the `r
 | `convert_pfx_to_pem` | Convert PKCS12/PFX to separate PEM files (cert, key, CA chain). |
 | `convert_pem_to_pfx` | Convert PEM certificate + key to PKCS12/PFX file. |
 | `create_keystore` | Create a PKCS12 keystore from PEM cert + key (Java-compatible). |
-| `create_truststore` | Create a PKCS12 truststore from CA certificate PEM files. |
+| `create_truststore` | Create a PKCS12 truststore from CA certificate PEM files. Leaf certificates are refused unless `allow_non_ca` is true (same default as the CLI). |
 | `vault_issue` | Issue a TLS certificate from HashiCorp Vault PKI. |
 | `vault_sign` | Sign a CSR using Vault PKI. |
 | `vault_revoke` | Revoke a certificate in Vault PKI (by serial or PEM file). |

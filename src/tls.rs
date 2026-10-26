@@ -1324,6 +1324,8 @@ pub struct StarttlsFetchOptions<'a> {
     pub host: &'a str,
     pub port: u16,
     pub protocol: StarttlsProtocol,
+    /// Client certificate for servers that require mTLS after STARTTLS.
+    pub identity: ClientIdentity<'a>,
 }
 
 /// Read a line from a TCP stream (up to `\n`), with a size limit.
@@ -1463,7 +1465,7 @@ pub fn fetch_tls_chain_starttls(opts: &StarttlsFetchOptions<'_>) -> Result<TlsCo
 
     // TLS handshake on the upgraded stream
     let l7_start = std::time::Instant::now();
-    let (connector, capture) = build_connector(&ConnectorOptions::from_probe(probe, ClientIdentity::default(), None))?;
+    let (connector, capture) = build_connector(&ConnectorOptions::from_probe(probe, opts.identity, None))?;
 
     let sni_host = probe.sni_override.unwrap_or(opts.host);
     let ssl_stream = connector
@@ -1477,7 +1479,7 @@ pub fn fetch_tls_chain_starttls(opts: &StarttlsFetchOptions<'_>) -> Result<TlsCo
     let session = session_summary(ssl_stream.ssl(), &capture, debug);
 
     let mut info = connection_info(session, &dialled, l7_latency, probe.no_verify, pem, None);
-    apply_cert_request(&mut info, capture.cert_request.get(), false);
+    apply_cert_request(&mut info, capture.cert_request.get(), opts.identity.is_configured());
     Ok(info)
 }
 

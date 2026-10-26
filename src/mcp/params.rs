@@ -580,12 +580,10 @@ pub(crate) struct CreateTruststoreParams {
     pub(crate) password: String,
     /// Output PKCS12 truststore file path
     pub(crate) output_path: String,
-    /// Allow non-CA (leaf/server) certificates in the truststore. Defaults to
-    /// `true` here to preserve the prior MCP behaviour of accepting any
-    /// parseable PEM. The CLI defaults to `false` (strict) so human users get
-    /// loud, actionable feedback. Agents can pass `false` to opt into strict
-    /// mode and surface the same guidance to their callers.
-    #[serde(default = "default_true")]
+    /// Allow non CA (leaf or server) certificates in the truststore. Defaults
+    /// to `false`, matching the CLI, so a leaf is refused with actionable
+    /// guidance instead of silently producing a truststore that trusts it.
+    #[serde(default)]
     pub(crate) allow_non_ca: bool,
 }
 

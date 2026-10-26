@@ -381,8 +381,9 @@ pub struct CheckArgs {
     #[arg(long, value_name = "PATH", env = "DCERT_KB_FILE")]
     pub kb_file: Option<String>,
 
-    /// Export the fetched PEM chain to a file (only for HTTPS targets)
-    #[arg(long)]
+    /// Export the fetched PEM chain to a file, or `-` to include it in the
+    /// output (printed after the report, or `pem_data` in JSON and YAML)
+    #[arg(long, value_name = "PATH|-")]
     pub export_pem: Option<String>,
 
     /// Exclude expired or invalid certificates from export (only with --export-pem)

@@ -216,6 +216,15 @@ pub enum Observation {
     Rejected(String),
 }
 
+/// Plaintext exchange before the TLS handshake.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Preamble {
+    /// TLS from the first byte.
+    None,
+    /// SMTP banner, EHLO and STARTTLS, then TLS (RFC 3207).
+    Smtp,
+}
+
 type Responder = Box<dyn Fn(&[u8]) -> Vec<u8> + Send + 'static>;
 
 /// Builder for a loopback TLS server. Every knob is optional; the defaults
@@ -232,6 +241,7 @@ pub struct TlsServerBuilder {
     alpn: Vec<Vec<u8>>,
     identity: Identity,
     connections: usize,
+    preamble: Preamble,
     respond: Responder,
 }
 
@@ -269,6 +279,7 @@ impl TlsServer {
             alpn: Vec::new(),
             identity: Identity::Fixture,
             connections: 1,
+            preamble: Preamble::None,
             respond: Box::new(|_| HTTP_200.to_vec()),
         }
     }
@@ -352,6 +363,12 @@ impl TlsServerBuilder {
         self
     }
 
+    /// Speak an SMTP STARTTLS exchange before the handshake.
+    pub fn starttls_smtp(mut self) -> Self {
+        self.preamble = Preamble::Smtp;
+        self
+    }
+
     /// Reply produced from the request head of each accepted connection.
     pub fn respond(mut self, respond: impl Fn(&[u8]) -> Vec<u8> + Send + 'static) -> Self {
         self.respond = Box::new(respond);
@@ -365,12 +382,17 @@ impl TlsServerBuilder {
         let port = listener.local_addr().expect("local addr").port();
         let (tx, rx) = channel();
         let connections = self.connections;
+        let preamble = self.preamble;
         let respond = self.respond;
         std::thread::spawn(move || {
             for _ in 0..connections {
-                let Ok((stream, _)) = listener.accept() else {
+                let Ok((mut stream, _)) = listener.accept() else {
                     continue;
                 };
+                if preamble == Preamble::Smtp && smtp_starttls(&mut stream).is_err() {
+                    let _ = tx.send(Observation::Rejected("SMTP STARTTLS exchange failed".into()));
+                    continue;
+                }
                 serve_one(&acceptor, stream, &respond, &tx);
             }
         });
@@ -470,6 +492,38 @@ fn describe(ssl: &SslRef) -> Observation {
         version: ssl.version_str().to_string(),
         cipher: ssl.current_cipher().map(|c| c.name().to_string()).unwrap_or_default(),
     }
+}
+
+/// Read one CRLF terminated line, byte by byte so nothing past it is consumed.
+fn read_line(stream: &mut TcpStream) -> std::io::Result<String> {
+    let mut line = Vec::new();
+    let mut byte = [0u8; 1];
+    while line.len() < 1024 {
+        if stream.read(&mut byte)? == 0 {
+            break;
+        }
+        line.push(byte[0]);
+        if byte[0] == b'\n' {
+            break;
+        }
+    }
+    Ok(String::from_utf8_lossy(&line).into_owned())
+}
+
+/// Server side of the RFC 3207 exchange up to the TLS handshake.
+fn smtp_starttls(stream: &mut TcpStream) -> std::io::Result<()> {
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+    stream.write_all(b"220 test-server ESMTP ready\r\n")?;
+    let ehlo = read_line(stream)?;
+    if !ehlo.to_ascii_uppercase().starts_with("EHLO") {
+        return Err(std::io::Error::other(format!("expected EHLO, got {ehlo:?}")));
+    }
+    stream.write_all(b"250-test-server\r\n250 STARTTLS\r\n")?;
+    let starttls = read_line(stream)?;
+    if !starttls.to_ascii_uppercase().starts_with("STARTTLS") {
+        return Err(std::io::Error::other(format!("expected STARTTLS, got {starttls:?}")));
+    }
+    stream.write_all(b"220 ready to start TLS\r\n")
 }
 
 fn serve_one(acceptor: &SslAcceptor, stream: TcpStream, respond: &Responder, tx: &Sender<Observation>) {

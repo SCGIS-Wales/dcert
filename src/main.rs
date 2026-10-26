@@ -3,7 +3,6 @@ use clap::CommandFactory;
 use clap::Parser;
 use colored::*;
 use dcert::{cert, cli, connect, convert, csr, diagnose, kbref, output, proxy, trust, vault};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use time::OffsetDateTime;
@@ -12,8 +11,8 @@ use time::format_description::well_known::Rfc3339;
 use cli::{CheckArgs, Cli, Command, HttpMethod, KNOWN_SUBCOMMANDS, OutputFormat, exit_code};
 use connect::ConnectOverrides;
 use output::{
-    StructuredOutput, TargetResult, check_expiry_warnings, export_pem_chain, output_results, print_diff,
-    print_structured, process_target,
+    StructuredOutput, TargetResult, check_expiry_warnings, export_pem_chain, export_pem_text, output_results,
+    print_diff, print_structured, process_target,
 };
 use proxy::ProxyConfig;
 
@@ -37,23 +36,38 @@ fn warn_secret_on_argv(flag: &str, env_var: &str, provided: bool) {
     }
 }
 
-/// Register a single, process-wide Ctrl+C handler that prints a friendly
-/// message and exits with code 130. Returns an `AtomicBool` that long-running
-/// loops (e.g. `--watch`) can poll for graceful shutdown — the handler also
-/// flips this bool to false before exiting, so cooperative loops still work.
+/// Cleared by the Ctrl+C handler. Watch mode polls it to stop between
+/// iterations.
+static RUNNING: AtomicBool = AtomicBool::new(true);
+
+/// Set while watch mode runs, so the first Ctrl+C stops the loop between
+/// iterations instead of exiting in the middle of a report.
+static COOPERATIVE_STOP: AtomicBool = AtomicBool::new(false);
+
+/// Whether a Ctrl+C must end the process at once. Only the first Ctrl+C in
+/// watch mode is cooperative; a second one, or any Ctrl+C elsewhere, exits.
+fn sigint_exits_now(cooperative: bool, was_running: bool) -> bool {
+    !(cooperative && was_running)
+}
+
+/// Register the single, process wide Ctrl+C handler.
 ///
 /// Most dcert flows are blocked inside OpenSSL `connect()` or TCP I/O when
-/// SIGINT arrives — they cannot poll the bool until the syscall returns.
-/// Calling `process::exit()` from the handler is the only way to make Ctrl+C
-/// feel responsive there. Watch mode owns its own polling loop and benefits
-/// from the bool too: see `run_check_with_stdin` watch branch.
-fn register_sigint_handler() -> Arc<AtomicBool> {
-    let running = Arc::new(AtomicBool::new(true));
-    let r = running.clone();
-    if let Err(e) = ctrlc::set_handler(move || {
-        r.store(false, Ordering::SeqCst);
-        eprintln!("\n{} Interrupted (Ctrl+C). Exiting cleanly.", "^C".yellow().bold());
-        std::process::exit(EXIT_INTERRUPTED);
+/// SIGINT arrives and cannot poll a flag until the syscall returns, so the
+/// handler exits with code 130 there. Watch mode owns its loop: the first
+/// Ctrl+C clears [`RUNNING`] and the loop stops cleanly after the current
+/// iteration; a second Ctrl+C exits immediately.
+fn register_sigint_handler() {
+    if let Err(e) = ctrlc::set_handler(|| {
+        let was_running = RUNNING.swap(false, Ordering::SeqCst);
+        if sigint_exits_now(COOPERATIVE_STOP.load(Ordering::SeqCst), was_running) {
+            eprintln!("\n{} Interrupted (Ctrl+C). Exiting cleanly.", "^C".yellow().bold());
+            std::process::exit(EXIT_INTERRUPTED);
+        }
+        eprintln!(
+            "\n{} Stopping watch after this iteration (Ctrl+C again to exit now).",
+            "^C".yellow().bold()
+        );
     }) {
         eprintln!(
             "{} Failed to register Ctrl+C handler: {}. Ctrl+C may not exit cleanly.",
@@ -61,7 +75,19 @@ fn register_sigint_handler() -> Arc<AtomicBool> {
             e
         );
     }
-    running
+}
+
+/// Sleep for `interval`, waking early when Ctrl+C cleared [`RUNNING`].
+fn sleep_while_running(interval: Duration) {
+    let slice = Duration::from_millis(200);
+    let deadline = std::time::Instant::now() + interval;
+    while RUNNING.load(Ordering::SeqCst) {
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            break;
+        }
+        std::thread::sleep(slice.min(deadline - now));
+    }
 }
 
 fn run_check(args: CheckArgs) -> Result<i32> {
@@ -186,22 +212,15 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
             args.fingerprint = true;
         }
 
-        // The global SIGINT handler (registered in `main()`) flips this bool to
-        // false before exiting, but we re-register here for the rare case where
-        // run() wasn't entered (e.g. tests calling run_check_with_stdin directly).
-        // ctrlc::set_handler() returns an error on second registration, which is
-        // fine — the global handler is already in place.
-        let running = Arc::new(AtomicBool::new(true));
-        let r = running.clone();
-        let _ = ctrlc::set_handler(move || {
-            r.store(false, Ordering::SeqCst);
-        });
+        // The first Ctrl+C stops the loop between iterations (see
+        // `register_sigint_handler`).
+        COOPERATIVE_STOP.store(true, Ordering::SeqCst);
 
         let mut iteration = 0u64;
         let mut prev_fingerprints: std::collections::HashMap<String, Vec<Option<String>>> =
             std::collections::HashMap::new();
 
-        while running.load(Ordering::SeqCst) {
+        while RUNNING.load(Ordering::SeqCst) {
             iteration += 1;
             let now = OffsetDateTime::now_utc()
                 .format(&Rfc3339)
@@ -241,10 +260,7 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
                 }
             }
 
-            if !running.load(Ordering::SeqCst) {
-                break;
-            }
-            std::thread::sleep(Duration::from_secs(interval));
+            sleep_while_running(Duration::from_secs(interval));
         }
 
         println!("\nWatch stopped.");
@@ -400,6 +416,15 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
         return Ok(exit_code);
     }
 
+    // `--export-pem -` puts the chain in the output itself, so it is attached
+    // before anything is printed.
+    if args.export_pem.as_deref() == Some("-") {
+        match all_results.as_mut_slice() {
+            [only] => only.pem_export = export_pem_text(&only.pem_data, args.exclude_expired)?,
+            _ => eprintln!("Warning: --export-pem only supported for a single target"),
+        }
+    }
+
     // JSON multi-target wrapping
     if multi_target && matches!(args.format, OutputFormat::Json) {
         let mut map = serde_json::Map::new();
@@ -461,7 +486,9 @@ fn run_check_with_stdin(mut args: CheckArgs, pre_read_stdin: Option<String>) -> 
     }
 
     // Export PEM
-    if let Some(ref export_path) = args.export_pem {
+    if let Some(ref export_path) = args.export_pem
+        && export_path != "-"
+    {
         if all_results.len() == 1 {
             export_pem_chain(&all_results[0].pem_data, export_path, args.exclude_expired)?;
         } else {
@@ -1379,9 +1406,8 @@ fn print_explanations_pretty(answers: &[kbref::Explanation]) {
 }
 
 fn main() {
-    // Register process-wide SIGINT handler for the stdin-pipe path too —
-    // run() registers it for everything else, but stdin-pipe never enters run().
-    let _running = register_sigint_handler();
+    // One process wide Ctrl+C handler, registered before any command runs.
+    register_sigint_handler();
 
     // When no arguments are provided and stdin has piped data, treat it as PEM input
     if std::env::args().len() == 1 {
@@ -1444,5 +1470,25 @@ fn main() {
             eprintln!("{} {}", "Error:".red().bold(), e);
             std::process::exit(exit_code::ERROR);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sigint_exits_now;
+
+    #[test]
+    fn first_ctrl_c_in_watch_mode_is_cooperative() {
+        assert!(!sigint_exits_now(true, true));
+    }
+
+    #[test]
+    fn second_ctrl_c_in_watch_mode_exits() {
+        assert!(sigint_exits_now(true, false));
+    }
+
+    #[test]
+    fn ctrl_c_outside_watch_mode_exits() {
+        assert!(sigint_exits_now(false, true));
     }
 }
