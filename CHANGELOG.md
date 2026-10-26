@@ -74,6 +74,10 @@ summary is written.
 
 ### Fixed
 
+- IMAP STARTTLS accepts untagged `*` lines (capabilities, alerts) before
+  the tagged `a001 OK`, as RFC 9051 allows, instead of failing on the first
+  line. On Windows, `dcert-mcp` shuts down cleanly on Ctrl+Break, console
+  close and system shutdown as well as Ctrl+C.
 - Post quantum reporting on the shipped binaries: the Linux and Docker
   binary (built against OpenSSL 3.0 headers to keep the Ubuntu 22.04 glibc
   floor) resolves `SSL_get0_group_name` at run time, so on OpenSSL 3.5 it

@@ -531,7 +531,27 @@ pub(crate) async fn wait_for_shutdown_signal() {
         }
     };
 
-    #[cfg(not(unix))]
+    // Windows has no SIGTERM: Ctrl+Break and closing the console window (or
+    // the service host ending the session) are its termination requests.
+    #[cfg(windows)]
+    let terminate = async {
+        use tokio::signal::windows;
+        match (windows::ctrl_break(), windows::ctrl_close(), windows::ctrl_shutdown()) {
+            (Ok(mut brk), Ok(mut close), Ok(mut shutdown)) => {
+                tokio::select! {
+                    _ = brk.recv() => {},
+                    _ = close.recv() => {},
+                    _ = shutdown.recv() => {},
+                }
+            }
+            _ => {
+                tracing::error!("failed to listen for Ctrl+Break or console close");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+
+    #[cfg(not(any(unix, windows)))]
     let terminate = std::future::pending::<()>();
 
     tokio::select! {
