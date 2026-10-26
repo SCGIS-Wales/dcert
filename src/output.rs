@@ -879,30 +879,39 @@ pub fn output_results(
             print_compliance_pretty(report);
         }
 
-        if !result.diagnosis.is_empty() {
-            let mut out = std::io::stdout().lock();
-            let _ = write_platforms(&mut out, &result.platforms);
-            drop(out);
-            print_diagnosis_pretty(&result.diagnosis);
-        }
-        if !result.context.is_empty() {
-            let mut out = std::io::stdout().lock();
-            let _ = write_context(&mut out, &result.context);
-        }
+        let _ = render_diagnosis(
+            &mut std::io::stdout().lock(),
+            &result.platforms,
+            &result.diagnosis,
+            &result.context,
+        );
         if let Some(pem) = &result.pem_export {
             print!("{pem}");
         }
     })
 }
 
-/// Render diagnostics findings for humans. The first finding is the primary
-/// attribution; the rest are secondary possibilities in path order.
-pub fn print_diagnosis_pretty(findings: &[Diagnosis]) {
-    let mut out = std::io::stdout().lock();
-    let _ = write_diagnosis(&mut out, findings);
+/// The one human rendering of a diagnosis, used for check, diagnose and
+/// failed probes alike: the platform line and the findings when there are
+/// any, then the reference context notes when there are any.
+pub fn render_diagnosis(
+    w: &mut impl std::io::Write,
+    platforms: &[PlatformHint],
+    findings: &[Diagnosis],
+    context: &[crate::kbref::Note],
+) -> std::io::Result<()> {
+    if !findings.is_empty() {
+        write_platforms(w, platforms)?;
+        write_diagnosis(w, findings)?;
+    }
+    if !context.is_empty() {
+        write_context(w, context)?;
+    }
+    Ok(())
 }
 
-/// Same as [`print_diagnosis_pretty`] but to any writer (stderr for failed probes).
+/// Render diagnostics findings for humans. The first finding is the primary
+/// attribution; the rest are secondary possibilities in path order.
 pub fn write_diagnosis(w: &mut impl std::io::Write, findings: &[Diagnosis]) -> std::io::Result<()> {
     writeln!(w, "{}", "=== Diagnosis ===".bold())?;
     for (i, d) in findings.iter().enumerate() {
