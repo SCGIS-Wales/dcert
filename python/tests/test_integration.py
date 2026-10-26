@@ -54,7 +54,10 @@ TEST_TARGET_ALT = "github.com"
 
 @pytest.fixture
 async def session():
-    async with create_session(timeout=60.0) as active:
+    # Tool file parameters are confined to DCERT_MCP_FILE_ROOT (default: the
+    # working directory); these tests write their files to the temp dir.
+    env = {"DCERT_MCP_FILE_ROOT": tempfile.gettempdir()}
+    async with create_session(timeout=60.0, env=env) as active:
         yield active
 
 

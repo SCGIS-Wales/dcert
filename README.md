@@ -1460,7 +1460,7 @@ OIDC tokens are validated against JWKS (JSON Web Key Sets) with automatic key ro
 | `DCERT_MCP_MAX_BODY_BYTES` | Maximum request body size (default: 1048576) |
 | `DCERT_MCP_AUTH_FAILURE_LIMIT` | Failed authentications per client address before a 429 is answered (default: 10; `0` disables) |
 | `DCERT_MCP_AUTH_FAILURE_WINDOW` | Window for that limit in seconds (default: 60) |
-| `DCERT_MCP_FILE_ROOT` | Comma-separated directories that tool file parameters are confined to (default: the working directory and the system temp directory) |
+| `DCERT_MCP_FILE_ROOT` | Comma separated directories that tool file parameters and file targets are confined to (default: the working directory only). The first root is the working directory of every dcert child process |
 | `DCERT_MCP_VAULT_ADDR_ALLOWLIST` | Comma-separated Vault addresses a tool call may target |
 | `DCERT_MCP_VAULT_ALLOW_SKIP_VERIFY` | Set to `1` to let a tool call disable Vault TLS verification (refused by default) |
 

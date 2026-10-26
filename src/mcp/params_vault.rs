@@ -104,7 +104,7 @@ impl Drop for VaultParams {
 }
 
 impl VaultParams {
-    pub(crate) fn validate(&self) -> Result<(), String> {
+    pub(crate) fn validate(&mut self) -> Result<(), String> {
         let method = self.auth_method.as_deref().unwrap_or("token");
         match method {
             "token" => {} // token is optional (falls back to env/file)
@@ -143,8 +143,8 @@ impl VaultParams {
                 ));
             }
         }
-        if let Some(ref p) = self.vault_cacert {
-            validate_path(p, "vault_cacert")?;
+        if let Some(p) = self.vault_cacert.as_mut() {
+            *p = validate_path(p, "vault_cacert")?;
         }
         Ok(())
     }

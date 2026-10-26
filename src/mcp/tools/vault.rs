@@ -30,10 +30,20 @@ fn validate_kv_path_param(path: &str, param_name: &str) -> Result<(), String> {
 /// `output` is a base name: dcert appends `.crt`, `.key` or `.pfx` to it. Each
 /// file that can result must lie inside the allowed roots, like every other
 /// file parameter.
-fn validate_output_base(output: &str) -> Result<(), String> {
-    validate_path(output, "output")?;
+///
+/// Returns the canonical base to pass to the child.
+fn validate_output_base(output: &str) -> Result<String, String> {
+    let base = validate_path(output, "output")?;
     for ext in ["crt", "key", "pfx"] {
-        validate_path(&format!("{output}.{ext}"), "output")?;
+        validate_path(&format!("{base}.{ext}"), "output")?;
+    }
+    Ok(base)
+}
+
+/// Replace an optional output base with its canonical form.
+fn resolve_output_base(output: &mut Option<String>) -> Result<(), String> {
+    if let Some(base) = output.as_mut() {
+        *base = validate_output_base(base)?;
     }
     Ok(())
 }
@@ -95,7 +105,7 @@ impl DcertMcpServer {
     )]
     pub async fn vault_issue(
         &self,
-        Parameters(params): Parameters<VaultIssueParams>,
+        Parameters(mut params): Parameters<VaultIssueParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         if let Err(e) = params.vault.validate() {
             return ok_error(e);
@@ -111,7 +121,7 @@ impl DcertMcpServer {
         .and_then(|()| validate_list(&params.sans, "sans", 100))
         .and_then(|()| validate_list(&params.ip_sans, "ip_sans", 100))
         .and_then(|()| validate_kv_version(params.kv_version))
-        .and_then(|()| params.output.as_deref().map_or(Ok(()), validate_output_base))
+        .and_then(|()| resolve_output_base(&mut params.output))
         .and_then(|()| {
             params
                 .store_path
@@ -166,7 +176,7 @@ impl DcertMcpServer {
     )]
     pub async fn vault_sign(
         &self,
-        Parameters(params): Parameters<VaultSignParams>,
+        Parameters(mut params): Parameters<VaultSignParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         if let Err(e) = params.vault.validate() {
             return ok_error(e);
@@ -183,7 +193,8 @@ impl DcertMcpServer {
         .and_then(|()| validate_list(&params.ip_sans, "ip_sans", 100))
         .and_then(|()| validate_kv_version(params.kv_version))
         .and_then(|()| validate_path(&params.csr_file, "csr_file"))
-        .and_then(|()| params.output.as_deref().map_or(Ok(()), validate_output_base))
+        .map(|p| params.csr_file = p)
+        .and_then(|()| resolve_output_base(&mut params.output))
         .and_then(|()| {
             params
                 .store_path
@@ -237,7 +248,7 @@ impl DcertMcpServer {
     )]
     pub async fn vault_revoke(
         &self,
-        Parameters(params): Parameters<VaultRevokeParams>,
+        Parameters(mut params): Parameters<VaultRevokeParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         if let Err(e) = params.vault.validate() {
             return ok_error(e);
@@ -258,11 +269,13 @@ impl DcertMcpServer {
             args.push(serial.clone());
         }
         if let Some(ref cert) = params.cert_file {
-            if let Err(e) = validate_path(cert, "cert_file") {
-                return ok_error(e);
+            match validate_path(cert, "cert_file") {
+                Ok(cert) => {
+                    args.push("--cert-file".to_string());
+                    args.push(cert);
+                }
+                Err(e) => return ok_error(e),
             }
-            args.push("--cert-file".to_string());
-            args.push(cert.clone());
         }
 
         let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -282,7 +295,7 @@ impl DcertMcpServer {
     )]
     pub async fn vault_list(
         &self,
-        Parameters(params): Parameters<VaultListParams>,
+        Parameters(mut params): Parameters<VaultListParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         if let Err(e) = params.vault.validate() {
             return ok_error(e);
@@ -308,11 +321,13 @@ impl DcertMcpServer {
             args.push("--valid-only".to_string());
         }
         if let Some(ref export) = params.export {
-            if let Err(e) = validate_path(export, "export") {
-                return ok_error(e);
+            match validate_path(export, "export") {
+                Ok(export) => {
+                    args.push("--export".to_string());
+                    args.push(export);
+                }
+                Err(e) => return ok_error(e),
             }
-            args.push("--export".to_string());
-            args.push(export.clone());
         }
 
         let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -332,7 +347,7 @@ impl DcertMcpServer {
     )]
     pub async fn vault_store(
         &self,
-        Parameters(params): Parameters<VaultStoreParams>,
+        Parameters(mut params): Parameters<VaultStoreParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         if let Err(e) = params.vault.validate() {
             return ok_error(e);
@@ -345,7 +360,9 @@ impl DcertMcpServer {
         .and_then(|()| validate_kv_path_param(&params.path, "path"))
         .and_then(|()| validate_kv_version(params.kv_version))
         .and_then(|()| validate_path(&params.cert_file, "cert_file"))
+        .map(|p| params.cert_file = p)
         .and_then(|()| validate_path(&params.key_file, "key_file"))
+        .map(|p| params.key_file = p)
         {
             return ok_error(e);
         }
@@ -382,7 +399,7 @@ impl DcertMcpServer {
     )]
     pub async fn vault_validate(
         &self,
-        Parameters(params): Parameters<VaultValidateParams>,
+        Parameters(mut params): Parameters<VaultValidateParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         if let Err(e) = params.vault.validate() {
             return ok_error(e);
@@ -426,7 +443,7 @@ impl DcertMcpServer {
     )]
     pub async fn vault_renew(
         &self,
-        Parameters(params): Parameters<VaultRenewParams>,
+        Parameters(mut params): Parameters<VaultRenewParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         if let Err(e) = params.vault.validate() {
             return ok_error(e);

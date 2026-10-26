@@ -158,18 +158,100 @@ fn test_validate_path_confines_to_root() {
 }
 
 #[test]
-fn test_validate_path_defaults_allow_cwd_and_temp_dir() {
+fn test_validate_path_defaults_to_the_working_directory_only() {
     let _guard = EnvGuard::unset("DCERT_MCP_FILE_ROOT");
-    // The working directory is where an IDE-launched server writes.
-    assert!(validate_path("exported.pem", "output_path").is_ok());
-    // The system scratch directory is the other place users name.
-    let scratch = std::env::temp_dir().join("dcert-export.pem");
-    assert!(
-        validate_path(scratch.to_str().expect("utf-8"), "output_path").is_ok(),
-        "the temp dir must be writable by default"
+    // The working directory is where an IDE launched server writes.
+    let cwd = std::env::current_dir()
+        .expect("cwd")
+        .canonicalize()
+        .expect("canonicalize");
+    assert_eq!(
+        validate_path("exported.pem", "output_path").expect("inside cwd"),
+        cwd.join("exported.pem").to_str().expect("utf-8")
     );
-    // Sensitive locations still need an explicit opt-in.
+    // The world writable temp directory is no longer a default root.
+    let scratch = std::env::temp_dir().canonicalize().expect("canonicalize");
+    if !cwd.starts_with(&scratch) {
+        let err = validate_path(scratch.join("dcert-export.pem").to_str().expect("utf-8"), "output_path")
+            .expect_err("temp dir must need DCERT_MCP_FILE_ROOT");
+        assert!(err.contains("DCERT_MCP_FILE_ROOT"), "{err}");
+    }
     assert!(validate_path("/etc/shadow", "cert").is_err());
+}
+
+#[test]
+fn test_validate_path_returns_the_canonical_path_under_the_root_not_the_cwd() {
+    // The server's working directory differs from the configured root. A
+    // relative path must resolve against the root, and the child must be
+    // given that absolute path, never the relative spelling.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().canonicalize().expect("canonicalize");
+    let _guard = EnvGuard::set("DCERT_MCP_FILE_ROOT", root.to_str().expect("utf-8 root"));
+    let cwd = std::env::current_dir()
+        .expect("cwd")
+        .canonicalize()
+        .expect("canonicalize");
+    assert_ne!(cwd, root);
+
+    let resolved = validate_path("Cargo.toml", "cert").expect("inside root");
+    assert_eq!(resolved, root.join("Cargo.toml").to_str().expect("utf-8"));
+    assert!(std::path::Path::new(&resolved).is_absolute());
+    assert_eq!(primary_root().as_deref(), Some(root.as_path()));
+}
+
+#[test]
+fn test_validate_path_canonicalises_a_link_inside_the_root() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().canonicalize().expect("canonicalize");
+    let _guard = EnvGuard::set("DCERT_MCP_FILE_ROOT", root.to_str().expect("utf-8 root"));
+    std::fs::create_dir(root.join("real")).expect("mkdir");
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(root.join("real"), root.join("alias")).expect("symlink");
+        let resolved = validate_path("alias/new.pem", "output_path").expect("inside root");
+        assert_eq!(resolved, root.join("real").join("new.pem").to_str().expect("utf-8"));
+    }
+}
+
+#[test]
+fn test_validate_path_is_not_a_file_existence_oracle() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().canonicalize().expect("canonicalize");
+    let outside = tempfile::tempdir().expect("tempdir");
+    let outside = outside.path().canonicalize().expect("canonicalize");
+    std::fs::write(outside.join("exists.pem"), b"x").expect("write");
+    let _guard = EnvGuard::set("DCERT_MCP_FILE_ROOT", root.to_str().expect("utf-8 root"));
+
+    let existing = outside.join("exists.pem");
+    let missing = outside.join("missing.pem");
+    let err_existing = validate_path(existing.to_str().expect("utf-8"), "target").expect_err("outside");
+    let err_missing = validate_path(missing.to_str().expect("utf-8"), "target").expect_err("outside");
+    assert_eq!(
+        err_existing.replace("exists.pem", "X"),
+        err_missing.replace("missing.pem", "X"),
+        "refusal must not reveal whether the file exists"
+    );
+}
+
+#[test]
+fn test_resolve_target_confines_file_targets_and_passes_urls_and_hosts() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().canonicalize().expect("canonicalize");
+    std::fs::write(root.join("chain.pem"), b"x").expect("write");
+    let _guard = EnvGuard::set("DCERT_MCP_FILE_ROOT", root.to_str().expect("utf-8 root"));
+
+    assert_eq!(
+        resolve_target("https://example.com/x").as_deref(),
+        Ok("https://example.com/x")
+    );
+    assert_eq!(resolve_target("example.com:8443").as_deref(), Ok("example.com:8443"));
+    assert_eq!(
+        resolve_target("chain.pem").expect("file in root"),
+        root.join("chain.pem").to_str().expect("utf-8")
+    );
+    let err = resolve_target("/etc/passwd").expect_err("file outside root");
+    assert!(err.contains("outside the allowed roots"), "{err}");
+    assert!(resolve_target("certs/../../etc/passwd").is_err());
 }
 
 #[cfg(unix)]
@@ -379,7 +461,7 @@ fn test_validate_path_accepts_filename_with_dots() {
 
 #[test]
 fn test_mtls_params_empty_valid() {
-    let params = MtlsParams::default();
+    let mut params = MtlsParams::default();
     assert!(params.validate().is_ok());
 }
 
@@ -1383,7 +1465,7 @@ fn test_format_timeout_error_without_proxy() {
 
 #[test]
 fn test_vault_params_token_default_valid() {
-    let params = VaultParams::default();
+    let mut params = VaultParams::default();
     // Token method with no explicit token is valid (falls back to env/file)
     assert!(params.validate().is_ok());
 }
@@ -1862,6 +1944,29 @@ async fn spawned_child_does_not_inherit_stdin() {
         .expect("cat must exit on its own rather than wait for stdin");
     assert_eq!(code, 0);
     assert!(stdout.is_empty(), "nothing should reach the child on stdin: {stdout:?}");
+}
+
+/// The child runs in the first allowed root, so it resolves a relative path
+/// the way `validate_path` did even when the server's own cwd differs.
+#[cfg(unix)]
+#[tokio::test]
+async fn spawned_child_runs_in_the_first_file_root() {
+    let pwd = PathBuf::from("/bin/pwd");
+    if !pwd.exists() {
+        eprintln!("Skipping test: /bin/pwd not found");
+        return;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().canonicalize().expect("canonicalize");
+    let mut config = test_config(pwd);
+    config.subprocess_timeout = Duration::from_secs(5);
+    let mut child = {
+        let _guard = EnvGuard::set("DCERT_MCP_FILE_ROOT", root.to_str().expect("utf-8 root"));
+        spawn_dcert(&config, &["-P"], &[]).expect("spawn pwd")
+    };
+    let (stdout, _stderr, code) = run_child_with_timeout(&mut child, &config).await.expect("pwd");
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), root.to_str().expect("utf-8"));
 }
 
 /// Dropping the child (a cancelled tool future) must take the process with it.

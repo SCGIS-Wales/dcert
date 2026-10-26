@@ -28,7 +28,7 @@ pub(crate) struct MtlsParams {
 }
 
 impl MtlsParams {
-    pub(crate) fn validate(&self) -> Result<(), String> {
+    pub(crate) fn validate(&mut self) -> Result<(), String> {
         // client_cert and client_key must both be set or both absent
         match (&self.client_cert, &self.client_key) {
             (Some(_), None) => return Err("client_cert requires client_key".to_string()),
@@ -39,18 +39,17 @@ impl MtlsParams {
         if self.client_cert.is_some() && self.pkcs12.is_some() {
             return Err("client_cert/client_key and pkcs12 are mutually exclusive".to_string());
         }
-        // Validate paths
-        if let Some(ref p) = self.client_cert {
-            validate_path(p, "client_cert")?;
-        }
-        if let Some(ref p) = self.client_key {
-            validate_path(p, "client_key")?;
-        }
-        if let Some(ref p) = self.pkcs12 {
-            validate_path(p, "pkcs12")?;
-        }
-        if let Some(ref p) = self.ca_cert {
-            validate_path(p, "ca_cert")?;
+        // Confine every path and replace it with the canonical form the
+        // child is given.
+        for (value, name) in [
+            (&mut self.client_cert, "client_cert"),
+            (&mut self.client_key, "client_key"),
+            (&mut self.pkcs12, "pkcs12"),
+            (&mut self.ca_cert, "ca_cert"),
+        ] {
+            if let Some(p) = value.as_mut() {
+                *p = validate_path(p, name)?;
+            }
         }
         Ok(())
     }

@@ -6,6 +6,18 @@ summary is written.
 
 ## Unreleased
 
+### Security
+
+- MCP file root confinement (`DCERT_MCP_FILE_ROOT`): a relative path could
+  escape the root because it was validated against the root but resolved by
+  the child against the server's working directory. Tools now pass the
+  canonical absolute path to the child, and the child runs in the first
+  root. Probe targets that name a local file are confined as well, and the
+  refusal no longer reveals whether a file outside the roots exists.
+- The system temp directory is no longer a default file root (it is world
+  writable); the default is the working directory only. Set
+  `DCERT_MCP_FILE_ROOT` to add it back.
+
 ### Fixed
 
 - `--starttls` with a bare host (`mail.example.com:587`) dialled the
