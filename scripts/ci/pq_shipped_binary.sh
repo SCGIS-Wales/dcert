@@ -11,6 +11,12 @@ apt-get install -y -qq --no-install-recommends openssl jq ca-certificates >/dev/
 
 openssl version
 dcert --version
+# The binary is built against the runner's OpenSSL 3.0 headers; if it does not
+# say so, it is not the binary this commit produced.
+if ! dcert --version | grep -q "built against OpenSSL 3.0"; then
+  echo "::error::dcert --version does not name its OpenSSL 3.0 build headers; stale binary?"
+  exit 1
+fi
 
 work="$(mktemp -d)"
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 \
