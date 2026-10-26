@@ -42,7 +42,14 @@ impl std::fmt::Display for ProxyConnectFailed {
 
 impl std::error::Error for ProxyConnectFailed {}
 
-/// Cached proxy configuration, read once at startup.
+/// dcert's own proxy variable; it overrides HTTPS_PROXY, HTTP_PROXY and
+/// ALL_PROXY, like `--proxy`.
+pub const DCERT_PROXY_ENV: &str = "DCERT_PROXY";
+/// dcert's own bypass list variable; it overrides NO_PROXY, like `--noproxy`.
+pub const DCERT_NOPROXY_ENV: &str = "DCERT_NOPROXY";
+
+/// The one reader of the proxy environment, used by the CLI, the MCP server
+/// and the diagnostics. Cached at startup.
 #[derive(Debug, Clone, Default)]
 pub struct ProxyConfig {
     pub https_proxy: Option<String>,
@@ -65,11 +72,23 @@ impl ProxyConfig {
         let no_proxy = env::var("no_proxy")
             .or_else(|_| env::var("NO_PROXY"))
             .unwrap_or_default();
-        Self {
+        let mut config = Self {
             https_proxy,
             http_proxy,
             no_proxy,
+        };
+        // dcert's own variables win, with the meaning `--proxy` and
+        // `--noproxy` give them: an empty DCERT_PROXY forces a direct
+        // connection and an empty DCERT_NOPROXY clears the bypass list.
+        if let Ok(proxy) = env::var(DCERT_PROXY_ENV) {
+            let proxy = Some(proxy.trim().to_string()).filter(|p| !p.is_empty());
+            config.https_proxy.clone_from(&proxy);
+            config.http_proxy = proxy;
         }
+        if let Ok(no_proxy) = env::var(DCERT_NOPROXY_ENV) {
+            config.no_proxy = no_proxy;
+        }
+        config
     }
 
     /// Build the effective configuration from the `--proxy` / `--noproxy` flags
@@ -292,6 +311,8 @@ mod tests {
             "all_proxy",
             "NO_PROXY",
             "no_proxy",
+            DCERT_PROXY_ENV,
+            DCERT_NOPROXY_ENV,
         ];
         let saved: Vec<(&str, Option<String>)> = names.iter().map(|n| (*n, env::var(n).ok())).collect();
         // Safe: ENV_LOCK serialises every environment mutation in this module.
@@ -316,6 +337,34 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn dcert_variables_override_the_standard_ones() {
+        with_env(
+            &[
+                ("HTTPS_PROXY", Some("http://corp:3128")),
+                ("NO_PROXY", Some("internal.example")),
+                (DCERT_PROXY_ENV, Some("http://dcert:8080")),
+                (DCERT_NOPROXY_ENV, Some("")),
+            ],
+            || {
+                let cfg = ProxyConfig::from_env();
+                assert_eq!(cfg.https_proxy.as_deref(), Some("http://dcert:8080"));
+                assert_eq!(cfg.http_proxy.as_deref(), Some("http://dcert:8080"));
+                assert_eq!(cfg.no_proxy, "", "an empty DCERT_NOPROXY clears NO_PROXY");
+            },
+        );
+        with_env(
+            &[("HTTPS_PROXY", Some("http://corp:3128")), (DCERT_PROXY_ENV, Some(""))],
+            || {
+                let cfg = ProxyConfig::from_env();
+                assert!(
+                    cfg.https_proxy.is_none(),
+                    "an empty DCERT_PROXY forces a direct connection"
+                );
+            },
+        );
     }
 
     #[test]

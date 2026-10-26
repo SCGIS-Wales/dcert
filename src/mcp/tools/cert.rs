@@ -92,8 +92,8 @@ impl DcertMcpServer {
         &self,
         Parameters(mut params): Parameters<CheckExpiryParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        if params.days > 3650 {
-            return ok_error(format!("days must be at most 3650 (10 years), got {}", params.days));
+        if let Err(e) = dcert::limits::check_range("days", params.days, &dcert::limits::EXPIRY_WARN_RANGE) {
+            return ok_error(e);
         }
 
         let outcome = self.run_probe(&mut params).await.map(|(stdout, stderr, code)| {

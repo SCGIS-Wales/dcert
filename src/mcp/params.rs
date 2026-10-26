@@ -4,8 +4,8 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::cliargs::{ArgBuilder, ToCliArgs};
-use crate::validate::{reject_flag_like, validate_arg, validate_path};
-use dcert::limits::{READ_TIMEOUT_RANGE, TIMEOUT_RANGE, check_range};
+use crate::validate::{parse_enum, reject_flag_like, validate_arg, validate_path};
+use dcert::limits::{self, READ_TIMEOUT_RANGE, TIMEOUT_RANGE, check_range};
 
 // -- Parameter types --
 
@@ -224,8 +224,8 @@ impl ToCliArgs for HttpTlsParams {
             .value("starttls", self.starttls.as_deref())
             // A proxy URL may carry credentials, so proxy settings travel in
             // the environment like DCERT_CERT_PASSWORD.
-            .env("DCERT_PROXY", self.proxy.as_deref())
-            .env("DCERT_NOPROXY", self.noproxy.as_deref());
+            .env(dcert::proxy::DCERT_PROXY_ENV, self.proxy.as_deref())
+            .env(dcert::proxy::DCERT_NOPROXY_ENV, self.noproxy.as_deref());
     }
 }
 
@@ -284,10 +284,22 @@ impl HttpTlsParams {
         if let Some(ref groups) = self.groups {
             dcert::keyex::validate_groups_list(groups).map_err(|e| e.replace("--groups", "groups"))?;
         }
-        if let Some(ref profile) = self.tls_profile
-            && !matches!(profile.as_str(), "modern" | "intermediate")
-        {
-            return Err(format!("tls_profile '{profile}' must be 'modern' or 'intermediate'"));
+        // Enumerated values are checked against the CLI's own enums, with
+        // the same case rule as the matching flag.
+        if let Some(ref v) = self.tls_profile {
+            parse_enum::<dcert::keyex::TlsProfile>("tls_profile", v, false)?;
+        }
+        if let Some(ref v) = self.starttls {
+            parse_enum::<dcert::cli::StarttlsProtocol>("starttls", v, false)?;
+        }
+        if let Some(ref v) = self.method {
+            parse_enum::<dcert::cli::HttpMethod>("method", v, true)?;
+        }
+        if let Some(ref v) = self.http_protocol {
+            parse_enum::<dcert::cli::HttpProtocol>("http_protocol", v, false)?;
+        }
+        if let Some(ref v) = self.ciphers_notation {
+            parse_enum::<dcert::cli::CipherNotation>("ciphers_notation", v, false)?;
         }
         for (name, value) in [
             ("cipher_list", &self.cipher_list),
@@ -735,6 +747,9 @@ impl ToCliArgs for ValidateCertificateParams {
     }
 }
 
+// Serde defaults. Each reads the one definition in `dcert::limits` that the
+// CLI's clap defaults also use.
+
 pub(crate) fn default_rsa_4096() -> String {
     "rsa-4096".to_string()
 }
@@ -743,31 +758,31 @@ pub(crate) fn default_true() -> bool {
     true
 }
 pub(crate) fn default_30() -> u64 {
-    30
+    limits::DEFAULT_EXPIRY_WARN_DAYS
 }
 pub(crate) fn default_dot() -> String {
-    ".".to_string()
+    limits::DEFAULT_OUTPUT_DIR.to_string()
 }
 pub(crate) fn default_server() -> String {
-    "server".to_string()
+    limits::DEFAULT_KEYSTORE_ALIAS.to_string()
 }
 pub(crate) fn default_changeit() -> String {
-    "changeit".to_string()
+    limits::DEFAULT_TRUSTSTORE_PASSWORD.to_string()
 }
 pub(crate) fn default_vault_mount() -> String {
-    "vault_intermediate".to_string()
+    limits::DEFAULT_VAULT_PKI_MOUNT.to_string()
 }
 pub(crate) fn default_ttl() -> String {
-    "8760h".to_string()
+    limits::DEFAULT_VAULT_TTL.to_string()
 }
 pub(crate) fn default_kv_version() -> u8 {
-    1
+    limits::DEFAULT_KV_VERSION
 }
 pub(crate) fn default_cert_key_name() -> String {
-    "cert".to_string()
+    limits::DEFAULT_KV_CERT_KEY.to_string()
 }
 pub(crate) fn default_key_key_name() -> String {
-    "key".to_string()
+    limits::DEFAULT_KV_KEY_KEY.to_string()
 }
 
 /// Wipe secrets received as tool arguments once the request is done.

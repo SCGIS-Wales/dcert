@@ -177,9 +177,11 @@ otel:
     - otlp
 
 tools:
+  # truststore_password, keystore_alias, expiry_days and output_dir mirror
+  # src/limits.rs; scripts/sync_defaults.py writes them and CI checks them.
   # Default password applied by the Rust server to new truststores.
-  truststore_password: changeit
-  keystore_alias: server
+  truststore_password: "changeit"
+  keystore_alias: "server"
   expiry_days: 30
   # Directory convert_pfx_to_pem writes PEM files to when none is given.
   output_dir: "."

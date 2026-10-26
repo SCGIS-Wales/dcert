@@ -145,26 +145,14 @@ pub(crate) struct McpProxyInfo {
 }
 
 impl McpProxyInfo {
-    /// Read proxy environment variables using the same precedence as the main dcert binary.
+    /// The proxy settings the dcert subprocess will apply, from the same
+    /// reader the CLI uses ([`dcert::proxy::ProxyConfig::from_env`]).
     pub(crate) fn from_env() -> Self {
-        // DCERT_PROXY/DCERT_NOPROXY come first: they are what the per-tool
-        // `proxy`/`noproxy` parameters set on the subprocess, and dcert itself
-        // gives them precedence over the standard variables.
-        let https_proxy = ["DCERT_PROXY", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]
-            .iter()
-            .find_map(|var| std::env::var(var).ok().filter(|v| !v.is_empty()));
-        let http_proxy = ["DCERT_PROXY", "HTTP_PROXY", "http_proxy"]
-            .iter()
-            .find_map(|var| std::env::var(var).ok().filter(|v| !v.is_empty()));
-        let no_proxy = std::env::var("DCERT_NOPROXY")
-            .or_else(|_| std::env::var("NO_PROXY"))
-            .or_else(|_| std::env::var("no_proxy"))
-            .ok()
-            .filter(|v| !v.is_empty());
+        let config = dcert::proxy::ProxyConfig::from_env();
         Self {
-            https_proxy,
-            http_proxy,
-            no_proxy,
+            https_proxy: config.https_proxy,
+            http_proxy: config.http_proxy,
+            no_proxy: Some(config.no_proxy).filter(|v| !v.is_empty()),
         }
     }
 }

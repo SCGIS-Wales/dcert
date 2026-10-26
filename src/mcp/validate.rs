@@ -274,27 +274,35 @@ pub(crate) fn validate_alias(alias: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Parse an enumerated parameter with the CLI's own clap `ValueEnum`, so the
+/// MCP layer accepts exactly the values the CLI does and names them all when
+/// it refuses one. `ignore_case` must match the CLI flag's own setting.
+pub(crate) fn parse_enum<T: clap::ValueEnum>(name: &str, value: &str, ignore_case: bool) -> Result<T, String> {
+    T::from_str(value, ignore_case).map_err(|_| {
+        let accepted: Vec<String> = T::value_variants()
+            .iter()
+            .filter_map(T::to_possible_value)
+            .filter(|v| !v.is_hide_set())
+            .map(|v| format!("\"{}\"", v.get_name()))
+            .collect();
+        format!("Invalid {name} '{value}': must be one of {}", accepted.join(", "))
+    })
+}
+
 /// Validate that a key algorithm string is one of the accepted values.
 pub(crate) fn validate_key_algorithm(algo: &str) -> Result<(), String> {
-    match algo {
-        "rsa-4096" | "rsa-2048" | "ecdsa-p256" | "ecdsa-p384" | "ed25519" => Ok(()),
-        _ => Err(format!(
-            "Invalid key algorithm '{algo}': must be one of \"rsa-4096\", \"rsa-2048\", \"ecdsa-p256\", \"ecdsa-p384\", \"ed25519\""
-        )),
-    }
+    parse_enum::<dcert::cli::KeyAlgorithmArg>("key algorithm", algo, false).map(|_| ())
 }
 
 /// Parse a TLS version parameter into the CLI's own enum, so the MCP layer
 /// accepts exactly the versions the CLI does and can compare them with `Ord`.
 pub(crate) fn validate_tls_version(version: &str) -> Result<dcert::cli::TlsVersionArg, String> {
-    use clap::ValueEnum;
-    dcert::cli::TlsVersionArg::from_str(version, true)
-        .map_err(|_| format!("Invalid TLS version '{version}': must be \"1.2\" or \"1.3\""))
+    parse_enum("TLS version", version, false)
 }
 
 /// Validate a Vault KV engine version parameter: only 1 and 2 exist.
 pub(crate) fn validate_kv_version(kv_version: u8) -> Result<(), String> {
-    if (1..=2).contains(&kv_version) {
+    if dcert::limits::KV_VERSION_RANGE.contains(&kv_version) {
         Ok(())
     } else {
         Err(format!("kv_version must be 1 or 2, got {kv_version}"))

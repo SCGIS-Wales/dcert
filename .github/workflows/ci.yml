@@ -257,7 +257,10 @@ jobs:
         run: mypy
 
       - name: Mypy (build scripts)
-        run: mypy --strict ../scripts/build_wheels.py
+        run: mypy --strict ../scripts/build_wheels.py ../scripts/sync_defaults.py
+
+      - name: Defaults in step with src/limits.rs
+        run: python ../scripts/sync_defaults.py --check
 
       # Known vulnerabilities in the resolved dependency set (runtime and dev).
       # The package itself is installed editable and is not on PyPI at this
@@ -311,10 +314,10 @@ jobs:
 
       # The build scripts read the packaged config.yaml for the platform table.
       - name: Install test dependencies
-        run: pip install pytest pyyaml
+        run: pip install pytest pyyaml click
 
       - name: Run wheel builder tests
-        run: pytest -v scripts/test_build_wheels.py
+        run: pytest -v scripts/test_build_wheels.py scripts/test_sync_defaults.py
 
   # Functional test: build a platform wheel, install it in a venv,
   # and verify that dcert, dcert-mcp, and dcert-python commands work.

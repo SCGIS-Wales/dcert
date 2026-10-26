@@ -1,0 +1,10 @@
+# Defaults the Python package mirrors from the Rust CLI. Each entry maps a
+# dotted key in the target YAML file to a constant in the source Rust file;
+# scripts/sync_defaults.py rewrites the values and CI fails when they drift.
+source: src/limits.rs
+target: python/src/dcert/config.yaml
+keys:
+  tools.truststore_password: DEFAULT_TRUSTSTORE_PASSWORD
+  tools.keystore_alias: DEFAULT_KEYSTORE_ALIAS
+  tools.expiry_days: DEFAULT_EXPIRY_WARN_DAYS
+  tools.output_dir: DEFAULT_OUTPUT_DIR
