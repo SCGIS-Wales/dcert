@@ -183,7 +183,8 @@ impl<'a> Invocation<'a> {
 /// --read-timeout)`.
 fn shared_flags(subcommand: &str) -> (bool, bool) {
     match subcommand {
-        "check" | "diagnose" | "verify-key" | "tls-scan" => (true, true),
+        // The server spawns `policy` only as `policy test`.
+        "check" | "diagnose" | "verify-key" | "tls-scan" | "policy" => (true, true),
         "vault" => (true, false),
         _ => (false, false),
     }

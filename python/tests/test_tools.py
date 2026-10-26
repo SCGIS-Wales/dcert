@@ -43,6 +43,7 @@ from dcert.tools import (
     list_tls_policies,
     show_tls_policy,
     tls_connection_info,
+    tls_policy_test,
     tls_scan,
     verify_key_match,
 )
@@ -311,6 +312,30 @@ CASES = [
     (explain_cipher_suite, {"suite": "C02F"}, "explain_cipher_suite", {"suite": "C02F"}),
     (tls_scan, {"target": "e"}, "tls_scan", {"target": "e"}),
     (list_tls_policies, {}, "list_tls_policies", {}),
+    (
+        tls_policy_test,
+        {
+            "target": "e",
+            "policy": "P",
+            "versions": ("1.2", "1.3"),
+            "strict": True,
+            "resolve": "e:443:10.0.0.1",
+        },
+        "tls_policy_test",
+        {
+            "target": "e",
+            "policy": "P",
+            "versions": ["1.2", "1.3"],
+            "strict": True,
+            "resolve": "e:443:10.0.0.1",
+        },
+    ),
+    (
+        tls_policy_test,
+        {"target": "e", "identify": True},
+        "tls_policy_test",
+        {"target": "e", "identify": True},
+    ),
     (list_tls_policies, {"provider": "aws_alb"}, "list_tls_policies", {"provider": "aws_alb"}),
     (
         show_tls_policy,
@@ -413,7 +438,7 @@ async def test_input_validation(open_session):
 
 
 def test_all_tool_functions_present():
-    assert len(TOOL_FUNCTIONS) == 16
+    assert len(TOOL_FUNCTIONS) == 17
     # inspect, not asyncio: asyncio.iscoroutinefunction is deprecated from 3.14.
     assert all(inspect.iscoroutinefunction(f) for f in TOOL_FUNCTIONS)
 
@@ -791,3 +816,9 @@ def test_default_session_is_rebuilt_for_a_new_event_loop(monkeypatch, caplog):
     assert len(created) == 2
     assert "Dropping the default session of a previous event loop" in caplog.text
     asyncio.run(close_default_session())
+
+
+@pytest.mark.parametrize("kwargs", [{}, {"policy": "P", "identify": True}])
+async def test_tls_policy_test_needs_exactly_one_of_policy_or_identify(kwargs):
+    with pytest.raises(ValueError, match="exactly one"):
+        await tls_policy_test(target="e", **kwargs)

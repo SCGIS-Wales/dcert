@@ -708,6 +708,64 @@ impl DcertMcpServer {
         reply(outcome, "stderr", ok_codes)
     }
 
+    /// Test an endpoint against a named TLS security policy.
+    #[tool(
+        title = "Test TLS Security Policy Conformance",
+        description = "Test whether an endpoint behaves exactly like a named TLS security policy from dcert's catalogue (AWS ALB and NLB `ELBSecurityPolicy-*`, CloudFront viewer, API Gateway, Mozilla), or with `identify` rank every catalogued policy by match. Makes bounded handshakes, four at a time: discovery (which certificate key types the listener holds), each protocol version alone, each TLS 1.2 cipher and TLS 1.3 suite alone (the policy's ones expected accepted with that suite negotiated, every other catalogued one expected refused) and each key exchange group alone (the policy's groups, X25519 as classical fallback for post quantum policies, the RFC 10024 hybrids expected refused otherwise). Returns JSON with the verdict (`conformant`, `non_conformant`, `inconclusive`), one line per deviation (suites in every notation), the key types and every check with expected, observed, evidence and outcome (`pass`, `fail`, `not_testable` such as ML-KEM on OpenSSL older than 3.5 or TLS 1.0 and 1.1 without `allow_legacy_tls`, `not_applicable` such as an ECDSA cipher on an RSA only listener). Verification is skipped; mTLS identities are presented on every handshake.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
+    pub async fn tls_policy_test(
+        &self,
+        Parameters(mut params): Parameters<TlsPolicyTestParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let target = match resolve_target(&params.target) {
+            Ok(t) if !target_is_file(&t) => t,
+            Ok(_) => return ok_error("tls_policy_test needs an HTTPS URL or hostname, not a file".to_string()),
+            Err(e) => return ok_error(e),
+        };
+        if let Err(e) = params.validate_choices() {
+            return ok_error(e);
+        }
+        if let Err(e) = params.mtls.validate() {
+            return ok_error(e);
+        }
+        let routing = params.routing();
+        if let Err(e) = routing.validate() {
+            return ok_error(e);
+        }
+        let destinations = match probe_destinations(&target, Some(&routing)) {
+            Ok(d) => d,
+            Err(e) => return ok_error(e),
+        };
+        if let Err(e) = check_destinations(&self.config.destinations, destinations).await {
+            return ok_error(e);
+        }
+        let (options, env_refs) = params.cli_args();
+        let mut args = vec!["policy".to_string()];
+        args.extend(target_args(
+            "test",
+            [options, vec!["--format=json".to_string()]].concat(),
+            &target,
+        ));
+        let outcome = run_dcert(Invocation::new(args).env(&env_refs), &self.config).await;
+        // Exit 9 (non conformant) and 10 (inconclusive with strict) are answers.
+        let ok_codes: &[i32] = match &outcome {
+            Ok((stdout, _, code))
+                if matches!(code, 9 | 10)
+                    && serde_json::from_str::<serde_json::Value>(stdout).is_ok_and(|v| v.is_object()) =>
+            {
+                &[0, 9, 10]
+            }
+            _ => &[0],
+        };
+        reply(outcome, "stderr", ok_codes)
+    }
+
     /// List the catalogued TLS security policies.
     #[tool(
         title = "List TLS Security Policies",

@@ -791,6 +791,7 @@ fn test_every_tool_declares_title_and_open_world() {
     assert_eq!(open_world("explain_cipher_suite"), Some(false));
     assert_eq!(open_world("tls_scan"), Some(true));
     assert_eq!(open_world("list_tls_policies"), Some(false));
+    assert_eq!(open_world("tls_policy_test"), Some(true));
     assert_eq!(open_world("show_tls_policy"), Some(false));
 }
 
@@ -1766,6 +1767,7 @@ async fn http_transport_exposes_every_tool() {
         "tls_scan",
         "list_tls_policies",
         "show_tls_policy",
+        "tls_policy_test",
         "vault_issue",
         "vault_revoke",
         "create_truststore",
@@ -2179,6 +2181,34 @@ async fn tls_connection_info_needs_allow_legacy_tls_for_tls_1_0_and_1_1() {
         .await
         .expect("a legacy version without the flag is an error");
         assert!(error.contains("allow_legacy_tls"), "{version}: {error}");
+    }
+}
+
+#[tokio::test]
+async fn tls_policy_test_validates_before_it_runs() {
+    for (arguments, needle) in [
+        (serde_json::json!({ "target": "example.com" }), "identify"),
+        (
+            serde_json::json!({ "target": "example.com", "policy": "P", "identify": true }),
+            "cannot be combined",
+        ),
+        (
+            serde_json::json!({ "target": "example.com", "identify": true, "provider": "azure" }),
+            "provider",
+        ),
+        (
+            serde_json::json!({ "target": "example.com", "identify": true, "versions": ["1.4"] }),
+            "versions",
+        ),
+        (
+            serde_json::json!({ "target": "example.com", "policy": "--strict" }),
+            "policy",
+        ),
+    ] {
+        let error = call_tool_error("tls_policy_test", arguments.clone())
+            .await
+            .unwrap_or_else(|| panic!("{arguments} should be refused"));
+        assert!(error.contains(needle), "{arguments}: {error}");
     }
 }
 

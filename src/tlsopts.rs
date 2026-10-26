@@ -260,6 +260,39 @@ impl Default for ConnectionOptions {
     }
 }
 
+/// The client certificate a probe presents for mutual TLS.
+#[derive(Args, Debug, Clone, Default)]
+#[command(next_help_heading = "Client certificate (mTLS)")]
+pub struct IdentityOptions {
+    /// Client certificate PEM file for mutual TLS authentication
+    #[arg(long, value_name = "PATH", requires = "client_key")]
+    pub client_cert: Option<String>,
+
+    /// Client private key PEM file for mutual TLS (unencrypted RSA/EC key)
+    #[arg(long, value_name = "PATH", requires = "client_cert", conflicts_with = "pkcs12")]
+    pub client_key: Option<String>,
+
+    /// PKCS12/PFX file containing client certificate and private key for mTLS
+    #[arg(long, value_name = "PATH", conflicts_with_all = ["client_cert", "client_key"])]
+    pub pkcs12: Option<String>,
+
+    /// Password for the PKCS12/PFX file (or set DCERT_CERT_PASSWORD env var)
+    #[arg(long, value_name = "PASS", env = "DCERT_CERT_PASSWORD", hide_env_values = true)]
+    pub cert_password: Option<crate::secret::Secret>,
+}
+
+impl IdentityOptions {
+    /// The identity, borrowed from these options.
+    pub fn identity(&self) -> ClientIdentity<'_> {
+        ClientIdentity {
+            client_cert_path: self.client_cert.as_deref(),
+            client_key_path: self.client_key.as_deref(),
+            pkcs12_path: self.pkcs12.as_deref(),
+            cert_password: self.cert_password.as_deref(),
+        }
+    }
+}
+
 /// Everything a handshake needs, resolved once per run from the TLS and
 /// connection options and the client identity.
 #[derive(Debug)]

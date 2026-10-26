@@ -83,6 +83,7 @@ Leaving out `session` uses a shared default session that is created on first use
 | `list_cipher_suites()` | List TLS cipher suites from the IANA registry (offline) |
 | `list_tls_policies()` | List the catalogued TLS security policies (offline) |
 | `show_tls_policy()` | Show one catalogued TLS security policy (offline) |
+| `tls_policy_test()` | Test an endpoint against a TLS security policy, or identify the closest one |
 | `explain_cipher_suite()` | Explain one cipher suite in any notation (offline) |
 
 The network facing functions accept the shared mTLS and connection options (`client_cert`, `client_key`, `pkcs12`, `cert_password`, `ca_cert`, `connect_to`, `resolve`, `proxy`, `noproxy`) as keyword arguments.

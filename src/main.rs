@@ -1167,6 +1167,228 @@ fn run_policy(args: cli::PolicyArgs) -> Result<i32> {
             println!("{}", serde_json::to_string_pretty(&PolicyCatalogue::json_schema())?);
             Ok(exit_code::SUCCESS)
         }
+        cli::PolicyMode::Test(args) => run_policy_test(*args),
+    }
+}
+
+/// `dcert policy test`: one policy against the endpoint, or `--identify`.
+fn run_policy_test(args: cli::PolicyTestArgs) -> Result<i32> {
+    use dcert::tlspolicy::conformance::{self, Outcome, PolicyReport, Verdict};
+    use dcert::tlspolicy::{PolicyCatalogue, TlsPolicy};
+    let catalogue = PolicyCatalogue::builtin()?;
+    let chosen: Option<&TlsPolicy> =
+        match args.policy.as_deref() {
+            Some(id) => Some(catalogue.find(id, args.provider).into_iter().next().ok_or_else(|| {
+                anyhow::anyhow!("no catalogued TLS policy named '{id}'; `dcert policy list` shows them")
+            })?),
+            None => None,
+        };
+    let tls = tlsopts::TlsOptions {
+        sni: args.sni.clone(),
+        starttls: args.starttls,
+        allow_legacy_tls: args.allow_legacy_tls,
+        ..Default::default()
+    };
+    let probe = ProbeOptions::new(&tls, &args.connection, args.identity.identity(), args.debug)?;
+    let (host, port, transport) = probe_target(&args.target, args.starttls)?;
+    let request = dcert::tls::PqProbeRequest {
+        host: &host,
+        port,
+        transport,
+        proxy_config: Some(&probe.proxy),
+        identity: args.identity.identity(),
+        alpn: None,
+    };
+    let versions = conformance::versions_or_all(&args.versions);
+    let targets: Vec<&TlsPolicy> = match chosen {
+        Some(p) => vec![p],
+        None => catalogue.policies.iter().collect(),
+    };
+    let plan = conformance::plan_for(
+        &targets,
+        catalogue,
+        &versions,
+        args.allow_legacy_tls,
+        dcert::limits::SCAN_CONCURRENCY,
+    );
+    let observation = conformance::observe(&request, &probe.tls_probe(), &plan);
+    if !observation
+        .versions
+        .values()
+        .any(|p| matches!(p, conformance::Probe::Accepted { .. }))
+    {
+        let why = observation
+            .versions
+            .values()
+            .find_map(|p| match p {
+                conformance::Probe::Rejected { alert } => Some(alert.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| "no version could be tested".to_string());
+        return Err(anyhow::anyhow!(
+            "{}: no protocol version was accepted ({why})",
+            args.target
+        ));
+    }
+
+    #[derive(serde::Serialize)]
+    struct Single<'a> {
+        target: &'a str,
+        versions: Vec<&'static str>,
+        handshakes: usize,
+        #[serde(flatten)]
+        report: &'a PolicyReport,
+    }
+    #[derive(serde::Serialize)]
+    struct Candidate<'a> {
+        policy: &'a str,
+        provider: dcert::tlspolicy::PolicyProvider,
+        verdict: Verdict,
+        failed: usize,
+        not_testable: usize,
+        deviations: &'a [String],
+    }
+    #[derive(serde::Serialize)]
+    struct Identified<'a> {
+        target: &'a str,
+        versions: Vec<&'static str>,
+        handshakes: usize,
+        best_fit: Vec<String>,
+        candidates: Vec<Candidate<'a>>,
+        best: &'a PolicyReport,
+    }
+
+    let version_names: Vec<&'static str> = versions.iter().map(|v| v.number()).collect();
+    match chosen {
+        Some(policy) => {
+            let report = conformance::evaluate(policy, &observation, &versions, catalogue);
+            let output = Single {
+                target: &args.target,
+                versions: version_names,
+                handshakes: observation.handshakes,
+                report: &report,
+            };
+            print_structured(args.format, &output, || {
+                print_policy_report(&args.target, &report, observation.handshakes);
+            })?;
+            Ok(match report.verdict {
+                Verdict::Conformant => exit_code::SUCCESS,
+                Verdict::NonConformant => exit_code::POLICY_NON_CONFORMANT,
+                Verdict::Inconclusive if args.strict => exit_code::POLICY_INCONCLUSIVE,
+                Verdict::Inconclusive => exit_code::SUCCESS,
+            })
+        }
+        None => {
+            let ranked = conformance::rank(&observation, &versions, catalogue);
+            let best = &ranked[0];
+            let best_fit: Vec<String> = ranked
+                .iter()
+                .take_while(|r| r.rank_key() == best.rank_key())
+                .map(|r| format!("{} ({})", r.policy, r.provider.label()))
+                .collect();
+            let candidates: Vec<Candidate<'_>> = ranked
+                .iter()
+                .take(best_fit.len().max(5) + 3)
+                .map(|r| Candidate {
+                    policy: &r.policy,
+                    provider: r.provider,
+                    verdict: r.verdict,
+                    failed: r.count(Outcome::Fail),
+                    not_testable: r.count(Outcome::NotTestable),
+                    deviations: &r.deviations,
+                })
+                .collect();
+            let output = Identified {
+                target: &args.target,
+                versions: version_names,
+                handshakes: observation.handshakes,
+                best_fit,
+                candidates,
+                best,
+            };
+            print_structured(args.format, &output, || {
+                println!(
+                    "{} {} ({} handshakes)",
+                    "Closest TLS policies for".bold(),
+                    args.target,
+                    observation.handshakes
+                );
+                for c in &output.candidates {
+                    let mark = if c.failed == 0 {
+                        "match".green()
+                    } else {
+                        format!("{} deviations", c.failed).yellow()
+                    };
+                    println!("  {:<52} {:<16} {mark}", c.policy, c.provider.label());
+                    for d in c.deviations.iter().take(3) {
+                        println!("      {d}");
+                    }
+                }
+            })?;
+            Ok(exit_code::SUCCESS)
+        }
+    }
+}
+
+/// Pretty output of a policy test: verdict, deviations, then every check.
+fn print_policy_report(target: &str, report: &dcert::tlspolicy::conformance::PolicyReport, handshakes: usize) {
+    use dcert::tlspolicy::conformance::{Outcome, Verdict};
+    let verdict = match report.verdict {
+        Verdict::Conformant => "CONFORMANT".green().bold(),
+        Verdict::NonConformant => "NON CONFORMANT".red().bold(),
+        Verdict::Inconclusive => "INCONCLUSIVE".yellow().bold(),
+    };
+    println!(
+        "{} against {} ({}): {verdict}",
+        target.bold(),
+        report.policy,
+        report.provider.label()
+    );
+    let keys: Vec<String> = report
+        .key_types
+        .iter()
+        .map(|k| format!("{k:?}").to_uppercase())
+        .collect();
+    println!(
+        "  Certificates: {}   Handshakes: {handshakes}",
+        if keys.is_empty() {
+            "unknown".to_string()
+        } else {
+            keys.join(" and ")
+        }
+    );
+    if !report.deviations.is_empty() {
+        println!("  Deviations:");
+        for d in &report.deviations {
+            println!("    {} {d}", "FAIL".red());
+        }
+    }
+    println!("  Checks:");
+    for c in &report.checks {
+        let badge = match c.outcome {
+            Outcome::Pass => "PASS".green(),
+            Outcome::Fail => "FAIL".red(),
+            Outcome::NotTestable => "N/T ".yellow(),
+            Outcome::NotApplicable => "N/A ".normal(),
+        };
+        let subject = c
+            .cipher
+            .as_ref()
+            .map_or_else(|| c.subject.clone(), dcert::ciphers::NegotiatedCipher::display);
+        let expected = match c.expected {
+            dcert::tlspolicy::conformance::Expected::Accept => "accept",
+            dcert::tlspolicy::conformance::Expected::Reject => "reject",
+        };
+        println!(
+            "    {badge} {:<16} {subject}: expected {expected}, observed {}{}",
+            format!("{:?}", c.kind),
+            c.observed,
+            if c.evidence.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", c.evidence)
+            }
+        );
     }
 }
 
@@ -1210,9 +1432,37 @@ fn print_policy_pretty(p: &dcert::tlspolicy::TlsPolicy) {
     println!("  Source    : {} (retrieved {})", p.source_url, p.retrieved);
 }
 
+/// Host, port and transport of a probe target: an HTTPS URL, or
+/// `host[:port]` with STARTTLS.
+fn probe_target(
+    target: &str,
+    starttls: Option<cli::StarttlsProtocol>,
+) -> Result<(String, u16, dcert::tls::ProbeTransport)> {
+    use dcert::tls::ProbeTransport;
+    Ok(match starttls {
+        Some(protocol) => {
+            let (host, port) = output::starttls_host_port(target, protocol.default_port());
+            (host, port, ProbeTransport::Starttls(protocol))
+        }
+        None => {
+            let url = url::Url::parse(target)
+                .ok()
+                .filter(|u| u.scheme() == "https")
+                .ok_or_else(|| anyhow::anyhow!("expected an HTTPS URL or hostname, got '{target}'"))?;
+            let host = url
+                .host_str()
+                .ok_or_else(|| anyhow::anyhow!("'{target}' has no host"))?
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .to_string();
+            (host, url.port().unwrap_or(443), ProbeTransport::Tls)
+        }
+    })
+}
+
 /// `dcert tls-scan`: enumerate versions, suites and groups.
 fn run_tls_scan(args: cli::TlsScanArgs) -> Result<i32> {
-    use dcert::tls::{PqProbeRequest, ProbeTransport};
+    use dcert::tls::PqProbeRequest;
     let tls = tlsopts::TlsOptions {
         sni: args.sni.clone(),
         starttls: args.starttls,
@@ -1220,25 +1470,7 @@ fn run_tls_scan(args: cli::TlsScanArgs) -> Result<i32> {
         ..Default::default()
     };
     let probe = ProbeOptions::new(&tls, &args.connection, ClientIdentity::default(), args.debug)?;
-    let (host, port, transport) = match args.starttls {
-        Some(protocol) => {
-            let (host, port) = output::starttls_host_port(&args.target, protocol.default_port());
-            (host, port, ProbeTransport::Starttls(protocol))
-        }
-        None => {
-            let url = url::Url::parse(&args.target)
-                .ok()
-                .filter(|u| u.scheme() == "https")
-                .ok_or_else(|| anyhow::anyhow!("tls-scan needs an HTTPS URL or hostname, got '{}'", args.target))?;
-            let host = url
-                .host_str()
-                .ok_or_else(|| anyhow::anyhow!("'{}' has no host", args.target))?
-                .trim_start_matches('[')
-                .trim_end_matches(']')
-                .to_string();
-            (host, url.port().unwrap_or(443), ProbeTransport::Tls)
-        }
-    };
+    let (host, port, transport) = probe_target(&args.target, args.starttls)?;
     let request = PqProbeRequest {
         host: &host,
         port,

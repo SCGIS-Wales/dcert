@@ -52,6 +52,10 @@ fn sample(property: &str) -> Map<String, Value> {
         | "allow_legacy_tls" => json!(true),
         "issuer_timeout" => json!(3),
         "max_handshakes" => json!(50),
+        "policy" => json!("ELBSecurityPolicy-2016-08"),
+        "provider" => json!("aws_nlb"),
+        "versions" => json!(["1.2", "1.3"]),
+        "identify" | "strict" => json!(true),
         "days" => json!(10),
         "timeout" => json!(7),
         "read_timeout" => json!(4),
@@ -224,6 +228,53 @@ fn every_tls_scan_property_maps_to_a_flag_tls_scan_accepts() {
         assert_ne!(
             args, base,
             "tls_scan: property `{property}` does not reach the command line"
+        );
+    }
+}
+
+/// The argv a tls_policy_test call with `props` produces, after checking
+/// that `dcert policy test` accepts it.
+fn policy_test_argv(props: &Map<String, Value>) -> Vec<String> {
+    let mut object = props.clone();
+    object.insert("target".to_string(), json!(TARGET));
+    if !object.contains_key("identify") {
+        object
+            .entry("policy")
+            .or_insert(json!("ELBSecurityPolicy-TLS13-1-3-PQ-2025-09"));
+    }
+    let mut params: TlsPolicyTestParams = serde_json::from_value(Value::Object(object)).expect("params deserialise");
+    params.validate_choices().expect("valid choices");
+    params.mtls.validate().expect("valid identity");
+    let (mut args, env) = params.cli_args();
+    args.extend(env.iter().map(|(var, value)| {
+        let cmd = Cli::command();
+        let test = cmd
+            .find_subcommand("policy")
+            .and_then(|p| p.find_subcommand("test"))
+            .expect("policy test");
+        let arg = test
+            .get_arguments()
+            .find(|a| a.get_env().is_some_and(|e| e == *var))
+            .unwrap_or_else(|| panic!("no policy test flag reads {var}"));
+        format!("--{}={value}", arg.get_long().expect("long flag"))
+    }));
+    let mut argv = vec!["dcert".to_string(), "policy".to_string(), "test".to_string()];
+    argv.extend(args.iter().cloned());
+    argv.extend(["--".to_string(), TARGET.to_string()]);
+    if let Err(e) = Cli::try_parse_from(&argv) {
+        panic!("policy test rejects {argv:?}: {e}");
+    }
+    args
+}
+
+#[test]
+fn every_tls_policy_test_property_maps_to_a_flag_policy_test_accepts() {
+    let base = policy_test_argv(&Map::new());
+    for property in properties::<TlsPolicyTestParams>() {
+        let args = policy_test_argv(&sample(&property));
+        assert_ne!(
+            args, base,
+            "tls_policy_test: property `{property}` does not reach the command line"
         );
     }
 }

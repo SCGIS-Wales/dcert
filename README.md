@@ -160,7 +160,7 @@ dcert diagnose <target> [OPTIONS]      # TLS, mTLS, gateway, CDN and forward pro
 dcert kb <list|show|validate|schema>   # Inspect the diagnostics knowledge base
 dcert ciphers <list|explain>           # Look up cipher suites in any notation (offline)
 dcert tls-scan <target> [OPTIONS]      # Enumerate accepted TLS versions, cipher suites and groups
-dcert policy <list|show|schema>        # Named TLS security policies (AWS, Mozilla)
+dcert policy <list|show|schema|test>   # Named TLS security policies (AWS, Mozilla); conformance tests
 dcert verify-key [--dir <DIR>]         # Auto-discover and verify all cert/key pairs
 dcert vault issue [OPTIONS]            # Issue a TLS certificate from Vault PKI
 dcert vault sign [OPTIONS]             # Sign a CSR using Vault PKI
@@ -1207,6 +1207,40 @@ unless `--provider` picks one. API Gateway's edge-optimized `TLS_1_0` and
 `TLS_1_2` differ from the Regional ones and are catalogued as `TLS_1_0/edge`
 and `TLS_1_2/edge`. Sources are listed in `kb/SOURCES.md`.
 
+#### Testing an endpoint against a policy
+
+`dcert policy test` answers "does this endpoint behave exactly like policy
+X?" with bounded handshakes, four at a time:
+
+1. Discovery: the default handshake and two more offering only RSA or only
+   ECDSA suites, to learn which certificate key types the listener holds.
+2. Each protocol version alone: accepted exactly when the policy lists it.
+3. Each TLS 1.2 cipher of the policy alone: accepted, with that cipher
+   negotiated. Every other catalogued TLS 1.2 cipher: refused.
+4. Each TLS 1.3 suite of the policy alone: accepted. Every other suite the
+   linked OpenSSL implements: refused.
+5. Each group of the policy alone, `X25519` alone for post quantum policies
+   (the classical fallback), and the RFC 10024 hybrids alone for the others
+   (refused).
+
+Each check is `pass`, `fail`, `not_testable` (ML-KEM groups on OpenSSL older
+than 3.5, TLS 1.0 and 1.1 without `--allow-legacy-tls`) or `not_applicable`
+(an ECDSA cipher on a listener with only an RSA certificate). The verdict is
+`conformant`, `non_conformant` (deviations listed first, suites in every
+notation) or `inconclusive`.
+
+```bash
+dcert policy test alb.example.com --policy ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09
+dcert policy test alb.example.com --policy ELBSecurityPolicy-TLS13-1-3-PQ-2025-09 --versions 1.3 -f json
+dcert policy test alb.example.com --identify            # rank every catalogued policy
+dcert policy test old.example.com --policy ELBSecurityPolicy-2016-08 --allow-legacy-tls --strict
+```
+
+Exit codes: 0 conformant (or inconclusive without `--strict`), 9 non
+conformant, 10 inconclusive with `--strict`, 2 when no version is accepted.
+STARTTLS, `--resolve`, `--connect-to`, proxies, timeouts and the mTLS client
+certificate flags apply to every handshake.
+
 ---
 
 ## MCP Server (AI IDE Integration)
@@ -1229,6 +1263,7 @@ It implements the current MCP specification revision (**2025-11-25**) via the `r
 | `validate_csr` | Validate a CSR for compliance with CA/B Forum Baseline Requirements, DigiCert, and X9 standards. Returns findings with severity levels. |
 | `diagnose_endpoint` | Diagnose why an endpoint fails: TLS and mTLS on any server, Apigee, Envoy/Istio and nginx errors, CloudFront edge and origin errors, API Gateway gateway responses, forward proxy failures and TLS interception. Returns findings ordered earliest layer first with confidence, evidence and remediation, the `platforms` the probe fingerprinted, and context notes explaining CloudFront and API Gateway responses. |
 | `tls_scan` | Enumerate the TLS versions, cipher suites (with leaf key type) and key exchange groups a server accepts, one handshake at a time within a handshake budget. |
+| `tls_policy_test` | Test an endpoint against a catalogued TLS security policy, check by check, or rank every policy by match (`identify`). Verdict `conformant`, `non_conformant` or `inconclusive`. Supports mTLS. |
 | `list_tls_policies` | List the catalogued TLS security policies (AWS load balancers, CloudFront, API Gateway, Mozilla), filtered by provider. No network access. |
 | `show_tls_policy` | Show one catalogued policy: protocols, suites, groups, flags, defaults and source. No network access. |
 | `list_cipher_suites` | List TLS cipher suites from the IANA registry with every notation and property; filter by protocol family or by what the linked OpenSSL can offer. No network access. |

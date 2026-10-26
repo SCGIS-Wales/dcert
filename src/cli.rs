@@ -35,6 +35,10 @@ pub mod exit_code {
     /// `--check-revocation` could not determine the status (responder
     /// unreachable, malformed or unverifiable response).
     pub const REVOCATION_CHECK_FAILED: i32 = 8;
+    /// `dcert policy test`: the endpoint does not behave like the policy.
+    pub const POLICY_NON_CONFORMANT: i32 = 9;
+    /// `dcert policy test --strict`: no check failed but some could not run.
+    pub const POLICY_INCONCLUSIVE: i32 = 10;
 }
 
 // -- Value enums --
@@ -338,6 +342,76 @@ pub enum PolicyMode {
     },
     /// Print the JSON schema of the catalogue file (kb/tls_policies.yaml)
     Schema,
+    /// Test whether an endpoint behaves exactly like a policy, or find the closest one
+    Test(Box<PolicyTestArgs>),
+}
+
+/// `dcert policy test` arguments.
+#[derive(Args, Debug)]
+#[command(after_help = "\x1b[1mExamples:\x1b[0m
+  dcert policy test alb.example.com --policy ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09
+  dcert policy test alb.example.com --policy ELBSecurityPolicy-TLS13-1-3-PQ-2025-09 --versions 1.3
+  dcert policy test alb.example.com --identify
+  dcert policy test legacy.example.com --policy ELBSecurityPolicy-2016-08 --allow-legacy-tls --strict
+
+\x1b[1mExit codes:\x1b[0m 0 conformant (or inconclusive without --strict), 9 non conformant,
+10 inconclusive with --strict, 2 when the endpoint cannot be reached")]
+pub struct PolicyTestArgs {
+    /// HTTPS URL or hostname (host[:port] with --starttls)
+    #[arg(value_parser = validate_target)]
+    pub target: String,
+
+    /// The policy to test against, e.g. ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09
+    #[arg(
+        long,
+        value_name = "ID",
+        required_unless_present = "identify",
+        conflicts_with = "identify"
+    )]
+    pub policy: Option<String>,
+
+    /// The provider, when several publish the policy id (ALB and NLB do); defaults to the first listed
+    #[arg(long, value_enum)]
+    pub provider: Option<crate::tlspolicy::PolicyProvider>,
+
+    /// Test only these protocol versions, comma separated (default: all)
+    #[arg(long, value_enum, value_delimiter = ',', value_name = "VERSIONS")]
+    pub versions: Vec<TlsVersionArg>,
+
+    /// Rank every catalogued policy by how well the endpoint matches it
+    #[arg(long)]
+    pub identify: bool,
+
+    /// Exit 10 when the verdict is inconclusive instead of 0
+    #[arg(long)]
+    pub strict: bool,
+
+    /// Offer TLS 1.0 and 1.1 too, at OpenSSL security level 0; without it
+    /// their checks are not testable
+    #[arg(long)]
+    pub allow_legacy_tls: bool,
+
+    /// Override the SNI hostname
+    #[arg(long)]
+    pub sni: Option<String>,
+
+    /// Negotiate STARTTLS first (mail and FTP servers); the target is host[:port]
+    #[arg(long, value_enum, value_name = "PROTOCOL")]
+    pub starttls: Option<StarttlsProtocol>,
+
+    #[command(flatten)]
+    pub identity: crate::tlsopts::IdentityOptions,
+
+    #[command(flatten)]
+    pub connection: crate::tlsopts::ConnectionOptions,
+
+    /// Output format
+    #[arg(short, long, value_enum, default_value_t = OutputFormat::Pretty)]
+    pub format: OutputFormat,
+
+    /// Print every handshake's OpenSSL details to stderr
+    #[arg(long)]
+    pub debug: bool,
 }
 
 /// `dcert tls-scan` arguments.
