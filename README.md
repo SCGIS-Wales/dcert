@@ -1661,11 +1661,17 @@ server.run()  # stdio mode (default)
 # stdio mode (default, for MCP clients like Claude Code)
 dcert-python
 
-# HTTP mode (binds 127.0.0.1 by default — the proxy has no auth of its own)
+# HTTP and SSE mode refuse to start without authentication: a static bearer
+# token (at least 32 characters) or an OIDC issuer, audience and JWKS URL
+export DCERT_MCP_AUTH_TOKEN="$(openssl rand -hex 32)"
 dcert-python --transport http --port 8080
 
-# Expose on all interfaces only behind a trusted, authenticating gateway
-dcert-python --transport http --host 0.0.0.0 --port 8080
+# On all interfaces, name the Host header values clients will use
+dcert-python --transport http --host 0.0.0.0 --port 8080 --allowed-hosts mcp.example.com
+
+# OIDC access tokens instead of a static token
+DCERT_MCP_OIDC_ISSUER=https://idp.example.com DCERT_MCP_OIDC_AUDIENCE=dcert \
+DCERT_MCP_OIDC_JWKS_URL=https://idp.example.com/keys dcert-python --transport http
 
 # Pre-download binary
 dcert-python --setup

@@ -13,7 +13,10 @@ from dataclasses import replace
 from typing import Literal
 
 import click
+from starlette.middleware import Middleware
 
+from dcert.auth import AuthSettings, HostHeaderGuard, build_auth
+from dcert.auth import allowed_hosts as build_allowed_hosts
 from dcert.binary import find_binary, is_running_script
 from dcert.config import load_config
 from dcert.resilience import OTelConfig, ResilienceConfig
@@ -126,9 +129,47 @@ def run_setup() -> None:
     "--host",
     default=_CONFIG.server.host,
     show_default=True,
+    help="Bind address for HTTP/SSE mode.",
+)
+@click.option(
+    "--auth-token",
+    envvar=_CONFIG.server.auth.token_env,
+    show_envvar=True,
+    default=None,
     help=(
-        "Bind address for HTTP/SSE mode. The proxy has no authentication; "
-        "bind to 0.0.0.0 only behind a trusted gateway."
+        "Static bearer token required by HTTP/SSE mode "
+        f"(at least {_CONFIG.server.auth.min_token_length} characters). "
+        "Prefer the environment variable: a flag value is visible in process listings."
+    ),
+)
+@click.option(
+    "--oidc-issuer",
+    envvar=_CONFIG.server.auth.oidc_issuer_env,
+    show_envvar=True,
+    default=None,
+    help="OIDC issuer (https) whose access tokens HTTP/SSE mode accepts.",
+)
+@click.option(
+    "--oidc-audience",
+    envvar=_CONFIG.server.auth.oidc_audience_env,
+    show_envvar=True,
+    default=None,
+    help="Audience the OIDC access tokens must carry.",
+)
+@click.option(
+    "--oidc-jwks-uri",
+    envvar=_CONFIG.server.auth.oidc_jwks_env,
+    show_envvar=True,
+    default=None,
+    help="JWKS URL (https) with the OIDC signing keys.",
+)
+@click.option(
+    "--allowed-hosts",
+    multiple=True,
+    metavar="HOST[,HOST...]",
+    help=(
+        "Extra Host header values HTTP/SSE mode accepts besides loopback and the "
+        "bind address (repeatable or comma separated)."
     ),
 )
 @click.option(
@@ -172,6 +213,11 @@ def run_setup() -> None:
 def main(
     transport: Transport,
     host: str,
+    auth_token: str | None,
+    oidc_issuer: str | None,
+    oidc_audience: str | None,
+    oidc_jwks_uri: str | None,
+    allowed_hosts: tuple[str, ...],
     port: int,
     binary: str | None,
     setup: bool,
@@ -203,16 +249,35 @@ def main(
     except ValueError as exc:
         raise click.ClickException(f"invalid resilience setting: {exc}") from exc
 
+    auth = None
+    if transport != "stdio":
+        settings = AuthSettings(
+            token=auth_token or None,
+            oidc_issuer=oidc_issuer or None,
+            oidc_audience=oidc_audience or None,
+            oidc_jwks_uri=oidc_jwks_uri or None,
+        )
+        try:
+            auth = build_auth(settings, _CONFIG.server.auth)
+        except ValueError as exc:
+            raise click.ClickException(f"refusing to start: {exc}") from exc
+
     setup_otel(otel_overrides(otel_config_from_env(), otel=otel, otel_exporter=otel_exporter))
     try:
-        server = create_server(binary_path=binary, resilience=resilience)
+        server = create_server(binary_path=binary, resilience=resilience, auth=auth)
     except (FileNotFoundError, RuntimeError) as exc:
         raise click.ClickException(str(exc)) from exc
 
     if transport == "stdio":
         server.run()
     else:
-        server.run(transport=transport, host=host, port=port)
+        hosts = build_allowed_hosts(_CONFIG.server.loopback_hosts, host, allowed_hosts)
+        server.run(
+            transport=transport,
+            host=host,
+            port=port,
+            middleware=[Middleware(HostHeaderGuard, hosts=hosts)],
+        )
 
 
 if __name__ == "__main__":

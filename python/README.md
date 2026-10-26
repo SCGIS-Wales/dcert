@@ -99,12 +99,16 @@ Only transport failures are retried, with exponential backoff and full jitter, a
 
 ```bash
 dcert-python                                   # stdio (for MCP clients such as Claude Code)
-dcert-python --transport http --port 8080      # HTTP; bind 0.0.0.0 only behind a gateway
+dcert-python --transport http --port 8080      # HTTP; needs DCERT_MCP_AUTH_TOKEN or OIDC
 dcert-python --setup                           # download the binary and exit
 dcert-python --binary /usr/local/bin/dcert-mcp # explicit binary
 dcert-python --rate-limit 20 --bulkhead-max 4  # resilience flags
 dcert-python --help                            # every option
 ```
+
+HTTP and SSE mode refuse to start without authentication: a static bearer token of at least 32 characters (`--auth-token` or, better, `DCERT_MCP_AUTH_TOKEN`, compared in constant time) or an OIDC configuration (`--oidc-issuer`, `--oidc-audience`, `--oidc-jwks-uri` or `DCERT_MCP_OIDC_ISSUER`, `DCERT_MCP_OIDC_AUDIENCE`, `DCERT_MCP_OIDC_JWKS_URL`, all https). Requests whose `Host` header is not a loopback name, the bind address or an entry from `--allowed-hosts` are answered 400, which defeats DNS rebinding from a browser.
+
+The proxy forwards only the environment variables listed under `subprocess.passthrough_env` in `config.yaml` to `dcert-mcp`: proxy and CA settings, `TMPDIR`, `XDG_CACHE_HOME`, `DCERT_PROXY`, `DCERT_NOPROXY`, `DCERT_KB_FILE`, every `DCERT_MCP_*` policy variable and the `VAULT_ADDR`, `VAULT_TOKEN`, `VAULT_CACERT`, `VAULT_CAPATH` and `VAULT_SKIP_VERIFY` settings. An entry ending in `*` matches by prefix.
 
 `dcert` and `dcert-mcp` are thin wrappers that exec the Rust binaries with all arguments. A wrapper refuses to run when the only `dcert-mcp` it can find is itself (for example the pip console script on `PATH`), instead of exec-ing in a loop.
 

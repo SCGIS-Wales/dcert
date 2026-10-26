@@ -12,6 +12,7 @@ from collections.abc import Iterable, Mapping
 
 from fastmcp.client.transports import StdioTransport
 from fastmcp.server import create_proxy
+from fastmcp.server.auth import AuthProvider
 from fastmcp.server.providers.proxy import FastMCPProxy
 
 from dcert.binary import find_binary
@@ -31,14 +32,23 @@ def build_subprocess_env(
 ) -> dict[str, str]:
     """Return the environment for the Rust subprocess.
 
-    Only the variables in *passthrough* (default: the configured allow list)
-    are copied from the current process; *extra_env* entries take precedence.
+    Only the variables in *passthrough* (default: the configured allow list,
+    where ``PREFIX*`` matches by prefix) are copied from the current process;
+    *extra_env* entries take precedence.
     """
     names = tuple(passthrough) if passthrough is not None else PASSTHROUGH_ENV_VARS
-    env = {name: os.environ[name] for name in names if name in os.environ}
+    env = {name: value for name, value in os.environ.items() if passthrough_matches(name, names)}
     if extra_env:
         env.update(extra_env)
     return env
+
+
+def passthrough_matches(name: str, patterns: Iterable[str]) -> bool:
+    """Return ``True`` when *name* equals a pattern or has a ``PREFIX*`` pattern's prefix."""
+    return any(
+        name.startswith(pattern[:-1]) if pattern.endswith("*") else name == pattern
+        for pattern in patterns
+    )
 
 
 def create_transport(binary_path: str | None, env: Mapping[str, str] | None) -> StdioTransport:
@@ -52,6 +62,7 @@ def create_server(
     name: str | None = None,
     env: Mapping[str, str] | None = None,
     resilience: ResilienceConfig | None = None,
+    auth: AuthProvider | None = None,
 ) -> FastMCPProxy:
     """Create the FastMCP proxy server with the resilience middleware attached.
 
@@ -60,12 +71,14 @@ def create_server(
         name: Server name advertised over MCP; defaults to the configured name.
         env: Extra environment variables for the subprocess.
         resilience: Resilience settings; read from the environment when ``None``.
+        auth: Authentication for the HTTP and SSE transports (see
+            :func:`dcert.auth.build_auth`); ``None`` for stdio.
 
     Raises:
         FileNotFoundError: If the binary cannot be located.
     """
     transport = create_transport(binary_path, env)
-    server = create_proxy(transport, name=name or load_config().server.name)
+    server = create_proxy(transport, name=name or load_config().server.name, auth=auth)
     for middleware in build_middleware(resilience or resilience_config_from_env()):
         server.add_middleware(middleware)
     return server
