@@ -258,6 +258,10 @@ summary is written.
 
 ### CI
 
+- GitHub releases carry the Python wheels (universal and the four platform
+  wheels) and the sdist, the same files published to PyPI, so dcert installs
+  from the release page without PyPI access. They are covered by
+  `SHA256SUMS`; the release job now waits for the wheel build.
 - The Chocolatey install test picks the newest release that already carries
   the Windows zip, instead of the newest tag, so it no longer fails while a
   release is still uploading its assets.
