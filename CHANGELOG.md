@@ -74,6 +74,13 @@ summary is written.
 
 ### Fixed
 
+- Post quantum reporting on the shipped binaries: the Linux and Docker
+  binary (built against OpenSSL 3.0 headers to keep the Ubuntu 22.04 glibc
+  floor) resolves `SSL_get0_group_name` at run time, so on OpenSSL 3.5 it
+  names `X25519MLKEM768` and `--pq-probe` reports `supported` instead of
+  `key_exchange_class: unknown` and `not_supported`. `dcert --version` also
+  names the build headers when they differ from the loaded library. The
+  debian trixie CI job that proves this is now required.
 - Python package: the downloader writes an install record (package
   version, archive digest, binary digests) and downloads again when the
   package version or embedded checksum changes or an installed binary was

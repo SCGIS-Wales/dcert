@@ -98,9 +98,8 @@ jobs:
   # and the Docker image runs it on debian trixie (OpenSSL 3.5). This job
   # reproduces that pairing against a loopback ML-KEM server and asserts the
   # negotiated group is named.
-  # Tracking: plan PR 2.6 (docs/plans/2026-10-tls-policy-hardening.md) resolves
-  # the group name at runtime. Until it lands the assertion fails, so the
-  # step is allowed to fail; PR 2.6 removes continue-on-error.
+  # The binary resolves SSL_get0_group_name at run time (plan PR 2.6), so
+  # this pairing must name the group; the job is required.
   pq-shipped-binary:
     name: Shipped binary on OpenSSL 3.5 (debian trixie)
     runs-on: ubuntu-22.04
@@ -133,7 +132,6 @@ jobs:
         run: cargo build --release --bin dcert
 
       - name: Probe a loopback ML-KEM server inside debian:trixie
-        continue-on-error: true
         run: |
           docker run --rm \
             -v "$PWD/target/release/dcert:/usr/local/bin/dcert:ro" \

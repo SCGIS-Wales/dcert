@@ -688,7 +688,87 @@ pub fn negotiated_group_name(ssl: &openssl::ssl::SslRef) -> Option<String> {
             return Some(name);
         }
     }
+    #[cfg(all(unix, not(dcert_ossl320)))]
+    {
+        if let Some(name) = runtime_group_name(ssl) {
+            return Some(name);
+        }
+    }
     group_name_from_tmp_key(ssl)
+}
+
+/// `SSL_get0_group_name` from the libssl loaded at run time.
+///
+/// The Linux release binary is built against OpenSSL 3.0 headers (the
+/// ubuntu 22.04 glibc floor) but often runs on OpenSSL 3.5 or later, as in
+/// the Docker image. The symbol is looked up once in the global symbol scope,
+/// so that binary names ML-KEM groups whenever the loaded library can.
+#[cfg(all(unix, not(dcert_ossl320)))]
+#[allow(unsafe_code)] // dlsym and a call through the pointer it returns.
+fn runtime_group_name_fn() -> Option<GroupNameFn> {
+    use std::sync::OnceLock;
+    static FUNC: OnceLock<Option<GroupNameFn>> = OnceLock::new();
+    *FUNC.get_or_init(|| {
+        let sym = lookup_global_symbol(c"SSL_get0_group_name");
+        if sym.is_null() {
+            None
+        } else {
+            // SAFETY: the symbol is OpenSSL's
+            // `const char *SSL_get0_group_name(SSL *s)`, which matches
+            // GroupNameFn.
+            Some(unsafe { std::mem::transmute::<*mut std::ffi::c_void, GroupNameFn>(sym) })
+        }
+    })
+}
+
+/// Address of `name` in the process's global symbol scope, or null.
+#[cfg(all(unix, not(dcert_ossl320)))]
+#[allow(unsafe_code)] // dlsym.
+fn lookup_global_symbol(name: &std::ffi::CStr) -> *mut std::ffi::c_void {
+    unsafe extern "C" {
+        fn dlsym(handle: *mut std::ffi::c_void, symbol: *const std::ffi::c_char) -> *mut std::ffi::c_void;
+    }
+    // RTLD_DEFAULT: null on glibc and musl, (void *)-2 on Apple platforms.
+    #[cfg(target_vendor = "apple")]
+    let default_scope = std::ptr::null_mut::<std::ffi::c_void>().wrapping_sub(2);
+    #[cfg(not(target_vendor = "apple"))]
+    let default_scope = std::ptr::null_mut::<std::ffi::c_void>();
+    // SAFETY: dlsym takes a valid handle (RTLD_DEFAULT) and a NUL terminated
+    // name; it returns null or the symbol's address and has no other effect.
+    unsafe { dlsym(default_scope, name.as_ptr()) }
+}
+
+#[cfg(all(unix, not(dcert_ossl320)))]
+type GroupNameFn = unsafe extern "C" fn(*mut openssl_sys::SSL) -> *const std::ffi::c_char;
+
+#[cfg(all(unix, not(dcert_ossl320)))]
+#[allow(unsafe_code)] // Calls the symbol resolved by runtime_group_name_fn.
+fn runtime_group_name(ssl: &openssl::ssl::SslRef) -> Option<String> {
+    use foreign_types::ForeignTypeRef;
+    let func = runtime_group_name_fn()?;
+    // SAFETY: `ssl.as_ptr()` is a live SSL handle for this borrow; the result
+    // is null or a NUL terminated string owned by the SSL object, copied
+    // before the borrow ends.
+    let ptr = unsafe { func(ssl.as_ptr()) };
+    if ptr.is_null() {
+        return None;
+    }
+    // SAFETY: non null and NUL terminated as documented.
+    let name = unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
+    if name.is_empty() { None } else { Some(name) }
+}
+
+/// Whether the loaded libssl can name the negotiated group: compiled in
+/// (OpenSSL 3.2 headers or later) or found at run time.
+pub fn group_name_available() -> bool {
+    #[cfg(all(unix, not(dcert_ossl320)))]
+    {
+        runtime_group_name_fn().is_some()
+    }
+    #[cfg(not(all(unix, not(dcert_ossl320))))]
+    {
+        cfg!(dcert_ossl320)
+    }
 }
 
 #[cfg(dcert_ossl320)]
@@ -1583,6 +1663,15 @@ fn pq_handshake(req: &PqProbeRequest<'_>, probe: &TlsProbeOptions<'_>) -> Result
 
 #[cfg(test)]
 mod tests {
+
+    /// The run time lookup finds libssl symbols the binary already links,
+    /// which proves it will find SSL_get0_group_name where it exists.
+    #[cfg(all(unix, not(dcert_ossl320)))]
+    #[test]
+    fn global_symbol_lookup_finds_linked_libssl_symbols() {
+        assert!(!super::lookup_global_symbol(c"SSL_get_version").is_null());
+        assert!(super::lookup_global_symbol(c"dcert_no_such_symbol").is_null());
+    }
     use super::{connect_via_override, handshake_verify_error, is_client_auth_required};
     use crate::connect::{OverrideSource, ResolvedOverride};
     use std::time::Duration;
