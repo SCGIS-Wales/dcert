@@ -6,6 +6,23 @@ summary is written.
 
 ## Unreleased
 
+### Added
+
+- A cipher suite model (`src/ciphers.rs`) with one table generated from the
+  IANA TLS Cipher Suites registry: code point, IANA and OpenSSL names,
+  protocol, key exchange, authentication, encryption, MAC and the AEAD,
+  forward secrecy, export, NULL, anonymous and FIPS flags, and the IANA
+  recommended or discouraged status.
+  It parses any notation (`TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256`,
+  `ECDHE-RSA-AES128-GCM-SHA256`, `0xC02F`, `C02F`, `0xC0,0x2F`), suggests
+  near misses for typos, expands OpenSSL keywords such as `ECDHE+AESGCM` and
+  `!aNULL`, and says whether the linked OpenSSL can offer a suite. The CLI
+  flags that use it arrive with PR 4.2.
+- `scripts/gen_cipher_table.py` (click) regenerates the table from the
+  vendored registry in `scripts/data`; its paths and URL live in
+  `scripts/cipher_table.yaml`. A new CI job fails when the table is stale
+  and reports when iana.org has a newer registry.
+
 ### Changed
 
 - One set of TLS and connection options (`src/tlsopts.rs`) is shared by
