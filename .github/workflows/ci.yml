@@ -1189,7 +1189,7 @@ jobs:
   release:
     name: Create GitHub Release
     if: needs.auto-tag.outputs.created == 'true'
-    needs: [ auto-tag, test, security-audit, build-linux, build-macos-intel, build-macos-arm, build-windows, create-homebrew-formula ]
+    needs: [ auto-tag, test, security-audit, build-linux, build-macos-intel, build-macos-arm, build-windows, create-homebrew-formula, python-build, build-platform-wheels ]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -1237,13 +1237,37 @@ jobs:
           name: sbom
           path: ./artifacts/sbom
 
+      # The same wheels and sdist that go to PyPI, attached to the release for
+      # offline and air gapped installs. build-platform-wheels already attests
+      # their provenance.
+      - name: Download universal wheel
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: python-wheel-universal
+          path: ./artifacts/python
+
+      - name: Download platform wheels
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: python-wheels-platform
+          path: ./artifacts/python
+
+      - name: Download source distribution
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: python-sdist
+          path: ./artifacts/python
+
       - name: Prepare release assets
         run: |
           mkdir -p release-assets
           # Copy binary artifacts
-          find artifacts -name "*.tar.gz" -o -name "*.zip" | while read file; do
+          find artifacts -path artifacts/python -prune -o \( -name "*.tar.gz" -o -name "*.zip" \) -print | while read file; do
             cp "$file" release-assets/
           done
+          # Python wheels (universal and per platform) and the sdist
+          ls artifacts/python/*.whl > /dev/null || { echo "::error::no wheels found"; exit 1; }
+          cp artifacts/python/*.whl artifacts/python/*.tar.gz release-assets/
           # Copy Homebrew formula
           cp artifacts/homebrew-formula/dcert.rb release-assets/
           # CycloneDX SBOM of the Rust crate
@@ -1283,6 +1307,12 @@ jobs:
 
           \`\`\`bash
           pip install dcert
+          \`\`\`
+
+          The same wheels are attached to this release for offline installs: \`manylinux_2_35_x86_64\`, \`macosx_10_15_x86_64\`, \`macosx_11_0_arm64\` and \`win_amd64\` bundle the binary; \`py3-none-any\` downloads it on first use.
+
+          \`\`\`bash
+          pip install https://github.com/${REPO}/releases/download/${TAG}/dcert-${TAG#v}-py3-none-manylinux_2_35_x86_64.whl
           \`\`\`
 
           ### Prebuilt binaries
