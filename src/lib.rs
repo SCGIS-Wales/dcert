@@ -13,6 +13,7 @@ pub mod csr;
 pub mod deadline;
 pub mod debug;
 pub mod diagnose;
+pub mod dns;
 pub mod http;
 pub mod kbref;
 pub mod keyex;

@@ -74,6 +74,11 @@ summary is written.
 
 ### Fixed
 
+- DNS: resolution is bounded by the connect timeout, and every resolved
+  address is tried in the resolver's order with the timeout shared between
+  them (at least one second each); a failure lists every address attempted.
+  The probe, the proxy dial and the OCSP client share this, so a dual stack
+  host with one unreachable address no longer fails.
 - Deadlines everywhere: every probe now has one wall clock budget of
   `--timeout` plus `--read-timeout` covering the proxy CONNECT, STARTTLS,
   the TLS handshake and the HTTP exchange, enforced by a watchdog that shuts

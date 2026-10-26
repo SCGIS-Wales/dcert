@@ -2,7 +2,7 @@ use anyhow::Result;
 use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
 use pem_rfc7468::LineEnding;
 use std::io::{Read, Write};
-use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -62,46 +62,16 @@ pub fn load_ca_certs(builder: &mut openssl::ssl::SslConnectorBuilder) -> Result<
     Ok(())
 }
 
-/// Resolve a hostname to a socket address, returning the address and DNS resolution time.
-pub fn resolve_host(host: &str, port: u16) -> Result<(SocketAddr, u128)> {
-    let dns_start = std::time::Instant::now();
-    let addr = format!("{host}:{port}")
-        .to_socket_addrs()
-        .map_err(|e| anyhow::anyhow!("DNS resolution failed for '{host}': {e}"))?
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("DNS resolution failed for '{host}': no addresses returned"))?;
-    let dns_ms = dns_start.elapsed().as_millis();
-    Ok((addr, dns_ms))
-}
-
-/// Establish a direct TCP connection with timeout and DNS resolution.
-/// Returns the stream, DNS latency in milliseconds, and the resolved socket address.
+/// Establish a direct TCP connection: resolve within `timeout`, then try
+/// every address in order (see [`crate::dns`]). Returns the stream, DNS
+/// latency in milliseconds, and the address actually reached.
 pub fn direct_tcp_connect(host: &str, port: u16, timeout: Duration) -> Result<(TcpStream, u128, SocketAddr)> {
-    let (socket_addr, dns_ms) = resolve_host(host, port)?;
+    let (addrs, dns_ms) = crate::dns::resolve_all(host, port, timeout)?;
     // The destination policy is enforced on the address actually dialled, so
     // a name that resolves somewhere else the second time is still refused.
-    crate::netpolicy::enforce_addr(host, &socket_addr)?;
-
-    let stream = TcpStream::connect_timeout(&socket_addr, timeout).map_err(|e| {
-        let kind = e.kind();
-        match kind {
-            std::io::ErrorKind::TimedOut => {
-                anyhow::anyhow!(
-                    "TCP connection to {}:{} timed out after {}s",
-                    host,
-                    port,
-                    timeout.as_secs()
-                )
-            }
-            std::io::ErrorKind::ConnectionRefused => {
-                anyhow::anyhow!("TCP connection refused by {host}:{port} (port may not be open)")
-            }
-            _ => {
-                anyhow::anyhow!("TCP connection to {host}:{port} failed: {e}")
-            }
-        }
-    })?;
-    Ok((stream, dns_ms, socket_addr))
+    let (stream, addr) =
+        crate::dns::connect_first(host, port, &addrs, timeout, |a| crate::netpolicy::enforce_addr(host, a))?;
+    Ok((stream, dns_ms, addr))
 }
 
 /// Dial the target of a `--resolve` / `--connect-to` override.

@@ -338,3 +338,29 @@ fn https_proxy_from_the_environment_gets_no_plaintext_connect() {
         );
     }
 }
+
+// ---------------------------------------------------------------
+// Plan PR 2.2: every resolved address is tried
+// ---------------------------------------------------------------
+
+#[test]
+fn localhost_reaches_an_ipv4_only_server_even_when_ipv6_resolves_first() {
+    // The harness binds 127.0.0.1 only. Where localhost resolves to ::1
+    // first, taking only the first address used to fail the probe.
+    let server = TlsServer::builder().spawn();
+    let output = dcert_bin()
+        .args([
+            &format!("https://localhost:{}", server.port()),
+            "--no-verify",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("failed to run dcert");
+    let parsed = json_output(&output);
+    assert_eq!(
+        parsed["connection"]["peer_address"],
+        format!("127.0.0.1:{}", server.port()),
+        "{parsed}"
+    );
+}
