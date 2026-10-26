@@ -129,9 +129,6 @@ def classify(code: int, iana: str, openssl: str | None, status: str = "N") -> Ro
     pfs = protocol == "tls13" or kx in {"ECDHE", "DHE"}
     fips = enc.startswith("AES_") and aead and "CCM_8" not in enc
     fips = fips and (protocol == "tls13" or (kx in FIPS_KX and au in FIPS_AU))
-    if openssl is None and protocol == "tls13":
-        # OpenSSL names TLS 1.3 suites by their standard names.
-        openssl = iana
     return Row(
         code=code,
         iana=iana,
@@ -300,13 +297,26 @@ def fetch(check: bool, print_copy: bool) -> None:
 @click.option("--names", type=click.Path(path_type=Path), default=None)
 def openssl_names(names: Path | None) -> None:
     """Refresh the IANA to OpenSSL name mapping from the linked OpenSSL."""
-    names = names or load_config()["openssl_names"]
+    config = load_config()
+    names = names or config["openssl_names"]
+    registry = parse_registry(config["iana_csv"].read_text(encoding="utf-8"), {})
+    # OpenSSL lists the TLS 1.3 suites it implements among those offered
+    # here and skips the rest; it names them by their standard names.
+    tls13 = ":".join(r.iana for r in registry if r.protocol == "tls13")
     openssl = shutil.which("openssl")
     if openssl is None:
         raise click.ClickException("openssl is not on PATH")
     # Fixed arguments and a resolved executable: nothing here is user input.
     listing = subprocess.run(  # noqa: S603
-        [openssl, "ciphers", "-V", "-stdname", "ALL:COMPLEMENTOFALL:@SECLEVEL=0"],
+        [
+            openssl,
+            "ciphers",
+            "-V",
+            "-stdname",
+            "-ciphersuites",
+            tls13,
+            "ALL:COMPLEMENTOFALL:@SECLEVEL=0",
+        ],
         check=True,
         capture_output=True,
         text=True,

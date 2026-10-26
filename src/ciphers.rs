@@ -485,6 +485,15 @@ mod tests {
     }
 
     #[test]
+    fn tls13_suites_openssl_lacks_have_no_openssl_name() {
+        // RFC 9150 era AEGIS suites are registered but not implemented by OpenSSL.
+        let aegis = Cipher::parse("TLS_AEGIS_256_SHA512").unwrap();
+        assert_eq!((aegis.protocol, aegis.openssl), (Protocol::Tls13, None));
+        assert!(!aegis.offerable());
+        assert_eq!(Cipher::parse("1304").unwrap().openssl, Some("TLS_AES_128_CCM_SHA256"));
+    }
+
+    #[test]
     fn unknown_names_suggest_near_misses() {
         let err = Cipher::parse("ECDHE-RSA-AES128-GCM-SHA265").unwrap_err();
         let CipherParseError::Unknown { suggestions, .. } = &err else {

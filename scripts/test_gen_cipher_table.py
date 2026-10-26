@@ -57,9 +57,11 @@ def test_ccm_suites_keep_their_mode() -> None:
     assert (ccm8.enc, ccm8.mac, ccm8.fips) == ("AES_128_CCM_8", "AEAD", False)
 
 
-def test_tls13_suites_use_their_standard_name_in_openssl() -> None:
+def test_tls13_suites_take_their_openssl_name_from_the_mapping_only() -> None:
     r = rows()["TLS_AES_128_CCM_SHA256"]
-    assert (r.protocol, r.openssl) == ("tls13", "TLS_AES_128_CCM_SHA256")
+    assert (r.protocol, r.openssl) == ("tls13", None)
+    named = gen.parse_registry(SAMPLE, {"TLS_AES_128_CCM_SHA256": "TLS_AES_128_CCM_SHA256"})
+    assert {x.iana: x.openssl for x in named}["TLS_AES_128_CCM_SHA256"] == "TLS_AES_128_CCM_SHA256"
     assert (r.kx, r.mac) == ("any", "AEAD")
     assert r.pfs
     assert r.fips
