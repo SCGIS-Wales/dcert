@@ -62,12 +62,15 @@ binaries:
 # One row per supported platform. "system" and "machine" are the lower-cased
 # values of platform.system() and platform.machine(); "wheel_tag" is used by
 # scripts/build_wheels.py to tag the platform wheel built from the archive.
+# The Linux tag is the newest glibc the binaries reference (GLIBC_2.34 from
+# the Ubuntu 22.04 build, so RHEL 9 and its rebuilds qualify);
+# build_wheels.py refuses a tag older than what the binaries need.
 platforms:
   - system: linux
     machine: x86_64
     triple: x86_64-unknown-linux-gnu
     archive_extension: tar.gz
-    wheel_tag: manylinux_2_35_x86_64
+    wheel_tag: manylinux_2_34_x86_64
   - system: darwin
     machine: x86_64
     triple: x86_64-apple-darwin

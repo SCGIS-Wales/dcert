@@ -11,7 +11,7 @@ The package uses [FastMCP](https://github.com/PrefectHQ/fastmcp) to run a transp
 ## Requirements
 
 - Python 3.12 or later
-- The `dcert-mcp` Rust binary. Platform wheels bundle it; the universal wheel downloads it on first use after verifying its SHA256 checksum.
+- The `dcert-mcp` Rust binary. Every published wheel bundles it, together with `dcert`.
 
 ## Installation
 
@@ -19,7 +19,7 @@ The package uses [FastMCP](https://github.com/PrefectHQ/fastmcp) to run a transp
 pip install dcert
 ```
 
-Platform wheels exist for Linux x86_64 (glibc 2.35 or later), macOS Intel, macOS Apple Silicon and Windows x86_64. The universal wheel works everywhere else that a release archive exists for.
+Wheels exist for Linux x86_64 (glibc 2.34 or later: RHEL 9, Ubuntu 22.04, Debian 12 and later), macOS Intel, macOS Apple Silicon and Windows x86_64. Only these platform wheels are published, to PyPI and to each GitHub release, so an install from PyPI, a private mirror or a downloaded wheel never fetches anything from GitHub. On any other platform pip reports "no matching distribution"; build the binaries from source and point `DCERT_MCP_BINARY` and `DCERT_PATH` at them.
 
 ## Quick start
 
@@ -134,7 +134,7 @@ The proxy reads each tool's MCP annotations before applying caching or retries:
 1. `DCERT_MCP_BINARY` (or `DCERT_PATH` for the `dcert` CLI); a relative path is resolved against the working directory, never through `PATH`
 2. The bundled binary in the package `bin/` directory
 3. A compiled `dcert-mcp` on `PATH` (pip console script wrappers and the running launcher are skipped)
-4. Download from GitHub Releases: https only, redirects restricted to GitHub hosts, size and time capped, SHA256 verified before extraction, installed atomically under a lock
+4. Download from GitHub Releases, only when none of the above found a binary (a source checkout or a locally built wheel; never with a published wheel): https only, redirects restricted to GitHub hosts, size and time capped, SHA256 verified before extraction, installed atomically under a lock
 
 An install record beside the binaries (`.install-record.json`: package version, archive digest and each binary's digest) makes a later run download again when the package version changes, the embedded checksum changes or an installed binary was modified. The install directory is created with mode `0700`.
 
