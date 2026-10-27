@@ -258,6 +258,17 @@ summary is written.
 
 ### CI
 
+- Only the platform wheels, each bundling `dcert` and `dcert-mcp`, are
+  published to PyPI and attached to GitHub releases. The universal wheel and
+  the sdist carried no binary and downloaded it from GitHub on first use,
+  which fails in locked down networks; pip now reports "no matching
+  distribution" on an unsupported host instead. The release notes list the
+  wheel for each platform.
+- The Linux wheel is tagged `manylinux_2_34_x86_64` (was `manylinux_2_35`):
+  the binaries need glibc 2.34, so RHEL 9 and its rebuilds now get the
+  binary wheel instead of falling back. `build_wheels.py` reads the newest
+  `GLIBC_` symbol version from each Linux binary and refuses a tag that
+  promises less.
 - GitHub releases carry the Python wheels (universal and the four platform
   wheels) and the sdist, the same files published to PyPI, so dcert installs
   from the release page without PyPI access. They are covered by

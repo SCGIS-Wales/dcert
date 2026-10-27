@@ -428,19 +428,14 @@ jobs:
       - name: Install build tools
         run: pip install build twine
 
-      # Builds both the sdist and the wheel. The sdist was previously built
-      # and then thrown away, so nothing but wheels reached PyPI.
+      # Builds the sdist and the universal wheel and checks their metadata.
+      # Neither is published: they carry no binaries, so only the platform
+      # wheels from build-platform-wheels reach PyPI and the release.
       - name: Build package
         run: python -m build
 
       - name: Check package
         run: twine check dist/*
-
-      - name: Upload source distribution
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: python-sdist
-          path: python/dist/*.tar.gz
 
   # Integration tests: build the Rust binary and run Python integration tests
   # against the real dcert-mcp binary
@@ -919,15 +914,7 @@ jobs:
         if: needs.auto-tag.outputs.created == 'true'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: |
-            python/dist/*.whl
-            python/platform-dist/*.whl
-
-      - name: Upload universal wheel
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: python-wheel-universal
-          path: python/dist/*.whl
+          subject-path: python/platform-dist/*.whl
 
       - name: Upload platform wheels
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -1237,25 +1224,14 @@ jobs:
           name: sbom
           path: ./artifacts/sbom
 
-      # The same wheels and sdist that go to PyPI, attached to the release for
-      # offline and air gapped installs. build-platform-wheels already attests
-      # their provenance.
-      - name: Download universal wheel
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: python-wheel-universal
-          path: ./artifacts/python
-
+      # The platform wheels, the only Python distributions published: each
+      # bundles the binaries, so an install never downloads from GitHub
+      # (blocked in locked down networks). build-platform-wheels already
+      # attests their provenance.
       - name: Download platform wheels
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: python-wheels-platform
-          path: ./artifacts/python
-
-      - name: Download source distribution
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: python-sdist
           path: ./artifacts/python
 
       - name: Prepare release assets
@@ -1265,9 +1241,12 @@ jobs:
           find artifacts -path artifacts/python -prune -o \( -name "*.tar.gz" -o -name "*.zip" \) -print | while read file; do
             cp "$file" release-assets/
           done
-          # Python wheels (universal and per platform) and the sdist
+          # Python platform wheels, each carrying dcert and dcert-mcp
           ls artifacts/python/*.whl > /dev/null || { echo "::error::no wheels found"; exit 1; }
-          cp artifacts/python/*.whl artifacts/python/*.tar.gz release-assets/
+          if ls artifacts/python/*-none-any.whl > /dev/null 2>&1; then
+            echo "::error::a wheel without the binaries reached the release"; exit 1
+          fi
+          cp artifacts/python/*.whl release-assets/
           # Copy Homebrew formula
           cp artifacts/homebrew-formula/dcert.rb release-assets/
           # CycloneDX SBOM of the Rust crate
@@ -1303,21 +1282,26 @@ jobs:
 
           ### Python (pip)
 
-          Platform-specific wheels bundle the binary — no network access needed at runtime:
-
           \`\`\`bash
           pip install dcert
           \`\`\`
 
-          The same wheels are attached to this release for offline installs: \`manylinux_2_35_x86_64\`, \`macosx_10_15_x86_64\`, \`macosx_11_0_arm64\` and \`win_amd64\` bundle the binary; \`py3-none-any\` downloads it on first use.
+          Every wheel bundles \`dcert\` and \`dcert-mcp\`, so nothing is downloaded at install or run time. The same wheels are attached to this release for offline and mirror installs:
+
+          | Platform | Wheel |
+          | --- | --- |
+          | Linux x86_64 (glibc 2.34+: RHEL 9, Ubuntu 22.04, Debian 12 and later) | \`dcert-${TAG#v}-py3-none-manylinux_2_34_x86_64.whl\` |
+          | macOS Intel (10.15+) | \`dcert-${TAG#v}-py3-none-macosx_10_15_x86_64.whl\` |
+          | macOS Apple Silicon (11+) | \`dcert-${TAG#v}-py3-none-macosx_11_0_arm64.whl\` |
+          | Windows x86_64 | \`dcert-${TAG#v}-py3-none-win_amd64.whl\` |
 
           \`\`\`bash
-          pip install https://github.com/${REPO}/releases/download/${TAG}/dcert-${TAG#v}-py3-none-manylinux_2_35_x86_64.whl
+          pip install dcert-${TAG#v}-py3-none-manylinux_2_34_x86_64.whl
           \`\`\`
 
           ### Prebuilt binaries
 
-          Prebuilt Linux binaries require **Ubuntu 22.04** (glibc 2.35) or later.
+          Prebuilt Linux binaries need glibc 2.34 and OpenSSL 3: **RHEL 9**, **Ubuntu 22.04**, **Debian 12** or later.
 
           \`\`\`bash
           # macOS (Intel)
@@ -1661,26 +1645,22 @@ jobs:
       name: pypi
       url: https://pypi.org/project/dcert/
     steps:
-      - name: Download universal wheel
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: python-wheel-universal
-          path: dist/
-
+      # Only the platform wheels: each bundles the binaries. Without a
+      # universal wheel or an sdist, pip on a host no platform wheel fits
+      # fails with "no matching distribution" instead of installing a package
+      # that must download the binary from GitHub at run time.
       - name: Download platform wheels
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: python-wheels-platform
           path: dist/
 
-      - name: Download source distribution
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: python-sdist
-          path: dist/
-
       - name: List distributions to publish
-        run: ls -la dist/
+        run: |
+          ls -la dist/
+          if ls dist/*-none-any.whl dist/*.tar.gz > /dev/null 2>&1; then
+            echo "::error::only platform wheels with bundled binaries are published"; exit 1
+          fi
 
       # PyPI publishing occasionally fails on transient upstream errors — most
       # often a 5xx from the Sigstore Rekor transparency log while generating

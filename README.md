@@ -1781,7 +1781,16 @@ done
 
 ## Python Package
 
-A Python wrapper is available on PyPI, providing a FastMCP proxy around the `dcert-mcp` Rust binary. The Rust binary is **automatically downloaded** on first use with SHA256 checksum verification.
+A Python wrapper is available on PyPI, providing a FastMCP proxy around the `dcert-mcp` Rust binary. Each wheel bundles `dcert` and `dcert-mcp` for its platform, so installing from PyPI or a private mirror (Artifactory, Nexus) needs no access to GitHub.
+
+| Platform | Wheel tag |
+| --- | --- |
+| Linux x86_64, glibc 2.34+ (RHEL 9, Ubuntu 22.04, Debian 12 and later) | `manylinux_2_34_x86_64` |
+| macOS Intel 10.15+ | `macosx_10_15_x86_64` |
+| macOS Apple Silicon 11+ | `macosx_11_0_arm64` |
+| Windows x86_64 | `win_amd64` |
+
+The same wheels are attached to every GitHub release. On a host no wheel fits, pip reports "no matching distribution" rather than installing a package without the binary.
 
 ```bash
 pip install dcert
@@ -1824,7 +1833,7 @@ The Python package locates the `dcert-mcp` binary in this order:
 
 1. `DCERT_MCP_BINARY` environment variable
 2. Bundled binary in the package `bin/` directory
-3. Auto-download from GitHub Releases (with SHA256 checksum verification)
+3. Download from GitHub Releases with SHA256 verification, only when no binary was found above (for example a source checkout); never needed with a published wheel
 4. `dcert-mcp` on `PATH`
 
 See the [Python package README](python/README.md) for full documentation.

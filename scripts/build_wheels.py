@@ -25,6 +25,7 @@ import glob
 import hashlib
 import importlib.util
 import logging
+import re
 import sys
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
@@ -65,6 +66,46 @@ BINARY_NAMES: tuple[str, ...] = ("dcert", "dcert-mcp", "dcert.exe", "dcert-mcp.e
 PLATFORM_MAP: dict[str, str] = {
     archive_name_for(row): row.wheel_tag for row in load_config().platforms
 }
+
+
+#: A glibc symbol version an ELF binary links against, such as ``GLIBC_2.34``.
+GLIBC_VERSION = re.compile(rb"GLIBC_(\d+)\.(\d+)")
+
+#: The glibc version a ``manylinux_X_Y_<arch>`` wheel tag promises.
+MANYLINUX_TAG = re.compile(r"^manylinux_(\d+)_(\d+)_")
+
+
+def required_glibc(binary: bytes) -> tuple[int, int] | None:
+    """Return the newest glibc symbol version *binary* references, if any.
+
+    The version names of an ELF binary's needed symbols are stored in its
+    dynamic string table, so a scan of the bytes finds them without an ELF
+    parser. Non ELF binaries (macOS, Windows) reference none.
+    """
+    return max(((int(m[1]), int(m[2])) for m in GLIBC_VERSION.finditer(binary)), default=None)
+
+
+def check_platform_tag(platform_tag: str, binaries: dict[str, bytes]) -> None:
+    """Refuse a ``manylinux`` tag that promises an older glibc than a binary needs.
+
+    pip would install such a wheel on hosts where the binary cannot start.
+
+    Raises:
+        RuntimeError: If a binary references a newer glibc than the tag.
+    """
+    match = MANYLINUX_TAG.match(platform_tag)
+    if match is None:
+        return
+    promised = (int(match[1]), int(match[2]))
+    for name, data in sorted(binaries.items()):
+        needed = required_glibc(data)
+        if needed is not None and needed > promised:
+            raise RuntimeError(
+                f"{name} needs glibc {needed[0]}.{needed[1]} but the wheel tag {platform_tag} "
+                f"promises {promised[0]}.{promised[1]}; raise wheel_tag in config.yaml"
+            )
+        if needed is not None:
+            logger.info("%s needs glibc %d.%d (tag %s)", name, *needed, platform_tag)
 
 
 def archive_name_for_host(system: str, machine: str) -> str | None:
@@ -116,7 +157,8 @@ def build_platform_wheel(
         Path to the new wheel.
 
     Raises:
-        RuntimeError: If ``dcert-mcp`` is not present in the archive.
+        RuntimeError: If ``dcert-mcp`` is not present in the archive, or a
+            binary needs a newer glibc than a ``manylinux`` tag promises.
     """
     name, version = parse_wheel_filename(source_wheel)
     dist_info = f"{name}-{version}.dist-info"
@@ -125,6 +167,7 @@ def build_platform_wheel(
     binaries = extract_binaries_from_archive(archive)
     if not {"dcert-mcp", "dcert-mcp.exe"} & binaries.keys():
         raise RuntimeError(f"dcert-mcp binary not found in {archive.name}")
+    check_platform_tag(platform_tag, binaries)
 
     records: list[str] = []
     with ZipFile(source_wheel, "r") as src, ZipFile(out_path, "w", ZIP_DEFLATED) as dst:

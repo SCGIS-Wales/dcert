@@ -14,10 +14,12 @@ from build_wheels import (
     archive_name_for_host,
     build_all,
     build_platform_wheel,
+    check_platform_tag,
     extract_binaries_from_archive,
     main,
     parse_wheel_filename,
     record_entry,
+    required_glibc,
     resolve_wheel,
 )
 
@@ -109,7 +111,7 @@ def test_parse_wheel_filename():
 
 def test_platform_map_from_config():
     assert PLATFORM_MAP == {
-        "dcert-x86_64-unknown-linux-gnu.tar.gz": "manylinux_2_35_x86_64",
+        "dcert-x86_64-unknown-linux-gnu.tar.gz": "manylinux_2_34_x86_64",
         "dcert-x86_64-apple-darwin.tar.gz": "macosx_10_15_x86_64",
         "dcert-aarch64-apple-darwin.tar.gz": "macosx_11_0_arm64",
         "dcert-x86_64-pc-windows-msvc.zip": "win_amd64",
@@ -205,6 +207,33 @@ def test_missing_dcert_mcp_raises(universal_wheel: Path, output_dir: Path, tmp_p
         build_platform_wheel(universal_wheel, archive, "macosx_11_0_arm64", output_dir)
 
 
+def test_required_glibc_reads_the_newest_symbol_version():
+    elf = b"\x7fELF...GLIBC_2.2.5\x00GLIBC_2.34\x00GLIBC_2.17\x00GLIBC_PRIVATE\x00"
+    assert required_glibc(elf) == (2, 34)
+    assert required_glibc(b"MZ\x90\x00no glibc here") is None
+
+
+def test_check_platform_tag_refuses_a_tag_older_than_the_binary():
+    binaries = {"dcert": b"GLIBC_2.34\x00", "dcert-mcp": b"GLIBC_2.35\x00"}
+    with pytest.raises(RuntimeError, match="dcert-mcp needs glibc 2.35 but the wheel tag"):
+        check_platform_tag("manylinux_2_34_x86_64", binaries)
+    check_platform_tag("manylinux_2_35_x86_64", binaries)
+    # Only manylinux tags make a glibc promise.
+    check_platform_tag("macosx_11_0_arm64", binaries)
+
+
+def test_build_refuses_a_linux_binary_newer_than_its_tag(
+    universal_wheel: Path, output_dir: Path, tmp_path: Path
+):
+    archive = make_tar_archive(
+        tmp_path / "archives" / "new.tar.gz",
+        {"dcert": b"\x7fELF GLIBC_2.39", "dcert-mcp": b"\x7fELF GLIBC_2.39"},
+    )
+    with pytest.raises(RuntimeError, match="needs glibc 2.39"):
+        build_platform_wheel(universal_wheel, archive, "manylinux_2_34_x86_64", output_dir)
+    assert not list(output_dir.glob("*.whl"))
+
+
 # -- build_all ---------------------------------------------------------------
 
 
@@ -258,7 +287,7 @@ def test_main_batch_mode(universal_wheel: Path, output_dir: Path, tmp_path: Path
         str(output_dir),
     ]
     assert main(argv) == 0
-    assert list(output_dir.glob("*manylinux_2_35_x86_64.whl"))
+    assert list(output_dir.glob("*manylinux_2_34_x86_64.whl"))
 
 
 def test_main_single_mode(universal_wheel: Path, tar_archive: Path, output_dir: Path):
