@@ -13,6 +13,7 @@ use crate::cli::{CheckArgs, CipherNotation, HttpProtocol, OutputFormat, SortOrde
 use crate::compliance::{self, ChainComplianceReport, Severity};
 use crate::convert::{CertRole, ConvertResult, write_public_file};
 use crate::debug::debug_log;
+use crate::debug::display_safe;
 use crate::diagnose::{Diagnosis, PlatformHint};
 use crate::keyex::{self, KeyExchangeClass, PqProbeStatus};
 use crate::mtls::ClientAuthStatus;
@@ -74,7 +75,7 @@ fn print_acceptable_cas(conn: &TlsConnectionInfo) {
     } else {
         println!("  Client certificates must be issued by one of:");
         for ca in &conn.acceptable_client_cas {
-            println!("    - {ca}");
+            println!("    - {}", display_safe(ca));
         }
     }
 }
@@ -211,10 +212,10 @@ HTTP status line (not the full response body)."
         println!("{}", "Certificate".bold());
         println!("  Index        : {}", info.index);
         if let Some(cn) = &info.common_name {
-            println!("  Common Name  : {cn}");
+            println!("  Common Name  : {}", display_safe(cn));
         }
-        println!("  Subject      : {}", info.subject);
-        println!("  Issuer       : {}", info.issuer);
+        println!("  Subject      : {}", display_safe(&info.subject));
+        println!("  Issuer       : {}", display_safe(&info.issuer));
         println!("  Serial       : {}", info.serial_number);
         println!("  Not Before   : {}", info.not_before);
         println!("  Not After    : {}", info.not_after);
@@ -222,7 +223,7 @@ HTTP status line (not the full response body)."
         if !info.subject_alternative_names.is_empty() {
             println!("  SANs         :");
             for san in &info.subject_alternative_names {
-                println!("    - {san}");
+                println!("    - {}", display_safe(san));
             }
         }
 
@@ -329,6 +330,21 @@ pub fn print_root_trust_pretty(trust: &RootTrustInfo) {
 
 pub fn cert_matches_hostname(cert: &CertInfo, host: &str) -> bool {
     let host = host.trim().to_lowercase();
+
+    // An IP literal (bracketed when it came from a URL) matches an IP SAN.
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(&host);
+    if let Ok(ip) = bare.parse::<std::net::IpAddr>()
+        && cert
+            .subject_alternative_names
+            .iter()
+            .filter_map(|san| san.strip_prefix("IP:"))
+            .any(|san| san.trim().parse::<std::net::IpAddr>() == Ok(ip))
+    {
+        return true;
+    }
 
     // Helper for wildcard matching
     fn matches_wildcard(pattern: &str, hostname: &str) -> bool {
@@ -1209,6 +1225,16 @@ mod tests {
         assert!(cert_matches_hostname(&cert, "api.example.com"));
         assert!(cert_matches_hostname(&cert, "www.example.com"));
         assert!(!cert_matches_hostname(&cert, "other.example.com"));
+    }
+
+    #[test]
+    fn test_hostname_ip_literal_matches_ip_san() {
+        let cert = make_test_cert(None, vec!["IP:192.0.2.7", "IP:2001:db8::1"]);
+        assert!(cert_matches_hostname(&cert, "192.0.2.7"));
+        assert!(cert_matches_hostname(&cert, "[2001:db8::1]"));
+        assert!(cert_matches_hostname(&cert, "2001:DB8:0::1"));
+        assert!(!cert_matches_hostname(&cert, "192.0.2.8"));
+        assert!(!cert_matches_hostname(&cert, "[2001:db8::2]"));
     }
 
     #[test]

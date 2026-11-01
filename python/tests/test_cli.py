@@ -97,7 +97,7 @@ def test_stdio_transport(runner, fake_binary, isolated_env):
         result = runner.invoke(main, ["--binary", fake_binary])
     assert result.exit_code == 0, result.output
     create.assert_called_once_with(
-        binary_path=fake_binary, resilience=resilience_config_from_env(), auth=None
+        binary_path=fake_binary, env={}, resilience=resilience_config_from_env(), auth=None
     )
     server.run.assert_called_once_with()
 
@@ -121,6 +121,27 @@ def test_http_transport(runner, fake_binary, isolated_env, monkeypatch):
     (guard,) = kwargs["middleware"]
     assert guard.cls is HostHeaderGuard
     assert guard.kwargs["hosts"] == frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def test_network_transports_deny_private_targets_in_the_child(
+    runner, fake_binary, isolated_env, monkeypatch
+):
+    monkeypatch.setenv(cli._CONFIG.server.auth.token_env, TOKEN)
+    monkeypatch.delenv(cli.DENY_PRIVATE_TARGETS_ENV, raising=False)
+    for transport in ("http", "sse"):
+        with patch("dcert.server.create_server", return_value=MagicMock()) as create:
+            result = runner.invoke(main, ["--binary", fake_binary, "--transport", transport])
+        assert result.exit_code == 0, result.output
+        assert create.call_args.kwargs["env"] == {cli.DENY_PRIVATE_TARGETS_ENV: "1"}
+
+
+def test_operator_choice_of_private_targets_is_kept(runner, fake_binary, isolated_env, monkeypatch):
+    monkeypatch.setenv(cli._CONFIG.server.auth.token_env, TOKEN)
+    monkeypatch.setenv(cli.DENY_PRIVATE_TARGETS_ENV, "0")
+    with patch("dcert.server.create_server", return_value=MagicMock()) as create:
+        result = runner.invoke(main, ["--binary", fake_binary, "--transport", "http"])
+    assert result.exit_code == 0, result.output
+    assert create.call_args.kwargs["env"] == {}
 
 
 def test_defaults_come_from_config(runner, fake_binary, isolated_env):

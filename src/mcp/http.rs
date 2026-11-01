@@ -182,16 +182,24 @@ pub(crate) async fn addr_is_loopback_async(addr: &str) -> bool {
 }
 
 /// Build OIDC validator from environment variables (if configured).
-pub(crate) fn build_oidc_validator() -> Option<security::oidc::OidcValidator> {
-    let issuer = std::env::var("DCERT_MCP_OIDC_ISSUER").ok().filter(|s| !s.is_empty())?;
+///
+/// `Ok(None)` when no issuer is set. An issuer with a missing audience or a
+/// validator that cannot be built is an error rather than OIDC quietly
+/// switched off: on a loopback bind behind a reverse proxy that would leave
+/// the server unauthenticated, or on a weaker static token, because of a typo.
+pub(crate) fn build_oidc_validator() -> Result<Option<security::oidc::OidcValidator>, String> {
+    let Some(issuer) = std::env::var("DCERT_MCP_OIDC_ISSUER").ok().filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
     let audience = std::env::var("DCERT_MCP_OIDC_AUDIENCE")
         .ok()
         .filter(|s| !s.is_empty())
         .unwrap_or_default();
 
     if audience.is_empty() {
-        tracing::error!("DCERT_MCP_OIDC_ISSUER is set but DCERT_MCP_OIDC_AUDIENCE is missing; OIDC is disabled");
-        return None;
+        return Err(
+            "refusing to start: DCERT_MCP_OIDC_ISSUER is set but DCERT_MCP_OIDC_AUDIENCE is missing".to_string(),
+        );
     }
 
     let csv = |name: &str| -> Vec<String> {
@@ -215,13 +223,9 @@ pub(crate) fn build_oidc_validator() -> Option<security::oidc::OidcValidator> {
         allowed_client_ids: csv("DCERT_MCP_ALLOWED_CLIENTS"),
     };
 
-    match security::oidc::OidcValidator::new(config) {
-        Ok(v) => Some(v),
-        Err(e) => {
-            tracing::error!(error = %e, "failed to create OIDC validator; OIDC is disabled");
-            None
-        }
-    }
+    security::oidc::OidcValidator::new(config)
+        .map(Some)
+        .map_err(|e| format!("refusing to start: cannot configure OIDC: {e}"))
 }
 
 /// Health check endpoint. Deliberately outside the authentication layer so
@@ -259,7 +263,7 @@ pub(crate) async fn run_http_mode(config: McpConfig, addr: &str) -> Result<(), B
     log_startup_diagnostics(&config);
 
     // Build auth state from environment variables.
-    let oidc_validator = build_oidc_validator();
+    let oidc_validator = build_oidc_validator()?;
     let static_token = std::env::var("DCERT_MCP_AUTH_TOKEN").ok().filter(|s| !s.is_empty());
 
     let auth_configured = oidc_validator.is_some() || static_token.is_some();

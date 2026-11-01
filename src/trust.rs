@@ -453,10 +453,16 @@ const ISSUER_MAX_REDIRECTS: usize = 2;
 /// Build a blocking HTTP client whose proxy behaviour mirrors dcert's
 /// [`ProxyConfig`] and whose connect and read timeout is the short issuer
 /// timeout.
-fn http_client(proxy: &ProxyConfig, timeout: Duration, max_redirects: usize) -> Result<reqwest::blocking::Client> {
+fn http_client(
+    proxy: &ProxyConfig,
+    timeout: Duration,
+    max_redirects: usize,
+    pinned: Option<&crate::netpolicy::PinnedHost>,
+) -> Result<reqwest::blocking::Client> {
     crate::http::blocking_client(&crate::http::HttpClientOptions {
         timeout: Some(timeout),
         proxy: Some(proxy),
+        pinned,
         // AIA endpoints occasionally redirect http to https; anything longer
         // is not a CA repository, and an unbounded chain would let a hostile
         // issuer URL walk the client around arbitrary hosts.
@@ -475,12 +481,13 @@ fn http_client(proxy: &ProxyConfig, timeout: Duration, max_redirects: usize) -> 
 /// The destination policy (`DCERT_ALLOWED_TARGETS`, `DCERT_DENY_PRIVATE_TARGETS`,
 /// set by the MCP server for its child) still applies, and while it
 /// restricts anything redirects are not followed, since a redirect would
-/// reach a host that was never checked.
+/// reach a host that was never checked. The client is pinned to the
+/// addresses the policy checked, so a second lookup cannot rebind the name.
 fn fetch_issuer(url: &str, opts: &TrustOpts, proxy: &ProxyConfig) -> Result<Vec<u8>> {
-    crate::netpolicy::enforce_url(url)?;
+    let pinned = crate::netpolicy::enforce_url_pinned(url, opts.issuer_timeout)?;
     let restricted = crate::netpolicy::cli_policy().map_or(true, |p| !p.is_open());
     let redirects = if restricted { 0 } else { ISSUER_MAX_REDIRECTS };
-    let client = http_client(proxy, opts.issuer_timeout, redirects)?;
+    let client = http_client(proxy, opts.issuer_timeout, redirects, pinned.as_ref())?;
     let resp = client
         .get(url)
         .send()
@@ -488,40 +495,19 @@ fn fetch_issuer(url: &str, opts: &TrustOpts, proxy: &ProxyConfig) -> Result<Vec<
     if !resp.status().is_success() {
         anyhow::bail!("HTTP {}", resp.status());
     }
-    read_capped(resp, MAX_ISSUER_BYTES, "issuer response")
-}
-
-/// Read a response body without ever buffering more than `cap` bytes. The
-/// declared `Content-Length` is checked first, then the stream is cut off
-/// one byte past the cap so an oversized body is rejected before it lands
-/// in memory.
-fn read_capped(resp: reqwest::blocking::Response, cap: usize, what: &str) -> Result<Vec<u8>> {
-    use std::io::Read;
-    if let Some(len) = resp.content_length()
-        && len > cap as u64
-    {
-        anyhow::bail!("{what} too large ({len} bytes, limit {cap})");
-    }
-    let mut buf = Vec::with_capacity(cap.min(64 * 1024));
-    resp.take(cap as u64 + 1)
-        .read_to_end(&mut buf)
-        .map_err(|e| anyhow::anyhow!("read failed: {e}"))?;
-    if buf.len() > cap {
-        anyhow::bail!("{what} too large (more than {cap} bytes)");
-    }
-    Ok(buf)
+    crate::http::read_capped(resp, MAX_ISSUER_BYTES, "issuer response")
 }
 
 /// Fetch and parse the upstream Mozilla/CCADB PEM bundle, caching it best-effort.
 fn refresh_public_roots(proxy: &ProxyConfig, timeout: Duration, debug: bool) -> Result<Vec<X509>> {
-    let client = http_client(proxy, timeout, ISSUER_MAX_REDIRECTS)?;
+    let client = http_client(proxy, timeout, ISSUER_MAX_REDIRECTS, None)?;
     let resp = client
         .get(CCADB_BUNDLE_URL)
         .send()
         .map_err(|e| anyhow::anyhow!("request failed: {e}"))?
         .error_for_status()
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let pem = read_capped(resp, MAX_BUNDLE_BYTES, "CCADB bundle")?;
+    let pem = crate::http::read_capped(resp, MAX_BUNDLE_BYTES, "CCADB bundle")?;
 
     let certs = X509::stack_from_pem(&pem).map_err(|e| anyhow::anyhow!("failed to parse CCADB bundle: {e}"))?;
 
@@ -529,10 +515,11 @@ fn refresh_public_roots(proxy: &ProxyConfig, timeout: Duration, debug: bool) -> 
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        // `write_public_file` removes whatever sits at the path and creates
+        // `write_private_file` removes whatever sits at the path and creates
         // the file fresh, so a symlink planted there is replaced rather than
-        // followed; the bundle is public data, so the umask mode is fine.
-        match crate::convert::write_public_file(&path.to_string_lossy(), &pem) {
+        // followed. The bundle is public data, but the reader refuses a cache
+        // that group or others can write, and a umask of 002 would make it so.
+        match crate::convert::write_private_file(&path.to_string_lossy(), &pem) {
             Ok(()) => debug_log!(debug, "Cached refreshed public roots to {}", path.display()),
             Err(e) => debug_log!(debug, "Could not cache public roots at {}: {}", path.display(), e),
         }

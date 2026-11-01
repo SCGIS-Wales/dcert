@@ -154,6 +154,19 @@ pub fn create_csr(opts: &CsrCreateOptions, csr_path: &str, key_path: &str) -> Re
         .set_subject_name(&subject_name)
         .with_context(|| "Failed to set subject name on CSR")?;
 
+    // OpenSSL joins the entries into one comma separated config string, so a
+    // comma inside an entry would add SANs the caller never listed.
+    if let Some(bad) = opts
+        .san
+        .iter()
+        .find(|e| e.contains(',') || e.chars().any(char::is_control))
+    {
+        anyhow::bail!(
+            "Invalid SAN entry '{}': commas and control characters are not allowed",
+            bad.escape_debug()
+        );
+    }
+
     // Add SANs as an extension request if provided
     if !opts.san.is_empty() {
         let mut extensions = openssl::stack::Stack::new().with_context(|| "Failed to create extensions stack")?;
@@ -1112,6 +1125,36 @@ mod tests {
         let result = create_csr(&opts, &csr_path, &key_path).unwrap();
         assert_eq!(result.key_algorithm, "ECDSA P-384");
         assert_eq!(result.key_size_bits, 384);
+    }
+
+    #[test]
+    fn test_create_csr_rejects_san_injection() {
+        let dir = TempDir::new().unwrap();
+        let csr_path = dir.path().join("test.csr").to_str().unwrap().to_string();
+        let key_path = dir.path().join("test.key").to_str().unwrap().to_string();
+
+        for bad in [
+            "a.example.com,IP:10.0.0.1",
+            "DNS:a.example.com,DNS:*.corp",
+            "a.example.com\n",
+        ] {
+            let opts = CsrCreateOptions {
+                subject: CsrSubject {
+                    common_name: "a.example.com".to_string(),
+                    ..Default::default()
+                },
+                san: vec![bad.to_string()],
+                key_algo: KeyAlgorithm::EcdsaP256,
+                encrypt_key: false,
+                key_password: None,
+            };
+            let err = create_csr(&opts, &csr_path, &key_path).expect_err(bad);
+            assert!(err.to_string().contains("Invalid SAN entry"), "{err}");
+        }
+        assert!(
+            !std::path::Path::new(&key_path).exists(),
+            "no key is written for a rejected CSR"
+        );
     }
 
     #[test]

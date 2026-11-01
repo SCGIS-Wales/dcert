@@ -36,12 +36,15 @@ pub fn sanitize_header_value(name: &str, value: &str) -> String {
     "****".to_string()
 }
 
-/// Sanitize a URL by masking any password component.
+/// Sanitize a URL by masking any password component. A username with no
+/// password is masked too, as it is then usually a token (`https://TOKEN@host`).
 pub fn sanitize_url(url_str: &str) -> String {
     match url::Url::parse(url_str) {
         Ok(mut u) => {
             if u.password().is_some() {
                 let _ = u.set_password(Some("****"));
+            } else if !u.username().is_empty() {
+                let _ = u.set_username("****");
             }
             u.to_string()
         }
@@ -62,6 +65,25 @@ fn mask_userinfo(text: &str) -> String {
         Some(at) => format!("{}****{}", &text[..start], &text[start + at..]),
         None => text.to_string(),
     }
+}
+
+/// `text` with control characters escaped (`\u{1b}`), keeping newlines and
+/// tabs, for printing to a terminal. Certificate names, response bodies and
+/// proxy replies come from the peer, and an escape sequence in them could
+/// retitle the terminal, hide output or, where allowed, write the clipboard.
+pub fn display_safe(text: &str) -> std::borrow::Cow<'_, str> {
+    if !text.chars().any(|c| c.is_control() && c != '\n' && c != '\t') {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len() + 8);
+    for c in text.chars() {
+        if c.is_control() && c != '\n' && c != '\t' {
+            out.extend(c.escape_default());
+        } else {
+            out.push(c);
+        }
+    }
+    std::borrow::Cow::Owned(out)
 }
 
 /// Remove PEM private key blocks from free text before it is displayed, so
@@ -115,6 +137,28 @@ pub use crate::debug_log;
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn sanitize_url_masks_a_bare_username_token() {
+        assert_eq!(
+            sanitize_url("https://ghp_secret@proxy.corp:3128/"),
+            "https://****@proxy.corp:3128/"
+        );
+        assert_eq!(
+            sanitize_url("http://user:hunter2@proxy.corp:3128"),
+            "http://user:****@proxy.corp:3128/"
+        );
+    }
+
+    #[test]
+    fn display_safe_escapes_terminal_controls_but_keeps_layout() {
+        assert!(matches!(display_safe("plain\ttext\n"), std::borrow::Cow::Borrowed(_)));
+        assert_eq!(
+            display_safe("evil\x1b]0;pwned\x07.example"),
+            "evil\\u{1b}]0;pwned\\u{7}.example"
+        );
+        assert_eq!(display_safe("a\rb"), "a\\rb");
+    }
 
     #[test]
     fn sanitize_url_masks_userinfo_even_when_the_url_does_not_parse() {

@@ -158,15 +158,14 @@ impl DcertMcpServer {
         &self,
         Parameters(params): Parameters<CompareCertificatesParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        if let Err(e) = validate_target(&params.target_a) {
-            return ok_error(e);
-        }
-        if let Err(e) = validate_target(&params.target_b) {
-            return ok_error(e);
-        }
+        // File targets are confined to the file roots like every other path.
+        let (target_a, target_b) = match (resolve_target(&params.target_a), resolve_target(&params.target_b)) {
+            (Ok(a), Ok(b)) => (a, b),
+            (Err(e), _) | (_, Err(e)) => return ok_error(e),
+        };
 
-        let destinations = probe_destinations(&params.target_a, None).and_then(|mut a| {
-            probe_destinations(&params.target_b, None).map(|b| {
+        let destinations = probe_destinations(&target_a, None).and_then(|mut a| {
+            probe_destinations(&target_b, None).map(|b| {
                 a.extend(b);
                 a
             })
@@ -179,8 +178,8 @@ impl DcertMcpServer {
         }
 
         let options = || vec!["--format".to_string(), "json".to_string(), "--fingerprint".to_string()];
-        let args_a = target_args("check", options(), &params.target_a);
-        let args_b = target_args("check", options(), &params.target_b);
+        let args_a = target_args("check", options(), &target_a);
+        let args_b = target_args("check", options(), &target_b);
         let (result_a, result_b) = tokio::join!(
             run_dcert(Invocation::new(args_a), &self.config),
             run_dcert(Invocation::new(args_b), &self.config)
@@ -309,12 +308,19 @@ impl DcertMcpServer {
         &self,
         Parameters(mut params): Parameters<VerifyKeyMatchParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        if let Err(e) = validate_target(&params.target) {
-            return ok_error(e);
-        }
+        let target = match resolve_target(&params.target) {
+            Ok(t) => t,
+            Err(e) => return ok_error(e),
+        };
         match validate_path(&params.key_path, "key_path") {
             Ok(p) => params.key_path = p,
             Err(e) => return ok_error(e),
+        }
+        if let Err(e) = match probe_destinations(&target, None) {
+            Ok(d) => check_destinations(&self.config.destinations, d).await,
+            Err(e) => Err(e),
+        } {
+            return ok_error(e);
         }
 
         let args = target_args(
@@ -325,7 +331,7 @@ impl DcertMcpServer {
                 "--format".to_string(),
                 "json".to_string(),
             ],
-            &params.target,
+            &target,
         );
         reply(run_dcert(Invocation::new(args), &self.config).await, "stderr", &[0, 7])
     }

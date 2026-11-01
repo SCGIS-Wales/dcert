@@ -242,10 +242,18 @@ async def create_session(
             return True
 
     async def retry_safe(tool: str) -> bool:
-        """Whether *tool* may be re-run, from the backend's annotations (read once)."""
+        """Whether *tool* may be re-run, from the backend's annotations (read once).
+
+        The annotations are read only from an already connected client. A
+        reconnect here would run outside the guard, so a hung or broken
+        backend would bypass the breaker, the bulkhead and the call timeout;
+        until a client is up again the call is simply not retried.
+        """
         nonlocal annotations
         if annotations is None:
-            active = await connect()
+            active = client
+            if active is None:
+                return False
             try:
                 async with asyncio.timeout(config.connect_timeout):
                     listed = await active.list_tools()

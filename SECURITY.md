@@ -49,7 +49,7 @@ Any listed scope or role satisfies the requirement. A denial is logged as `authz
 
 When running in HTTP mode, authentication is resolved in priority order:
 
-1. **OIDC/OAuth2** — if `DCERT_MCP_OIDC_ISSUER` is set
+1. **OIDC/OAuth2** — if `DCERT_MCP_OIDC_ISSUER` is set. A set issuer with no `DCERT_MCP_OIDC_AUDIENCE`, or one that fails validation (for example a plain `http://` issuer off loopback), stops the server from starting rather than quietly falling back to a static token or no authentication
 2. **Static bearer token** — if only `DCERT_MCP_AUTH_TOKEN` is set
 3. **No auth** — if neither is configured (not recommended for production)
 
@@ -116,7 +116,7 @@ Every authentication failure returns the same bare `401 Unauthorized` with a `WW
 
 ### Vault Access Policy
 
-- `DCERT_MCP_VAULT_ADDR_ALLOWLIST` names the Vault servers a tool call may target. When unset, a request must use the server's own `VAULT_ADDR`. Only when neither is set may a request name an arbitrary address, and then only over HTTPS (or HTTP to loopback). This closes the request-forgery path where a client points the server, with the caller's credentials, at an internal host of its choosing
+- `DCERT_MCP_VAULT_ADDR_ALLOWLIST` names the Vault servers a tool call may target. When unset, a request must use the server's own `VAULT_ADDR`. Only when neither is set may a request name an arbitrary address, and then only over HTTPS (or HTTP to loopback) and only where the destination policy allows it (`DCERT_MCP_DENY_PRIVATE_TARGETS`, `DCERT_MCP_ALLOWED_TARGETS`), for the child and for in process LDAP and AppRole logins alike. This closes the request-forgery path where a client points the server, with the caller's credentials, at an internal host of its choosing
 - The server's own Vault token (`VAULT_TOKEN` or `~/.vault-token`) is an operator credential and is only used for an operator configured address: the server's `VAULT_ADDR` or one listed in `DCERT_MCP_VAULT_ADDR_ALLOWLIST`. With token auth against any other address the request must carry an explicit `vault_token`; otherwise it is refused before a child process starts, so the server's token can never be sent to a Vault the caller chose.
 - `skip_verify` in a tool call is refused unless the operator sets `DCERT_MCP_VAULT_ALLOW_SKIP_VERIFY=1`: whether Vault's certificate is checked is an operator decision, not a client one
 - Vault authentication goes through the same library code as the CLI, so `vault_cacert`, `VAULT_CACERT` and `VAULT_CAPATH` are honoured on the login request, not only on the session that follows
@@ -187,7 +187,7 @@ Every authentication failure returns the same bare `401 Unauthorized` with a `WW
 | `DCERT_NOPROXY` | Proxy bypass list for the `dcert` binary; overrides `NO_PROXY` |
 | `DCERT_ALLOWED_TARGETS` / `DCERT_DENY_PRIVATE_TARGETS` | The destination policy the CLI enforces; set by the MCP server for its child, usable directly |
 
-The Python proxy (`dcert-python`) also reads the resilience and telemetry variables `DCERT_MCP_TOOL_TIMEOUT`, `DCERT_MCP_CONNECT_TIMEOUT`, `DCERT_MCP_RECONNECT_MAX`, `DCERT_MCP_NO_RETRY`, `DCERT_MCP_RETRY_MAX_ATTEMPTS`, `DCERT_MCP_RETRY_BASE_DELAY`, `DCERT_MCP_RETRY_MAX_DELAY`, `DCERT_MCP_RETRY_MULTIPLIER`, `DCERT_MCP_NO_CIRCUIT_BREAKER`, `DCERT_MCP_CB_THRESHOLD`, `DCERT_MCP_CB_RESET_TIMEOUT`, `DCERT_MCP_RATE_LIMIT_ENABLED`, `DCERT_MCP_RATE_LIMIT_RPS`, `DCERT_MCP_RATE_LIMIT_BURST`, `DCERT_MCP_BULKHEAD_MAX`, `DCERT_MCP_CACHE_ENABLED`, `DCERT_MCP_CACHE_TOOL_TTL`, `DCERT_MCP_CACHE_LIST_TTL`, `DCERT_MCP_MAX_RESPONSE_BYTES`, `DCERT_MCP_OTEL_ENABLED`, `DCERT_MCP_OTEL_EXPORTER` and `DCERT_MCP_OTEL_SERVICE_NAME` (see `python/src/dcert/resilience.py`). None of them weakens a security control. In HTTP and SSE mode it requires `DCERT_MCP_AUTH_TOKEN` (at least 32 characters) or `DCERT_MCP_OIDC_ISSUER`, `DCERT_MCP_OIDC_AUDIENCE` and `DCERT_MCP_OIDC_JWKS_URL`.
+The Python proxy (`dcert-python`) also reads the resilience and telemetry variables `DCERT_MCP_TOOL_TIMEOUT`, `DCERT_MCP_CONNECT_TIMEOUT`, `DCERT_MCP_RECONNECT_MAX`, `DCERT_MCP_NO_RETRY`, `DCERT_MCP_RETRY_MAX_ATTEMPTS`, `DCERT_MCP_RETRY_BASE_DELAY`, `DCERT_MCP_RETRY_MAX_DELAY`, `DCERT_MCP_RETRY_MULTIPLIER`, `DCERT_MCP_NO_CIRCUIT_BREAKER`, `DCERT_MCP_CB_THRESHOLD`, `DCERT_MCP_CB_RESET_TIMEOUT`, `DCERT_MCP_RATE_LIMIT_ENABLED`, `DCERT_MCP_RATE_LIMIT_RPS`, `DCERT_MCP_RATE_LIMIT_BURST`, `DCERT_MCP_BULKHEAD_MAX`, `DCERT_MCP_CACHE_ENABLED`, `DCERT_MCP_CACHE_TOOL_TTL`, `DCERT_MCP_CACHE_LIST_TTL`, `DCERT_MCP_MAX_RESPONSE_BYTES`, `DCERT_MCP_OTEL_ENABLED`, `DCERT_MCP_OTEL_EXPORTER` and `DCERT_MCP_OTEL_SERVICE_NAME` (see `python/src/dcert/resilience.py`). None of them weakens a security control. In HTTP and SSE mode it requires `DCERT_MCP_AUTH_TOKEN` (at least 32 characters) or `DCERT_MCP_OIDC_ISSUER`, `DCERT_MCP_OIDC_AUDIENCE` and `DCERT_MCP_OIDC_JWKS_URL`, and it starts its `dcert-mcp` child with `DCERT_MCP_DENY_PRIVATE_TARGETS=1` unless the operator set that variable, matching the HTTP mode default of `dcert-mcp` itself.
 
 ## Threat Model for HTTP Mode
 

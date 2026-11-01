@@ -153,7 +153,8 @@ pub fn pfx_to_pem(input: &str, password: &str, output_dir: &str) -> Result<Conve
     if let Some(ref cert) = parsed.cert {
         let cert_pem = cert.to_pem().with_context(|| "Failed to encode certificate as PEM")?;
         let cert_path = output_file_path(output_dir, "cert.pem")?;
-        fs::write(&cert_path, &cert_pem).with_context(|| format!("Failed to write certificate: {cert_path}"))?;
+        write_public_file(&cert_path, &cert_pem)
+            .with_context(|| format!("Failed to write certificate: {cert_path}"))?;
         output_files.push(cert_path);
 
         cert_subject = Some(format_x509_name(cert.subject_name()));
@@ -185,7 +186,8 @@ pub fn pfx_to_pem(input: &str, password: &str, output_dir: &str) -> Result<Conve
             ca_pem.push_str(&String::from_utf8_lossy(&pem_bytes));
         }
         let ca_path = output_file_path(output_dir, "ca.pem")?;
-        fs::write(&ca_path, &ca_pem).with_context(|| format!("Failed to write CA certificates: {ca_path}"))?;
+        write_public_file(&ca_path, ca_pem.as_bytes())
+            .with_context(|| format!("Failed to write CA certificates: {ca_path}"))?;
         output_files.push(ca_path);
     }
 

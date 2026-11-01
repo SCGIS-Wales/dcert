@@ -66,12 +66,20 @@ pub fn load_ca_certs(builder: &mut openssl::ssl::SslConnectorBuilder) -> Result<
 /// every address in order (see [`crate::dns`]). Returns the stream, DNS
 /// latency in milliseconds, and the address actually reached.
 pub fn direct_tcp_connect(host: &str, port: u16, timeout: Duration) -> Result<(TcpStream, u128, SocketAddr)> {
+    // A URL's IPv6 literal keeps its brackets (`[::1]`), which no resolver
+    // accepts.
+    let host = unbracket(host);
     let (addrs, dns_ms) = crate::dns::resolve_all(host, port, timeout)?;
     // The destination policy is enforced on the address actually dialled, so
     // a name that resolves somewhere else the second time is still refused.
     let (stream, addr) =
         crate::dns::connect_first(host, port, &addrs, timeout, |a| crate::netpolicy::enforce_addr(host, a))?;
     Ok((stream, dns_ms, addr))
+}
+
+/// `host` without the brackets a URL puts around an IPv6 literal.
+pub(crate) fn unbracket(host: &str) -> &str {
+    host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host)
 }
 
 /// Dial the target of a `--resolve` / `--connect-to` override.
@@ -1245,7 +1253,9 @@ pub fn fetch_tls_chain_openssl(opts: &TlsFetchOptions<'_>) -> Result<TlsConnecti
         Some(opts.http_protocol),
     ))?;
 
-    let sni_host = probe.sni_override.unwrap_or(host);
+    // An IPv6 literal is verified against the certificate's IP SANs and sent
+    // without SNI only when OpenSSL can parse it, which it cannot in brackets.
+    let sni_host = probe.sni_override.unwrap_or_else(|| unbracket(host));
     let identity_configured = opts.identity.is_configured();
     let mut ssl_stream = match connector.connect(sni_host, stream) {
         Ok(s) => s,

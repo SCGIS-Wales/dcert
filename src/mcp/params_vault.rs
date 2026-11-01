@@ -9,7 +9,7 @@ use crate::exec::{Invocation, RunOutcome, run_dcert};
 use crate::params::{
     default_cert_key_name, default_key_key_name, default_kv_version, default_ttl, default_vault_mount,
 };
-use crate::validate::validate_path;
+use crate::validate::{check_destinations, validate_path};
 
 // ---------------------------------------------------------------------------
 // Vault MCP Parameters
@@ -219,6 +219,19 @@ pub(crate) fn check_vault_addr_policy(addr: &str) -> Result<AddrTrust, String> {
     Ok(AddrTrust::CallerChosen)
 }
 
+/// The `(host, port)` a Vault address dials, for the destination policy.
+/// IPv6 literals lose their brackets, as the policy expects a bare address.
+pub(crate) fn vault_destination(addr: &str) -> Result<(String, u16), String> {
+    let url = url::Url::parse(addr).map_err(|e| format!("invalid vault_addr '{addr}': {e}"))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| format!("vault_addr '{addr}' has no host"))?
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_string();
+    Ok((host, url.port_or_known_default().unwrap_or(8200)))
+}
+
 /// Where the Vault token handed to the child comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TokenSource {
@@ -336,6 +349,14 @@ pub(crate) async fn run_dcert_vault<S: Into<String>>(
         Some(addr) => check_vault_addr_policy(&addr)?,
         None => AddrTrust::CallerChosen,
     };
+    // An address the caller picked is a destination like any probe target, so
+    // the destination policy applies before the child or an in process LDAP
+    // or AppRole login dials it. Operator configured addresses are trusted.
+    if trust == AddrTrust::CallerChosen
+        && let Some(addr) = vault_params.resolve_addr()
+    {
+        check_destinations(&config.destinations, vec![vault_destination(&addr)?]).await?;
+    }
     let method = vault_params.auth_method.as_deref().unwrap_or("token");
     // Wrapped in `Zeroizing` so the token buffer is wiped once it has been
     // handed to the subprocess environment below.

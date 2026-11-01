@@ -578,6 +578,37 @@ async def test_tool_listing_timeout_disables_retry(open_session, config):
     assert call.await_count == 1
 
 
+async def test_reconnect_before_the_listing_is_read_runs_inside_the_guard(config):
+    """A hung reconnect on a later call is a guarded connection error, not a raw one."""
+
+    class Hanging(FakeClient):
+        async def __aenter__(self):
+            await asyncio.sleep(10)
+
+    call = AsyncMock(side_effect=ConnectionResetError("gone"))
+    listing = AsyncMock(side_effect=RuntimeError("no listing"))
+    clients: list[FakeClient] = []
+
+    def factory():
+        clients.append(Hanging(call) if clients else FakeClient(call, list_tools=listing))
+        return clients[-1]
+
+    cfg = replace(config, connect_timeout=0.01, circuit_breaker_enabled=False)
+    async with create_session(
+        binary_path="/fake/dcert-mcp",
+        client_factory=factory,
+        resilience=cfg,
+        max_reconnects=1,
+        sleep=AsyncMock(),
+    ) as session:
+        with pytest.raises(DcertConnectionError, match="gone"):
+            await session.call("tool", {})
+        assert session.connected() is False
+        with pytest.raises(DcertConnectionError, match="Connecting to dcert-mcp timed out"):
+            await session.call("tool", {})
+    assert len(clients) == 2
+
+
 async def test_concurrent_transport_loss_reconnects_once(open_session, config):
     """In flight calls that fail together share one reconnect and one breaker failure."""
     cfg = replace(config, circuit_breaker_enabled=True, circuit_breaker_threshold=2)
