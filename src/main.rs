@@ -630,13 +630,7 @@ fn run_verify_key(args: cli::VerifyKeyArgs) -> Result<i32> {
                 });
             }
             Err(e) => {
-                eprintln!(
-                    "{} {} + {}: {}",
-                    "Error:".red().bold(),
-                    cert_path,
-                    key_path,
-                    dcert::debug::display_safe(&e.to_string())
-                );
+                eprintln!("{} {} + {}: {}", "Error:".red().bold(), cert_path, key_path, e);
                 if exit_code < exit_code::ERROR {
                     exit_code = exit_code::ERROR;
                 }
