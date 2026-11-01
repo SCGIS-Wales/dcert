@@ -1766,7 +1766,12 @@ fn run_once(ctx: &CheckContext<'_>, targets: &[String]) -> CheckPass {
                 all_results.push(result);
             }
             Err(e) => {
-                eprintln!("{} {}: {}", "Error:".red().bold(), target, e);
+                eprintln!(
+                    "{} {}: {}",
+                    "Error:".red().bold(),
+                    target,
+                    dcert::debug::display_safe(&e.to_string())
+                );
                 if exit_code < exit_code::ERROR {
                     exit_code = exit_code::ERROR;
                 }
@@ -1830,7 +1835,7 @@ fn print_diagnose_output_pretty(items: &[DiagnoseOutput]) {
         if let Some(body) = &item.body_excerpt {
             println!("{}", "Response body:".bold());
             for line in body.lines() {
-                println!("  {line}");
+                println!("  {}", dcert::debug::display_safe(line));
             }
             if item.body_truncated {
                 println!("  {}", "[truncated at --body-limit]".dimmed());
@@ -2012,7 +2017,11 @@ fn main() {
                     Command::Check(args) => match run_check_with_stdin(*args, Some(content)) {
                         Ok(code) => std::process::exit(code),
                         Err(e) => {
-                            eprintln!("{} {}", "Error:".red().bold(), e);
+                            eprintln!(
+                                "{} {}",
+                                "Error:".red().bold(),
+                                dcert::debug::display_safe(&e.to_string())
+                            );
                             std::process::exit(exit_code::ERROR);
                         }
                     },
@@ -2043,7 +2052,11 @@ fn main() {
     match run() {
         Ok(code) => std::process::exit(code),
         Err(e) => {
-            eprintln!("{} {}", "Error:".red().bold(), e);
+            eprintln!(
+                "{} {}",
+                "Error:".red().bold(),
+                dcert::debug::display_safe(&e.to_string())
+            );
             std::process::exit(exit_code::ERROR);
         }
     }

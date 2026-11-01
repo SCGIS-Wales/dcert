@@ -2994,3 +2994,122 @@ async fn issuer_timeout_out_of_range_is_refused() {
     .expect("refused");
     assert!(err.contains("issuer_timeout"), "{err}");
 }
+
+// ---------------------------------------------------------------
+// OIDC misconfiguration refuses to start instead of disabling auth
+// ---------------------------------------------------------------
+
+const OIDC_VARS: &[&str] = &[
+    "DCERT_MCP_OIDC_ISSUER",
+    "DCERT_MCP_OIDC_AUDIENCE",
+    "DCERT_MCP_OIDC_JWKS_URL",
+];
+
+#[test]
+fn oidc_is_off_without_an_issuer() {
+    let _env = EnvGuard::unset_all(OIDC_VARS);
+    assert!(matches!(build_oidc_validator(), Ok(None)));
+}
+
+#[test]
+fn oidc_issuer_without_audience_is_an_error() {
+    let mut env = EnvGuard::unset_all(OIDC_VARS);
+    env.set("DCERT_MCP_OIDC_ISSUER", "https://idp.example.com");
+    let err = build_oidc_validator().err().expect("refused");
+    assert!(err.contains("DCERT_MCP_OIDC_AUDIENCE"), "{err}");
+}
+
+#[test]
+fn oidc_validator_that_cannot_be_built_is_an_error() {
+    let mut env = EnvGuard::unset_all(OIDC_VARS);
+    env.set("DCERT_MCP_OIDC_ISSUER", "http://idp.example.com");
+    env.set("DCERT_MCP_OIDC_AUDIENCE", "dcert");
+    let err = build_oidc_validator().err().expect("refused");
+    assert!(err.starts_with("refusing to start"), "{err}");
+}
+
+// ---------------------------------------------------------------
+// A caller chosen vault_addr is a destination like any other
+// ---------------------------------------------------------------
+
+#[test]
+fn vault_destination_takes_host_and_port_from_the_address() {
+    assert_eq!(
+        vault_destination("https://vault.corp:8443"),
+        Ok(("vault.corp".to_string(), 8443))
+    );
+    assert_eq!(vault_destination("https://[fd00::7]"), Ok(("fd00::7".to_string(), 443)));
+    assert!(vault_destination("not a url").is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn caller_chosen_vault_addr_is_checked_against_the_destination_policy() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = dir.path().join("fake-dcert");
+    std::fs::write(&script, "#!/bin/sh\necho ran\n").expect("write script");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let mut config = test_config(script);
+    config.destinations = deny_private_policy("");
+    let _env = EnvGuard::unset_all(VAULT_POLICY_VARS);
+    let mut params = VaultParams::default();
+    params.vault_addr = Some("https://10.0.0.7:8443".to_string());
+    params.vault_token = Some("caller-token".to_string());
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let err = runtime
+        .block_on(run_dcert_vault(["list"], &params, &config, &[]))
+        .expect_err("refused");
+    assert!(
+        err.contains("10.0.0.7") && err.contains(DENY_PRIVATE_TARGETS_VAR),
+        "{err}"
+    );
+}
+
+// ---------------------------------------------------------------
+// compare_certificates and verify_key_match confine file targets
+// ---------------------------------------------------------------
+
+fn tool_error_text(result: Result<rmcp::model::CallToolResult, rmcp::ErrorData>) -> String {
+    let result = result.expect("tool result");
+    assert!(result.is_error.unwrap_or(false), "expected a tool error");
+    result
+        .content
+        .first()
+        .and_then(|c| c.as_text())
+        .map(|t| t.text.clone())
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn compare_certificates_confines_file_targets() {
+    use rmcp::handler::server::wrapper::Parameters;
+    let server = DcertMcpServer::default();
+    let params: CompareCertificatesParams =
+        serde_json::from_value(serde_json::json!({"target_a": "/etc/hosts", "target_b": "example.com"}))
+            .expect("params");
+    let text = tool_error_text(server.compare_certificates(Parameters(params)).await);
+    assert!(text.contains("outside the allowed roots"), "{text}");
+}
+
+#[tokio::test]
+async fn verify_key_match_confines_the_target_and_checks_destinations() {
+    use rmcp::handler::server::wrapper::Parameters;
+    let server = DcertMcpServer::default();
+    let params: VerifyKeyMatchParams =
+        serde_json::from_value(serde_json::json!({"target": "/etc/hosts", "key_path": "key.pem"})).expect("params");
+    let text = tool_error_text(server.verify_key_match(Parameters(params)).await);
+    assert!(text.contains("outside the allowed roots"), "{text}");
+
+    let mut config = test_config(PathBuf::from("/nonexistent/dcert"));
+    config.destinations = deny_private_policy("");
+    let server = DcertMcpServer::new(config);
+    let params: VerifyKeyMatchParams =
+        serde_json::from_value(serde_json::json!({"target": "https://169.254.169.254/", "key_path": "Cargo.toml"}))
+            .expect("params");
+    let text = tool_error_text(server.verify_key_match(Parameters(params)).await);
+    assert!(text.contains(DENY_PRIVATE_TARGETS_VAR), "{text}");
+}

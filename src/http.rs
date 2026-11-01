@@ -39,6 +39,10 @@ pub struct HttpClientOptions<'a> {
     /// the original request. Clients that send credentials (Vault) set this,
     /// so a redirect can never carry a token to another server.
     pub same_origin_redirects: bool,
+    /// Connect to these addresses for this host instead of resolving it
+    /// again, so the addresses a destination policy checked are the ones
+    /// dialled (see [`crate::netpolicy::enforce_url_pinned`]).
+    pub pinned: Option<&'a crate::netpolicy::PinnedHost>,
 }
 
 /// Default redirect limit, matching reqwest's.
@@ -95,6 +99,10 @@ pub fn blocking_client_with_summary(opts: &HttpClientOptions<'_>) -> Result<(req
         builder = builder.redirect(reqwest::redirect::Policy::limited(n));
     }
 
+    if let Some((host, addrs)) = opts.pinned {
+        builder = builder.resolve_to_addrs(host, addrs);
+    }
+
     match opts.proxy {
         Some(proxy) => {
             let no_proxy = reqwest::NoProxy::from_string(&proxy.no_proxy);
@@ -134,6 +142,27 @@ pub fn blocking_client_with_summary(opts: &HttpClientOptions<'_>) -> Result<(req
 
     let client = builder.build().context("failed to build HTTP client")?;
     Ok((client, summary))
+}
+
+/// Read a response body without ever buffering more than `cap` bytes. The
+/// declared `Content-Length` is checked first, then the stream is cut off
+/// one byte past the cap so an oversized body is rejected before it lands
+/// in memory.
+pub fn read_capped(resp: reqwest::blocking::Response, cap: usize, what: &str) -> Result<Vec<u8>> {
+    use std::io::Read;
+    if let Some(len) = resp.content_length()
+        && len > cap as u64
+    {
+        anyhow::bail!("{what} too large ({len} bytes, limit {cap})");
+    }
+    let mut buf = Vec::with_capacity(cap.min(64 * 1024));
+    resp.take(cap as u64 + 1)
+        .read_to_end(&mut buf)
+        .map_err(|e| anyhow::anyhow!("read failed: {e}"))?;
+    if buf.len() > cap {
+        anyhow::bail!("{what} too large (more than {cap} bytes)");
+    }
+    Ok(buf)
 }
 
 /// Parse every certificate in a PEM bundle.

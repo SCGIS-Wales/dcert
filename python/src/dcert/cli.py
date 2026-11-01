@@ -22,6 +22,10 @@ from dcert.config import load_config
 from dcert.resilience import OTelConfig, ResilienceConfig
 
 _CONFIG = load_config()
+
+#: The ``dcert-mcp`` setting that refuses private, loopback and metadata
+#: destinations (``src/mcp/config.rs``).
+DENY_PRIVATE_TARGETS_ENV = "DCERT_MCP_DENY_PRIVATE_TARGETS"
 #: Transports FastMCP's ``run`` accepts; ``config.yaml`` lists the subset offered.
 Transport = Literal["stdio", "http", "sse"]
 
@@ -264,7 +268,12 @@ def main(
 
     setup_otel(otel_overrides(otel_config_from_env(), otel=otel, otel_exporter=otel_exporter))
     try:
-        server = create_server(binary_path=binary, resilience=resilience, auth=auth)
+        server = create_server(
+            binary_path=binary,
+            env=child_policy_env(transport),
+            resilience=resilience,
+            auth=auth,
+        )
     except (FileNotFoundError, RuntimeError) as exc:
         raise click.ClickException(str(exc)) from exc
 
@@ -278,6 +287,20 @@ def main(
             port=port,
             middleware=[Middleware(HostHeaderGuard, hosts=hosts)],
         )
+
+
+def child_policy_env(transport: str) -> dict[str, str]:
+    """Return the destination policy defaults for the ``dcert-mcp`` child.
+
+    The child always speaks stdio to this proxy, so it would choose its stdio
+    default and allow private destinations. Served over HTTP or SSE, the
+    proxy takes requests from the network, so private, loopback and metadata
+    addresses are refused unless the operator set the variable themselves,
+    as ``dcert-mcp --mode http`` does.
+    """
+    if transport == "stdio" or DENY_PRIVATE_TARGETS_ENV in os.environ:
+        return {}
+    return {DENY_PRIVATE_TARGETS_ENV: "1"}
 
 
 if __name__ == "__main__":

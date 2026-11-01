@@ -39,8 +39,8 @@ foreign-types = "0.3"
 pem = "4.0"
 serde_norway = "0.9"
 ctrlc = "3.5"
-openssl-probe = "0.2"
-rmcp = { version = "3.7", features = [
+openssl-probe = "0.2.2"
+rmcp = { version = "3.8", features = [
     "server",
     "transport-io",
     "transport-streamable-http-server",
@@ -75,7 +75,7 @@ regex-lite = "0.1"
 subtle = "2.6"
 tempfile = "3.27"
 percent-encoding = "2.3"
-rust_xlsxwriter = "0.101"
+rust_xlsxwriter = "0.102"
 zeroize = { version = "1.9", features = ["derive"] }
 webpki-root-certs = "1"
 rpassword = "7.5"

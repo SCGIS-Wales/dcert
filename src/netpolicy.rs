@@ -30,8 +30,9 @@ pub const DENY_PRIVATE_TARGETS_ENV: &str = "DCERT_DENY_PRIVATE_TARGETS";
 /// reach: loopback, unspecified, RFC 1918, link local, carrier grade NAT
 /// (100.64.0.0/10), the IETF protocol block 192.0.0.0/24, documentation
 /// networks, multicast, the reserved 240.0.0.0/4, broadcast, unique local
-/// IPv6 (fc00::/7) and link local IPv6 (fe80::/10). IPv4 mapped IPv6
-/// addresses get the IPv4 rules.
+/// IPv6 (fc00::/7) and link local IPv6 (fe80::/10), and the benchmarking
+/// network 198.18.0.0/15. IPv4 mapped, NAT64 and 6to4 IPv6 addresses get the
+/// IPv4 rules for the address they embed.
 pub fn is_internal_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => is_internal_v4(v4),
@@ -50,6 +51,7 @@ fn is_internal_v4(v4: Ipv4Addr) -> bool {
         || v4.is_multicast()
         || (a == 100 && (64..=127).contains(&b))
         || (a == 192 && b == 0 && c == 0)
+        || (a == 198 && (b & 0xfe) == 18)
         || a >= 240
 }
 
@@ -57,7 +59,24 @@ fn is_internal_v6(v6: Ipv6Addr) -> bool {
     if let Some(v4) = v6.to_ipv4_mapped() {
         return is_internal_v4(v4);
     }
-    let first = v6.segments()[0];
+    let seg = v6.segments();
+    let first = seg[0];
+    // NAT64 (64:ff9b::/96) and 6to4 (2002::/16) carry an IPv4 address that
+    // the gateway or relay dials, so it gets the IPv4 rules. The local use
+    // NAT64 prefix (64:ff9b:1::/48) is site specific and always internal.
+    let embedded = |hi: u16, lo: u16| {
+        let ([a, b], [c, d]) = (hi.to_be_bytes(), lo.to_be_bytes());
+        Ipv4Addr::new(a, b, c, d)
+    };
+    if seg[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+        return is_internal_v4(embedded(seg[6], seg[7]));
+    }
+    if first == 0x2002 {
+        return is_internal_v4(embedded(seg[1], seg[2]));
+    }
+    if first == 0x64 && seg[1] == 0xff9b && seg[2] == 1 {
+        return true;
+    }
     v6.is_loopback()
         || v6.is_unspecified()
         || v6.is_multicast()
@@ -351,16 +370,34 @@ pub fn enforce_addr(host: &str, addr: &SocketAddr) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
-/// Enforce the CLI policy on a URL host before an HTTP client fetches it.
-pub fn enforce_url(url: &str) -> anyhow::Result<()> {
+/// Addresses an HTTP client is pinned to: the host name and the addresses
+/// it resolved to when the policy checked it.
+pub type PinnedHost = (String, Vec<SocketAddr>);
+
+/// Enforce the CLI policy on a URL host and return the checked addresses to
+/// pin the HTTP client to. Without the pin the client resolves the name a
+/// second time and a rebinding DNS server could answer that lookup with a
+/// private address. `None` when the policy is open or the host is an IP
+/// literal, as there is nothing to rebind.
+pub fn enforce_url_pinned(url: &str, timeout: std::time::Duration) -> anyhow::Result<Option<PinnedHost>> {
     let parsed = url::Url::parse(url).map_err(|e| anyhow::anyhow!("invalid URL '{url}': {e}"))?;
     let host = parsed
         .host_str()
         .ok_or_else(|| anyhow::anyhow!("URL '{url}' has no host"))?;
     let port = parsed.port_or_known_default().unwrap_or(443);
-    cli_policy()
-        .and_then(|p| p.check(host, port))
-        .map_err(|e| anyhow::anyhow!("{e}"))
+    let policy = cli_policy().map_err(|e| anyhow::anyhow!("{e}"))?;
+    if policy.is_open() || host_ip(host).is_some() {
+        policy.check(host, port).map_err(|e| anyhow::anyhow!("{e}"))?;
+        return Ok(None);
+    }
+    let (addrs, _) = crate::dns::resolve_all(host, port, timeout)?;
+    if addrs.is_empty() {
+        anyhow::bail!("DNS resolution for '{host}' returned no addresses");
+    }
+    for addr in &addrs {
+        policy.check_addr(host, addr).map_err(|e| anyhow::anyhow!("{e}"))?;
+    }
+    Ok(Some((host.to_string(), addrs)))
 }
 
 #[cfg(test)]
@@ -401,6 +438,13 @@ mod tests {
             "fd00:ec2::254",
             "::ffff:127.0.0.1",
             "::ffff:169.254.169.254",
+            "198.18.0.1",
+            "198.19.255.255",
+            "64:ff9b::a9fe:a9fe",
+            "64:ff9b::7f00:1",
+            "64:ff9b:1::1",
+            "2002:a9fe:a9fe::1",
+            "2002:0a00:0001::1",
         ] {
             let err = p.check_with(ip, 443, no_dns).expect_err(ip);
             assert!(err.contains(D) && err.contains(A), "{ip}: {err}");
@@ -410,7 +454,15 @@ mod tests {
     #[test]
     fn public_addresses_pass_when_private_is_denied() {
         let p = policy("", "1");
-        for ip in ["93.184.216.34", "1.1.1.1", "2606:4700:4700::1111", "100.128.0.1"] {
+        for ip in [
+            "93.184.216.34",
+            "1.1.1.1",
+            "2606:4700:4700::1111",
+            "100.128.0.1",
+            "198.20.0.1",
+            "64:ff9b::101:101",
+            "2002:101:101::1",
+        ] {
             assert!(p.check_with(ip, 443, no_dns).is_ok(), "{ip}");
         }
     }

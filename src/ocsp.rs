@@ -111,6 +111,17 @@ pub fn check_ocsp_status(cert_der: &[u8], issuer_der: Option<&[u8]>, ocsp_url: &
         .proxy
         .filter(|p| !p.should_bypass(&host))
         .and_then(|p| p.get_proxy_url("http"));
+    // Through a proxy the proxy resolves the responder, but a name that the
+    // local resolver already maps to an internal address is refused here, so
+    // a certificate cannot aim the proxy at the network behind it. A name the
+    // local resolver cannot answer is left to the proxy, as proxy only
+    // networks often resolve nothing public locally.
+    if via_proxy.is_some()
+        && let Ok((addrs, _)) = crate::dns::resolve_all(&host, port, timeout)
+        && addrs.iter().any(|a| !is_safe_ocsp_host(&a.ip().to_string()))
+    {
+        return "unknown (OCSP responder rejected: address is private, loopback or otherwise internal)".to_string();
+    }
     let (tcp_stream, request_target, proxy_auth) = match via_proxy {
         Some(proxy_url) => match connect_proxy(proxy_url, timeout) {
             Ok((stream, auth)) => {
