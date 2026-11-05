@@ -29,7 +29,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "fastmcp>=4.1.4,<5",
+    "fastmcp>=4.1.6,<5",
     "click>=8.5,<9",
     "pyyaml>=6.0.3,<7",
 ]
@@ -42,7 +42,7 @@ dev = [
     "pytest-timeout>=2.4",
     "ruff>=0.17.3",
     "mypy>=2.4.1",
-    "types-PyYAML>=6.0.12.20261030",
+    "types-PyYAML>=6.0.12.20261103",
 ]
 otel = [
     "opentelemetry-sdk>=1.45.2",
