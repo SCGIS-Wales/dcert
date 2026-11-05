@@ -115,6 +115,13 @@ summary is written.
 
 ### Security
 
+- Dependencies patched to the latest stable releases: openssl 0.10.82,
+  openssl-sys 0.9.118, zip 9.3.0, cc 1.11.0 and crc32fast 1.5.4 in Rust;
+  fastmcp 4.1.6 and types-PyYAML 6.0.12.20261103 in Python; the debian
+  trixie-slim base image digest; and the docker/login-action v4.8.0,
+  sigstore/cosign-installer v4.1.3, taiki-e/install-action v2.90.1 and
+  github/codeql-action v4.39.3 pins. `foreign-types` stays on 0.3, the
+  version the `openssl` crate implements its traits against.
 - Supply chain: releases publish `SHA256SUMS` and a CycloneDX SBOM; release
   archives, the SBOM and wheels carry build provenance attestations; the
   container image is scanned with Trivy on every build and each pushed
