@@ -395,11 +395,11 @@ One pull request per checkbox. Branch name `plan/S<phase>-<n>-<slug>`. Each pull
 
 ### Phase S2: remove the ignored advisories
 
-- [ ] **S2.1 Move JWT verification to `jsonwebtoken` 12 with `aws_lc_rs` and empty both ignore lists.**
+- [x] **S2.1 Move JWT verification to `jsonwebtoken` 12 with `aws_lc_rs` and empty both ignore lists.**
   - Scope: section 5.3. Files: `Cargo.toml`, `Cargo.lock`, `src/mcp/security/oidc.rs`, `.cargo/audit.toml`, `deny.toml`, `SECURITY.md`.
   - Acceptance: `cargo audit` and `cargo deny check` pass with `ignore = []`; `grep -c 'name = "rsa"' Cargo.lock` prints 0; OIDC tests pass unchanged.
   - Rollback: revert. The ignore entries return with it.
-  - Session notes:
+  - Session notes: Done. jsonwebtoken 12 with aws_lc_rs; rsa, crypto-bigint, p256, p384 and the other RustCrypto asymmetric crates left Cargo.lock. oidc.rs needed no change and the OIDC tests pass unchanged. Both ignore lists are empty. SECURITY.md had no reference to the ignored advisories, so it is unchanged.
 
 ### Phase S3: minimal CLI (before or with the 4.0.0 split pull request)
 
