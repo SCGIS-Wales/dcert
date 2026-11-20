@@ -67,7 +67,8 @@ jobs:
           python-version: "3.12"
 
       - name: Install tools
-        run: pip install uv pip-audit
+        # uv is pinned: the lock file format revision depends on its version.
+        run: pip install uv==0.13.9 pip-audit
 
       # The latest allowed versions, and the lowest the declared ranges allow,
       # which is what an old cache or mirror may serve.
