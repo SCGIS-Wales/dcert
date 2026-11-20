@@ -343,7 +343,7 @@ jobs:
       - name: Lock file is current
         run: |
           pip install uv
-          uv lock --check
+          scripts/ci/check_uv_lock.sh
 
       - name: Ruff check
         run: ruff check src tests ../scripts
