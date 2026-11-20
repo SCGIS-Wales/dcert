@@ -60,16 +60,17 @@ tokio = { version = "1", features = [
 ], optional = true }
 schemars = { version = "1.2", optional = true }
 jsonwebtoken = { version = "12", features = ["aws_lc_rs"], optional = true }
-# reqwest 0.13 replaced 0.12's `rustls-tls-native-roots`: `rustls` now pulls in
-# rustls-platform-verifier, so the platform trust store is used by default and
-# the separate native-roots feature no longer exists. `form` also became its own
-# feature; the OBO token exchange posts a urlencoded form body.
+# HTTP for the CLI (AIA issuers, public roots, Vault): ureq over the OpenSSL
+# already linked for the probe, so the CLI carries one TLS implementation.
+# `src/http.rs` supplies the TLS connector; no ureq TLS feature is enabled.
+ureq = { version = "3.5", default-features = false, features = ["json"] }
+# The MCP server's async HTTP (OIDC discovery, JWKS, token exchange). reqwest
+# 0.13's `rustls` uses the platform trust store; `form` posts the OBO exchange.
 reqwest = { version = "0.13", features = [
     "json",
     "form",
     "rustls",
-    "blocking",
-], default-features = false }
+], default-features = false, optional = true }
 axum = { version = "0.8", optional = true }
 tower-http = { version = "0.7", features = ["cors", "limit", "timeout", "trace"], optional = true }
 tracing = { version = "0.1", optional = true }
@@ -97,6 +98,7 @@ default = ["xlsx"]
 # Everything the dcert-mcp binary needs. Build it with
 # `cargo build --bin dcert-mcp --features mcp`; the dcert CLI is built without.
 mcp = [
+    "dep:reqwest",
     "dep:rmcp",
     "dep:tokio",
     "dep:jsonwebtoken",
@@ -116,6 +118,11 @@ xlsx = ["dep:rust_xlsxwriter"]
 # where no development headers are installed. Requires Perl (and NASM on
 # Windows). Enabled on Windows automatically through the target dependency.
 vendored = ["openssl/vendored"]
+
+# The OS trust store for the HTTP client where OpenSSL cannot read it (the
+# Windows certificate store, the macOS keychain); see src/http.rs.
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+rustls-native-certs = "0.8"
 
 [dev-dependencies]
 wiremock = "0.6"

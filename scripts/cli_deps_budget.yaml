@@ -8,7 +8,7 @@
 cargo_args: ["--target", "x86_64-unknown-linux-gnu"]
 
 # Upper bound on unique crates (`name version`) in the normal dependency tree.
-max_crates: 170
+max_crates: 135
 
 # false: report only. true: exit 1 on a violation.
 enforce: true
@@ -24,3 +24,12 @@ banned_crates:
   - crypto-bigint
   - chrono
   - tracing-subscriber
+  # S4b: the CLI speaks HTTP through ureq over OpenSSL (src/http.rs), so it
+  # carries no second TLS stack and no async runtime.
+  - reqwest
+  - hyper
+  - tokio
+  - rustls
+  - aws-lc-rs
+  - aws-lc-sys
+  - ring

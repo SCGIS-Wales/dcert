@@ -121,7 +121,7 @@ impl VaultTlsSettings {
         }
     }
 
-    fn client(&self, timeout: std::time::Duration) -> Result<(reqwest::blocking::Client, crate::http::CaDirSummary)> {
+    fn client(&self, timeout: std::time::Duration) -> Result<(crate::http::HttpClient, crate::http::CaDirSummary)> {
         crate::http::blocking_client_with_summary(&crate::http::HttpClientOptions {
             timeout: Some(timeout),
             proxy: None,
@@ -316,9 +316,9 @@ pub struct VaultClientConfig {
     pub debug: bool,
 }
 
-/// A simple Vault HTTP client wrapping reqwest.
+/// A simple Vault HTTP client.
 pub struct VaultClient {
-    client: reqwest::blocking::Client,
+    client: crate::http::HttpClient,
     base_url: String,
     /// Vault token. Wrapped in `Zeroizing` so the heap buffer is wiped when the
     /// client drops — important for the long-running MCP server.
@@ -411,7 +411,7 @@ impl VaultClient {
             .send()
             .map_err(|e| vault_connection_error(e, &self.base_url, self.debug))?;
 
-        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        if resp.status() == ureq::http::StatusCode::NOT_FOUND {
             return Ok(None);
         }
         handle_vault_response(resp, &hint).map(Some)
@@ -445,7 +445,7 @@ impl VaultClient {
         let resp = self
             .client
             .request(
-                reqwest::Method::from_bytes(b"LIST").unwrap_or(reqwest::Method::GET),
+                ureq::http::Method::from_bytes(b"LIST").unwrap_or(ureq::http::Method::GET),
                 &url,
             )
             .header("X-Vault-Token", self.token.as_str())
@@ -478,7 +478,7 @@ impl VaultClient {
     }
 }
 
-fn vault_connection_error(e: reqwest::Error, base_url: &str, debug: bool) -> anyhow::Error {
+fn vault_connection_error(e: crate::http::HttpError, base_url: &str, debug: bool) -> anyhow::Error {
     let debug_detail = if debug {
         format!("\n\n  Debug detail: {e:#}")
     } else {
@@ -536,20 +536,20 @@ const MAX_VAULT_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 
 /// Parse a Vault response body as JSON, reading at most
 /// [`MAX_VAULT_RESPONSE_BYTES`].
-fn read_json(resp: reqwest::blocking::Response) -> Result<serde_json::Value> {
+fn read_json(resp: crate::http::Response) -> Result<serde_json::Value> {
     let body = crate::http::read_capped(resp, MAX_VAULT_RESPONSE_BYTES, "Vault response")?;
     Ok(serde_json::from_slice(&body)?)
 }
 
 /// A Vault error body as text, capped like [`read_json`]; empty when it
 /// cannot be read.
-fn read_text(resp: reqwest::blocking::Response) -> String {
+fn read_text(resp: crate::http::Response) -> String {
     crate::http::read_capped(resp, MAX_VAULT_RESPONSE_BYTES, "Vault response")
         .map(|b| String::from_utf8_lossy(&b).into_owned())
         .unwrap_or_default()
 }
 
-fn handle_vault_response(resp: reqwest::blocking::Response, hint: &PolicyHint) -> Result<serde_json::Value> {
+fn handle_vault_response(resp: crate::http::Response, hint: &PolicyHint) -> Result<serde_json::Value> {
     let status = resp.status();
 
     if status.is_success() {

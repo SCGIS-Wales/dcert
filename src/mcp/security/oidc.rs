@@ -182,6 +182,18 @@ pub struct OidcValidator {
     jwks_cache: Arc<RwLock<JwksCache>>,
 }
 
+/// A redirect policy that stays on the original request's origin.
+fn same_origin_redirect_policy(limit: usize) -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(move |attempt| {
+        let hops = attempt.previous().len();
+        let allowed = attempt
+            .previous()
+            .first()
+            .is_some_and(|first| dcert::http::same_origin_redirect_allowed(first, attempt.url(), hops, limit));
+        if allowed { attempt.follow() } else { attempt.stop() }
+    })
+}
+
 impl OidcValidator {
     /// Creates a new OIDC token validator.
     pub fn new(config: OidcConfig) -> Result<Self, String> {
@@ -190,7 +202,7 @@ impl OidcValidator {
             .timeout(Duration::from_secs(10))
             // Discovery and JWKS answers decide which keys are trusted, so a
             // redirect may not move them to another origin.
-            .redirect(dcert::http::same_origin_redirect_policy(5))
+            .redirect(same_origin_redirect_policy(5))
             .build()
             .map_err(|e| format!("failed to create HTTP client: {e}"))?;
 

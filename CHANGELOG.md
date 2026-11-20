@@ -38,6 +38,15 @@ summary is written.
 - Publish one CycloneDX SBOM per binary, `dcert-cli-sbom.cdx.json` and
   `dcert-mcp-sbom.cdx.json`, in place of `dcert-sbom.cdx.json`. Both are listed
   in `SHA256SUMS` and attested.
+- Replace `reqwest` in the CLI with `ureq` 3 over the OpenSSL already linked for
+  the probe (`src/http.rs`): one TLS implementation instead of two, and no
+  `tokio`, `hyper`, `rustls` or `aws-lc-rs` in the `dcert` binary (166 to 131
+  crates; the budget gate now bans them and caps the tree at 135). Proxies, the
+  same-origin redirect rule for Vault, pinned addresses, timeouts and the extra
+  CA file and directory behave as before; plain `http` requests still go to an
+  HTTP proxy in absolute form. On macOS and Windows the operating system trust
+  store is added to OpenSSL's for these requests. `dcert-mcp` keeps `reqwest`
+  for its async OIDC client.
 - Add an OpenSSL floor gate: `scripts/check_openssl_floor.py` runs `dcert --version` on
   every built binary and fails below the per branch floor in
   `scripts/openssl_floor.yaml` (3.5.9 and 4.0.3, rising on 1 December 2026).

@@ -235,12 +235,13 @@ dcert links OpenSSL, and the version in each artefact is part of its security po
 | --- | --- | --- |
 | Rust vulnerabilities in `Cargo.lock` (no ignore list) | 3 | 0 |
 | Advisories ignored in `.cargo/audit.toml` and `deny.toml` | 2 | 0 |
-| Crates in the `dcert` CLI (Linux x86_64) | 257 | 166 (156 without Excel export) |
-| Crates in `dcert-mcp` | 257 | 226 |
+| Crates in the `dcert` CLI (Linux x86_64) | 257 | 131 (121 without Excel export) |
+| Crates in `dcert-mcp` | 257 | 229 |
+| TLS implementations in the `dcert` CLI | 2 (OpenSSL, and rustls with aws-lc-rs through `reqwest`) | 1 (OpenSSL) |
 | MCP crates (`rmcp`, `axum`, `jsonwebtoken`, `chrono`) in the CLI | all | none |
 | SBOMs per release | 1 | 2, one per binary |
 | Python packages with known vulnerabilities (latest, locked, lowest allowed) | 0 | 0, now checked daily |
 | Scheduled advisory audit | none | daily, opens one issue on failure |
 | OpenSSL floor per artefact | none | hard gate on the Windows binary (the only one that carries OpenSSL); report only for the dynamically linked Linux and macOS binaries |
 
-The Python dependency count (62 packages) falls to zero for the `dcert` wheel with the PyPI split. Raw outputs: `docs/security/baseline/2026-11/` and `docs/security/after/`.
+The CLI makes its HTTP requests (AIA issuers, public roots, Vault) with `ureq` over the same OpenSSL as the TLS probe; trust is OpenSSL's defaults plus the operating system store on macOS and Windows plus `--vault-cacert` / `VAULT_CAPATH`. The Python dependency count (62 packages) falls to zero for the `dcert` wheel with the PyPI split. Raw outputs: `docs/security/baseline/2026-11/` and `docs/security/after/`.
