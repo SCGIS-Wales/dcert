@@ -408,12 +408,12 @@ One pull request per checkbox. Branch name `plan/S<phase>-<n>-<slug>`. Each pull
   - Acceptance: job runs and reports the current count without failing the build.
   - Session notes: Done. Script, budget file and 8 unit tests added; CI runs the tests and the report step in the security-audit job. Reports 232 unique crates and 9 banned-crate hits on macOS before S3.2.
 
-- [ ] **S3.2 Introduce the `mcp` and `xlsx` features and build each binary separately.**
+- [x] **S3.2 Introduce the `mcp` and `xlsx` features and build each binary separately.**
   - Scope: section 5.2 in full, including every CI job listed there and `cargo auditable` builds.
   - Acceptance: both feature sets compile, pass Clippy with warnings as errors and pass tests; the release archive for each platform still contains both binaries; `cargo audit bin dist/dcert` lists no banned crate; the budget gate is switched to enforcing with `max_crates: 170`.
   - Tests: the two existing parity tests under `src/mcp/` run with `--features mcp`; a new test asserts `dcert vault list --format xlsx` gives a clear error when built without `xlsx`.
   - Rollback: revert. No published artefact changes shape, so no user facing rollback is needed.
-  - Session notes:
+  - Session notes: Done. `mcp` and `xlsx` features added; CLI tree is 166 crates (Linux target), budget gate enforcing at 170; clippy and tests pass for default, --features mcp and --no-default-features. `dcert kb schema` and `tls-policy schema` embed the checked-in kb schema files in the CLI (output identical to the generated schema; a test under `mcp` proves it). Builds go through scripts/ci/build_release.sh with cargo auditable (tested locally: CLI embeds 204 entries, MCP 257, chrono only in MCP). Not done: banned-crate check on the binary itself (cargo audit bin has no usable JSON listing); the source tree gate covers it. CI workflow changes are untested until a pull request runs.
 
 - [ ] **S3.3 Publish one SBOM per binary.**
   - Scope: replace the single `dcert-sbom.cdx.json` with `dcert-cli-sbom.cdx.json` and `dcert-mcp-sbom.cdx.json`, generated per feature set. Confirm the exact flags with `cargo cyclonedx --help` (expected: `--no-default-features`, `--features`, `--describe binaries`, `--override-filename`). Attest both.

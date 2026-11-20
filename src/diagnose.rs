@@ -12,7 +12,6 @@
 
 use anyhow::{Context, Result};
 use regex_lite::Regex;
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -34,7 +33,8 @@ pub const MIN_CONFIDENCE: f32 = 0.45;
 
 /// Where in the request path a failure is attributed. The order is the order
 /// in which a probe traverses the path, and the order diagnoses are reported.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "mcp", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Layer {
     LocalProxyEnv,
@@ -63,7 +63,8 @@ impl Layer {
 }
 
 /// Broad grouping used for filtering and display.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "mcp", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Category {
     Cloudfront,
@@ -80,7 +81,8 @@ pub enum Category {
 /// Products dcert can fingerprint from a probe. Vendor specific knowledge
 /// base entries require one with a `platform` signal, so an mTLS refusal from
 /// Apigee or nginx is never explained with CloudFront or API Gateway advice.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "mcp", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Platform {
     /// Amazon CloudFront (Via, X-Cache, X-Amz-Cf-* headers, *.cloudfront.net).
@@ -117,14 +119,16 @@ impl Platform {
 }
 
 /// One identified platform and the first piece of evidence that named it.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "mcp", derive(schemars::JsonSchema))]
 pub struct PlatformHint {
     pub platform: Platform,
     pub reason: String,
 }
 
 /// Root trust classes a signal can test for; mirrors [`RootTrustClass`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "mcp", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum RootClass {
     PubliclyTrusted,
@@ -148,7 +152,8 @@ impl From<&RootTrustClass> for RootClass {
 
 /// One observable condition. Regex patterns use the `regex-lite` syntax
 /// (no look around); prefix with `(?i)` for case insensitive matching.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "mcp", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SignalKind {
     /// HTTP status code of the final response is one of `codes`.
@@ -199,7 +204,8 @@ pub enum SignalKind {
 }
 
 /// A weighted, optionally required, optionally negated signal.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "mcp", derive(schemars::JsonSchema))]
 pub struct Signal {
     #[serde(flatten)]
     pub kind: SignalKind,
@@ -223,7 +229,8 @@ fn default_entry_weight() -> f32 {
 }
 
 /// One failure signature with its explanation.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "mcp", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Entry {
     /// Stable identifier, e.g. `cloudfront.edge.waf-blocked`.
@@ -247,7 +254,8 @@ pub struct Entry {
 }
 
 /// The whole knowledge base file.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "mcp", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct KnowledgeBase {
     pub version: u32,
@@ -341,7 +349,20 @@ impl KnowledgeBase {
 
     /// JSON schema for the YAML file, for editor validation.
     pub fn json_schema() -> serde_json::Value {
-        serde_json::to_value(schemars::schema_for!(KnowledgeBase)).unwrap_or_default()
+        #[cfg(feature = "mcp")]
+        {
+            serde_json::to_value(schemars::schema_for!(KnowledgeBase)).unwrap_or_default()
+        }
+        // The CLI is built without schemars. A test built with the `mcp`
+        // feature proves this checked-in file equals the generated schema.
+        #[cfg(not(feature = "mcp"))]
+        {
+            serde_json::from_str(include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/kb/diagnostics.schema.json"
+            )))
+            .unwrap_or_default()
+        }
     }
 }
 
@@ -632,7 +653,8 @@ fn https_proxy_missing_http_set() -> bool {
 // ---------------------------------------------------------------------------
 
 /// One reported finding.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "mcp", derive(schemars::JsonSchema))]
 pub struct Diagnosis {
     pub id: String,
     pub title: String,
@@ -968,6 +990,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "mcp")]
     #[test]
     fn schema_file_is_current() {
         let expected = serde_json::to_string_pretty(&KnowledgeBase::json_schema()).unwrap();
@@ -976,7 +999,7 @@ mod tests {
         assert_eq!(
             on_disk.trim(),
             expected.trim(),
-            "kb/diagnostics.schema.json is stale; run `dcert kb schema > kb/diagnostics.schema.json`"
+            "kb/diagnostics.schema.json is stale; run `cargo run --features mcp -- kb schema > kb/diagnostics.schema.json`"
         );
     }
 

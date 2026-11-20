@@ -88,3 +88,4 @@ python/.coverage
 
 # Separate target directory for `cargo build --features vendored` runs
 target-vendored/
+dist-bin/

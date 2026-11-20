@@ -19,7 +19,6 @@
 
 use anyhow::{Context, Result};
 use regex_lite::Regex;
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -33,7 +32,8 @@ pub const BUILTIN_REFERENCE: &str = include_str!("../kb/reference.yaml");
 // ---------------------------------------------------------------------------
 
 /// The whole reference file.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "mcp", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ReferenceBase {
     pub version: u32,
@@ -41,7 +41,8 @@ pub struct ReferenceBase {
 }
 
 /// One AWS service and everything dcert knows about its responses.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "mcp", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Service {
     /// Stable identifier, e.g. `cloudfront` or `api_gateway`.
@@ -65,7 +66,8 @@ pub struct Service {
 }
 
 /// Signals that identify the service in a captured response.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "mcp", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Detect {
     /// Any of these response headers matching marks the service as present.
@@ -77,7 +79,8 @@ pub struct Detect {
 }
 
 /// A header name and a pattern its value must match.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "mcp", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct HeaderMatch {
     pub name: String,
@@ -85,7 +88,8 @@ pub struct HeaderMatch {
 }
 
 /// What one HTTP status code means when this service returns it.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "mcp", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct StatusNote {
     pub code: u16,
@@ -103,7 +107,8 @@ pub struct StatusNote {
 }
 
 /// What one header means, with optional per value meanings.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "mcp", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct HeaderNote {
     pub name: String,
@@ -118,7 +123,8 @@ pub struct HeaderNote {
 }
 
 /// A value pattern and what it means.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "mcp", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ValueMeaning {
     pub pattern: String,
@@ -126,7 +132,8 @@ pub struct ValueMeaning {
 }
 
 /// A canonical sentence in an error body and what it means.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "mcp", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct BodyNote {
     pub pattern: String,
@@ -139,7 +146,8 @@ pub struct BodyNote {
 }
 
 /// One control plane exception.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "mcp", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ErrorNote {
     pub name: String,
@@ -148,7 +156,8 @@ pub struct ErrorNote {
 }
 
 /// A longer explanation on one subject (mTLS modes, limits, ciphers).
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "mcp", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Topic {
     pub id: String,
@@ -253,7 +262,20 @@ impl ReferenceBase {
 
     /// JSON schema for the YAML file, for editor validation.
     pub fn json_schema() -> serde_json::Value {
-        serde_json::to_value(schemars::schema_for!(ReferenceBase)).unwrap_or_default()
+        #[cfg(feature = "mcp")]
+        {
+            serde_json::to_value(schemars::schema_for!(ReferenceBase)).unwrap_or_default()
+        }
+        // The CLI is built without schemars. A test built with the `mcp`
+        // feature proves this checked-in file equals the generated schema.
+        #[cfg(not(feature = "mcp"))]
+        {
+            serde_json::from_str(include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/kb/reference.schema.json"
+            )))
+            .unwrap_or_default()
+        }
     }
 }
 
@@ -262,7 +284,8 @@ impl ReferenceBase {
 // ---------------------------------------------------------------------------
 
 /// What a note is about.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "mcp", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum NoteKind {
     Status,
@@ -271,7 +294,8 @@ pub enum NoteKind {
 }
 
 /// One piece of context derived from a response.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "mcp", derive(schemars::JsonSchema))]
 pub struct Note {
     /// Service id the note comes from.
     pub service: String,
@@ -392,7 +416,8 @@ pub fn annotate(rb: &ReferenceBase, ev: &Evidence) -> Vec<Note> {
 // ---------------------------------------------------------------------------
 
 /// One answer to a look up.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "mcp", derive(schemars::JsonSchema))]
 pub struct Explanation {
     pub service: String,
     /// `status`, `header`, `body`, `error` or `topic`.
@@ -509,7 +534,8 @@ pub fn explain(rb: &ReferenceBase, query: &str, service: Option<&str>) -> Vec<Ex
 }
 
 /// A compact index of what `explain` can answer, for `dcert kb topics`.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "mcp", derive(schemars::JsonSchema))]
 pub struct TopicIndex {
     pub service: String,
     pub name: String,
@@ -569,6 +595,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "mcp")]
     #[test]
     fn schema_file_is_current() {
         let expected = serde_json::to_string_pretty(&ReferenceBase::json_schema()).unwrap();
@@ -577,7 +604,7 @@ mod tests {
         assert_eq!(
             on_disk.trim(),
             expected.trim(),
-            "kb/reference.schema.json is stale; run `dcert kb schema --reference > kb/reference.schema.json`"
+            "kb/reference.schema.json is stale; run `cargo run --features mcp -- kb schema --reference > kb/reference.schema.json`"
         );
     }
 

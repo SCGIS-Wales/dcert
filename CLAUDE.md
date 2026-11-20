@@ -43,9 +43,13 @@ on any branch, and above all on `main`, must be attributed to api-py alone.
 - Rust CLI and MCP server in `src/` (`dcert`, `dcert-mcp`); Python FastMCP
   proxy and typed client in `python/`.
 - Local checks before pushing: `cargo fmt --check`,
-  `cargo clippy --all-targets -- -D warnings`, `cargo test`, and in `python/`:
+  `cargo clippy --all-targets -- -D warnings`, `cargo test`, the same two with
+  `--features mcp` (the MCP server), `python scripts/check_cli_deps.py`, and in `python/`:
   `ruff check src tests ../scripts`, `ruff format --check src tests ../scripts`,
   `mypy`, `pytest`.
+- `dcert-mcp` needs the `mcp` Cargo feature and the `dcert` CLI is built without
+  it, so a plain `cargo build --release` builds only `dcert`. Release builds use
+  `scripts/ci/build_release.sh`, which builds each binary separately.
 - Every push to `main` runs the release pipeline (auto-tag, version bump,
   PyPI, Docker, Homebrew, Chocolatey). The version-bump commit carries
   `[skip ci]`.

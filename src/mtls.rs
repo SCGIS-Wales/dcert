@@ -15,7 +15,6 @@
 //! client identity is configured. It records that fact and the acceptable CA
 //! names the server listed, then lets the handshake continue unchanged.
 
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -23,7 +22,8 @@ use openssl::ex_data::Index;
 use openssl::ssl::{SslContext, SslContextBuilder, SslRef};
 
 /// What the probe learned about client certificate authentication.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "mcp", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ClientAuthStatus {
     /// The server never sent a CertificateRequest: not an mTLS endpoint.

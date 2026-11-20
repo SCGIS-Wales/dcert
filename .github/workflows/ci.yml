@@ -59,11 +59,23 @@ jobs:
       # No --all-features: that silently enables `vendored`, so the system
       # OpenSSL 3.0 code path the Linux release links against was never
       # tested. The vendored build has its own job below.
-      - name: Cargo clippy
+      - name: Cargo clippy (CLI, default features)
         run: cargo clippy --all-targets -- -D warnings
 
-      - name: Cargo test
+      - name: Cargo clippy (MCP server, --features mcp)
+        run: cargo clippy --all-targets --features mcp -- -D warnings
+
+      - name: Cargo clippy (CLI, no default features)
+        run: cargo clippy --all-targets --no-default-features -- -D warnings
+
+      - name: Cargo test (CLI, default features)
         run: cargo test --verbose
+
+      - name: Cargo test (MCP server, --features mcp)
+        run: cargo test --verbose --features mcp
+
+      - name: Cargo test (CLI, no default features)
+        run: cargo test --verbose --no-default-features --lib
 
   # Minimum supported Rust version from Cargo.toml (`rust-version`). The
   # toolchain file pins the release toolchain, so the MSRV is selected with
@@ -91,8 +103,11 @@ jobs:
           key: ${{ runner.os }}-cargo-msrv-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-msrv-
 
-      - name: Cargo check on the MSRV
+      - name: Cargo check on the MSRV (CLI)
         run: cargo +1.91 check --all-targets --locked
+
+      - name: Cargo check on the MSRV (MCP server)
+        run: cargo +1.91 check --all-targets --locked --features mcp
 
   # The Linux release binary is built on ubuntu 22.04 (OpenSSL 3.0 headers)
   # and the Docker image runs it on debian trixie (OpenSSL 3.5). This job
@@ -168,7 +183,7 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-vendored-
 
       - name: Build with vendored OpenSSL
-        run: cargo build --features vendored --bins
+        run: cargo build --features vendored,mcp --bins
 
       - name: Show linked OpenSSL and post quantum capability
         run: |
@@ -176,7 +191,7 @@ jobs:
           ./target/debug/dcert --version | grep -q "post quantum key exchange: available"
 
       - name: Test with vendored OpenSSL
-        run: cargo test --features vendored
+        run: cargo test --features vendored,mcp
 
   security-audit:
     name: Security audit
@@ -478,8 +493,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config libssl-dev
 
-      - name: Build dcert-mcp binary
-        run: cargo build --release
+      # dcert-mcp needs the `mcp` feature; the dcert CLI it spawns is built
+      # without it, as in the release build.
+      - name: Build dcert and dcert-mcp
+        run: |
+          cargo build --release --locked --bin dcert
+          cargo build --release --locked --bin dcert-mcp --features mcp
         working-directory: .
 
       - name: Set up Python
@@ -645,13 +664,21 @@ jobs:
           key: ${{ runner.os }}-22.04-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-22.04-${{ matrix.target }}-cargo-
 
+      - name: Install cargo-auditable
+        uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
+        with:
+          tool: cargo-auditable
+
+      # Two builds, one per binary; see scripts/ci/build_release.sh.
       - name: Build (release)
-        run: cargo build --release --target ${{ matrix.target }}
+        env:
+          TARGET: ${{ matrix.target }}
+        run: scripts/ci/build_release.sh
 
       - name: Package artifact
         run: |
           mkdir -p dist
-          tar czf dist/dcert-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release dcert dcert-mcp
+          tar czf dist/dcert-${{ matrix.target }}.tar.gz -C dist-bin dcert dcert-mcp
 
       - name: Upload artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -693,17 +720,22 @@ jobs:
           key: macos-intel-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: macos-intel-cargo-
 
+      - name: Install cargo-auditable
+        uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
+        with:
+          tool: cargo-auditable
+
       - name: Build (release)
         env:
           OPENSSL_DIR: /usr/local/opt/openssl@3
           OPENSSL_LIB_DIR: /usr/local/opt/openssl@3/lib
           OPENSSL_INCLUDE_DIR: /usr/local/opt/openssl@3/include
-        run: cargo build --release
+        run: scripts/ci/build_release.sh
 
       - name: Package artifact
         run: |
           mkdir -p dist
-          tar czf dist/dcert-x86_64-apple-darwin.tar.gz -C target/release dcert dcert-mcp
+          tar czf dist/dcert-x86_64-apple-darwin.tar.gz -C dist-bin dcert dcert-mcp
 
       - name: Upload artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -745,17 +777,22 @@ jobs:
           key: macos-arm-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: macos-arm-cargo-
 
+      - name: Install cargo-auditable
+        uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
+        with:
+          tool: cargo-auditable
+
       - name: Build (release)
         env:
           OPENSSL_DIR: /opt/homebrew/opt/openssl@3
           OPENSSL_LIB_DIR: /opt/homebrew/opt/openssl@3/lib
           OPENSSL_INCLUDE_DIR: /opt/homebrew/opt/openssl@3/include
-        run: cargo build --release
+        run: scripts/ci/build_release.sh
 
       - name: Package artifact
         run: |
           mkdir -p dist
-          tar czf dist/dcert-aarch64-apple-darwin.tar.gz -C target/release dcert dcert-mcp
+          tar czf dist/dcert-aarch64-apple-darwin.tar.gz -C dist-bin dcert dcert-mcp
 
       - name: Upload artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -810,15 +847,31 @@ jobs:
           key: windows-msvc-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: windows-msvc-cargo-
 
+      - name: Install cargo-auditable
+        uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
+        with:
+          tool: cargo-auditable
+
+      # Two builds, one per binary, each copied aside straight after its own
+      # build; see scripts/ci/build_release.sh for why.
       - name: Build (release)
-        run: cargo build --release --target x86_64-pc-windows-msvc
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $rel = "target/x86_64-pc-windows-msvc/release"
+          New-Item -ItemType Directory -Force -Path dist-bin | Out-Null
+          cargo auditable build --release --locked --target x86_64-pc-windows-msvc --bin dcert
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item "$rel/dcert.exe" "dist-bin/dcert.exe"
+          cargo auditable build --release --locked --target x86_64-pc-windows-msvc --bin dcert-mcp --features mcp
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item "$rel/dcert-mcp.exe" "dist-bin/dcert-mcp.exe"
 
       - name: Package artifact
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          $rel = "target/x86_64-pc-windows-msvc/release"
-          Compress-Archive -Path "$rel/dcert.exe","$rel/dcert-mcp.exe" `
+          Compress-Archive -Path "dist-bin/dcert.exe","dist-bin/dcert-mcp.exe" `
             -DestinationPath "dist/dcert-x86_64-pc-windows-msvc.zip" -Force
 
       - name: Upload artifact

@@ -1080,7 +1080,13 @@ fn csv_escape(field: &str) -> String {
 
 pub fn export_cert_list(entries: &[VaultCertListEntry], export_path: &str) -> Result<()> {
     if export_path.ends_with(".xlsx") {
+        #[cfg(feature = "xlsx")]
         export_cert_list_xlsx(entries, export_path)?;
+        #[cfg(not(feature = "xlsx"))]
+        anyhow::bail!(
+            "Excel export is not available: this dcert was built without the `xlsx` feature. \
+             Export to .csv or .json instead."
+        );
     } else if export_path.ends_with(".csv") {
         let mut csv = String::from("serial_number,common_name,not_before,not_after,status\n");
         for entry in entries {
@@ -1104,6 +1110,7 @@ pub fn export_cert_list(entries: &[VaultCertListEntry], export_path: &str) -> Re
     Ok(())
 }
 
+#[cfg(feature = "xlsx")]
 fn export_cert_list_xlsx(entries: &[VaultCertListEntry], export_path: &str) -> Result<()> {
     use rust_xlsxwriter::{Format, Workbook};
 
@@ -2723,6 +2730,17 @@ mod tests {
 
     // -- Excel Export --
 
+    #[cfg(not(feature = "xlsx"))]
+    #[test]
+    fn xlsx_export_without_the_feature_is_a_clear_error() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let path = temp_dir.path().join("certs.xlsx").to_str().unwrap().to_string();
+        let err = export_cert_list(&[], &path).unwrap_err().to_string();
+        assert!(err.contains("`xlsx` feature"), "{err}");
+        assert!(!std::path::Path::new(&path).exists());
+    }
+
+    #[cfg(feature = "xlsx")]
     #[test]
     fn test_export_cert_list_xlsx() {
         let temp_dir = tempfile::TempDir::new().unwrap();
