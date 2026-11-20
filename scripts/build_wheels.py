@@ -57,7 +57,9 @@ def _register_source_package() -> None:
     if "dcert" in sys.modules:
         return
     spec = importlib.util.spec_from_file_location(
-        "dcert", PACKAGE_DIR / "__init__.py", submodule_search_locations=[str(PACKAGE_DIR)]
+        "dcert",
+        PACKAGE_DIR / "__init__.py",
+        submodule_search_locations=[str(PACKAGE_DIR)],
     )
     if spec is None:
         raise ImportError(f"dcert package not found at {PACKAGE_DIR}")
@@ -223,6 +225,13 @@ def build_all(source_wheel: Path, archives_dir: Path, output_dir: Path) -> list[
 
 #: Executable names carried by the ``dcert`` wheel.
 CLI_BINARY_NAMES: tuple[str, ...] = ("dcert", "dcert.exe")
+#: Executable names each project's wheel carries; the other binary is never included.
+PROJECT_BINARIES: dict[str, tuple[str, ...]] = {
+    "dcert": CLI_BINARY_NAMES,
+    "dcert-mcp": ("dcert-mcp", "dcert-mcp.exe"),
+}
+#: Extras that are for developing the project and are not published in METADATA.
+UNPUBLISHED_EXTRAS = frozenset({"dev"})
 
 
 def read_project(project_dir: Path) -> dict[str, object]:
@@ -262,8 +271,37 @@ def render_metadata(project: dict[str, object], description: str) -> str:
         lines.append(f"Requires-Python: {project['requires-python']}")
     for requirement in project.get("dependencies") or []:  # type: ignore[attr-defined]
         lines.append(f"Requires-Dist: {requirement}")
+    extras = project.get("optional-dependencies") or {}
+    for extra, requirements in extras.items():  # type: ignore[attr-defined]
+        if extra in UNPUBLISHED_EXTRAS:
+            continue
+        lines.append(f"Provides-Extra: {extra}")
+        lines += [
+            f'Requires-Dist: {requirement}; extra == "{extra}"' for requirement in requirements
+        ]
     lines += ["Description-Content-Type: text/markdown", "", description]
     return "\n".join(lines) + "\n"
+
+
+def read_package_layout(project_dir: Path) -> tuple[dict[str, bytes], dict[str, str]]:
+    """Return the Python files to ship and the console scripts for a project.
+
+    Both are empty for a project without a ``[tool.dcert-wheel]`` table, so the
+    ``dcert`` wheel stays free of Python code.
+    """
+    with (project_dir / "pyproject.toml").open("rb") as handle:
+        table = tomllib.load(handle).get("tool", {}).get("dcert-wheel")
+    if not table:
+        return {}, {}
+    package_dir = project_dir / str(table["python-package"])
+    files = {
+        f"{package_dir.name}/{path.relative_to(package_dir).as_posix()}": path.read_bytes()
+        for path in sorted(package_dir.rglob("*"))
+        if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc"
+    }
+    if not files:
+        raise RuntimeError(f"no files found in {package_dir}")
+    return files, dict(table.get("entry-points", {}))
 
 
 def build_cli_wheel(
@@ -273,31 +311,42 @@ def build_cli_wheel(
     output_dir: Path,
     license_file: Path | None = None,
 ) -> Path:
-    """Build the ``dcert`` CLI wheel for one platform from a release archive.
+    """Build the ``dcert`` or ``dcert-mcp`` wheel for one platform from a release archive.
 
-    The wheel holds the ``dcert`` executable in ``<name>-<version>.data/scripts``,
-    the ``dist-info`` files and nothing else: no Python modules, no
-    ``Requires-Dist``.
+    The executable goes in ``<name>-<version>.data/scripts``. The ``dcert``
+    wheel holds that and the ``dist-info`` files and nothing else: no Python
+    modules, no ``Requires-Dist``. A project with a ``[tool.dcert-wheel]`` table
+    (``dcert-mcp``) also carries its Python package and console scripts.
 
     Raises:
-        RuntimeError: If the archive has no ``dcert`` executable, or it needs a
-            newer glibc than a ``manylinux`` tag promises.
+        RuntimeError: If the archive has no executable for the project, or it
+            needs a newer glibc than a ``manylinux`` tag promises.
     """
     project = read_project(project_dir)
     name, version = str(project["name"]), str(project["version"])
+    if name not in PROJECT_BINARIES:
+        raise RuntimeError(f"no binary known for project {name!r}")
+    wanted = PROJECT_BINARIES[name]
+    package_files, entry_points = read_package_layout(project_dir)
     readme = (project_dir / str(project.get("readme", "README.md"))).read_text(encoding="utf-8")
-    dist_info = f"{name}-{version}.dist-info"
-    scripts = f"{name}-{version}.data/scripts"
-    out_path = output_dir / f"{name}-{version}-py3-none-{platform_tag}.whl"
+    # Wheel file and directory names escape runs of "-", "_" and "." as "_" (PEP 427).
+    stem = f"{re.sub(r'[-_.]+', '_', name)}-{version}"
+    dist_info = f"{stem}.dist-info"
+    scripts = f"{stem}.data/scripts"
+    out_path = output_dir / f"{stem}-py3-none-{platform_tag}.whl"
 
-    found = {
-        n: d for n, d in extract_binaries_from_archive(archive).items() if n in CLI_BINARY_NAMES
-    }
+    found = {n: d for n, d in extract_binaries_from_archive(archive).items() if n in wanted}
     if not found:
-        raise RuntimeError(f"dcert executable not found in {archive.name}")
+        raise RuntimeError(f"{wanted[0]} executable not found in {archive.name}")
     check_platform_tag(platform_tag, found)
 
     files: dict[str, bytes] = {f"{dist_info}/METADATA": render_metadata(project, readme).encode()}
+    files.update(package_files)
+    if entry_points:
+        lines = [f"{command} = {target}" for command, target in sorted(entry_points.items())]
+        files[f"{dist_info}/entry_points.txt"] = (
+            "[console_scripts]\n" + "\n".join(lines) + "\n"
+        ).encode()
     if license_file is not None and license_file.is_file():
         files[f"{dist_info}/licenses/{license_file.name}"] = license_file.read_bytes()
     files[f"{dist_info}/WHEEL"] = (
@@ -326,9 +375,12 @@ def build_cli_wheel(
 
 
 def build_all_cli(
-    project_dir: Path, archives_dir: Path, output_dir: Path, license_file: Path | None = None
+    project_dir: Path,
+    archives_dir: Path,
+    output_dir: Path,
+    license_file: Path | None = None,
 ) -> list[Path]:
-    """Build the ``dcert`` wheel for every known archive in *archives_dir*."""
+    """Build the project's wheel for every known archive in *archives_dir*."""
     return [
         build_cli_wheel(project_dir, archives_dir / filename, tag, output_dir, license_file)
         for filename, tag in sorted(PLATFORM_MAP.items())
@@ -354,7 +406,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Build platform specific Python wheels with bundled Rust binaries",
     )
-    parser.add_argument("--project", help="Build the dcert CLI wheel from this project directory")
+    parser.add_argument(
+        "--project",
+        help="Build the wheel of this project directory (python/dcert-cli or python/dcert-mcp)",
+    )
     parser.add_argument("--wheel", help="Path to the universal wheel (legacy mode)")
     parser.add_argument("--archive", help="A single platform archive (use with --platform)")
     parser.add_argument("--platform", help="Wheel platform tag (e.g. macosx_11_0_arm64)")
@@ -367,7 +422,9 @@ def main(argv: list[str] | None = None) -> int:
     """Command line entry point; returns the process exit status."""
     args = build_parser().parse_args(argv)
     logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stderr
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        stream=sys.stderr,
     )
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -381,10 +438,12 @@ def main(argv: list[str] | None = None) -> int:
             )
             if not wheels:
                 raise FileNotFoundError(f"no known platform archive in {archives_dir}")
-            logger.info("built %d dcert wheels", len(wheels))
+            logger.info("built %d wheels", len(wheels))
             return 0
         if not args.wheel:
-            raise ValueError("specify --project (dcert CLI wheel) or --wheel (legacy mode)")
+            raise ValueError(
+                "specify --project (a dcert or dcert-mcp wheel) or --wheel (legacy mode)"
+            )
         source_wheel = resolve_wheel(args.wheel)
         if args.archives_dir:
             archives_dir = Path(args.archives_dir)

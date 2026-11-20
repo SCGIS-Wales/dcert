@@ -28,14 +28,14 @@ the user types `dcert`. A user of the MCP server must not need the proxy.
 
 ## Design
 
-1. **Layout.** `python/dcert/` and `python/dcert-mcp/`, each with its own
+1. **Layout.** `python/dcert-cli/` and `python/dcert-mcp/`, each with its own
    `pyproject.toml`. The current single project under `python/` stays until the
    cut-over (phase 4) so `main` keeps publishing a working package.
 2. **`dcert` wheel.** Platform wheels only, built by `scripts/build_wheels.py`
    from the release archives. The executable goes in
    `dcert-<v>.data/scripts/`, as `ruff` and `uv` do, so pip puts it in `bin/`
    and no Python runs. No Python modules, no `download.py`, no network access.
-   `Requires-Dist` is empty. Metadata comes from `python/dcert/pyproject.toml`,
+   `Requires-Dist` is empty. Metadata comes from `python/dcert-cli/pyproject.toml`,
    read by the builder, so there is one source of truth. No sdist: on a host no
    platform wheel fits, pip says "no matching distribution".
 3. **`dcert-mcp` wheel.** Platform wheel with the `dcert-mcp` executable in
@@ -58,17 +58,24 @@ the user types `dcert`. A user of the MCP server must not need the proxy.
 
 ## Phases
 
-- [ ] **Phase 0: this plan.**
-- [ ] **Phase 1: the `dcert` wheel.** `python/dcert/pyproject.toml` and README;
+- [x] **Phase 0: this plan.**
+- [x] **Phase 1: the `dcert` wheel.** `python/dcert-cli/pyproject.toml` and README;
   `scripts/build_wheels.py` builds it from scratch (scripts entry, metadata,
   RECORD, platform tag, glibc check kept); contract tests against the built
   wheel (zero `Requires-Dist`, no `.py` files, executable bit, scripts entry
   present, tag per platform). Security plan S5.1.
-- [ ] **Phase 2: the `dcert-mcp` package.** Port `python/src/dcert` to
+- [x] **Phase 2: the `dcert-mcp` package.** Port `python/src/dcert` to
   `python/dcert-mcp/src/dcert_mcp` with its tests; lazy FastMCP import and the
   missing-extra message; extras with the security floors; builder support for
   the second wheel kind; remove `download.py`, `checksums.json` and the binary
   search (the binary is on `PATH`).
+  Session notes: the directory is `python/dcert-cli/` (a `python/dcert/` folder
+  shadows the `dcert` import name and zeroed coverage in the old project). The
+  `dcert-mcp` wheel is named `dcert_mcp-<v>-py3-none-<platform>.whl` (PEP 427
+  escaping); `dcert_mcp.__init__` resolves helpers lazily, and the
+  `dcert-mcp-proxy` console script prints one line naming the extra when
+  FastMCP is missing. `python/uv.lock` for `dcert-mcp` waits for phase 3
+  because `dcert==<v>` is not on PyPI until the release publishes it.
 - [ ] **Phase 3: CI.** Build both wheel sets, install tests per platform
   (`pip install dcert`, then `dcert-mcp` with and without the extra), the
   `lowest-direct` audit and `uv.lock` for `dcert-mcp`, publish both.

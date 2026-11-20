@@ -1,0 +1,136 @@
+# Metadata for the `dcert-mcp` wheel. The wheel is built by scripts/build_wheels.py:
+# it carries the prebuilt `dcert-mcp` executable (as a wheel script, so no Python
+# runs when the server starts) and the `dcert_mcp` package in src/. The builder
+# reads this file, so there is one source of truth for metadata and extras.
+[project]
+name = "dcert-mcp"
+version = "3.0.95"
+description = "MCP server for TLS certificate analysis, with an optional FastMCP proxy and typed client"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+authors = [
+    { name = "sreengineer" },
+]
+keywords = ["tls", "certificate", "x509", "mcp", "model-context-protocol", "fastmcp", "ai-tools", "security"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
+    "Programming Language :: Rust",
+    "Topic :: Security",
+    "Topic :: Software Development :: Libraries",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Typing :: Typed",
+]
+# The default install carries no third party package: the MCP server is the Rust
+# binary. `dcert` is pinned to the same version (the build stamps both).
+dependencies = [
+    "dcert==3.0.95",
+]
+
+[project.optional-dependencies]
+# The FastMCP proxy, typed client and `dcert-mcp-proxy` command.
+proxy = [
+    "fastmcp>=4.2.3,<5",
+    "click>=8.5.1,<9",
+    "pyyaml>=6.0.3,<7",
+    # Security floors for transitive packages: the first release with every
+    # known advisory fixed, so no resolver can select a vulnerable version.
+    "mcp>=2.3.0",
+    "starlette>=1.3.1",
+    "authlib>=1.9.1",
+    "pyjwt>=2.15.1",
+    "cryptography>=50.0.0",
+    "joserfc>=1.7.6",
+    "httpx2>=2.12.0",
+    "httpcore2>=2.10.0",
+    "python-multipart>=0.0.31",
+    "anyio>=4.14.2",
+    "dnspython>=2.9.2",
+    "certifi>=2026.10.18",
+    "pydantic-settings>=2.14.2",
+    "opentelemetry-api>=1.45.2",
+]
+otel = [
+    "opentelemetry-sdk>=1.45.2",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.45.2",
+]
+dev = [
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.4.1",
+    "pytest-cov>=7.1",
+    "pytest-timeout>=2.4",
+    "ruff>=0.17.3",
+    "mypy>=2.4.1",
+    "types-PyYAML>=6.0.12.20261103",
+]
+
+[project.urls]
+Homepage = "https://github.com/SCGIS-Wales/dcert"
+Repository = "https://github.com/SCGIS-Wales/dcert"
+Issues = "https://github.com/SCGIS-Wales/dcert/issues"
+Documentation = "https://github.com/SCGIS-Wales/dcert#python-package"
+Changelog = "https://github.com/SCGIS-Wales/dcert/blob/main/CHANGELOG.md"
+
+# Not a build-backend project: scripts/build_wheels.py assembles the wheel.
+# Console scripts (dcert-mcp is the Rust executable, installed as a wheel script):
+#   dcert-mcp        -> prebuilt binary
+#   dcert-mcp-proxy  -> dcert_mcp.proxy:main
+[tool.dcert-wheel]
+python-package = "src/dcert_mcp"
+entry-points = { dcert-mcp-proxy = "dcert_mcp.proxy:main" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+timeout = 120
+addopts = "--strict-markers --cov=dcert_mcp --cov-report=term-missing --cov-fail-under=85"
+filterwarnings = [
+    "error::DeprecationWarning",
+    # Python 3.15 warns when isinstance() meets a typing.Protocol that is not
+    # @runtime_checkable. The check comes from beartype inside fastmcp's
+    # key-value cache wrappers (third party code this package does not call
+    # directly); with warnings as errors it would fail every cached server
+    # test on 3.15 until those packages are updated. Tracked upstream.
+    "ignore:.*isn't explicitly decorated with @runtime_checkable.*:DeprecationWarning",
+]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["dcert_mcp"]
+mypy_path = "src"
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+# The OpenTelemetry SDK is an optional extra.
+module = ["opentelemetry.*"]
+ignore_missing_imports = true
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B", "SIM", "RUF100", "ARG", "S", "ASYNC", "PT", "ANN"]
+ignore = [
+    # PEP 695 type parameter syntax is deliberately avoided (see the project brief).
+    "UP040", "UP046", "UP047",
+    # The public ``timeout`` parameters are applied internally with asyncio.timeout.
+    "ASYNC109",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests: assert statements, missing annotations and fixture arguments are expected.
+"tests/*" = ["S101", "S104", "ANN", "ARG001", "S105", "S106", "S108", "ASYNC230", "ASYNC240"]
+"../../scripts/test_*.py" = ["S101", "ANN", "ARG001", "S603", "S607"]
