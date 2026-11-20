@@ -8,6 +8,9 @@ summary is written.
 
 ### Security
 
+- Link OpenSSL 3.5 LTS (built from the official source, SHA256 pinned) in the
+  Windows binaries instead of the out of support 3.6 from `openssl-src`, and
+  remove the OpenSSL exception: every artefact is now on a supported branch.
 - Publish the after snapshot (`docs/security/after/`) and a before and after table
   in `SECURITY.md`.
 - Commit `python/uv.lock`, check it is current in CI, audit the locked set in the

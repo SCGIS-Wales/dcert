@@ -86,11 +86,11 @@ rpassword = "7.5"
 tower = { version = "0.5.3", features = ["limit", "timeout", "util"], optional = true }
 tokio-util = { version = "0.7.20", optional = true }
 
-# Windows has no system OpenSSL. Build it from source via the `vendored`
-# feature (gated to Windows so Linux/macOS keep using system/Homebrew OpenSSL).
-# The vendored build requires Perl and NASM on the build machine (CI installs them).
-[target.'cfg(windows)'.dependencies]
-openssl = { version = "0.10", features = ["vendored"] }
+# Windows has no system OpenSSL. The release build links a static OpenSSL 3.5
+# that CI builds from the official source (scripts/ci/build_openssl_windows.ps1)
+# and exposes through OPENSSL_DIR and OPENSSL_STATIC=1. To build on Windows
+# yourself, point OPENSSL_DIR at an OpenSSL install, or use `--features vendored`
+# (needs Perl and NASM).
 
 [features]
 default = ["xlsx"]

@@ -118,7 +118,7 @@ choco install dcert
 
 Or `pip install dcert` (the `win_amd64` wheel bundles `dcert.exe` and `dcert-mcp.exe`), or download the `dcert-x86_64-pc-windows-msvc.zip` archive from the [Releases](https://github.com/SCGIS-Wales/dcert/releases) page and add the extracted `.exe` files to your `PATH`.
 
-> Note: the Windows build links a vendored OpenSSL that has no system trust store. If certificate verification fails because no CA roots are found, set `SSL_CERT_FILE` to a CA bundle (e.g. one exported from your organization or a `cacert.pem`).
+> Note: the Windows build links a static OpenSSL 3.5 (built from the official source in CI) that has no system trust store. If certificate verification fails because no CA roots are found, set `SSL_CERT_FILE` to a CA bundle (e.g. one exported from your organization or a `cacert.pem`).
 
 ### Build from source
 
