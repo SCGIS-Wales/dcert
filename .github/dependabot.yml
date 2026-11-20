@@ -57,10 +57,10 @@ updates:
       - "github-actions"
       - "dependencies"
 
-  # Python wrapper package under python/, which ships to PyPI alongside the
-  # crate and had no update schedule of its own.
+  # The dcert-mcp package under python/dcert-mcp, which ships to PyPI. The
+  # dcert wheel has no Python dependencies.
   - package-ecosystem: "pip"
-    directory: "/python"
+    directory: "/python/dcert-mcp"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -75,18 +75,6 @@ updates:
       prefix: "deps"
       prefix-development: "deps-dev"
       include: "scope"
-    labels:
-      - "dependencies"
-      - "python"
-
-  # Security updates for the committed python/uv.lock. Version updates stay off
-  # (limit 0): they rewrite lower bounds in pyproject.toml. Routine refreshes
-  # of the lock file are done by hand with `uv lock --upgrade`.
-  - package-ecosystem: "uv"
-    directory: "/python"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 0
     labels:
       - "dependencies"
       - "python"

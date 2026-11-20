@@ -2,7 +2,7 @@
 # dotted key in the target YAML file to a constant in the source Rust file;
 # scripts/sync_defaults.py rewrites the values and CI fails when they drift.
 source: src/limits.rs
-target: python/src/dcert/config.yaml
+target: python/dcert-mcp/src/dcert_mcp/config.yaml
 keys:
   tools.truststore_password: DEFAULT_TRUSTSTORE_PASSWORD
   tools.keystore_alias: DEFAULT_KEYSTORE_ALIAS

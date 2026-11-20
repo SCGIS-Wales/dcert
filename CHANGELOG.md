@@ -6,6 +6,18 @@ summary is written.
 
 ## Unreleased
 
+### Breaking changes (4.0)
+
+- Split the PyPI package in two. `pip install dcert` is now the command line tool only
+  and installs no Python dependency. The MCP server is `pip install dcert-mcp`, which
+  depends on `dcert` at the same version; the FastMCP proxy, typed client and
+  OpenTelemetry export are extras (`dcert-mcp[proxy]`, `dcert-mcp[proxy,otel]`).
+- The Python import name is `dcert_mcp` (was `dcert`), the proxy command is
+  `dcert-mcp-proxy` (was `dcert-python`), and `--setup` and the run time binary
+  download are removed: the wheels carry the executables as wheel scripts.
+- Without the `proxy` extra, importing a helper that needs FastMCP fails with one line
+  naming the extra.
+
 ### Security
 
 - Link OpenSSL 3.5 LTS (built from the official source, SHA256 pinned) in the
@@ -13,8 +25,8 @@ summary is written.
   remove the OpenSSL exception. The floor check is a hard gate for the Windows binary and report-only for the dynamically linked Linux and macOS binaries.
 - Publish the after snapshot (`docs/security/after/`) and a before and after table
   in `SECURITY.md`.
-- Commit `python/uv.lock`, check it is current in CI, audit the locked set in the
-  scheduled audit, and enable Dependabot security updates for it.
+- Audit the `dcert-mcp` requirements (newest and oldest versions the declared ranges
+  allow) in CI and in the scheduled audit.
 - Add a scheduled security audit workflow (`audit.yml`, daily) covering Rust and
   Python advisories, the binaries and image of the latest release, and expired
   exceptions; it opens one "Security audit failing" issue on failure.

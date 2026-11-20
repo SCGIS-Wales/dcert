@@ -313,13 +313,15 @@ jobs:
         with:
           fail-on-severity: high
 
+  # Lint, type and consistency checks for the build scripts and the dcert-mcp
+  # requirements. The package's own lint and tests are in python-mcp below.
   python-lint:
-    name: Python lint and types
+    name: Python scripts lint and types
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
       run:
-        working-directory: python
+        working-directory: python/dcert-mcp
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -333,72 +335,34 @@ jobs:
 
       # The dev extra pins ruff and mypy, so CI and a developer's machine run
       # the same versions.
-      - name: Install package with dev dependencies
-        run: pip install -e ".[dev]"
-
-      # The build scripts live outside the package but ship with it, so they
-      # are linted and type checked under the same configuration.
-      # A stale lock file fails fast; python/uv.lock is what the scheduled
-      # audit checks.
-      - name: Lock file is current
+      - name: Install the requirements of the extras
         run: |
-          # Pinned: the lock file format revision depends on the uv version.
-          pip install uv==0.13.9
-          "$GITHUB_WORKSPACE/scripts/ci/check_uv_lock.sh"
+          python ../../scripts/ci/extras_requirements.py proxy otel dev > extras.txt
+          pip install -r extras.txt
 
       - name: Ruff check
-        run: ruff check src tests ../scripts
+        run: ruff check ../../scripts
 
       - name: Ruff format check
-        run: ruff format --check src tests ../scripts
-
-      - name: Mypy (strict)
-        run: mypy
+        run: ruff format --check ../../scripts
 
       - name: Mypy (build scripts)
-        run: mypy --strict ../scripts/build_wheels.py ../scripts/sync_defaults.py ../scripts/gen_cipher_table.py ../scripts/fetch_aws_tls_policies.py ../scripts/check_cli_deps.py ../scripts/check_openssl_floor.py ../scripts/check_exceptions.py ../scripts/ci/openssl_pin.py
+        run: mypy --strict ../../scripts/build_wheels.py ../../scripts/sync_defaults.py ../../scripts/gen_cipher_table.py ../../scripts/fetch_aws_tls_policies.py ../../scripts/check_cli_deps.py ../../scripts/check_openssl_floor.py ../../scripts/check_exceptions.py ../../scripts/ci/openssl_pin.py ../../scripts/ci/extras_requirements.py
 
       - name: Defaults in step with src/limits.rs
-        run: python ../scripts/sync_defaults.py --check
+        run: python ../../scripts/sync_defaults.py --check
 
-      # Known vulnerabilities in the resolved dependency set (runtime and dev).
-      # The package itself is installed editable and is not on PyPI at this
-      # version, so it is skipped.
+      # Known vulnerabilities in the requirements of the extras at the oldest
+      # and newest versions the declared ranges allow. The package itself is
+      # not on PyPI at this version until the release publishes it.
       - name: Dependency audit
         run: |
-          pip install pip-audit
-          pip-audit --skip-editable --progress-spinner off
-
-  python-test:
-    name: Python test (${{ matrix.python-version }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.12", "3.13", "3.14", "3.15"]
-    defaults:
-      run:
-        working-directory: python
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: ${{ matrix.python-version }}
-          allow-prereleases: true
-
-      - name: Install package with dev dependencies
-        run: pip install -e ".[dev]"
-
-      # Timeout, coverage target and the coverage gate live in pyproject.toml,
-      # so a local run enforces exactly what CI does.
-      - name: Run tests with coverage
-        run: pytest -v --cov-report=xml:coverage.xml
+          pip install uv==0.13.9 pip-audit
+          python ../../scripts/ci/extras_requirements.py proxy otel > runtime.in
+          uv pip compile runtime.in --python-version 3.12 -o latest.txt
+          uv pip compile runtime.in --python-version 3.12 --resolution lowest-direct -o lowest.txt
+          pip-audit -r latest.txt --no-deps --disable-pip --strict
+          pip-audit -r lowest.txt --no-deps --disable-pip --strict
 
   # The dcert-mcp package (python/dcert-mcp). It depends on `dcert` at the same
   # version, which is not on PyPI until the release publishes it, so the package
@@ -428,18 +392,14 @@ jobs:
 
       - name: Install the package and the requirements of its extras
         run: |
-          python - <<'PYEOF' > extras.txt
-          import tomllib
-          extras = tomllib.load(open("pyproject.toml", "rb"))["project"]["optional-dependencies"]
-          print("\n".join(extras["proxy"] + extras["otel"] + extras["dev"]))
-          PYEOF
+          python ../../scripts/ci/extras_requirements.py proxy otel dev > extras.txt
           pip install -r extras.txt
 
       - name: Ruff check
-        run: ruff check src tests ../../scripts/test_dcert_mcp_wheel.py
+        run: ruff check src tests
 
       - name: Ruff format check
-        run: ruff format --check src tests ../../scripts/test_dcert_mcp_wheel.py
+        run: ruff format --check src tests
 
       - name: Mypy (strict)
         run: mypy
@@ -462,7 +422,6 @@ jobs:
         with:
           python-version: "3.12"
 
-      # The build scripts read the packaged config.yaml for the platform table.
       - name: Install test dependencies
         run: pip install pytest pyyaml click
 
@@ -471,7 +430,7 @@ jobs:
           pytest -v scripts/test_build_wheels.py scripts/test_sync_defaults.py
           scripts/test_gen_cipher_table.py scripts/test_fetch_aws_tls_policies.py
           scripts/test_check_cli_deps.py scripts/test_check_openssl_floor.py scripts/test_check_exceptions.py scripts/test_openssl_pin.py
-          scripts/test_dcert_wheel.py scripts/test_dcert_mcp_wheel.py
+          scripts/test_dcert_wheel.py scripts/test_dcert_mcp_wheel.py scripts/test_extras_requirements.py
 
   # src/ciphers_table.rs is generated from the vendored IANA registry. The
   # table must regenerate byte for byte; a newer registry on iana.org is
@@ -533,70 +492,6 @@ jobs:
       - name: Catalogue regenerates from the snapshot
         run: python scripts/fetch_aws_tls_policies.py generate --check
 
-  # Functional test: build a platform wheel, install it in a venv,
-  # and verify that dcert, dcert-mcp, and dcert-python commands work.
-  # Pinned to ubuntu-22.04 to match the build environment for Linux wheels.
-  wheel-install-test:
-    name: Wheel install test (Ubuntu 22.04)
-    runs-on: ubuntu-22.04
-    timeout-minutes: 20
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Python
-        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: "3.12"
-
-      - name: Install test dependencies
-        run: pip install pytest build pyyaml
-
-      - name: Run wheel install functional tests
-        run: pytest -v scripts/test_wheel_install.py
-
-  python-build:
-    name: Python build
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    needs: [ auto-tag ]
-    if: always() && (needs.auto-tag.result == 'success' || needs.auto-tag.result == 'skipped')
-    defaults:
-      run:
-        working-directory: python
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Python
-        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: "3.12"
-
-      - name: Set Python package version
-        if: needs.auto-tag.outputs.version != ''
-        working-directory: .
-        run: |
-          VERSION="${{ needs.auto-tag.outputs.version }}"
-          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" python/pyproject.toml
-          sed -i "s/^__version__ = \".*\"/__version__ = \"$VERSION\"/" python/src/dcert/__init__.py
-
-      - name: Install build tools
-        run: pip install build twine
-
-      # Builds the sdist and the universal wheel and checks their metadata.
-      # Neither is published: they carry no binaries, so only the platform
-      # wheels from build-platform-wheels reach PyPI and the release.
-      - name: Build package
-        run: python -m build
-
-      - name: Check package
-        run: twine check dist/*
-
   # Integration tests: build the Rust binary and run Python integration tests
   # against the real dcert-mcp binary
   integration-test:
@@ -605,7 +500,7 @@ jobs:
     timeout-minutes: 30
     defaults:
       run:
-        working-directory: python
+        working-directory: python/dcert-mcp
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -638,7 +533,7 @@ jobs:
         run: |
           cargo build --release --locked --bin dcert
           cargo build --release --locked --bin dcert-mcp --features mcp
-        working-directory: .
+        working-directory: ${{ github.workspace }}
 
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -646,7 +541,11 @@ jobs:
           python-version: "3.12"
 
       - name: Install package with dev dependencies
-        run: pip install -e ".[dev]"
+        run: |
+          pip install tomli
+          python ../../scripts/ci/extras_requirements.py proxy otel dev > extras.txt
+          pip install -r extras.txt
+          pip install --no-deps -e .
 
       # --no-cov: the coverage gate in pyproject addopts is written for the
       # unit suite. These tests drive the real binary end to end and touch a
@@ -740,17 +639,15 @@ jobs:
           PYEOF
 
           # Update Python package version
-          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" python/pyproject.toml
           sed -i "s/^version = \".*\"/version = \"$VERSION\"/" python/dcert-cli/pyproject.toml
           sed -i "s/^version = \".*\"/version = \"$VERSION\"/" python/dcert-mcp/pyproject.toml
           sed -i "s/\"dcert==[^\"]*\"/\"dcert==$VERSION\"/" python/dcert-mcp/pyproject.toml
           sed -i "s/^__version__ = \".*\"/__version__ = \"$VERSION\"/" python/dcert-mcp/src/dcert_mcp/__init__.py
-          sed -i "s/^__version__ = \".*\"/__version__ = \"$VERSION\"/" python/src/dcert/__init__.py
 
           # Commit the version bump
           git config user.name "api-py"
           git config user.email "5954680+api-py@users.noreply.github.com"
-          git add Cargo.toml Cargo.lock python/pyproject.toml python/dcert-cli/pyproject.toml python/dcert-mcp/pyproject.toml python/dcert-mcp/src/dcert_mcp/__init__.py python/src/dcert/__init__.py
+          git add Cargo.toml Cargo.lock python/dcert-cli/pyproject.toml python/dcert-mcp/pyproject.toml python/dcert-mcp/src/dcert_mcp/__init__.py
           git commit -m "chore: bump version to ${VERSION} [skip ci]"
           git push origin main
 
@@ -1084,10 +981,15 @@ jobs:
           path: dist/dcert-x86_64-pc-windows-msvc.zip
 
   # Build platform-specific Python wheels that bundle the Rust binaries
+  # The two PyPI projects (docs/plans/2026-11-pypi-split-dcert-mcp.md): `dcert`
+  # (the CLI, no Python dependencies) and `dcert-mcp` (the MCP server and the
+  # optional proxy). Each platform wheel carries a prebuilt executable, so an
+  # install never downloads from GitHub. Built from the real release archives,
+  # which runs the glibc check on the real binaries.
   build-platform-wheels:
     name: Build platform wheels
-    needs: [ auto-tag, build-linux, build-macos-intel, build-macos-arm, build-windows, python-build ]
-    if: always() && needs.python-build.result == 'success' && needs.build-linux.result == 'success' && needs.build-macos-intel.result == 'success' && needs.build-macos-arm.result == 'success' && needs.build-windows.result == 'success'
+    needs: [ auto-tag, build-linux, build-macos-intel, build-macos-arm, build-windows ]
+    if: always() && needs.build-linux.result == 'success' && needs.build-macos-intel.result == 'success' && needs.build-macos-arm.result == 'success' && needs.build-windows.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -1106,20 +1008,14 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Set Python package version
+      - name: Set Python package versions
         if: needs.auto-tag.outputs.version != ''
         run: |
           VERSION="${{ needs.auto-tag.outputs.version }}"
-          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" python/pyproject.toml
           sed -i "s/^version = \".*\"/version = \"$VERSION\"/" python/dcert-cli/pyproject.toml
           sed -i "s/^version = \".*\"/version = \"$VERSION\"/" python/dcert-mcp/pyproject.toml
           sed -i "s/\"dcert==[^\"]*\"/\"dcert==$VERSION\"/" python/dcert-mcp/pyproject.toml
           sed -i "s/^__version__ = \".*\"/__version__ = \"$VERSION\"/" python/dcert-mcp/src/dcert_mcp/__init__.py
-          sed -i "s/^__version__ = \".*\"/__version__ = \"$VERSION\"/" python/src/dcert/__init__.py
-
-      # pyyaml: build_wheels.py reads the packaged config.yaml.
-      - name: Install build tools
-        run: pip install build pyyaml
 
       - name: Download all release artifacts
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -1131,72 +1027,15 @@ jobs:
       - name: List release assets
         run: ls -la release-assets/
 
-      # Checksums are generated BEFORE the wheel is built. They are package
-      # data: build_wheels.py copies the universal wheel's contents verbatim
-      # into every platform wheel, so a wheel built first would ship the empty
-      # placeholder and the auto-download path could never verify a binary.
-      - name: Generate checksums.json
+      - name: Build the dcert and dcert-mcp wheels
         run: |
-          python3 - "${{ needs.auto-tag.outputs.version || '0.0.0' }}" <<'PYEOF'
-          import hashlib, json, os, sys
-
-          checksums = {"version": sys.argv[1], "archives": {}}
-          assets_dir = "release-assets"
-          for name in sorted(os.listdir(assets_dir)):
-              if name.startswith("dcert-") and name.endswith((".tar.gz", ".zip")):
-                  with open(os.path.join(assets_dir, name), "rb") as fh:
-                      checksums["archives"][name] = hashlib.file_digest(fh, "sha256").hexdigest()
-          if not checksums["archives"]:
-              sys.exit("no release archives found; refusing to ship empty checksums")
-          with open("python/src/dcert/checksums.json", "w") as out:
-              json.dump(checksums, out, indent=2)
-              out.write("\n")
-          print(json.dumps(checksums, indent=2))
-          PYEOF
-
-      - name: Build universal wheel
-        run: python -m build --wheel python/
-
-      - name: Verify checksums are inside the wheel
-        run: |
-          python3 - <<'PYEOF'
-          import glob, json, sys, zipfile
-
-          wheel = sorted(glob.glob("python/dist/dcert-*.whl"))[-1]
-          with zipfile.ZipFile(wheel) as zf:
-              data = json.loads(zf.read("dcert/checksums.json"))
-          if not data.get("archives"):
-              sys.exit(f"{wheel} ships checksums with no archives")
-          print(f"{wheel} carries {len(data['archives'])} checksums for version {data['version']}")
-          PYEOF
-
-      - name: Build platform-specific wheels
-        run: |
-          python scripts/build_wheels.py \
-            --wheel python/dist/dcert-*.whl \
-            --archives-dir release-assets/ \
-            --output python/platform-dist/
-
-      - name: List platform wheels
-        run: ls -la python/platform-dist/
-
-      # The zero dependency `dcert` CLI wheels of the PyPI split (see
-      # docs/plans/2026-11-pypi-split-dcert-mcp.md). Built from the real release
-      # archives, which runs the glibc check on the real binaries. Not published
-      # yet: phase 3 of the split adds the publish.
-      - name: Build the dcert CLI wheels
-        run: |
-          python scripts/build_wheels.py \
-            --project python/dcert-cli \
-            --archives-dir release-assets/ \
-            --output python/dcert-cli-dist/
-          ls -la python/dcert-cli-dist/
-
-      - name: Upload the dcert CLI wheels
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: python-wheels-dcert-cli
-          path: python/dcert-cli-dist/*.whl
+          for project in dcert-cli dcert-mcp; do
+            python scripts/build_wheels.py \
+              --project "python/$project" \
+              --archives-dir release-assets/ \
+              --output python/platform-dist/
+          done
+          ls -la python/platform-dist/
 
       - name: Attest wheel build provenance
         if: needs.auto-tag.outputs.created == 'true'
@@ -1209,6 +1048,41 @@ jobs:
         with:
           name: python-wheels-platform
           path: python/platform-dist/*.whl
+
+  # Installs the built wheels the way a user would, on each platform, from the
+  # local wheel directory (the packages are not on PyPI yet): `dcert` alone,
+  # `dcert-mcp` (which must pull in `dcert` and no third party package), then
+  # the `proxy` extra from PyPI.
+  wheel-install-test:
+    name: Wheel install test (${{ matrix.os }})
+    needs: [ build-platform-wheels ]
+    if: needs.build-platform-wheels.result == 'success'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-22.04, macos-15-intel, macos-latest, windows-latest ]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Download the wheels
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: python-wheels-platform
+          path: wheels
+
+      - name: Install and run
+        shell: bash
+        run: python scripts/ci/wheel_install_check.py wheels
 
   # Docker image reuses the Linux binary from the build-linux job instead
   # of recompiling from source, cutting build time from ~30min to ~30sec.
@@ -1484,7 +1358,7 @@ jobs:
   release:
     name: Create GitHub Release
     if: needs.auto-tag.outputs.created == 'true'
-    needs: [ auto-tag, test, security-audit, build-linux, build-macos-intel, build-macos-arm, build-windows, create-homebrew-formula, python-build, build-platform-wheels ]
+    needs: [ auto-tag, test, security-audit, build-linux, build-macos-intel, build-macos-arm, build-windows, create-homebrew-formula, build-platform-wheels ]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -1535,7 +1409,7 @@ jobs:
           path: ./artifacts/sbom
 
       # The platform wheels, the only Python distributions published: each
-      # bundles the binaries, so an install never downloads from GitHub
+      # carries its executable, so an install never downloads from GitHub
       # (blocked in locked down networks). build-platform-wheels already
       # attests their provenance.
       - name: Download platform wheels
@@ -1551,7 +1425,7 @@ jobs:
           find artifacts -path artifacts/python -prune -o \( -name "*.tar.gz" -o -name "*.zip" \) -print | while read file; do
             cp "$file" release-assets/
           done
-          # Python platform wheels, each carrying dcert and dcert-mcp
+          # Python platform wheels: dcert (CLI) and dcert-mcp (server and proxy)
           ls artifacts/python/*.whl > /dev/null || { echo "::error::no wheels found"; exit 1; }
           if ls artifacts/python/*-none-any.whl > /dev/null 2>&1; then
             echo "::error::a wheel without the binaries reached the release"; exit 1
@@ -1595,20 +1469,23 @@ jobs:
           ### Python (pip)
 
           \`\`\`bash
-          pip install dcert
+          pip install dcert        # the command line tool
+          pip install dcert-mcp    # the MCP server (and dcert)
+          pip install "dcert-mcp[proxy]"  # plus the FastMCP proxy and typed client
           \`\`\`
 
-          Every wheel bundles \`dcert\` and \`dcert-mcp\`, so nothing is downloaded at install or run time. The same wheels are attached to this release for offline and mirror installs:
+          Each wheel carries a prebuilt executable, so nothing is downloaded at install or run time, and \`dcert\` installs no Python dependency. The same wheels are attached to this release for offline and mirror installs:
 
-          | Platform | Wheel |
+          | Platform | Wheel suffix |
           | --- | --- |
-          | Linux x86_64 (glibc 2.34+: RHEL 9, Ubuntu 22.04, Debian 12 and later) | \`dcert-${TAG#v}-py3-none-manylinux_2_34_x86_64.whl\` |
-          | macOS Intel (10.15+) | \`dcert-${TAG#v}-py3-none-macosx_10_15_x86_64.whl\` |
-          | macOS Apple Silicon (11+) | \`dcert-${TAG#v}-py3-none-macosx_11_0_arm64.whl\` |
-          | Windows x86_64 | \`dcert-${TAG#v}-py3-none-win_amd64.whl\` |
+          | Linux x86_64 (glibc 2.34+: RHEL 9, Ubuntu 22.04, Debian 12 and later) | \`py3-none-manylinux_2_34_x86_64.whl\` |
+          | macOS Intel (10.15+) | \`py3-none-macosx_10_15_x86_64.whl\` |
+          | macOS Apple Silicon (11+) | \`py3-none-macosx_11_0_arm64.whl\` |
+          | Windows x86_64 | \`py3-none-win_amd64.whl\` |
 
           \`\`\`bash
           pip install dcert-${TAG#v}-py3-none-manylinux_2_34_x86_64.whl
+          pip install dcert_mcp-${TAG#v}-py3-none-manylinux_2_34_x86_64.whl
           \`\`\`
 
           ### Prebuilt binaries
@@ -1948,10 +1825,10 @@ jobs:
         shell: pwsh
         run: Write-Host "CHOCO_API_KEY secret not set — skipping chocolatey.org publish (the .nupkg artifact is still available)."
 
-  publish-pypi:
-    name: Publish to PyPI
+  publish-pypi-dcert:
+    name: Publish dcert to PyPI
     if: needs.auto-tag.outputs.created == 'true'
-    needs: [ auto-tag, release, python-lint, python-test, python-mcp, python-build, build-platform-wheels, integration-test, wheel-install-test ]
+    needs: [ auto-tag, release, python-lint, python-mcp, build-platform-wheels, integration-test, wheel-install-test ]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -1960,19 +1837,94 @@ jobs:
       name: pypi
       url: https://pypi.org/project/dcert/
     steps:
-      # Only the platform wheels: each bundles the binaries. Without a
-      # universal wheel or an sdist, pip on a host no platform wheel fits
-      # fails with "no matching distribution" instead of installing a package
-      # that must download the binary from GitHub at run time.
+      # Only platform wheels, each with its executable: on a host no wheel fits,
+      # pip fails with "no matching distribution" instead of installing a
+      # package that must download a binary at run time.
       - name: Download platform wheels
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: python-wheels-platform
-          path: dist/
+          path: all/
 
-      - name: List distributions to publish
+      - name: Select the dcert distributions
         run: |
+          mkdir dist
+          cp all/dcert-[0-9]*.whl dist/
           ls -la dist/
+          [ "$(ls dist/*.whl | wc -l)" -eq 4 ] || { echo "::error::expected 4 wheels"; exit 1; }
+          if ls dist/*-none-any.whl dist/*.tar.gz > /dev/null 2>&1; then
+            echo "::error::only platform wheels with bundled binaries are published"; exit 1
+          fi
+
+      # PyPI publishing occasionally fails on transient upstream errors — most
+      # often a 5xx from the Sigstore Rekor transparency log while generating
+      # PEP 740 attestations (e.g. "Rekor returned an unknown error with HTTP
+      # 502"). Retry the publish with exponential backoff instead of failing the
+      # release. Every attempt uses the official trusted-publisher action (OIDC)
+      # with skip-existing, so files uploaded by an earlier partial attempt are
+      # skipped rather than causing a hard error on the next try.
+      - name: Publish to PyPI (attempt 1)
+        id: publish1
+        continue-on-error: true
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          packages-dir: dist/
+          skip-existing: true
+
+      - name: Backoff before attempt 2
+        if: steps.publish1.outcome == 'failure'
+        run: echo "Attempt 1 failed (likely transient). Waiting 30s before retry..." && sleep 30
+
+      - name: Publish to PyPI (attempt 2)
+        id: publish2
+        if: steps.publish1.outcome == 'failure'
+        continue-on-error: true
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          packages-dir: dist/
+          skip-existing: true
+
+      - name: Backoff before attempt 3
+        if: steps.publish1.outcome == 'failure' && steps.publish2.outcome == 'failure'
+        run: echo "Attempt 2 failed (likely transient). Waiting 60s before final retry..." && sleep 60
+
+      # Final attempt: NOT continue-on-error, so a persistent failure here
+      # (i.e. a real problem rather than a transient blip) fails the job.
+      - name: Publish to PyPI (attempt 3, final)
+        if: steps.publish1.outcome == 'failure' && steps.publish2.outcome == 'failure'
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          packages-dir: dist/
+          skip-existing: true
+
+  publish-pypi-mcp:
+    name: Publish dcert-mcp to PyPI
+    # Needs the dcert wheels on PyPI first: dcert-mcp requires dcert==<same version>.
+    if: needs.auto-tag.outputs.created == 'true'
+    needs: [ auto-tag, publish-pypi-dcert, build-platform-wheels ]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      id-token: write
+    environment:
+      name: pypi
+      url: https://pypi.org/project/dcert-mcp/
+    steps:
+      # Only platform wheels, each with its executable: on a host no wheel fits,
+      # pip fails with "no matching distribution" instead of installing a
+      # package that must download a binary at run time.
+      - name: Download platform wheels
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: python-wheels-platform
+          path: all/
+
+      - name: Select the dcert-mcp distributions
+        run: |
+          mkdir dist
+          cp all/dcert_mcp-*.whl dist/
+          ls -la dist/
+          [ "$(ls dist/*.whl | wc -l)" -eq 4 ] || { echo "::error::expected 4 wheels"; exit 1; }
           if ls dist/*-none-any.whl dist/*.tar.gz > /dev/null 2>&1; then
             echo "::error::only platform wheels with bundled binaries are published"; exit 1
           fi
