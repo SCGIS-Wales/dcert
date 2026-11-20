@@ -1826,13 +1826,16 @@ jobs:
   publish-pypi-dcert:
     name: Publish dcert to PyPI
     if: needs.auto-tag.outputs.created == 'true'
-    needs: [ auto-tag, publish-pypi-mcp, build-platform-wheels ]
+    needs: [ auto-tag, release, python-lint, python-mcp, build-platform-wheels, integration-test, wheel-install-test ]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       id-token: write
+    # Its own environment, so the OIDC claims of this job match exactly one
+    # PyPI trusted publisher (dcert). With one environment for both projects
+    # PyPI minted a token valid for dcert-mcp only and refused the dcert upload.
     environment:
-      name: pypi
+      name: pypi-dcert
       url: https://pypi.org/project/dcert/
     steps:
       # Only platform wheels, each with its executable: on a host no wheel fits,
@@ -1897,12 +1900,9 @@ jobs:
 
   publish-pypi-mcp:
     name: Publish dcert-mcp to PyPI
-    # Published first on purpose: the pending trusted publisher for the new project
-    # name shares repository, workflow and environment with the one for dcert, and
-    # until its first upload PyPI scopes the OIDC token to the pending project only.
-    # After that one upload the token is valid for both projects, and dcert follows.
+    # After the dcert wheels: dcert-mcp requires dcert==<same version>.
     if: needs.auto-tag.outputs.created == 'true'
-    needs: [ auto-tag, release, python-lint, python-mcp, build-platform-wheels, integration-test, wheel-install-test ]
+    needs: [ auto-tag, publish-pypi-dcert, build-platform-wheels ]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
