@@ -10,6 +10,9 @@ summary is written.
 
 - Upgrade `zlib1g` in the Docker image (CVE-2026-85091) on top of the pinned
   base layer.
+- Add `scripts/check_cli_deps.py` and `scripts/cli_deps_budget.yaml`, a
+  dependency budget for the `dcert` CLI tree. It reports only until the
+  `mcp` feature split lands.
 - Pin the Trivy scanner binary version in the image scan, and refresh the
   `taiki-e/install-action` and CodeQL action pins.
 - Raise the Python dependency floors to patched releases (`fastmcp` 4.2.3,
