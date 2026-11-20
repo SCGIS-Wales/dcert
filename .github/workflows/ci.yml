@@ -542,10 +542,8 @@ jobs:
 
       - name: Install package with dev dependencies
         run: |
-          pip install tomli
           python ../../scripts/ci/extras_requirements.py proxy otel dev > extras.txt
           pip install -r extras.txt
-          pip install --no-deps -e .
 
       # --no-cov: the coverage gate in pyproject addopts is written for the
       # unit suite. These tests drive the real binary end to end and touch a
