@@ -694,13 +694,13 @@ jobs:
 
           # Update Python package version
           sed -i "s/^version = \".*\"/version = \"$VERSION\"/" python/pyproject.toml
-          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" python/dcert/pyproject.toml
+          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" python/dcert-cli/pyproject.toml
           sed -i "s/^__version__ = \".*\"/__version__ = \"$VERSION\"/" python/src/dcert/__init__.py
 
           # Commit the version bump
           git config user.name "api-py"
           git config user.email "5954680+api-py@users.noreply.github.com"
-          git add Cargo.toml Cargo.lock python/pyproject.toml python/dcert/pyproject.toml python/src/dcert/__init__.py
+          git add Cargo.toml Cargo.lock python/pyproject.toml python/dcert-cli/pyproject.toml python/src/dcert/__init__.py
           git commit -m "chore: bump version to ${VERSION} [skip ci]"
           git push origin main
 
@@ -1061,7 +1061,7 @@ jobs:
         run: |
           VERSION="${{ needs.auto-tag.outputs.version }}"
           sed -i "s/^version = \".*\"/version = \"$VERSION\"/" python/pyproject.toml
-          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" python/dcert/pyproject.toml
+          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" python/dcert-cli/pyproject.toml
           sed -i "s/^__version__ = \".*\"/__version__ = \"$VERSION\"/" python/src/dcert/__init__.py
 
       # pyyaml: build_wheels.py reads the packaged config.yaml.
@@ -1134,16 +1134,16 @@ jobs:
       - name: Build the dcert CLI wheels
         run: |
           python scripts/build_wheels.py \
-            --project python/dcert \
+            --project python/dcert-cli \
             --archives-dir release-assets/ \
-            --output python/dcert-dist/
-          ls -la python/dcert-dist/
+            --output python/dcert-cli-dist/
+          ls -la python/dcert-cli-dist/
 
       - name: Upload the dcert CLI wheels
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: python-wheels-dcert-cli
-          path: python/dcert-dist/*.whl
+          path: python/dcert-cli-dist/*.whl
 
       - name: Attest wheel build provenance
         if: needs.auto-tag.outputs.created == 'true'

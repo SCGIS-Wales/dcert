@@ -20,7 +20,7 @@ from zipfile import ZipFile
 import pytest
 from build_wheels import PLATFORM_MAP, build_all_cli, build_cli_wheel, main, read_project
 
-PROJECT = Path(__file__).resolve().parent.parent / "python" / "dcert"
+PROJECT = Path(__file__).resolve().parent.parent / "python" / "dcert-cli"
 LICENSE = Path(__file__).resolve().parent.parent / "LICENSE"
 FAKE_CLI = b"#!/bin/sh\necho dcert-fake\n"
 LINUX_ARCHIVE = "dcert-x86_64-unknown-linux-gnu.tar.gz"

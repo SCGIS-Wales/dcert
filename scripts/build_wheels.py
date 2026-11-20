@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build platform specific wheels by bundling the Rust binaries.
 
-Two modes. ``--project python/dcert`` builds the ``dcert`` CLI wheel from
+Two modes. ``--project python/dcert-cli`` builds the ``dcert`` CLI wheel from
 scratch: the executable goes in ``.data/scripts`` (so pip installs it straight
 into ``bin/`` and no Python runs), the wheel has no Python code and no
 dependencies, and its metadata is read from that project's ``pyproject.toml``.
@@ -18,7 +18,7 @@ from the ``dcert`` package in ``python/src`` so the two cannot disagree.
 Usage::
 
     python scripts/build_wheels.py \\
-        --project python/dcert \\
+        --project python/dcert-cli \\
         --archives-dir release-assets/ \\
         --output dist/
 

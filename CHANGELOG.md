@@ -58,7 +58,7 @@ summary is written.
 
 ### Added
 
-- `python/dcert/` and `scripts/build_wheels.py --project`: the zero dependency
+- `python/dcert-cli/` and `scripts/build_wheels.py --project`: the zero dependency
   `dcert` CLI wheel of the PyPI split. The executable is installed from
   `.data/scripts`, so no Python runs when you type `dcert`; the wheel has no
   `Requires-Dist` and no Python code. CI builds these wheels from the release

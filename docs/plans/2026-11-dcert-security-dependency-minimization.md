@@ -161,7 +161,7 @@ uvx zizmor@1.32.0 --gh-token "$(gh auth token)" .github/workflows/
 
 ### 5.1 `dcert` wheel: zero dependencies, enforced
 
-- `dependencies = []` in `python/dcert/pyproject.toml`. No extras.
+- `dependencies = []` in `python/dcert-cli/pyproject.toml`. No extras.
 - The wheel contains the `dcert` binary and at most a standard library launcher. `download.py`, `checksums.json`, `config.py` and `config.yaml` do not ship in `dcert`. The package performs no network access.
 - Preferred layout, to be settled with the packaging plan: place the native executable in the wheel `.data/scripts` directory, as `ruff` and `uv` do, so that no Python code runs when the user types `dcert`. If a Python launcher is kept, it may import only standard library modules.
 - Constants the launcher needs (environment variable names) live in one generated module, written from the YAML source by a script and checked in CI, because the launcher cannot read YAML without a dependency.
