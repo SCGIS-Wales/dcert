@@ -13,6 +13,9 @@ summary is written.
   exceptions; it opens one "Security audit failing" issue on failure.
   `scripts/check_exceptions.py` fails CI for any advisory exception without an
   `expires` date or past it.
+- Harden the workflows: a required `zizmor` job, `persist-credentials: false` on
+  every checkout that does not push, dependency review on pull requests, and a
+  report only Trivy scan that includes findings without a fix.
 - Publish one CycloneDX SBOM per binary, `dcert-cli-sbom.cdx.json` and
   `dcert-mcp-sbom.cdx.json`, in place of `dcert-sbom.cdx.json`. Both are listed
   in `SHA256SUMS` and attested.
