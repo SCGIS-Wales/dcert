@@ -58,6 +58,12 @@ summary is written.
 
 ### Added
 
+- `python/dcert-cli/` and `scripts/build_wheels.py --project`: the zero dependency
+  `dcert` CLI wheel of the PyPI split. The executable is installed from
+  `.data/scripts`, so no Python runs when you type `dcert`; the wheel has no
+  `Requires-Dist` and no Python code. CI builds these wheels from the release
+  archives (artifact `python-wheels-dcert-cli`); they are not published yet.
+  Contract tests build the real wheel and `pip install` it.
 - A cipher suite model (`src/ciphers.rs`) with one table generated from the
   IANA TLS Cipher Suites registry: code point, IANA and OpenSSL names,
   protocol, key exchange, authentication, encryption, MAC and the AEAD,

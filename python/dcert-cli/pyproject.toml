@@ -1,0 +1,35 @@
+# Metadata for the `dcert` wheel. The wheel is built by scripts/build_wheels.py
+# from the release archives (it carries the prebuilt `dcert` executable and no
+# Python code), which reads this file, so there is one source of truth. This is
+# not a build backend project: there is nothing to compile from this directory.
+[project]
+name = "dcert"
+version = "3.0.93"
+description = "TLS certificate analysis, format conversion and key verification CLI"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+authors = [
+    { name = "sreengineer" },
+]
+keywords = ["tls", "certificate", "x509", "pem", "pkcs12", "ocsp", "security", "cli"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Rust",
+    "Topic :: Security",
+    "Topic :: System :: Networking",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+]
+# The contract for this project: no Python dependencies, ever.
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/SCGIS-Wales/dcert"
+Repository = "https://github.com/SCGIS-Wales/dcert"
+Issues = "https://github.com/SCGIS-Wales/dcert/issues"
+Changelog = "https://github.com/SCGIS-Wales/dcert/blob/main/CHANGELOG.md"
