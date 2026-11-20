@@ -39,7 +39,7 @@ Three conclusions follow.
 | --- | --- | --- | --- |
 | O1 | `dcert` wheel has no Python dependencies | 0 `Requires-Dist` lines | Wheel metadata test in CI |
 | O2 | `dcert` launcher uses the standard library only and never opens a network connection | No third party import, no `urllib` | Import test in CI |
-| O3 | `dcert` CLI binary excludes every MCP only crate | 0 banned crates in the CLI tree, at most 170 crates | `scripts/check_cli_deps.py` in CI |
+| O3 | `dcert` CLI binary excludes every MCP only crate | 0 banned crates in the CLI tree, at most 170 crates (135 after S4b) | `scripts/check_cli_deps.py` in CI |
 | O4 | No ignored advisory anywhere | Empty `ignore` lists in `.cargo/audit.toml` and `deny.toml` | `cargo audit`, `cargo deny` |
 | O5 | No known unpatched vulnerability in either distribution at release | 0 findings | `cargo audit`, `cargo audit bin`, `uv audit`, `pip-audit`, Trivy |
 | O6 | Every shipped binary declares its exact dependency list | `cargo auditable` data present in all eight binaries | `cargo audit bin` in CI |
@@ -237,10 +237,10 @@ Measured effect on Linux x86_64 (normal dependencies, unique crates, root crate 
 | Build | Before | After S1 and S2 | After S3 |
 | --- | --- | --- | --- |
 | `dcert-mcp` (`--features mcp`) | 257 | 226 | 226 |
-| `dcert` (default features) | 257 | 226 | 166 |
-| `dcert` (`--no-default-features`) | 257 | 226 | 156 |
+| `dcert` (default features) | 257 | 226 | 166 (131 after S4b) |
+| `dcert` (`--no-default-features`) | 257 | 226 | 156 (121 after S4b) |
 
-After S3 the CLI tree contains none of `rmcp`, `axum`, `jsonwebtoken`, `rsa`, `crypto-bigint` or `chrono`. `tokio`, `hyper`, `rustls` and `aws-lc-rs` remain in the CLI through `reqwest`, whose subtree is about 92 crates. Reducing that is optional phase S4b.
+After S3 the CLI tree contains none of `rmcp`, `axum`, `jsonwebtoken`, `rsa`, `crypto-bigint` or `chrono`. `tokio`, `hyper`, `rustls` and `aws-lc-rs` remain in the CLI through `reqwest`, whose subtree is about 92 crates. Reducing that is optional phase S4b, done: see its session notes.
 
 Consequences that must be handled in the same pull request:
 
@@ -426,7 +426,8 @@ One pull request per checkbox. Branch name `plan/S<phase>-<n>-<slug>`. Each pull
   - Session notes: Options 1 and 2 are unavailable. `openssl-src` has no newer 3.x or 4.x package that `openssl-sys` 0.9.118 (`^300.2.0`) accepts, and vcpkg only ships the 3.6 branch (3.6.5, still out of support). Option 3 is recorded as a dated exception in `scripts/openssl_floor.yaml` (expires 2026-12-18, owner Dejan Gregor). Dejan had asked to proceed without further approvals; review this decision.
   - Update: superseded by option A. The macOS binaries link the host's OpenSSL dynamically (the Intel runner image had 3.6.3 but ARM 3.5.9), so only Windows carries its own OpenSSL and was on 3.6; the floor check is a hard gate there and report-only (`--report-only`) for macOS. Reinstalling Homebrew's openssl@3 on the runner was tried and breaks Homebrew's own curl. Windows now links OpenSSL 3.5.9 built from the official source in CI (pinned version and SHA256 in `scripts/openssl_floor.yaml`), and the exception list is empty. Upstream rust-openssl #2692 (`vendored-4`) is the alternative if 4.0 is wanted later.
 - [x] **S4.2 OpenSSL floor gate for every artefact.** `scripts/openssl_floor.yaml` plus a CI step per build job. Includes the macOS linkage check with `otool -L`.
-- [ ] **S4b (optional, later) Reduce the HTTP client.** Evaluate replacing blocking `reqwest` in `src/http.rs`, `src/trust.rs` and `src/vault.rs` with `ureq` 3 over the OpenSSL already linked. Expected saving is most of the 92 crate `reqwest` subtree. Proxy support, timeouts and the Vault client must behave identically. Do not start without Dejan's approval.
+- [x] **S4b (optional, later) Reduce the HTTP client.** Evaluate replacing blocking `reqwest` in `src/http.rs`, `src/trust.rs` and `src/vault.rs` with `ureq` 3 over the OpenSSL already linked. Expected saving is most of the 92 crate `reqwest` subtree. Proxy support, timeouts and the Vault client must behave identically. Do not start without Dejan's approval.
+  - Session notes: Approved ("complete the whole plan") and done. `src/http.rs` is a small client on `ureq` 3 (no ureq TLS feature) with an OpenSSL connector, so the CLI carries one TLS stack. Measured saving: 166 to 131 crates (121 without Excel export), with `reqwest`, `hyper`, `tokio`, `rustls`, `aws-lc-rs` and `ring` gone and now banned by the budget gate (cap 135). Behaviour kept: proxy per scheme with `NO_PROXY`, plain `http` sent in absolute form to an HTTP proxy (ureq alone would CONNECT, which many proxies refuse for port 80) with `Proxy-Authorization` from the proxy URL; redirects followed by dcert (limit, same-origin rule for Vault that never carries `X-Vault-Token` off the origin, 307/308 keep method and body); pinned addresses through a resolver; Vault `LIST`; capped body reads; connect, timeout and redirect error kinds for the Vault messages. Trust: OpenSSL defaults as in the probe, the system store on macOS and Windows (`rustls-native-certs`, which pulls in no TLS implementation), plus the extra CA file and directory. Tests run TLS end to end against a local OpenSSL server (untrusted refused with the verify reason, trusted with the CA file, insecure mode, host name mismatch). `dcert-mcp` keeps async `reqwest` for OIDC (229 crates, was 226, because it links `ureq` too).
 
 ### Phase S5: Python contract (with the split pull request)
 

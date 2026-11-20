@@ -458,7 +458,7 @@ fn http_client(
     timeout: Duration,
     max_redirects: usize,
     pinned: Option<&crate::netpolicy::PinnedHost>,
-) -> Result<reqwest::blocking::Client> {
+) -> Result<crate::http::HttpClient> {
     crate::http::blocking_client(&crate::http::HttpClientOptions {
         timeout: Some(timeout),
         proxy: Some(proxy),
@@ -504,9 +504,10 @@ fn refresh_public_roots(proxy: &ProxyConfig, timeout: Duration, debug: bool) -> 
     let resp = client
         .get(CCADB_BUNDLE_URL)
         .send()
-        .map_err(|e| anyhow::anyhow!("request failed: {e}"))?
-        .error_for_status()
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        .map_err(|e| anyhow::anyhow!("request failed: {e}"))?;
+    if !resp.status().is_success() {
+        anyhow::bail!("HTTP {} from {CCADB_BUNDLE_URL}", resp.status());
+    }
     let pem = crate::http::read_capped(resp, MAX_BUNDLE_BYTES, "CCADB bundle")?;
 
     let certs = X509::stack_from_pem(&pem).map_err(|e| anyhow::anyhow!("failed to parse CCADB bundle: {e}"))?;
