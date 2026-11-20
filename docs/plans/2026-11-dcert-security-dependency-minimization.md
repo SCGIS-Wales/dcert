@@ -448,11 +448,13 @@ One pull request per checkbox. Branch name `plan/S<phase>-<n>-<slug>`. Each pull
 
 ### Phase S6: permanent gates
 
-- [ ] **S6.1 Scheduled audit workflow `.github/workflows/audit.yml`.** Daily cron and manual dispatch. Runs `cargo audit`, `cargo deny check advisories`, `uv audit --locked`, the `lowest-direct` audit, `cargo audit bin` against the binaries of the latest release, and Trivy on the published image. Permissions `contents: read` and `issues: write` only. On failure it opens or updates one issue titled "Security audit failing".
+- [x] **S6.1 Scheduled audit workflow `.github/workflows/audit.yml`.** Daily cron and manual dispatch. Runs `cargo audit`, `cargo deny check advisories`, `uv audit --locked`, the `lowest-direct` audit, `cargo audit bin` against the binaries of the latest release, and Trivy on the published image. Permissions `contents: read` and `issues: write` only. On failure it opens or updates one issue titled "Security audit failing".
+  - Session notes: Done. `.github/workflows/audit.yml`: daily 05:17 UTC and manual dispatch; Rust (`cargo audit`, `cargo deny check advisories`), Python (latest and lowest-direct `pip-audit`; `uv audit --locked` joins once S5.3 commits a lock file), release binaries (`cargo audit bin`), published image (Trivy), exception expiry, and one issue titled "Security audit failing" opened or updated on failure. Permissions: `contents: read`, plus `issues: write` on the report job only.
 - [ ] **S6.2 Workflow hardening.** Add zizmor as a required job; add `actions/dependency-review-action` on pull requests; add a second Trivy step with `ignore-unfixed: false` and `exit-code: 0` for visibility; enable secret scanning and push protection (repository setting, ask Dejan).
 - [ ] **S6.3 Rules for `ci-mcp.yml` if it uses `workflow_run`.** Run only when the triggering run was a `push` to `main` of this repository and concluded successfully; never check out or execute code from the triggering ref; treat downloaded artefacts as data and verify each with `gh attestation verify` before publishing; grant `id-token: write` to the publish job alone.
 - [ ] **S6.4 Dependabot.** Section 5.6.
-- [ ] **S6.5 Exception expiry check.** A script fails CI when any entry in an ignore list lacks an `expires` comment or is past it.
+- [x] **S6.5 Exception expiry check.** A script fails CI when any entry in an ignore list lacks an `expires` comment or is past it.
+  - Session notes: Done. `scripts/check_exceptions.py` covers `.cargo/audit.toml`, `deny.toml` and the exception list of `scripts/openssl_floor.yaml`; it runs in CI and in the scheduled audit.
 
 ### Phase S7: final verification
 

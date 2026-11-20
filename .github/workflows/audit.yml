@@ -1,0 +1,135 @@
+name: Security audit
+
+# Scheduled advisory checks between merges (security plan, objective O8). A new
+# advisory can appear any day; without this, nothing fails until the next push.
+
+on:
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: Rust advisories
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install audit tooling
+        uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
+        with:
+          tool: cargo-audit,cargo-deny
+
+      - name: cargo audit
+        run: cargo audit
+
+      - name: cargo deny advisories
+        run: cargo deny check advisories
+
+  exceptions:
+    name: Advisory exceptions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Fail on a missing or expired exception
+        run: |
+          pip install click pyyaml
+          python scripts/check_exceptions.py
+
+  python:
+    name: Python advisories
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install tools
+        run: pip install uv pip-audit
+
+      # The latest allowed versions, and the lowest the declared ranges allow,
+      # which is what an old cache or mirror may serve.
+      - name: Resolve and audit
+        run: |
+          uv pip compile python/pyproject.toml --extra otel --python-version 3.12 -o latest.txt
+          uv pip compile python/pyproject.toml --extra otel --python-version 3.12 \
+            --resolution lowest-direct -o lowest.txt
+          pip-audit -r latest.txt --no-deps --disable-pip --strict
+          pip-audit -r lowest.txt --no-deps --disable-pip --strict
+
+  release-binaries:
+    name: Latest release binaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Install audit tooling
+        uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
+        with:
+          tool: cargo-audit
+
+      # Each binary embeds its exact dependency list (cargo auditable), so this
+      # audits what shipped, not what the source tree resolves today.
+      - name: Download and audit the Linux archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p release && cd release
+          gh release download --repo "$GITHUB_REPOSITORY" --pattern 'dcert-x86_64-unknown-linux-gnu.tar.gz'
+          tar xzf dcert-x86_64-unknown-linux-gnu.tar.gz
+          cargo audit bin dcert dcert-mcp
+
+  image:
+    name: Published image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Trivy scan (fixable critical and high)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ghcr.io/scgis-wales/dcert:latest
+          version: v0.76.2
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+  report:
+    name: Open or update the failure issue
+    needs: [rust, exceptions, python, release-binaries, image]
+    if: failure()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Open or update one issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Security audit failing"
+          body="The scheduled security audit failed: ${RUN_URL}"
+          number="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$title\" in:title" \
+            --json number --jq '.[0].number')"
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          fi

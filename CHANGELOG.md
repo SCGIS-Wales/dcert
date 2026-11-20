@@ -8,6 +8,11 @@ summary is written.
 
 ### Security
 
+- Add a scheduled security audit workflow (`audit.yml`, daily) covering Rust and
+  Python advisories, the binaries and image of the latest release, and expired
+  exceptions; it opens one "Security audit failing" issue on failure.
+  `scripts/check_exceptions.py` fails CI for any advisory exception without an
+  `expires` date or past it.
 - Publish one CycloneDX SBOM per binary, `dcert-cli-sbom.cdx.json` and
   `dcert-mcp-sbom.cdx.json`, in place of `dcert-sbom.cdx.json`. Both are listed
   in `SHA256SUMS` and attested.
