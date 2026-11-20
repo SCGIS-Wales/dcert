@@ -4,7 +4,7 @@
 # reads this file, so there is one source of truth for metadata and extras.
 [project]
 name = "dcert-mcp"
-version = "3.0.95"
+version = "4.0.1"
 description = "MCP server for TLS certificate analysis, with an optional FastMCP proxy and typed client"
 readme = "README.md"
 license = "MIT"
@@ -33,7 +33,7 @@ classifiers = [
 # The default install carries no third party package: the MCP server is the Rust
 # binary. `dcert` is pinned to the same version (the build stamps both).
 dependencies = [
-    "dcert==3.0.95",
+    "dcert==4.0.1",
 ]
 
 [project.optional-dependencies]
