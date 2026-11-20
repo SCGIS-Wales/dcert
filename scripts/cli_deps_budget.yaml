@@ -1,0 +1,26 @@
+# Dependency budget for the dcert CLI binary (security plan, objective O3).
+# Read by scripts/check_cli_deps.py. The CLI is built without the `mcp`
+# feature, so none of the MCP only crates may appear in its tree.
+
+# Arguments added to `cargo tree` to select the CLI feature set. Empty means
+# the default features, which include `xlsx`.
+cargo_args: []
+
+# Upper bound on unique crates (`name version`) in the normal dependency tree.
+max_crates: 170
+
+# false: report only. true: exit 1 on a violation. Switched on by S3.2.
+enforce: false
+
+# Crates that must not be in the CLI tree.
+banned_crates:
+  - rmcp
+  - rmcp-macros
+  - axum
+  - axum-core
+  - jsonwebtoken
+  - rsa
+  - crypto-bigint
+  - chrono
+  - tower-http
+  - tracing-subscriber

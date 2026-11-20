@@ -403,10 +403,10 @@ One pull request per checkbox. Branch name `plan/S<phase>-<n>-<slug>`. Each pull
 
 ### Phase S3: minimal CLI (before or with the 4.0.0 split pull request)
 
-- [ ] **S3.1 Add the dependency budget gate, initially report only.**
+- [x] **S3.1 Add the dependency budget gate, initially report only.**
   - Scope: `scripts/check_cli_deps.py` (click, functional style) and `scripts/cli_deps_budget.yaml` holding `max_crates` and `banned_crates`. The script runs `cargo tree --locked -e normal --prefix none` for the CLI feature set and compares. Unit tests in `scripts/test_check_cli_deps.py`.
   - Acceptance: job runs and reports the current count without failing the build.
-  - Session notes:
+  - Session notes: Done. Script, budget file and 8 unit tests added; CI runs the tests and the report step in the security-audit job. Reports 232 unique crates and 9 banned-crate hits on macOS before S3.2.
 
 - [ ] **S3.2 Introduce the `mcp` and `xlsx` features and build each binary separately.**
   - Scope: section 5.2 in full, including every CI job listed there and `cargo auditable` builds.
