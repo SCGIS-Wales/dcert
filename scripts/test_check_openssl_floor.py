@@ -80,3 +80,14 @@ def test_exception_too_far_ahead_fails() -> None:
 def test_exception_without_owner_fails() -> None:
     spec = dict(SPEC, exceptions=[{"branch": "3.6", "reason": "r", "expires": D(2026, 12, 18)}])
     assert "lacks owner" in floor.verdict((3, 6, 3), spec, NOV)
+
+
+def test_report_only_does_not_fail_below_the_floor(tmp_path: Path) -> None:
+    from click.testing import CliRunner
+
+    binary = tmp_path / "fake"
+    binary.write_text("#!/bin/sh\necho 'dcert 1'\necho 'OpenSSL 3.4.1 1 Jan 2026'\n")
+    binary.chmod(0o755)
+    runner = CliRunner()
+    assert runner.invoke(floor.main, [str(binary)]).exit_code == 1
+    assert runner.invoke(floor.main, ["--report-only", str(binary)]).exit_code == 0

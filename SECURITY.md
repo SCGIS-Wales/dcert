@@ -223,11 +223,11 @@ All GitHub Actions are pinned to commit SHAs.
 
 ### OpenSSL
 
-dcert links OpenSSL, and the version in each artefact is part of its security posture. `scripts/openssl_floor.yaml` records the minimum patch release per supported branch (3.5 and 4.0), and CI runs `dcert --version` on every built binary and fails below it.
+dcert links OpenSSL, and the version in each artefact is part of its security posture. `scripts/openssl_floor.yaml` records the minimum patch release per supported branch (3.5 and 4.0), and CI runs `dcert --version` on every built binary. It fails the build below the floor for binaries that carry their own OpenSSL (Windows) and reports for the rest.
 
 - **Linux release binaries** link the system `libssl` at run time (OpenSSL 3.0 on the build host, whatever the installed distribution ships when run). Upstream fixes for 3.0 are for premium support customers only, so the distribution is the only source of fixes: keep the host patched. The Docker image uses OpenSSL 3.5 from Debian trixie.
-- **Windows binaries** statically link OpenSSL 3.6.3 (`openssl-src` 300.6.1), and the macOS runners link Homebrew `openssl@3`. The 3.6 branch is out of support. No newer `openssl-src` package exists, `openssl-sys` 0.9 requires `openssl-src` `^300` (so the 4.0 packages cannot be selected), and vcpkg only ships 3.6. This is recorded as a dated exception in `scripts/openssl_floor.yaml`, owned by the maintainer and re-checked weekly; CI fails when it expires.
-- The issues fixed in later 3.6 releases that a certificate parser can reach are rated Low, and the High and Moderate items for that branch concern DTLS, QUIC, CMS and CMP, which dcert does not use.
+- **Windows binaries** statically link OpenSSL 3.5 LTS (supported to 2030), built in CI from the official source tarball with its SHA256 pinned in `scripts/openssl_floor.yaml` (`scripts/ci/build_openssl_windows.ps1`). The `vendored` feature is not used there: `openssl-src` only ships the 3.6 and 4.0 branches, 3.6 is out of support, and `openssl-sys` 0.9 cannot select 4.0. The floor check fails the Windows build if the pin falls behind (3.5.10 on 1 December 2026), so bumping the pin is the whole upgrade.
+- **macOS binaries** link the host's OpenSSL dynamically (Homebrew `openssl@3`), like the Linux binaries, so the shipped file carries none and the version in use is whatever the user has installed: keep Homebrew current. CI prints the version the runner built against but does not fail on it (the Intel runner image carries 3.6.3).
 
 ### Before and after the dependency minimisation (2026-11-20)
 
@@ -241,6 +241,6 @@ dcert links OpenSSL, and the version in each artefact is part of its security po
 | SBOMs per release | 1 | 2, one per binary |
 | Python packages with known vulnerabilities (latest, locked, lowest allowed) | 0 | 0, now checked daily |
 | Scheduled advisory audit | none | daily, opens one issue on failure |
-| OpenSSL floor per artefact | none | checked in CI, with one dated exception (3.6 on Windows and macOS) |
+| OpenSSL floor per artefact | none | hard gate on the Windows binary (the only one that carries OpenSSL); report only for the dynamically linked Linux and macOS binaries |
 
 The Python dependency count (62 packages) falls to zero for the `dcert` wheel with the PyPI split. Raw outputs: `docs/security/baseline/2026-11/` and `docs/security/after/`.

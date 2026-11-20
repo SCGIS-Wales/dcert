@@ -113,6 +113,11 @@ def run_version(binary: Path) -> str:
 
 
 @click.command()
+@click.option(
+    "--report-only",
+    is_flag=True,
+    help="Print the verdict but exit 0 (for binaries that link the host's OpenSSL dynamically).",
+)
 @click.argument("binary", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option(
     "--floors",
@@ -126,7 +131,7 @@ def run_version(binary: Path) -> str:
     default=None,
     help="Override today's date (tests).",
 )
-def main(binary: Path, floors: Path, today: datetime.datetime | None) -> None:
+def main(binary: Path, floors: Path, today: datetime.datetime | None, report_only: bool) -> None:
     """Check the OpenSSL linked into BINARY against the recorded floor."""
     spec = yaml.safe_load(floors.read_text(encoding="utf-8"))
     day = today.date() if today else datetime.datetime.now(datetime.timezone.utc).date()  # noqa: UP017 - 3.10 runners lack datetime.UTC
@@ -134,6 +139,9 @@ def main(binary: Path, floors: Path, today: datetime.datetime | None) -> None:
     reason = verdict(version, spec, day)
     text = ".".join(map(str, version))
     if reason:
+        if report_only:
+            click.echo(f"report only {binary}: {reason}", err=True)
+            return
         click.echo(f"FAIL {binary}: {reason}", err=True)
         sys.exit(1)
     click.echo(f"ok {binary}: OpenSSL {text}")

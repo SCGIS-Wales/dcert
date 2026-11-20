@@ -20,18 +20,21 @@ scheduled:
 distro_managed:
   - "3.0"
 
+# The OpenSSL the Windows release build links statically. It is built from the
+# official source tarball by scripts/ci/build_openssl_windows.ps1, which
+# verifies the SHA256 below before building. Bump `version` and `sha256`
+# together (checksum from the release page, github.com/openssl/openssl/releases)
+# whenever the floor above rises; the floor check fails the Windows build if
+# the pin falls behind.
+windows_source:
+  version: "3.5.9"
+  sha256: "603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a"
+  url: "https://github.com/openssl/openssl/releases/download/openssl-{version}/openssl-{version}.tar.gz"
+
 # A branch newer than every branch in `floors` passes (for example 4.1).
 # Any other branch fails unless an exception covers it. An exception needs an
 # owner, a reason and an `expires` date no more than 30 days ahead; the check
-# fails once the date has passed.
-exceptions:
-  - branch: "3.6"
-    owner: Dejan Gregor
-    reason: >-
-      The Windows build statically links OpenSSL 3.6.3 from openssl-src
-      300.6.1, and the macOS runners link Homebrew openssl@3. The 3.6 branch is
-      out of support. openssl-src has no newer package (openssl-sys 0.9.x
-      requires ^300, so the 4.0 packages cannot be selected) and vcpkg only
-      ships the 3.6 branch (3.6.5), so neither route reaches a supported
-      branch. Re-check weekly whether openssl-sys accepts openssl-src 400.x.
-    expires: 2026-12-18
+# fails once the date has passed. There is none today: every artefact links a
+# supported branch (Windows 3.5 built from source, macOS Homebrew 3.5, Linux
+# the distribution's libssl).
+exceptions: []

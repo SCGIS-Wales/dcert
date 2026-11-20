@@ -356,7 +356,7 @@ jobs:
         run: mypy
 
       - name: Mypy (build scripts)
-        run: mypy --strict ../scripts/build_wheels.py ../scripts/sync_defaults.py ../scripts/gen_cipher_table.py ../scripts/fetch_aws_tls_policies.py ../scripts/check_cli_deps.py ../scripts/check_openssl_floor.py ../scripts/check_exceptions.py
+        run: mypy --strict ../scripts/build_wheels.py ../scripts/sync_defaults.py ../scripts/gen_cipher_table.py ../scripts/fetch_aws_tls_policies.py ../scripts/check_cli_deps.py ../scripts/check_openssl_floor.py ../scripts/check_exceptions.py ../scripts/ci/openssl_pin.py
 
       - name: Defaults in step with src/limits.rs
         run: python ../scripts/sync_defaults.py --check
@@ -423,7 +423,7 @@ jobs:
         run: >-
           pytest -v scripts/test_build_wheels.py scripts/test_sync_defaults.py
           scripts/test_gen_cipher_table.py scripts/test_fetch_aws_tls_policies.py
-          scripts/test_check_cli_deps.py scripts/test_check_openssl_floor.py scripts/test_check_exceptions.py
+          scripts/test_check_cli_deps.py scripts/test_check_openssl_floor.py scripts/test_check_exceptions.py scripts/test_openssl_pin.py
 
   # src/ciphers_table.rs is generated from the vendored IANA registry. The
   # table must regenerate byte for byte; a newer registry on iana.org is
@@ -837,7 +837,9 @@ jobs:
       - name: OpenSSL floor
         run: |
           pip install click pyyaml
-          python scripts/check_openssl_floor.py dist-bin/dcert
+          # Report only: the macOS binary links the host's OpenSSL dynamically, so
+          # the shipped file carries none; this shows what the runner built against.
+          python scripts/check_openssl_floor.py --report-only dist-bin/dcert
           otool -L dist-bin/dcert | grep -iE 'ssl|crypto' || echo "no dynamic libssl (statically linked)"
 
       - name: Package artifact
@@ -903,7 +905,9 @@ jobs:
       - name: OpenSSL floor
         run: |
           pip install click pyyaml
-          python scripts/check_openssl_floor.py dist-bin/dcert
+          # Report only: the macOS binary links the host's OpenSSL dynamically, so
+          # the shipped file carries none; this shows what the runner built against.
+          python scripts/check_openssl_floor.py --report-only dist-bin/dcert
           otool -L dist-bin/dcert | grep -iE 'ssl|crypto' || echo "no dynamic libssl (statically linked)"
 
       - name: Package artifact
@@ -944,16 +948,39 @@ jobs:
           toolchain: stable
           targets: x86_64-pc-windows-msvc
 
-      # Vendored OpenSSL (Windows-only, see Cargo.toml) builds from source and
-      # requires NASM and Perl. Strawberry Perl ships on the runner image.
+      # OpenSSL 3.5 LTS is built from the official source with Perl and NASM
+      # (Strawberry Perl ships on the runner image) in an MSVC environment;
+      # see scripts/ci/build_openssl_windows.ps1 and scripts/openssl_floor.yaml.
       - name: Install NASM
         uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+
+      - name: MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
 
       - name: Verify build prerequisites
         shell: pwsh
         run: |
           where.exe nasm
           where.exe perl
+          where.exe nmake
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Restore the OpenSSL build
+        id: openssl-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}\openssl
+          key: openssl-windows-${{ hashFiles('scripts/openssl_floor.yaml', 'scripts/ci/build_openssl_windows.ps1') }}
+
+      - name: Build OpenSSL from the pinned source
+        shell: pwsh
+        run: |
+          pip install pyyaml click
+          ./scripts/ci/build_openssl_windows.ps1 -Prefix "$env:RUNNER_TEMP\openssl"
 
       - name: Cache cargo
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
