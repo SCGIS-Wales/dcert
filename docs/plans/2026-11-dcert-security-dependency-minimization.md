@@ -375,7 +375,7 @@ One pull request per checkbox. Branch name `plan/S<phase>-<n>-<slug>`. Each pull
   - Rollback: revert.
   - Session notes: Done. fastmcp 4.2.3, click 8.5.1 and the section 5.5 floors are hard dependencies for now (S5.2 is blocked on confirmation). pip-audit is clean on the latest and the lowest-direct resolution (with the otel extra); ruff, mypy and pytest pass on 3.12. Not run on 3.13 to 3.15 locally; CI covers them.
 
-- [ ] **S1.3 Actions and base image.**
+- [x] **S1.3 Actions and base image.**
   - Scope: resolve each action to its newest release SHA; refresh the `debian:trixie-slim` digest; pin the Trivy binary version in the `trivy-action` step.
   - Commands:
 
@@ -391,7 +391,7 @@ One pull request per checkbox. Branch name `plan/S<phase>-<n>-<slug>`. Each pull
 
   - Acceptance: CI green; Trivy job passes; no action referenced by tag.
   - Rollback: revert.
-  - Session notes:
+  - Session notes: Done. Every action was already at its newest release except taiki-e/install-action (v2.90.6) and github/codeql-action (v4.39.4), now bumped. The debian:trixie-slim digest is unchanged. The Trivy binary is pinned to v0.76.2 through the action `version` input; this is only proven by a CI run, so check the Trivy job on the pull request. No action is referenced by tag.
 
 ### Phase S2: remove the ignored advisories
 
