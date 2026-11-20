@@ -435,7 +435,6 @@ jobs:
           print("\n".join(extras["proxy"] + extras["otel"] + extras["dev"]))
           PYEOF
           pip install -r extras.txt
-          pip install --no-deps -e .
 
       - name: Ruff check
         run: ruff check src tests ../../scripts/test_dcert_mcp_wheel.py

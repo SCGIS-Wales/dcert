@@ -91,6 +91,7 @@ entry-points = { dcert-mcp-proxy = "dcert_mcp.proxy:main" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 timeout = 120
