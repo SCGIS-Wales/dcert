@@ -431,7 +431,7 @@ One pull request per checkbox. Branch name `plan/S<phase>-<n>-<slug>`. Each pull
 
 - [ ] **S5.1 Zero dependency contract tests for the `dcert` wheel.** Section 5.1. Runs against the real built wheel, not the source tree.
 - [ ] **S5.2 Proxy as an optional extra.** Section 5.5. **Blocked until Dejan confirms.**
-- [ ] **S5.3 Commit `uv.lock` for `dcert-mcp` and audit it.**
+- [x] **S5.3 Commit `uv.lock` for `dcert-mcp` and audit it.**
 
   ```bash
   # Step 1: create or refresh the lock file for the dcert-mcp project. Next: audit it.
@@ -445,6 +445,7 @@ One pull request per checkbox. Branch name `plan/S<phase>-<n>-<slug>`. Each pull
     --resolution lowest-direct -o /tmp/lowest.txt
   uvx pip-audit -r /tmp/lowest.txt --no-deps --disable-pip --strict
   ```
+  - Session notes: Done for the current single `python/` project; the lock moves with the split. `uv audit` in uv 0.10.9 is a stub that only prints "Would have audited", so the locked set is audited with `uv export` plus `pip-audit`. CI runs `uv lock --check`; the scheduled audit audits the locked set and both resolutions. Re-point the paths to `python/dcert-mcp` when the split lands.
 
 ### Phase S6: permanent gates
 
@@ -454,9 +455,10 @@ One pull request per checkbox. Branch name `plan/S<phase>-<n>-<slug>`. Each pull
   - Session notes: Done except the repository setting. zizmor 1.32.0 is a CI job (`--min-severity low`): fixed 10 version comment mismatches and added `persist-credentials: false` to every checkout except the two that push (auto-tag, Homebrew tap, annotated `zizmor: ignore[artipacked]`); 21 informational template-injection notes remain below the threshold. Added `actions/dependency-review-action` (PR only, fails on high) and a report only Trivy step with `ignore-unfixed: false`. Secret scanning is enabled; **push protection is still disabled** and is a repository setting for Dejan to switch on.
 - [x] **S6.3 Rules for `ci-mcp.yml` if it uses `workflow_run`.** Run only when the triggering run was a `push` to `main` of this repository and concluded successfully; never check out or execute code from the triggering ref; treat downloaded artefacts as data and verify each with `gh attestation verify` before publishing; grant `id-token: write` to the publish job alone.
   - Session notes: Not applicable today: there is no `ci-mcp.yml` and no workflow uses `workflow_run`. If one is added, these rules apply and zizmor will check it.
-- [ ] **S6.4 Dependabot.** Section 5.6.
+- [x] **S6.4 Dependabot.** Section 5.6.
 - [x] **S6.5 Exception expiry check.** A script fails CI when any entry in an ignore list lacks an `expires` comment or is past it.
   - Session notes: Done. `scripts/check_exceptions.py` covers `.cargo/audit.toml`, `deny.toml` and the exception list of `scripts/openssl_floor.yaml`; it runs in CI and in the scheduled audit.
+  - Session notes: Done for `/python` (`uv` ecosystem, security updates only). Add the two new project directories with the split.
 
 ### Phase S7: final verification
 

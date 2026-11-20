@@ -338,6 +338,13 @@ jobs:
 
       # The build scripts live outside the package but ship with it, so they
       # are linted and type checked under the same configuration.
+      # A stale lock file fails fast; python/uv.lock is what the scheduled
+      # audit checks.
+      - name: Lock file is current
+        run: |
+          pip install uv
+          uv lock --check
+
       - name: Ruff check
         run: ruff check src tests ../scripts
 

@@ -79,6 +79,18 @@ updates:
       - "dependencies"
       - "python"
 
+  # Security updates for the committed python/uv.lock. Version updates stay off
+  # (limit 0): they rewrite lower bounds in pyproject.toml. Routine refreshes
+  # of the lock file are done by hand with `uv lock --upgrade`.
+  - package-ecosystem: "uv"
+    directory: "/python"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+    labels:
+      - "dependencies"
+      - "python"
+
   # Docker base image
   - package-ecosystem: "docker"
     directory: "/"

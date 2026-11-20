@@ -8,6 +8,8 @@ summary is written.
 
 ### Security
 
+- Commit `python/uv.lock`, check it is current in CI, audit the locked set in the
+  scheduled audit, and enable Dependabot security updates for it.
 - Add a scheduled security audit workflow (`audit.yml`, daily) covering Rust and
   Python advisories, the binaries and image of the latest release, and expired
   exceptions; it opens one "Security audit failing" issue on failure.
