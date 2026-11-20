@@ -220,3 +220,11 @@ cosign verify ghcr.io/scgis-wales/dcert@<digest> \
 ```
 
 All GitHub Actions are pinned to commit SHAs.
+
+### OpenSSL
+
+dcert links OpenSSL, and the version in each artefact is part of its security posture. `scripts/openssl_floor.yaml` records the minimum patch release per supported branch (3.5 and 4.0), and CI runs `dcert --version` on every built binary and fails below it.
+
+- **Linux release binaries** link the system `libssl` at run time (OpenSSL 3.0 on the build host, whatever the installed distribution ships when run). Upstream fixes for 3.0 are for premium support customers only, so the distribution is the only source of fixes: keep the host patched. The Docker image uses OpenSSL 3.5 from Debian trixie.
+- **Windows binaries** statically link OpenSSL 3.6.3 (`openssl-src` 300.6.1), and the macOS runners link Homebrew `openssl@3`. The 3.6 branch is out of support. No newer `openssl-src` package exists, `openssl-sys` 0.9 requires `openssl-src` `^300` (so the 4.0 packages cannot be selected), and vcpkg only ships 3.6. This is recorded as a dated exception in `scripts/openssl_floor.yaml`, owned by the maintainer and re-checked weekly; CI fails when it expires.
+- The issues fixed in later 3.6 releases that a certificate parser can reach are rated Low, and the High and Moderate items for that branch concern DTLS, QUIC, CMS and CMP, which dcert does not use.
