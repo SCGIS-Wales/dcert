@@ -13,7 +13,6 @@ use std::collections::HashSet;
 use std::sync::OnceLock;
 
 use anyhow::{Result, bail};
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::ciphers::{Cipher, Protocol};
@@ -24,9 +23,8 @@ pub mod conformance;
 pub const BUILTIN_POLICIES: &str = include_str!("../../kb/tls_policies.yaml");
 
 /// Who publishes a policy.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema, clap::ValueEnum,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, clap::ValueEnum)]
+#[cfg_attr(feature = "mcp", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum PolicyProvider {
     /// Application Load Balancer `ELBSecurityPolicy-*`.
@@ -60,7 +58,8 @@ impl PolicyProvider {
 }
 
 /// One named policy.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "mcp", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct TlsPolicy {
     /// The provider's name for the policy, e.g. `ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09`.
@@ -99,7 +98,8 @@ pub struct TlsPolicy {
 }
 
 /// The catalogue file.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "mcp", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct PolicyCatalogue {
     /// Format version, currently 1.
@@ -202,7 +202,20 @@ impl PolicyCatalogue {
 
     /// JSON schema for the YAML file, for editor validation.
     pub fn json_schema() -> serde_json::Value {
-        serde_json::to_value(schemars::schema_for!(PolicyCatalogue)).unwrap_or_default()
+        #[cfg(feature = "mcp")]
+        {
+            serde_json::to_value(schemars::schema_for!(PolicyCatalogue)).unwrap_or_default()
+        }
+        // The CLI is built without schemars. A test built with the `mcp`
+        // feature proves this checked-in file equals the generated schema.
+        #[cfg(not(feature = "mcp"))]
+        {
+            serde_json::from_str(include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/kb/tls_policies.schema.json"
+            )))
+            .unwrap_or_default()
+        }
     }
 }
 
@@ -337,6 +350,7 @@ mod tests {
         assert!(PolicyCatalogue::parse(&yaml("C02F", "'1.3'")).is_err());
     }
 
+    #[cfg(feature = "mcp")]
     #[test]
     fn schema_file_is_current() {
         let expected = serde_json::to_string_pretty(&PolicyCatalogue::json_schema()).unwrap();

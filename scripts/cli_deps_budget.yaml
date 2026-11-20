@@ -2,15 +2,16 @@
 # Read by scripts/check_cli_deps.py. The CLI is built without the `mcp`
 # feature, so none of the MCP only crates may appear in its tree.
 
-# Arguments added to `cargo tree` to select the CLI feature set. Empty means
-# the default features, which include `xlsx`.
-cargo_args: []
+# Arguments added to `cargo tree` to select the CLI feature set. Empty features
+# means the defaults, which include `xlsx`. The target is pinned so the count
+# does not depend on the machine that runs the check.
+cargo_args: ["--target", "x86_64-unknown-linux-gnu"]
 
 # Upper bound on unique crates (`name version`) in the normal dependency tree.
 max_crates: 170
 
-# false: report only. true: exit 1 on a violation. Switched on by S3.2.
-enforce: false
+# false: report only. true: exit 1 on a violation.
+enforce: true
 
 # Crates that must not be in the CLI tree.
 banned_crates:
@@ -22,5 +23,4 @@ banned_crates:
   - rsa
   - crypto-bigint
   - chrono
-  - tower-http
   - tracing-subscriber

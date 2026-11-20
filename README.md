@@ -125,7 +125,8 @@ Or `pip install dcert` (the `win_amd64` wheel bundles `dcert.exe` and `dcert-mcp
 ```bash
 git clone https://github.com/SCGIS-Wales/dcert.git
 cd dcert
-cargo build --release
+cargo build --release                                  # dcert CLI
+cargo build --release --bin dcert-mcp --features mcp   # MCP server
 # Binaries: target/release/dcert and target/release/dcert-mcp
 ```
 
@@ -1844,8 +1845,10 @@ See the [Python package README](python/README.md) for full documentation.
 
 ```bash
 cargo fmt --all
-cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --all-targets -- -D warnings
+cargo clippy --all-targets --features mcp -- -D warnings
 cargo test
+cargo test --features mcp
 cargo build --release
 ```
 

@@ -10,6 +10,11 @@ summary is written.
 
 - Upgrade `zlib1g` in the Docker image (CVE-2026-85091) on top of the pinned
   base layer.
+- Split the MCP stack behind a new `mcp` Cargo feature. The `dcert` CLI is built
+  without `rmcp`, `axum`, `jsonwebtoken`, `tokio` and `chrono` (257 to 166
+  crates), and `dcert-mcp` requires `--features mcp`. Excel export is behind a
+  default `xlsx` feature. Release builds use `scripts/ci/build_release.sh`
+  (`cargo auditable`, one build per binary) and the budget gate now enforces.
 - Add `scripts/check_cli_deps.py` and `scripts/cli_deps_budget.yaml`, a
   dependency budget for the `dcert` CLI tree. It reports only until the
   `mcp` feature split lands.

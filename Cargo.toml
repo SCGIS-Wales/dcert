@@ -17,6 +17,7 @@ path = "src/main.rs"
 [[bin]]
 name = "dcert-mcp"
 path = "src/mcp/main.rs"
+required-features = ["mcp"]
 
 [dependencies]
 
@@ -40,12 +41,14 @@ pem = "4.0"
 serde_norway = "0.9"
 ctrlc = "3.5"
 openssl-probe = "0.2.2"
+# MCP server only. Optional so the dcert CLI is built and audited without them;
+# the `mcp` feature switches them on for the dcert-mcp binary.
 rmcp = { version = "3.11", features = [
     "server",
     "transport-io",
     "transport-streamable-http-server",
     "client",
-] }
+], optional = true }
 tokio = { version = "1", features = [
     "rt-multi-thread",
     "macros",
@@ -54,9 +57,9 @@ tokio = { version = "1", features = [
     "sync",
     "time",
     "signal",
-] }
-schemars = "1.2"
-jsonwebtoken = { version = "12", features = ["aws_lc_rs"] }
+], optional = true }
+schemars = { version = "1.2", optional = true }
+jsonwebtoken = { version = "12", features = ["aws_lc_rs"], optional = true }
 # reqwest 0.13 replaced 0.12's `rustls-tls-native-roots`: `rustls` now pulls in
 # rustls-platform-verifier, so the platform trust store is used by default and
 # the separate native-roots feature no longer exists. `form` also became its own
@@ -67,20 +70,21 @@ reqwest = { version = "0.13", features = [
     "rustls",
     "blocking",
 ], default-features = false }
-axum = "0.8"
-tower-http = { version = "0.7", features = ["cors", "limit", "timeout", "trace"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+axum = { version = "0.8", optional = true }
+tower-http = { version = "0.7", features = ["cors", "limit", "timeout", "trace"], optional = true }
+tracing = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"], optional = true }
 regex-lite = "0.1"
-subtle = "2.6"
+subtle = { version = "2.6", optional = true }
 tempfile = "3.27"
 percent-encoding = "2.3"
-rust_xlsxwriter = "0.103"
+# Excel export for `dcert vault list`. On by default, removable for a smaller build.
+rust_xlsxwriter = { version = "0.103", optional = true }
 zeroize = { version = "1.9", features = ["derive"] }
 webpki-root-certs = "1"
 rpassword = "7.5"
-tower = { version = "0.5.3", features = ["limit", "timeout", "util"] }
-tokio-util = "0.7.20"
+tower = { version = "0.5.3", features = ["limit", "timeout", "util"], optional = true }
+tokio-util = { version = "0.7.20", optional = true }
 
 # Windows has no system OpenSSL. Build it from source via the `vendored`
 # feature (gated to Windows so Linux/macOS keep using system/Homebrew OpenSSL).
@@ -89,7 +93,24 @@ tokio-util = "0.7.20"
 openssl = { version = "0.10", features = ["vendored"] }
 
 [features]
-default = []
+default = ["xlsx"]
+# Everything the dcert-mcp binary needs. Build it with
+# `cargo build --bin dcert-mcp --features mcp`; the dcert CLI is built without.
+mcp = [
+    "dep:rmcp",
+    "dep:tokio",
+    "dep:jsonwebtoken",
+    "dep:axum",
+    "dep:tower-http",
+    "dep:tower",
+    "dep:tracing",
+    "dep:tracing-subscriber",
+    "dep:tokio-util",
+    "dep:subtle",
+    "dep:schemars",
+]
+# Excel export for `dcert vault list --export file.xlsx`.
+xlsx = ["dep:rust_xlsxwriter"]
 # Build and statically link OpenSSL from source (openssl-src) instead of the
 # system library. Useful on hosts whose OpenSSL predates 3.5 (no ML-KEM) or
 # where no development headers are installed. Requires Perl (and NASM on
