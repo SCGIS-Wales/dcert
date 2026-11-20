@@ -825,6 +825,16 @@ jobs:
         with:
           tool: cargo-auditable
 
+      # The runner images carry a Homebrew openssl@3 of whatever age the image
+      # was built with (the Intel image had 3.6.3, which is out of support).
+      # Reinstall the current formula, then the OpenSSL floor check below
+      # proves what was linked.
+      - name: Use the current Homebrew OpenSSL
+        run: |
+          brew update --quiet
+          brew reinstall openssl@3
+          brew list --versions openssl@3
+
       - name: Build (release)
         env:
           OPENSSL_DIR: /usr/local/opt/openssl@3
@@ -890,6 +900,16 @@ jobs:
         uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
         with:
           tool: cargo-auditable
+
+      # The runner images carry a Homebrew openssl@3 of whatever age the image
+      # was built with (the Intel image had 3.6.3, which is out of support).
+      # Reinstall the current formula, then the OpenSSL floor check below
+      # proves what was linked.
+      - name: Use the current Homebrew OpenSSL
+        run: |
+          brew update --quiet
+          brew reinstall openssl@3
+          brew list --versions openssl@3
 
       - name: Build (release)
         env:
