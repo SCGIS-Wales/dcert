@@ -100,7 +100,12 @@ the user types `dcert`. A user of the MCP server must not need the proxy.
 
 - Register `dcert-mcp` on PyPI with a **pending trusted publisher**:
   repository `SCGIS-Wales/dcert`, workflow `ci.yml`, environment `pypi`.
-  Until then the first upload of the new name fails.
+  Until then the first upload of the new name fails. (Done; first upload 4.0.3.)
+- Add a trusted publisher to the existing `dcert` project for environment
+  `pypi-dcert` (repository `SCGIS-Wales/dcert`, workflow `ci.yml`). With both
+  projects on environment `pypi`, PyPI minted tokens valid for `dcert-mcp`
+  only and refused every `dcert` upload with "OIDC scoped token is not valid
+  for project". The `publish-pypi-dcert` job now uses `pypi-dcert`.
 - Confirm the breaking changes in design point 4 (import name, proxy command).
 - Yanking or deprecating any release of the old `dcert` is a decision for the
   maintainer.
