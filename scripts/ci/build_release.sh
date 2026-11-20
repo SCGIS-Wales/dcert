@@ -27,12 +27,14 @@ case "${TARGET:-$(uname -s)}" in *windows* | MINGW* | MSYS*) exe=".exe" ;; esac
 rm -rf "$out"
 mkdir -p "$out"
 
+# No --locked: the release job stamps the new version into Cargo.toml first,
+# which updates the package entry in Cargo.lock.
 # Step 1: the CLI, default features, no mcp. Next: copy it aside.
-cargo auditable build --release --locked ${target_args[@]+"${target_args[@]}"} --bin dcert
+cargo auditable build --release ${target_args[@]+"${target_args[@]}"} --bin dcert
 cp "${release_dir}/dcert${exe}" "${out}/dcert${exe}"
 
 # Step 2: the MCP server with the mcp feature. Next: copy it aside and verify both exist.
-cargo auditable build --release --locked ${target_args[@]+"${target_args[@]}"} --bin dcert-mcp --features mcp
+cargo auditable build --release ${target_args[@]+"${target_args[@]}"} --bin dcert-mcp --features mcp
 cp "${release_dir}/dcert-mcp${exe}" "${out}/dcert-mcp${exe}"
 
 for binary in "dcert${exe}" "dcert-mcp${exe}"; do
