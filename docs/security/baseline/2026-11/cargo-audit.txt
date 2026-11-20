@@ -1,0 +1,68 @@
+    Fetching advisory database from `https://github.com/RustSec/advisory-db.git`
+      Loaded 1550 security advisories (from /Users/ssddgreg/.cargo/advisory-db)
+    Updating crates.io index
+    Scanning Cargo.lock for vulnerabilities (346 crate dependencies)
+Crate:     crypto-bigint
+Version:   0.5.5
+Title:     Multiple timing variability issues in operations intended to be constant-time
+Date:      2026-10-23
+ID:        RUSTSEC-2026-0387
+URL:       https://github.com/RustCrypto/crypto-bigint/pull/1365
+Solution:  Upgrade to >=0.7.6
+Dependency tree:
+crypto-bigint 0.5.5
+└── elliptic-curve 0.13.8
+    ├── primeorder 0.13.6
+    │   ├── p384 0.13.1
+    │   │   └── jsonwebtoken 11.1.0
+    │   │       └── dcert 3.0.80
+    │   └── p256 0.13.2
+    │       └── jsonwebtoken 11.1.0
+    ├── p384 0.13.1
+    ├── p256 0.13.2
+    └── ecdsa 0.16.9
+        ├── p384 0.13.1
+        └── p256 0.13.2
+
+Crate:     rmcp
+Version:   3.8.0
+Title:     Unbounded response body buffering in Streamable HTTP clients
+Date:      2026-11-05
+ID:        RUSTSEC-2026-0462
+URL:       https://rustsec.org/advisories/RUSTSEC-2026-0462
+Severity:  6.5 (medium)
+Solution:  Upgrade to >=3.9.0
+Dependency tree:
+rmcp 3.8.0
+└── dcert 3.0.80
+
+Crate:     rsa
+Version:   0.9.10
+Title:     Marvin Attack: potential key recovery through timing sidechannels
+Date:      2023-11-22
+ID:        RUSTSEC-2023-0071
+URL:       https://rustsec.org/advisories/RUSTSEC-2023-0071
+Severity:  5.9 (medium)
+Solution:  Upgrade to >=0.10.0
+Dependency tree:
+rsa 0.9.10
+└── jsonwebtoken 11.1.0
+    └── dcert 3.0.80
+
+Crate:     chrono
+Version:   0.4.45
+Warning:   unmaintained
+Title:     chrono is unmaintained
+Date:      2026-09-14
+ID:        RUSTSEC-2026-0543
+URL:       https://rustsec.org/advisories/RUSTSEC-2026-0543
+Dependency tree:
+chrono 0.4.45
+├── schemars 1.2.3
+│   ├── rmcp 3.8.0
+│   │   └── dcert 3.0.80
+│   └── dcert 3.0.80
+└── rmcp 3.8.0
+
+error: 3 vulnerabilities found!
+warning: 1 allowed warning found

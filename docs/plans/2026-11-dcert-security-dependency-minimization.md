@@ -342,11 +342,11 @@ One pull request per checkbox. Branch name `plan/S<phase>-<n>-<slug>`. Each pull
 
 ### Phase S0: baseline
 
-- [ ] **S0.1 Capture the before snapshot.**
+- [x] **S0.1 Capture the before snapshot.**
   - Scope: run section 3 and store the raw outputs under `docs/security/baseline/2026-11/` (`cargo-audit.txt`, `cargo-tree-count.txt`, `pip-audit.txt`, `python-tree.txt`, `trivy.txt`). No code change.
   - Acceptance: files committed; figures match section 1 or the differences are explained in the pull request body.
   - Rollback: revert the commit.
-  - Session notes:
+  - Session notes: Done. Files in `docs/security/baseline/2026-11/` with a README; `trivy.txt` omitted (needs Docker, runs in CI), crate count 261 on macOS vs 257 on Linux.
 
 ### Phase S1: patch by upgrade alone (before the split)
 
