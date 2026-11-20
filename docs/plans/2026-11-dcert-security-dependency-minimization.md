@@ -430,9 +430,12 @@ One pull request per checkbox. Branch name `plan/S<phase>-<n>-<slug>`. Each pull
 
 ### Phase S5: Python contract (with the split pull request)
 
-- [ ] **S5.1 Zero dependency contract tests for the `dcert` wheel.** Section 5.1. Runs against the real built wheel, not the source tree.
-- [ ] **S5.2 Proxy as an optional extra.** Section 5.5. **Blocked until Dejan confirms.**
+- [x] **S5.1 Zero dependency contract tests for the `dcert` wheel.** Section 5.1. Runs against the real built wheel, not the source tree.
+  - Session notes: Done in `scripts/test_dcert_wheel.py` (built wheel: no `Requires-Dist`, no `.py`, executable script, tags, RECORD hashes, a real `pip install`) and `scripts/ci/wheel_install_check.py` (installs on four platforms in CI and asserts no third party package).
+- [x] **S5.2 Proxy as an optional extra.** Section 5.5. Confirmed by Dejan ("dcert and dcert-mcp, two separate Python packages").
+  - Session notes: Done. `dcert-mcp[proxy]` and `[otel]` carry every third party package with the section 5.5 floors; the default `dcert-mcp` install depends only on `dcert`. A missing extra gives one line naming it.
 - [x] **S5.3 Commit `uv.lock` for `dcert-mcp` and audit it.**
+  - Session notes (revised after the split): no lock file for `dcert-mcp`, because `dcert==<version>` cannot resolve before the release publishes it. CI and the scheduled audit instead resolve the extras at the newest and the oldest versions the ranges allow and run `pip-audit` on both; the `uv` Dependabot ecosystem is removed.
 
   ```bash
   # Step 1: create or refresh the lock file for the dcert-mcp project. Next: audit it.

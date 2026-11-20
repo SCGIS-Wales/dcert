@@ -2,7 +2,7 @@
 """Keep the Python package's defaults in step with the Rust CLI.
 
 ``src/limits.rs`` defines every default once. This script copies the values
-named in ``scripts/sync_defaults.yaml`` into ``python/src/dcert/config.yaml``,
+named in ``scripts/sync_defaults.yaml`` into ``python/dcert-mcp/src/dcert_mcp/config.yaml``,
 editing only the value of each listed key so comments and layout survive.
 
 Usage::

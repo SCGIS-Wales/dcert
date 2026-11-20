@@ -76,11 +76,25 @@ the user types `dcert`. A user of the MCP server must not need the proxy.
   `dcert-mcp-proxy` console script prints one line naming the extra when
   FastMCP is missing. `python/uv.lock` for `dcert-mcp` waits for phase 3
   because `dcert==<v>` is not on PyPI until the release publishes it.
-- [ ] **Phase 3: CI.** Build both wheel sets, install tests per platform
+- [x] **Phase 3: CI.** Build both wheel sets, install tests per platform
   (`pip install dcert`, then `dcert-mcp` with and without the extra), the
   `lowest-direct` audit and `uv.lock` for `dcert-mcp`, publish both.
-- [ ] **Phase 4: cut-over.** Remove the old `python/` project, create the
+- [x] **Phase 4: cut-over.** Remove the old `python/` project, create the
   `v4.0.0` tag, migration notes in the README and CHANGELOG.
+  Session notes (phases 3 and 4 landed together, on the owner's instruction to
+  proceed without further confirmation): CI builds both wheel sets from the
+  release archives (`python-wheels-platform` artifact), installs them on four
+  platforms (`scripts/ci/wheel_install_check.py`: `dcert` alone installs no
+  third party package, `dcert-mcp` installs `dcert` and nothing else, the proxy
+  extra comes from PyPI), then publishes `dcert` and afterwards `dcert-mcp`
+  (`publish-pypi-dcert`, `publish-pypi-mcp`). No `uv.lock` for `dcert-mcp`: the
+  `dcert==<v>` pin cannot resolve before the release publishes it, so CI and the
+  scheduled audit resolve the extras' requirements (`scripts/ci/
+  extras_requirements.py`) at the newest and the oldest versions the ranges allow
+  and audit both; the `uv` Dependabot ecosystem is removed, the `pip` one points
+  at `python/dcert-mcp`. The legacy universal-wheel mode of `build_wheels.py`,
+  `download.py` and the old `python/` project are gone. Nothing is yanked: 3.x
+  releases of the old `dcert` stay on PyPI.
 
 ## Owner actions (cannot be done from a pull request)
 
@@ -93,5 +107,5 @@ the user types `dcert`. A user of the MCP server must not need the proxy.
 
 ## Stop conditions
 
-Stop and ask before: phase 4 cut-over; anything that publishes to PyPI under a
-new name; yanking a release.
+Stop and ask before yanking or deleting a release. The cut-over and the first
+publish of `dcert-mcp` were approved by the owner ("go autonomous").

@@ -116,7 +116,7 @@ Install with [Chocolatey](https://chocolatey.org/):
 choco install dcert
 ```
 
-Or `pip install dcert` (the `win_amd64` wheel bundles `dcert.exe` and `dcert-mcp.exe`), or download the `dcert-x86_64-pc-windows-msvc.zip` archive from the [Releases](https://github.com/SCGIS-Wales/dcert/releases) page and add the extracted `.exe` files to your `PATH`.
+Or `pip install dcert` (the `win_amd64` wheel carries `dcert.exe`; `pip install dcert-mcp` adds `dcert-mcp.exe`), or download the `dcert-x86_64-pc-windows-msvc.zip` archive from the [Releases](https://github.com/SCGIS-Wales/dcert/releases) page and add the extracted `.exe` files to your `PATH`.
 
 > Note: the Windows build links a static OpenSSL 3.5 (built from the official source in CI) that has no system trust store. If certificate verification fails because no CA roots are found, set `SSL_CERT_FILE` to a CA bundle (e.g. one exported from your organization or a `cacert.pem`).
 
@@ -1780,9 +1780,18 @@ done
 
 ---
 
-## Python Package
+## Python Packages
 
-A Python wrapper is available on PyPI, providing a FastMCP proxy around the `dcert-mcp` Rust binary. Each wheel bundles `dcert` and `dcert-mcp` for its platform, so installing from PyPI or a private mirror (Artifactory, Nexus) needs no access to GitHub.
+Two separate PyPI projects. Each platform wheel carries a prebuilt executable, so installing from PyPI or a private mirror (Artifactory, Nexus) needs no access to GitHub, and neither package downloads anything at run time.
+
+| Command | Result | Third party Python packages |
+| --- | --- | --- |
+| `pip install dcert` | the `dcert` command line tool | 0 |
+| `pip install dcert-mcp` | the `dcert-mcp` MCP server, and `dcert` through the dependency | 0 |
+| `pip install "dcert-mcp[proxy]"` | plus the FastMCP proxy, typed client and `dcert-mcp-proxy` | the FastMCP stack |
+| `pip install "dcert-mcp[proxy,otel]"` | plus OpenTelemetry export | the FastMCP stack and OpenTelemetry |
+
+`dcert` and `dcert-mcp` always carry the same version, and `dcert-mcp` requires exactly that `dcert`.
 
 | Platform | Wheel tag |
 | --- | --- |
@@ -1793,51 +1802,50 @@ A Python wrapper is available on PyPI, providing a FastMCP proxy around the `dce
 
 The same wheels are attached to every GitHub release. On a host no wheel fits, pip reports "no matching distribution" rather than installing a package without the binary.
 
-```bash
-pip install dcert
-```
+### Upgrading from 3.x
 
-### Quick Start
+Releases before 4.0 shipped one `dcert` package that bundled both binaries and always installed the FastMCP proxy. In 4.x:
+
+- `pip install dcert` installs the CLI only. Install `dcert-mcp` for the MCP server.
+- The Python import name is `dcert_mcp` (was `dcert`), and the proxy and typed client need `pip install "dcert-mcp[proxy]"`.
+- The proxy command is `dcert-mcp-proxy` (was `dcert-python`). `--setup` is gone: nothing is downloaded at run time.
+
+### Quick start
 
 ```python
-from dcert import create_server
+from dcert_mcp import create_server
 
 server = create_server()
 server.run()  # stdio mode (default)
 ```
 
-### CLI
+### Proxy command
 
 ```bash
 # stdio mode (default, for MCP clients like Claude Code)
-dcert-python
+dcert-mcp-proxy
 
 # HTTP and SSE mode refuse to start without authentication: a static bearer
 # token (at least 32 characters) or an OIDC issuer, audience and JWKS URL
 export DCERT_MCP_AUTH_TOKEN="$(openssl rand -hex 32)"
-dcert-python --transport http --port 8080
+dcert-mcp-proxy --transport http --port 8080
 
 # On all interfaces, name the Host header values clients will use
-dcert-python --transport http --host 0.0.0.0 --port 8080 --allowed-hosts mcp.example.com
+dcert-mcp-proxy --transport http --host 0.0.0.0 --port 8080 --allowed-hosts mcp.example.com
 
 # OIDC access tokens instead of a static token
 DCERT_MCP_OIDC_ISSUER=https://idp.example.com DCERT_MCP_OIDC_AUDIENCE=dcert \
-DCERT_MCP_OIDC_JWKS_URL=https://idp.example.com/keys dcert-python --transport http
-
-# Pre-download binary
-dcert-python --setup
+DCERT_MCP_OIDC_JWKS_URL=https://idp.example.com/keys dcert-mcp-proxy --transport http
 ```
 
-### Binary Discovery
+### Binary discovery
 
-The Python package locates the `dcert-mcp` binary in this order:
+The proxy locates the `dcert-mcp` binary in this order:
 
 1. `DCERT_MCP_BINARY` environment variable
-2. Bundled binary in the package `bin/` directory
-3. Download from GitHub Releases with SHA256 verification, only when no binary was found above (for example a source checkout); never needed with a published wheel
-4. `dcert-mcp` on `PATH`
+2. `dcert-mcp` on `PATH` (the wheel installs it there)
 
-See the [Python package README](python/README.md) for full documentation.
+See the [dcert-mcp README](python/dcert-mcp/README.md) for full documentation.
 
 ---
 

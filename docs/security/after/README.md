@@ -8,7 +8,7 @@ after phases S0 to S4 and S6 of
 | --- | --- |
 | `cargo-audit.txt` | `cargo audit --file Cargo.lock` on a copy of the lock file outside the repository (no ignore list applies) |
 | `cargo-tree-count.txt` | `cargo tree --locked -e normal --prefix none --target x86_64-unknown-linux-gnu`, unique crates, per feature set |
-| `python-tree.txt` | `uv export --frozen --no-emit-project` of `python/uv.lock` (runtime) |
+| `python-tree.txt` | `uv export --frozen --no-emit-project` of the former `python/uv.lock` (runtime), as of the snapshot date |
 | `pip-audit.txt` | `pip-audit` on that tree |
 
 The Python tree is still the single package, so it still has dependencies
