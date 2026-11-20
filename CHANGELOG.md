@@ -8,6 +8,8 @@ summary is written.
 
 ### Security
 
+- Upgrade `zlib1g` in the Docker image (CVE-2026-85091) on top of the pinned
+  base layer.
 - Upgrade `rmcp` to 3.11, which fixes RUSTSEC-2026-0462 (unbounded response
   body buffering in Streamable HTTP clients), and refresh every compatible
   crate. `cargo deny` now checks unmaintained notices for direct dependencies
