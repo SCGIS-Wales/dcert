@@ -76,6 +76,9 @@ jobs:
           uv pip compile python/pyproject.toml --extra otel --python-version 3.12 -o latest.txt
           uv pip compile python/pyproject.toml --extra otel --python-version 3.12 \
             --resolution lowest-direct -o lowest.txt
+          uv lock --check --project python
+          uv export --project python --locked --all-extras --no-hashes --no-emit-project -o locked.txt
+          pip-audit -r locked.txt --no-deps --disable-pip --strict
           pip-audit -r latest.txt --no-deps --disable-pip --strict
           pip-audit -r lowest.txt --no-deps --disable-pip --strict
 
