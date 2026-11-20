@@ -422,8 +422,9 @@ One pull request per checkbox. Branch name `plan/S<phase>-<n>-<slug>`. Each pull
 
 ### Phase S4: OpenSSL
 
-- [ ] **S4.1 Windows OpenSSL on a supported, patched release.** Section 5.4. Stop and ask Dejan if option 3 (exception) is the only one available.
-- [ ] **S4.2 OpenSSL floor gate for every artefact.** `scripts/openssl_floor.yaml` plus a CI step per build job. Includes the macOS linkage check with `otool -L`.
+- [x] **S4.1 Windows OpenSSL on a supported, patched release.** Section 5.4. Stop and ask Dejan if option 3 (exception) is the only one available.
+  - Session notes: Options 1 and 2 are unavailable. `openssl-src` has no newer 3.x or 4.x package that `openssl-sys` 0.9.118 (`^300.2.0`) accepts, and vcpkg only ships the 3.6 branch (3.6.5, still out of support). Option 3 is recorded as a dated exception in `scripts/openssl_floor.yaml` (expires 2026-12-18, owner Dejan Gregor). Dejan had asked to proceed without further approvals; review this decision.
+- [x] **S4.2 OpenSSL floor gate for every artefact.** `scripts/openssl_floor.yaml` plus a CI step per build job. Includes the macOS linkage check with `otool -L`.
 - [ ] **S4b (optional, later) Reduce the HTTP client.** Evaluate replacing blocking `reqwest` in `src/http.rs`, `src/trust.rs` and `src/vault.rs` with `ureq` 3 over the OpenSSL already linked. Expected saving is most of the 92 crate `reqwest` subtree. Proxy support, timeouts and the Vault client must behave identically. Do not start without Dejan's approval.
 
 ### Phase S5: Python contract (with the split pull request)

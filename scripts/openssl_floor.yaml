@@ -1,0 +1,37 @@
+# Minimum acceptable OpenSSL per branch for every shipped artefact (security
+# plan, objective O7). Read by scripts/check_openssl_floor.py, which runs
+# `dcert --version` on the built binary.
+
+# Newest patch release required on each supported branch.
+floors:
+  "3.5": "3.5.9"
+  "4.0": "4.0.3"
+
+# Floors that take effect on a date. The script applies every entry whose date
+# has passed, so the bump needs no follow-up pull request.
+scheduled:
+  - date: 2026-12-01
+    floors:
+      "3.5": "3.5.10"
+      "4.0": "4.0.4"
+
+# Branches whose fixes come from the host distribution, not from us: the Linux
+# release binary links the system libssl at run time.
+distro_managed:
+  - "3.0"
+
+# A branch newer than every branch in `floors` passes (for example 4.1).
+# Any other branch fails unless an exception covers it. An exception needs an
+# owner, a reason and an `expires` date no more than 30 days ahead; the check
+# fails once the date has passed.
+exceptions:
+  - branch: "3.6"
+    owner: Dejan Gregor
+    reason: >-
+      The Windows build statically links OpenSSL 3.6.3 from openssl-src
+      300.6.1, and the macOS runners link Homebrew openssl@3. The 3.6 branch is
+      out of support. openssl-src has no newer package (openssl-sys 0.9.x
+      requires ^300, so the 4.0 packages cannot be selected) and vcpkg only
+      ships the 3.6 branch (3.6.5), so neither route reaches a supported
+      branch. Re-check weekly whether openssl-sys accepts openssl-src 400.x.
+    expires: 2026-12-18

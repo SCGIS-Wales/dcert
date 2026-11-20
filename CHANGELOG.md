@@ -11,6 +11,10 @@ summary is written.
 - Publish one CycloneDX SBOM per binary, `dcert-cli-sbom.cdx.json` and
   `dcert-mcp-sbom.cdx.json`, in place of `dcert-sbom.cdx.json`. Both are listed
   in `SHA256SUMS` and attested.
+- Add an OpenSSL floor gate: `scripts/check_openssl_floor.py` runs `dcert --version` on
+  every built binary and fails below the per branch floor in
+  `scripts/openssl_floor.yaml` (3.5.9 and 4.0.3, rising on 1 December 2026).
+  The out of support OpenSSL 3.6 on Windows and macOS is a dated exception.
 - Upgrade `zlib1g` in the Docker image (CVE-2026-85091) on top of the pinned
   base layer.
 - Split the MCP stack behind a new `mcp` Cargo feature. The `dcert` CLI is built
