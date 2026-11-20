@@ -369,11 +369,11 @@ One pull request per checkbox. Branch name `plan/S<phase>-<n>-<slug>`. Each pull
   - Rollback: revert; `Cargo.lock` is restored with it.
   - Session notes: Done. rmcp 3.8.0 to 3.11.0 clears RUSTSEC-2026-0462; rust_xlsxwriter 0.103; cargo update refreshed the lock. No source changes were needed. cargo deny also failed on the chrono unmaintained notice (RUSTSEC-2026-0543) before this change, so deny.toml now sets unmaintained = "workspace" (direct dependencies only) with a comment; revisit after S3.
 
-- [ ] **S1.2 Python: raise floors to patched releases.**
+- [x] **S1.2 Python: raise floors to patched releases.**
   - Scope: in the current `python/pyproject.toml`, raise `fastmcp` to `>=4.2.3`, `click` to `>=8.5.1`, and add the security floors of section 5.5. Development tools to latest.
   - Acceptance: `pip-audit` clean on the latest and on the `lowest-direct` resolution; tests pass on 3.12 to 3.15.
   - Rollback: revert.
-  - Session notes:
+  - Session notes: Done. fastmcp 4.2.3, click 8.5.1 and the section 5.5 floors are hard dependencies for now (S5.2 is blocked on confirmation). pip-audit is clean on the latest and the lowest-direct resolution (with the otel extra); ruff, mypy and pytest pass on 3.12. Not run on 3.13 to 3.15 locally; CI covers them.
 
 - [ ] **S1.3 Actions and base image.**
   - Scope: resolve each action to its newest release SHA; refresh the `debian:trixie-slim` digest; pin the Trivy binary version in the `trivy-action` step.
