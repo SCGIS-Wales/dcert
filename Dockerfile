@@ -9,8 +9,12 @@
 # Dependabot's docker ecosystem opens a pull request when the tag moves on.
 FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
 
+# zlib1g is upgraded explicitly: the pinned base layer carries a version with
+# CVE-2026-85091 (heap buffer overflow in gz_vacate), fixed in 1.3.1-1+deb13u1.
+# Remove the --only-upgrade once the pinned digest already includes the fix.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends --only-upgrade zlib1g \
     && rm -rf /var/lib/apt/lists/*
 
 # dcert-mcp spawns the dcert binary as a subprocess and binds an unprivileged

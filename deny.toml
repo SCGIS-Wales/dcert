@@ -4,6 +4,11 @@
 [advisories]
 # Use the latest advisory DB; fail on any unignored vulnerability.
 yanked = "deny"
+# Unmaintained notices apply to our direct dependencies only. The one open
+# notice, RUSTSEC-2026-0543 (chrono, no fixed release), reaches us through
+# rmcp and schemars; it leaves the dcert CLI with the feature split (S3).
+# Track upstream rmcp/schemars for a move to jiff or time.
+unmaintained = "workspace"
 ignore = [
     # RUSTSEC-2023-0071: rsa crate — Marvin Attack timing sidechannel.
     # Reaches us as rsa 0.9.x, pulled in by jsonwebtoken 11 (rust_crypto

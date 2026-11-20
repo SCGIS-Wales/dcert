@@ -6,6 +6,16 @@ summary is written.
 
 ## Unreleased
 
+### Security
+
+- Upgrade `zlib1g` in the Docker image (CVE-2026-85091) on top of the pinned
+  base layer.
+- Upgrade `rmcp` to 3.11, which fixes RUSTSEC-2026-0462 (unbounded response
+  body buffering in Streamable HTTP clients), and refresh every compatible
+  crate. `cargo deny` now checks unmaintained notices for direct dependencies
+  only; the open `chrono` notice (RUSTSEC-2026-0543) is transitive and has no
+  fixed release.
+
 ### Added
 
 - A cipher suite model (`src/ciphers.rs`) with one table generated from the
