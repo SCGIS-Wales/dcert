@@ -424,6 +424,7 @@ jobs:
           pytest -v scripts/test_build_wheels.py scripts/test_sync_defaults.py
           scripts/test_gen_cipher_table.py scripts/test_fetch_aws_tls_policies.py
           scripts/test_check_cli_deps.py scripts/test_check_openssl_floor.py scripts/test_check_exceptions.py scripts/test_openssl_pin.py
+          scripts/test_dcert_wheel.py
 
   # src/ciphers_table.rs is generated from the vendored IANA registry. The
   # table must regenerate byte for byte; a newer registry on iana.org is
@@ -693,12 +694,13 @@ jobs:
 
           # Update Python package version
           sed -i "s/^version = \".*\"/version = \"$VERSION\"/" python/pyproject.toml
+          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" python/dcert/pyproject.toml
           sed -i "s/^__version__ = \".*\"/__version__ = \"$VERSION\"/" python/src/dcert/__init__.py
 
           # Commit the version bump
           git config user.name "api-py"
           git config user.email "5954680+api-py@users.noreply.github.com"
-          git add Cargo.toml Cargo.lock python/pyproject.toml python/src/dcert/__init__.py
+          git add Cargo.toml Cargo.lock python/pyproject.toml python/dcert/pyproject.toml python/src/dcert/__init__.py
           git commit -m "chore: bump version to ${VERSION} [skip ci]"
           git push origin main
 
@@ -1059,6 +1061,7 @@ jobs:
         run: |
           VERSION="${{ needs.auto-tag.outputs.version }}"
           sed -i "s/^version = \".*\"/version = \"$VERSION\"/" python/pyproject.toml
+          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" python/dcert/pyproject.toml
           sed -i "s/^__version__ = \".*\"/__version__ = \"$VERSION\"/" python/src/dcert/__init__.py
 
       # pyyaml: build_wheels.py reads the packaged config.yaml.
@@ -1123,6 +1126,24 @@ jobs:
 
       - name: List platform wheels
         run: ls -la python/platform-dist/
+
+      # The zero dependency `dcert` CLI wheels of the PyPI split (see
+      # docs/plans/2026-11-pypi-split-dcert-mcp.md). Built from the real release
+      # archives, which runs the glibc check on the real binaries. Not published
+      # yet: phase 3 of the split adds the publish.
+      - name: Build the dcert CLI wheels
+        run: |
+          python scripts/build_wheels.py \
+            --project python/dcert \
+            --archives-dir release-assets/ \
+            --output python/dcert-dist/
+          ls -la python/dcert-dist/
+
+      - name: Upload the dcert CLI wheels
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: python-wheels-dcert-cli
+          path: python/dcert-dist/*.whl
 
       - name: Attest wheel build provenance
         if: needs.auto-tag.outputs.created == 'true'
