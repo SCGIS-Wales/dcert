@@ -985,6 +985,32 @@ mod tests {
         assert!(blocking_client(&opts).is_ok());
     }
 
+    /// Read one HTTP request: the head, then as many body bytes as its
+    /// `Content-Length` says, however the client split them across writes.
+    fn read_request(stream: &mut std::net::TcpStream) -> String {
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut data = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            if let Some(end) = data.windows(4).position(|w| w == b"\r\n\r\n") {
+                let head = String::from_utf8_lossy(&data[..end]).to_ascii_lowercase();
+                let length = head
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length:"))
+                    .and_then(|v| v.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                if data.len() >= end + 4 + length {
+                    break;
+                }
+            }
+            match stream.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => data.extend_from_slice(&buf[..n]),
+            }
+        }
+        String::from_utf8_lossy(&data).into_owned()
+    }
+
     /// Serve `responses` in order on a local port, one per connection, and
     /// return the port and a handle yielding each raw request received.
     fn serve(responses: Vec<String>) -> (u16, std::thread::JoinHandle<Vec<String>>) {
@@ -994,9 +1020,7 @@ mod tests {
             let mut seen = Vec::new();
             for response in responses {
                 let Ok((mut stream, _)) = listener.accept() else { break };
-                let mut buf = [0u8; 4096];
-                let n = stream.read(&mut buf).unwrap_or(0);
-                seen.push(String::from_utf8_lossy(&buf[..n]).into_owned());
+                seen.push(read_request(&mut stream));
                 let _ = stream.write_all(response.as_bytes());
             }
             seen
