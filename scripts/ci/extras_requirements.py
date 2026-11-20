@@ -11,10 +11,10 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-try:
+if sys.version_info >= (3, 11):
     import tomllib
-except ModuleNotFoundError:  # Python 3.10, where the matrix starts
-    import tomli as tomllib  # type: ignore[no-redef]
+else:  # Python 3.10, where the matrix starts
+    import tomli as tomllib
 
 PYPROJECT = Path(__file__).resolve().parents[2] / "python" / "dcert-mcp" / "pyproject.toml"
 
