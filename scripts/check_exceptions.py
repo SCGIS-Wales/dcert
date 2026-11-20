@@ -90,7 +90,7 @@ def yaml_problems(text: str, today: datetime.date) -> list[str]:
 )
 def main(files: tuple[Path, ...], today: datetime.datetime | None) -> None:
     """Check every ignore list for missing or expired exceptions."""
-    day = today.date() if today else datetime.datetime.now(datetime.UTC).date()
+    day = today.date() if today else datetime.datetime.now(datetime.timezone.utc).date()
     targets = files or tuple(PROJECT_ROOT / name for name in DEFAULT_FILES)
     failed = False
     for path in targets:
