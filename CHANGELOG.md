@@ -10,6 +10,10 @@ summary is written.
 
 - Upgrade `zlib1g` in the Docker image (CVE-2026-85091) on top of the pinned
   base layer.
+- Move JWT verification to `jsonwebtoken` 12 with the `aws_lc_rs` backend,
+  which removes `rsa` and `crypto-bigint` from the dependency tree. This clears
+  RUSTSEC-2023-0071 and RUSTSEC-2026-0387, and both advisory ignore lists
+  (`.cargo/audit.toml`, `deny.toml`) are now empty.
 - Upgrade `rmcp` to 3.11, which fixes RUSTSEC-2026-0462 (unbounded response
   body buffering in Streamable HTTP clients), and refresh every compatible
   crate. `cargo deny` now checks unmaintained notices for direct dependencies
