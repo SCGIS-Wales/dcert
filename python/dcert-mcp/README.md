@@ -16,7 +16,7 @@ This package is separate from [`dcert`](https://pypi.org/project/dcert/), the co
 | `pip install "dcert-mcp[proxy]"` | plus the FastMCP proxy, typed client and `dcert-mcp-proxy` | the FastMCP stack |
 | `pip install "dcert-mcp[proxy,otel]"` | plus OpenTelemetry export | the FastMCP stack and OpenTelemetry |
 
-Requires Python 3.10 or later. Wheels exist for Linux x86_64 (glibc 2.34 or later: RHEL 9, Ubuntu 22.04, Debian 12 and later), macOS Intel, macOS Apple Silicon and Windows x86_64. Only these platform wheels are published, so an install from PyPI, a private mirror or a downloaded wheel never fetches anything from GitHub. On any other platform pip reports "no matching distribution"; build the binaries from source and point `DCERT_MCP_BINARY` at the server.
+Requires Python 3.12 or later. Wheels exist for Linux x86_64 (glibc 2.34 or later: RHEL 9, Ubuntu 22.04, Debian 12 and later), macOS Intel, macOS Apple Silicon and Windows x86_64. Only these platform wheels are published, so an install from PyPI, a private mirror or a downloaded wheel never fetches anything from GitHub. On any other platform pip reports "no matching distribution"; build the binaries from source and point `DCERT_MCP_BINARY` at the server.
 
 Without the extra, the Rust server works on its own (`dcert-mcp` speaks MCP over stdio, or HTTP with `--mode http`). The Python helpers below need the extra: importing one without it fails with a single line naming it, for example `dcert_mcp needs the optional package 'fastmcp'. Install it with: pip install "dcert-mcp[proxy]"`.
 
