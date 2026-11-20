@@ -8,6 +8,9 @@ summary is written.
 
 ### Security
 
+- Publish one CycloneDX SBOM per binary, `dcert-cli-sbom.cdx.json` and
+  `dcert-mcp-sbom.cdx.json`, in place of `dcert-sbom.cdx.json`. Both are listed
+  in `SHA256SUMS` and attested.
 - Upgrade `zlib1g` in the Docker image (CVE-2026-85091) on top of the pinned
   base layer.
 - Split the MCP stack behind a new `mcp` Cargo feature. The `dcert` CLI is built

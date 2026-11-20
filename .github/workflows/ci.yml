@@ -236,15 +236,26 @@ jobs:
           pip install click pyyaml
           python scripts/check_cli_deps.py
 
-      - name: Generate SBOM
-        run: cargo cyclonedx --format json --all
+      # One SBOM per binary, each from its own feature set, so the CLI SBOM
+      # lists no MCP crate. `--describe binaries` writes both binaries for any
+      # feature set; keep the matching one from each run.
+      - name: Generate SBOMs
+        run: |
+          mkdir -p sbom
+          cargo cyclonedx --format json --describe binaries
+          mv dcert_bin.cdx.json sbom/dcert-cli-sbom.cdx.json
+          rm -f dcert-mcp_bin.cdx.json
+          cargo cyclonedx --format json --describe binaries --features mcp
+          mv dcert-mcp_bin.cdx.json sbom/dcert-mcp-sbom.cdx.json
+          rm -f dcert_bin.cdx.json
+          ls -l sbom
 
       - name: Upload SBOM artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sbom
-          path: '**/*.cdx.json'
-          if-no-files-found: warn
+          path: sbom/*.cdx.json
+          if-no-files-found: error
 
   python-lint:
     name: Python lint and types
@@ -1312,10 +1323,11 @@ jobs:
           cp artifacts/python/*.whl release-assets/
           # Copy Homebrew formula
           cp artifacts/homebrew-formula/dcert.rb release-assets/
-          # CycloneDX SBOM of the Rust crate
-          sbom="$(find artifacts/sbom -name '*.cdx.json' | head -1)"
-          test -n "$sbom" || { echo "::error::no CycloneDX SBOM artifact found"; exit 1; }
-          cp "$sbom" release-assets/dcert-sbom.cdx.json
+          # CycloneDX SBOMs, one per binary
+          for sbom in dcert-cli-sbom.cdx.json dcert-mcp-sbom.cdx.json; do
+            test -s "artifacts/sbom/$sbom" || { echo "::error::missing $sbom"; exit 1; }
+            cp "artifacts/sbom/$sbom" "release-assets/$sbom"
+          done
           # Checksums over every asset, for `sha256sum -c SHA256SUMS`
           (cd release-assets && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
 
@@ -1325,7 +1337,8 @@ jobs:
           subject-path: |
             release-assets/dcert-*.tar.gz
             release-assets/dcert-*.zip
-            release-assets/dcert-sbom.cdx.json
+            release-assets/dcert-cli-sbom.cdx.json
+            release-assets/dcert-mcp-sbom.cdx.json
 
       - name: Generate release notes
         run: |
@@ -1410,7 +1423,7 @@ jobs:
           gh attestation verify dcert-x86_64-unknown-linux-gnu.tar.gz --repo ${REPO}
           \`\`\`
 
-          The container image is signed with cosign (keyless); the CycloneDX SBOM is \`dcert-sbom.cdx.json\`.
+          The container image is signed with cosign (keyless); the CycloneDX SBOMs are \`dcert-cli-sbom.cdx.json\` and \`dcert-mcp-sbom.cdx.json\`.
           EOF
 
       - name: Delete existing draft releases
