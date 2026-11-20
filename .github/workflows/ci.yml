@@ -860,10 +860,10 @@ jobs:
           $ErrorActionPreference = "Stop"
           $rel = "target/x86_64-pc-windows-msvc/release"
           New-Item -ItemType Directory -Force -Path dist-bin | Out-Null
-          cargo auditable build --release --locked --target x86_64-pc-windows-msvc --bin dcert
+          cargo auditable build --release --target x86_64-pc-windows-msvc --bin dcert
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Copy-Item "$rel/dcert.exe" "dist-bin/dcert.exe"
-          cargo auditable build --release --locked --target x86_64-pc-windows-msvc --bin dcert-mcp --features mcp
+          cargo auditable build --release --target x86_64-pc-windows-msvc --bin dcert-mcp --features mcp
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Copy-Item "$rel/dcert-mcp.exe" "dist-bin/dcert-mcp.exe"
 
