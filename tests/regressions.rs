@@ -388,10 +388,14 @@ fn cli_rejects_out_of_range_numeric_options() {
     }
 }
 
+// dcert-mcp has required-features = ["mcp"], so these tests only exist when the
+// feature is on (`cargo test --features mcp`).
+#[cfg(feature = "mcp")]
 fn mcp_bin() -> std::process::Command {
     std::process::Command::new(env!("CARGO_BIN_EXE_dcert-mcp"))
 }
 
+#[cfg(feature = "mcp")]
 #[test]
 fn mcp_refuses_a_zero_subprocess_timeout_at_startup() {
     let output = mcp_bin()
@@ -407,6 +411,7 @@ fn mcp_refuses_a_zero_subprocess_timeout_at_startup() {
     );
 }
 
+#[cfg(feature = "mcp")]
 #[test]
 fn mcp_refuses_an_unknown_mode() {
     let output = mcp_bin()
