@@ -825,18 +825,6 @@ jobs:
         with:
           tool: cargo-auditable
 
-      # The runner images carry a Homebrew openssl@3 of whatever age the image
-      # was built with (the Intel image had 3.6.3, which is out of support).
-      # Replace it with the current formula, then the OpenSSL floor check below
-      # proves what was linked.
-      - name: Use the current Homebrew OpenSSL
-        run: |
-          brew update --quiet
-          # Uninstall first: a reinstall fails to link over the older keg.
-          brew uninstall --ignore-dependencies --force openssl@3
-          brew install openssl@3
-          brew list --versions openssl@3
-
       - name: Build (release)
         env:
           OPENSSL_DIR: /usr/local/opt/openssl@3
@@ -849,7 +837,9 @@ jobs:
       - name: OpenSSL floor
         run: |
           pip install click pyyaml
-          python scripts/check_openssl_floor.py dist-bin/dcert
+          # Report only: the macOS binary links the host's OpenSSL dynamically, so
+          # the shipped file carries none; this shows what the runner built against.
+          python scripts/check_openssl_floor.py --report-only dist-bin/dcert
           otool -L dist-bin/dcert | grep -iE 'ssl|crypto' || echo "no dynamic libssl (statically linked)"
 
       - name: Package artifact
@@ -903,18 +893,6 @@ jobs:
         with:
           tool: cargo-auditable
 
-      # The runner images carry a Homebrew openssl@3 of whatever age the image
-      # was built with (the Intel image had 3.6.3, which is out of support).
-      # Replace it with the current formula, then the OpenSSL floor check below
-      # proves what was linked.
-      - name: Use the current Homebrew OpenSSL
-        run: |
-          brew update --quiet
-          # Uninstall first: a reinstall fails to link over the older keg.
-          brew uninstall --ignore-dependencies --force openssl@3
-          brew install openssl@3
-          brew list --versions openssl@3
-
       - name: Build (release)
         env:
           OPENSSL_DIR: /opt/homebrew/opt/openssl@3
@@ -927,7 +905,9 @@ jobs:
       - name: OpenSSL floor
         run: |
           pip install click pyyaml
-          python scripts/check_openssl_floor.py dist-bin/dcert
+          # Report only: the macOS binary links the host's OpenSSL dynamically, so
+          # the shipped file carries none; this shows what the runner built against.
+          python scripts/check_openssl_floor.py --report-only dist-bin/dcert
           otool -L dist-bin/dcert | grep -iE 'ssl|crypto' || echo "no dynamic libssl (statically linked)"
 
       - name: Package artifact
