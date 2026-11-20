@@ -827,12 +827,14 @@ jobs:
 
       # The runner images carry a Homebrew openssl@3 of whatever age the image
       # was built with (the Intel image had 3.6.3, which is out of support).
-      # Reinstall the current formula, then the OpenSSL floor check below
+      # Replace it with the current formula, then the OpenSSL floor check below
       # proves what was linked.
       - name: Use the current Homebrew OpenSSL
         run: |
           brew update --quiet
-          brew reinstall openssl@3
+          # Uninstall first: a reinstall fails to link over the older keg.
+          brew uninstall --ignore-dependencies --force openssl@3
+          brew install openssl@3
           brew list --versions openssl@3
 
       - name: Build (release)
@@ -903,12 +905,14 @@ jobs:
 
       # The runner images carry a Homebrew openssl@3 of whatever age the image
       # was built with (the Intel image had 3.6.3, which is out of support).
-      # Reinstall the current formula, then the OpenSSL floor check below
+      # Replace it with the current formula, then the OpenSSL floor check below
       # proves what was linked.
       - name: Use the current Homebrew OpenSSL
         run: |
           brew update --quiet
-          brew reinstall openssl@3
+          # Uninstall first: a reinstall fails to link over the older keg.
+          brew uninstall --ignore-dependencies --force openssl@3
+          brew install openssl@3
           brew list --versions openssl@3
 
       - name: Build (release)
