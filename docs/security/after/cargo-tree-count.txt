@@ -1,0 +1,3 @@
+dcert CLI (default features): 166
+dcert CLI (--no-default-features): 156
+dcert-mcp (--features mcp): 226

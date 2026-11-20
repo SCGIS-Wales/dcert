@@ -228,3 +228,19 @@ dcert links OpenSSL, and the version in each artefact is part of its security po
 - **Linux release binaries** link the system `libssl` at run time (OpenSSL 3.0 on the build host, whatever the installed distribution ships when run). Upstream fixes for 3.0 are for premium support customers only, so the distribution is the only source of fixes: keep the host patched. The Docker image uses OpenSSL 3.5 from Debian trixie.
 - **Windows binaries** statically link OpenSSL 3.6.3 (`openssl-src` 300.6.1), and the macOS runners link Homebrew `openssl@3`. The 3.6 branch is out of support. No newer `openssl-src` package exists, `openssl-sys` 0.9 requires `openssl-src` `^300` (so the 4.0 packages cannot be selected), and vcpkg only ships 3.6. This is recorded as a dated exception in `scripts/openssl_floor.yaml`, owned by the maintainer and re-checked weekly; CI fails when it expires.
 - The issues fixed in later 3.6 releases that a certificate parser can reach are rated Low, and the High and Moderate items for that branch concern DTLS, QUIC, CMS and CMP, which dcert does not use.
+
+### Before and after the dependency minimisation (2026-11-20)
+
+| Measure | Before | After |
+| --- | --- | --- |
+| Rust vulnerabilities in `Cargo.lock` (no ignore list) | 3 | 0 |
+| Advisories ignored in `.cargo/audit.toml` and `deny.toml` | 2 | 0 |
+| Crates in the `dcert` CLI (Linux x86_64) | 257 | 166 (156 without Excel export) |
+| Crates in `dcert-mcp` | 257 | 226 |
+| MCP crates (`rmcp`, `axum`, `jsonwebtoken`, `chrono`) in the CLI | all | none |
+| SBOMs per release | 1 | 2, one per binary |
+| Python packages with known vulnerabilities (latest, locked, lowest allowed) | 0 | 0, now checked daily |
+| Scheduled advisory audit | none | daily, opens one issue on failure |
+| OpenSSL floor per artefact | none | checked in CI, with one dated exception (3.6 on Windows and macOS) |
+
+The Python dependency count (62 packages) falls to zero for the `dcert` wheel with the PyPI split. Raw outputs: `docs/security/baseline/2026-11/` and `docs/security/after/`.

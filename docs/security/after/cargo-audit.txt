@@ -1,0 +1,20 @@
+    Fetching advisory database from `https://github.com/RustSec/advisory-db.git`
+      Loaded 1555 security advisories (from /Users/ssddgreg/.cargo/advisory-db)
+    Updating crates.io index
+    Scanning Cargo.lock for vulnerabilities (313 crate dependencies)
+Crate:     chrono
+Version:   0.4.45
+Warning:   unmaintained
+Title:     chrono is unmaintained
+Date:      2026-09-14
+ID:        RUSTSEC-2026-0543
+URL:       https://rustsec.org/advisories/RUSTSEC-2026-0543
+Dependency tree:
+chrono 0.4.45
+├── schemars 1.2.3
+│   ├── rmcp 3.11.0
+│   │   └── dcert 3.0.89
+│   └── dcert 3.0.89
+└── rmcp 3.11.0
+
+warning: 1 allowed warning found

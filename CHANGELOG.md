@@ -8,6 +8,8 @@ summary is written.
 
 ### Security
 
+- Publish the after snapshot (`docs/security/after/`) and a before and after table
+  in `SECURITY.md`.
 - Commit `python/uv.lock`, check it is current in CI, audit the locked set in the
   scheduled audit, and enable Dependabot security updates for it.
 - Add a scheduled security audit workflow (`audit.yml`, daily) covering Rust and

@@ -463,6 +463,7 @@ One pull request per checkbox. Branch name `plan/S<phase>-<n>-<slug>`. Each pull
 ### Phase S7: final verification
 
 - [ ] **S7.1 After snapshot and published comparison.** Repeat S0.1 into `docs/security/after/`, add a before and after table to `SECURITY.md`, and confirm every objective in section 2.
+  - Session notes: Partly done. After snapshot in `docs/security/after/` and the before and after table in `SECURITY.md` are in. Not ticked: objectives O1, O2 (zero dependency `dcert` wheel) and O9 for wheels depend on the PyPI split, which is not started. S4b and S5.1/S5.2 are open for the same reason.
 
 ## 7. Sequencing with the packaging split
 
