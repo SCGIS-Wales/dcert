@@ -209,7 +209,9 @@ HTTP mode exposes tools that make outbound connections, read and write files and
 
 ## Supply Chain
 
-Every release publishes `SHA256SUMS` over all assets and a CycloneDX SBOM (`dcert-sbom.cdx.json`). Release archives, the SBOM and the Python wheels carry GitHub build provenance attestations (`gh attestation verify <file> --repo SCGIS-Wales/dcert`). The container image is scanned with Trivy on every build, failing on fixable critical or high findings, and each pushed digest is signed keylessly with cosign:
+Every release publishes `SHA256SUMS` over all assets and two CycloneDX SBOMs, one per binary (`dcert-cli-sbom.cdx.json` for the `dcert` CLI and `dcert-mcp-sbom.cdx.json` for the MCP server). Release archives, the SBOMs and the Python wheels carry GitHub build provenance attestations (`gh attestation verify <file> --repo SCGIS-Wales/dcert`). The container image is scanned with Trivy on every build, failing on fixable critical or high findings, and each pushed digest is signed keylessly with cosign:
+
+`Cargo.lock` lists the MCP only crates because the `dcert-mcp` binary needs them, so repository level scanners (Dependabot alerts, Trivy filesystem scans) report them against the repository. The `dcert` CLI is built without the `mcp` feature: its dependency list embedded in the binary (`cargo audit bin dcert`) and its SBOM are the authoritative evidence of what it contains.
 
 ```bash
 cosign verify ghcr.io/scgis-wales/dcert@<digest> \

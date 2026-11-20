@@ -415,10 +415,10 @@ One pull request per checkbox. Branch name `plan/S<phase>-<n>-<slug>`. Each pull
   - Rollback: revert. No published artefact changes shape, so no user facing rollback is needed.
   - Session notes: Done. `mcp` and `xlsx` features added; CLI tree is 166 crates (Linux target), budget gate enforcing at 170; clippy and tests pass for default, --features mcp and --no-default-features. `dcert kb schema` and `tls-policy schema` embed the checked-in kb schema files in the CLI (output identical to the generated schema; a test under `mcp` proves it). Builds go through scripts/ci/build_release.sh with cargo auditable (tested locally: CLI embeds 204 entries, MCP 257, chrono only in MCP). Not done: banned-crate check on the binary itself (cargo audit bin has no usable JSON listing); the source tree gate covers it. CI workflow changes are untested until a pull request runs.
 
-- [ ] **S3.3 Publish one SBOM per binary.**
+- [x] **S3.3 Publish one SBOM per binary.**
   - Scope: replace the single `dcert-sbom.cdx.json` with `dcert-cli-sbom.cdx.json` and `dcert-mcp-sbom.cdx.json`, generated per feature set. Confirm the exact flags with `cargo cyclonedx --help` (expected: `--no-default-features`, `--features`, `--describe binaries`, `--override-filename`). Attest both.
   - Acceptance: both files attached to the release and listed in `SHA256SUMS`; `SECURITY.md` updated.
-  - Session notes:
+  - Session notes: Done. `cargo cyclonedx --describe binaries` cannot be combined with `--override-filename`; it writes both binaries for any feature set, so CI keeps `dcert_bin` from the default run (203 components) and `dcert-mcp_bin` from the `--features mcp` run (256) and renames them.
 
 ### Phase S4: OpenSSL
 
