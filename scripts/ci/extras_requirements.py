@@ -11,7 +11,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-if sys.version_info >= (3, 11):
+if sys.version_info >= (3, 11):  # noqa: UP036 (the script runs on 3.10 in CI)
     import tomllib
 else:  # Python 3.10, where the matrix starts
     import tomli as tomllib
