@@ -344,7 +344,7 @@ jobs:
         run: |
           # Pinned: the lock file format revision depends on the uv version.
           pip install uv==0.13.9
-          scripts/ci/check_uv_lock.sh
+          "$GITHUB_WORKSPACE/scripts/ci/check_uv_lock.sh"
 
       - name: Ruff check
         run: ruff check src tests ../scripts
