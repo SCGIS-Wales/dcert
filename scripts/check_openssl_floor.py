@@ -129,7 +129,7 @@ def run_version(binary: Path) -> str:
 def main(binary: Path, floors: Path, today: datetime.datetime | None) -> None:
     """Check the OpenSSL linked into BINARY against the recorded floor."""
     spec = yaml.safe_load(floors.read_text(encoding="utf-8"))
-    day = today.date() if today else datetime.datetime.now(datetime.UTC).date()
+    day = today.date() if today else datetime.datetime.now(datetime.timezone.utc).date()
     version = parse_openssl_version(run_version(binary))
     reason = verdict(version, spec, day)
     text = ".".join(map(str, version))
