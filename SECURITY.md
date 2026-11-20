@@ -241,6 +241,6 @@ dcert links OpenSSL, and the version in each artefact is part of its security po
 | SBOMs per release | 1 | 2, one per binary |
 | Python packages with known vulnerabilities (latest, locked, lowest allowed) | 0 | 0, now checked daily |
 | Scheduled advisory audit | none | daily, opens one issue on failure |
-| OpenSSL floor per artefact | none | checked in CI, with one dated exception (3.6 on Windows and macOS) |
+| OpenSSL floor per artefact | none | checked in CI on every binary; all on supported branches, no exceptions |
 
 The Python dependency count (62 packages) falls to zero for the `dcert` wheel with the PyPI split. Raw outputs: `docs/security/baseline/2026-11/` and `docs/security/after/`.
