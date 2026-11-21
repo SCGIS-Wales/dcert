@@ -204,9 +204,14 @@ environments; a release where any channel fails; any CI failure not explained by
   means no release.
   Also: when main moves during a release run, the bump push is rejected; auto-tag now ends with
   `created=false` and a notice instead of failing, and the newer run releases both changes.
-- [ ] **D.2 ci: post publish verification job** (F2). Poll PyPI for up to 15 minutes; install both with pip
+- [x] **D.2 ci: post publish verification job** (F2). Poll PyPI for up to 15 minutes; install both with pip
   and uv on Linux, macOS and Windows; `--version` and a tools/list handshake.
-  Session notes:
+  Session notes: 2026-11-21. `scripts/ci/release_check.py` (click, functions) with `wait-pypi`
+  and `handshake`; job `verify-pypi` (matrix ubuntu, macos, windows; bash on all three; uv
+  0.13.9 from pip as elsewhere in the workflows). The handshake compares tools/list with the
+  README tool table rather than a fixed 30, so adding a tool needs only the README row C.1
+  already enforces. Checked locally: `wait-pypi --version 4.0.8` passes at once;
+  `handshake` against the installed 4.0.7 server reports 30 tools.
 - [ ] **D.3 ci: release consistency summary** (F2). `if: always()` job checks the GitHub release assets,
   both PyPI projects, GHCR, the tap formula and Chocolatey; writes a job summary table.
   Session notes:
