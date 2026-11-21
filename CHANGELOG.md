@@ -391,6 +391,9 @@ summary is written.
   not exist (the `--key` regression), on a flag no document mentions, and on an MCP
   tool table that differs from the server's `tools/list`. Covers the READMEs,
   SECURITY.md and the release notes template.
+- `docs-commands` also runs `check_docs_commands.py env-table`, which fails when the
+  forwarded environment table in the dcert-mcp README and `passthrough_env` in
+  `config.yaml` differ in either direction.
 - Only the platform wheels, each bundling `dcert` and `dcert-mcp`, are
   published to PyPI and attached to GitHub releases. The universal wheel and
   the sdist carried no binary and downloaded it from GitHub on first use,
