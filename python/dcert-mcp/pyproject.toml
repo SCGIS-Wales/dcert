@@ -4,7 +4,7 @@
 # reads this file, so there is one source of truth for metadata and extras.
 [project]
 name = "dcert-mcp"
-version = "4.0.10"
+version = "4.0.11"
 description = "dcert-mcp is a Model Context Protocol server that gives AI assistants the dcert certificate and TLS tools."
 readme = "README.md"
 license = "MIT"
@@ -33,7 +33,7 @@ classifiers = [
 # The default install carries no third party package: the MCP server is the Rust
 # binary. `dcert` is pinned to the same version (the build stamps both).
 dependencies = [
-    "dcert==4.0.10",
+    "dcert==4.0.11",
 ]
 
 [project.optional-dependencies]

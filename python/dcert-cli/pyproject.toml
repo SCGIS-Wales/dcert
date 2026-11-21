@@ -4,7 +4,7 @@
 # not a build backend project: there is nothing to compile from this directory.
 [project]
 name = "dcert"
-version = "4.0.10"
+version = "4.0.11"
 description = "dcert is a command line tool that decodes, validates and converts X.509 certificates and diagnoses TLS endpoints."
 readme = "README.md"
 license = "MIT"

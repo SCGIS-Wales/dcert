@@ -10,6 +10,8 @@ nothing (documentation, plans) do not cut a release and wait under
 
 ## Unreleased
 
+## 4.0.11 (2026-11-21)
+
 ### Added
 
 - Hash-pinned requirement files for the extras of dcert-mcp
