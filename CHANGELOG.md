@@ -387,6 +387,10 @@ summary is written.
 
 ### CI
 
+- New job `verify-pypi` after both PyPI uploads: waits up to 15 minutes until PyPI
+  serves both projects, then installs `dcert-mcp==<version>` from PyPI with pip and
+  with uv on Linux, macOS and Windows and runs `dcert --version` and an MCP handshake
+  that must report the version and the README's tools (`scripts/ci/release_check.py`).
 - The dcert-mcp tests run on Python 3.15 too, which the package classifiers already
   claimed.
 - Documentation-only pushes no longer cut a release: `auto-tag` runs

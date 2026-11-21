@@ -347,7 +347,7 @@ jobs:
         run: ruff format --check ../../scripts
 
       - name: Mypy (build scripts)
-        run: mypy --strict ../../scripts/build_wheels.py ../../scripts/sync_defaults.py ../../scripts/gen_cipher_table.py ../../scripts/fetch_aws_tls_policies.py ../../scripts/check_cli_deps.py ../../scripts/check_openssl_floor.py ../../scripts/check_exceptions.py ../../scripts/ci/openssl_pin.py ../../scripts/ci/extras_requirements.py ../../scripts/ci/openssl_upstream.py ../../scripts/ci/release_paths.py ../../scripts/check_docs_commands.py
+        run: mypy --strict ../../scripts/build_wheels.py ../../scripts/sync_defaults.py ../../scripts/gen_cipher_table.py ../../scripts/fetch_aws_tls_policies.py ../../scripts/check_cli_deps.py ../../scripts/check_openssl_floor.py ../../scripts/check_exceptions.py ../../scripts/ci/openssl_pin.py ../../scripts/ci/extras_requirements.py ../../scripts/ci/openssl_upstream.py ../../scripts/ci/release_paths.py ../../scripts/check_docs_commands.py ../../scripts/ci/release_check.py
 
       - name: Defaults in step with src/limits.rs
         run: python ../../scripts/sync_defaults.py --check
@@ -431,7 +431,7 @@ jobs:
           scripts/test_gen_cipher_table.py scripts/test_fetch_aws_tls_policies.py
           scripts/test_check_cli_deps.py scripts/test_check_openssl_floor.py scripts/test_check_exceptions.py scripts/test_openssl_pin.py
           scripts/test_dcert_wheel.py scripts/test_dcert_mcp_wheel.py scripts/test_extras_requirements.py scripts/test_openssl_upstream.py
-          scripts/test_release_paths.py scripts/test_check_docs_commands.py
+          scripts/test_release_paths.py scripts/test_check_docs_commands.py scripts/test_release_check.py
 
   # The documentation must match the binaries: every documented subcommand
   # and flag exists, every flag is documented, and the README tool table
@@ -2075,3 +2075,54 @@ jobs:
         with:
           packages-dir: dist/
           skip-existing: true
+
+  # After both PyPI uploads: install the release from real PyPI with pip and
+  # with uv on each platform family, in fresh environments, and talk to the
+  # server. A tag whose packages cannot be installed fails here, the same day.
+  verify-pypi:
+    name: Verify PyPI install (${{ matrix.os }})
+    if: needs.auto-tag.outputs.created == 'true'
+    needs: [ auto-tag, publish-pypi-dcert, publish-pypi-mcp ]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, macos-latest, windows-latest ]
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.auto-tag.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Wait until PyPI serves both projects
+        run: |
+          pip install --quiet click uv==0.13.9
+          python scripts/ci/release_check.py wait-pypi --version "$VERSION" --timeout 900
+
+      - name: Install with pip and check
+        run: |
+          python -m venv "$RUNNER_TEMP/pip-env"
+          BIN="$RUNNER_TEMP/pip-env/bin"; [ -d "$BIN" ] || BIN="$RUNNER_TEMP/pip-env/Scripts"
+          "$BIN/python" -m pip install --quiet --no-cache-dir --index-url https://pypi.org/simple "dcert-mcp==$VERSION"
+          "$BIN/dcert" --version
+          "$BIN/dcert-mcp" --version
+          python scripts/ci/release_check.py handshake --binary "$BIN/dcert-mcp" --version "$VERSION"
+
+      - name: Install with uv and check
+        run: |
+          uv venv --quiet --python 3.12 "$RUNNER_TEMP/uv-env"
+          BIN="$RUNNER_TEMP/uv-env/bin"; [ -d "$BIN" ] || BIN="$RUNNER_TEMP/uv-env/Scripts"
+          uv pip install --quiet --no-cache --python "$RUNNER_TEMP/uv-env" --index-url https://pypi.org/simple "dcert-mcp==$VERSION"
+          "$BIN/dcert" --version
+          python scripts/ci/release_check.py handshake --binary "$BIN/dcert-mcp" --version "$VERSION"
