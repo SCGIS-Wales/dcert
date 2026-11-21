@@ -274,8 +274,17 @@ environments; a release where any channel fails; any CI failure not explained by
   Session notes: 2026-11-21. `git rm --cached python/dcert-mcp/.coverage`; `.gitignore` patterns
   moved to `python/*/`, with `.coverage`, `coverage.xml`, `extras.txt`, `runtime.in`,
   `latest.txt` and `lowest.txt`. `git ls-files` finds none of them.
-- [ ] **E.5 ci: uv scenarios and MCP handshake in the install test** (F25).
-  Session notes:
+- [x] **E.5 ci: uv scenarios and MCP handshake in the install test** (F25).
+  Session notes: 2026-11-21. `wheel_install_check.py` gains `check_uv` (uv pip into a fresh
+  venv, exactly two packages; `uv tool install --with-executables-from dcert` links exactly
+  `dcert`, `dcert-mcp`, `dcert-mcp-proxy`; `uv tool run --from dcert==<v>`, which is `uvx`) and
+  `handshake` against the Rust server (scenario 2) and the proxy (scenario 3), compared with the
+  README tool table instead of a separate `mcp_tools.yaml`. uv 0.13.9 is installed from pip as in
+  the other jobs rather than adding setup-uv. The `Env` class stays (replacing it would not be a
+  small diff). Scenario 3 now installs the local wheels before the extra: with version 4.0.8
+  already on PyPI, pip had taken the published wheel and the proxy handshake caught it
+  (FastMCP's 4.2.4 reported). Run locally on macOS arm64 against wheels built from this tree:
+  all scenarios pass, both handshakes report dcert-mcp 4.0.8 with 30 tools.
 - [ ] **E.6 build: hash pinned requirements per extra** (F26).
   Session notes:
 
