@@ -465,6 +465,9 @@ jobs:
           pip install --quiet pyyaml click
           python scripts/check_docs_commands.py commands --bin-dir docs-bin
 
+      - name: Check the dcert-mcp environment table against config.yaml
+        run: python scripts/check_docs_commands.py env-table
+
   # src/ciphers_table.rs is generated from the vendored IANA registry. The
   # table must regenerate byte for byte; a newer registry on iana.org is
   # reported (with a copy in the log) but does not block unrelated changes.

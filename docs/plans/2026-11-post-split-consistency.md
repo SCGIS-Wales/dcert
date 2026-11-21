@@ -171,9 +171,11 @@ environments; a release where any channel fails; any CI failure not explained by
   the A.1 fix (`--key`) makes it fail on README lines 475, 484 and 1086. Every flag of both
   binaries is already mentioned somewhere, so `undocumented_ok` starts empty. `dcert-mcp-proxy`
   is not walked: the job has no FastMCP install, and its flags are Python (click) not clap.
-- [ ] **C.2 ci: environment table check** (F15). Subcommand `env-table` compares the README table with
+- [x] **C.2 ci: environment table check** (F15). Subcommand `env-table` compares the README table with
   config.yaml.
-  Session notes:
+  Session notes: 2026-11-21. Reads the names between the `env-table` markers added in B.4 and
+  compares them with `subprocess.passthrough_env` (29 entries) in both directions, plus
+  duplicates. Tests: fixture drift both ways, and the repository table is current.
 - [ ] **C.3 ci: link check and wheel metadata check** (F28). lychee pinned by SHA; `twine check --strict`
   on both wheel sets.
   Session notes:

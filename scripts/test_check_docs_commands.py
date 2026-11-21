@@ -183,3 +183,29 @@ def test_release_notes_template_is_read_from_the_workflow() -> None:
     text = cdc.release_notes(config, cdc.ROOT)
     assert "```bash" in text
     assert "pip install dcert" in text
+
+
+def test_env_table_matches_in_both_directions() -> None:
+    text = "\n".join(
+        [
+            "<!-- env-table: generated -->",
+            "| Group | Variables |",
+            "|-------|-----------|",
+            "| Proxy | `HTTP_PROXY`, `NO_PROXY` |",
+            "| dcert | `DCERT_MCP_*`, `STALE` |",
+            "<!-- /env-table -->",
+        ]
+    )
+    documented = cdc.env_table(text)
+    assert documented == ["HTTP_PROXY", "NO_PROXY", "DCERT_MCP_*", "STALE"]
+    assert cdc.check_env_table(documented, ["HTTP_PROXY", "NO_PROXY", "DCERT_MCP_*", "NEW"]) == [
+        "STALE is in the README table but not forwarded by config.yaml",
+        "NEW is forwarded by config.yaml but missing from the README table",
+    ]
+
+
+def test_env_table_of_the_repository_is_current() -> None:
+    readme = cdc.ROOT / "python" / "dcert-mcp" / "README.md"
+    config = cdc.ROOT / "python" / "dcert-mcp" / "src" / "dcert_mcp" / "config.yaml"
+    forwarded = cdc.load(config)["subprocess"]["passthrough_env"]
+    assert cdc.check_env_table(cdc.env_table(readme.read_text(encoding="utf-8")), forwarded) == []

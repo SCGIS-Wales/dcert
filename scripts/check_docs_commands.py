@@ -399,5 +399,67 @@ def commands(bin_dir: Path, config_path: Path) -> None:
     click.echo(f"documentation matches: {flags} flags, {len(served)} MCP tools")
 
 
+ENV_TABLE_START = "<!-- env-table"
+ENV_TABLE_END = "<!-- /env-table -->"
+ENV_NAME = re.compile(r"`([A-Za-z_][A-Za-z0-9_]*\*?)`")
+
+
+def env_table(text: str) -> list[str]:
+    """Variable names in the README table between the ``env-table`` markers."""
+    start = text.find(ENV_TABLE_START)
+    end = text.find(ENV_TABLE_END)
+    if start < 0 or end < start:
+        raise click.ClickException("the env-table markers are missing")
+    names: list[str] = []
+    for line in text[start:end].splitlines():
+        if line.startswith("|") and not line.startswith("|-"):
+            cells = line.strip("|").split("|")
+            if len(cells) >= 2:
+                names.extend(ENV_NAME.findall(cells[1]))
+    return names
+
+
+def check_env_table(documented: Sequence[str], forwarded: Sequence[str]) -> list[str]:
+    """Both directions of drift between the README table and ``passthrough_env``."""
+    problems = [
+        f"{n} is in the README table but not forwarded by config.yaml"
+        for n in sorted(set(documented) - set(forwarded))
+    ]
+    problems += [
+        f"{n} is forwarded by config.yaml but missing from the README table"
+        for n in sorted(set(forwarded) - set(documented))
+    ]
+    problems += [
+        f"{n} is listed twice in the README table"
+        for n in sorted({n for n in documented if documented.count(n) > 1})
+    ]
+    return problems
+
+
+@main.command("env-table")
+@click.option(
+    "--readme",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=ROOT / "python" / "dcert-mcp" / "README.md",
+    show_default=True,
+)
+@click.option(
+    "--config-yaml",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=ROOT / "python" / "dcert-mcp" / "src" / "dcert_mcp" / "config.yaml",
+    show_default=True,
+)
+def env_table_command(readme: Path, config_yaml: Path) -> None:
+    """The forwarded environment table in the dcert-mcp README against config.yaml."""
+    documented = env_table(readme.read_text(encoding="utf-8"))
+    forwarded = [str(n) for n in load(config_yaml)["subprocess"]["passthrough_env"]]
+    problems = check_env_table(documented, forwarded)
+    for problem in problems:
+        click.echo(f"::error::{problem}", err=True)
+    if problems:
+        sys.exit(1)
+    click.echo(f"environment table matches config.yaml: {len(forwarded)} variables")
+
+
 if __name__ == "__main__":
     main()
