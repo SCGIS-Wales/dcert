@@ -402,6 +402,10 @@ summary is written.
   `project`) downloads the wheels of an existing GitHub release, verifies them against
   its `SHA256SUMS` and publishes them with `skip-existing` through the same environments,
   so the existing trusted publishers accept them. It runs in its own concurrency group.
+- The daily audit runs `cargo audit bin` on every executable of the newest release (all
+  four archives, Linux, both macOS architectures and Windows) and of the newest wheels
+  on PyPI, and fails if the `dcert` wheel declares a dependency. It audited the Linux
+  archive only before.
 - The dcert-mcp tests run on Python 3.15 too, which the package classifiers already
   claimed.
 - Documentation-only pushes no longer cut a release: `auto-tag` runs

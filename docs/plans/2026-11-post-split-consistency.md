@@ -237,8 +237,12 @@ environments; a release where any channel fails; any CI failure not explained by
   version" gave a false failure while a release was in flight (the GitHub release appears
   before the PyPI upload), so the check is presence of the settled release. Live: 4.0.7
   (90 min grace) and 4.0.8 (no grace) pass; 4.0.4 would fail for dcert (unit test).
-- [ ] **D.6 ci: audit every archive and published wheel** (F27).
-  Session notes:
+- [x] **D.6 ci: audit every archive and published wheel** (F27).
+  Session notes: 2026-11-21. `cargo audit bin` finds cargo auditable data in all eight
+  executables of a release (ELF, Mach-O x86_64 and arm64, PE) and of the wheels. Both new steps
+  run locally against v4.0.9 archives and the 4.0.8 PyPI wheels: no vulnerability, one allowed
+  informational warning (chrono RUSTSEC-2026-0543, dcert-mcp only), and the dcert METADATA has
+  no `Requires-Dist`.
 - [ ] **D.7 ci: environment rename.** Not chosen (D2 option a).
   Session notes: superseded by D2 (a).
 
