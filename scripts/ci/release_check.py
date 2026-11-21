@@ -21,8 +21,8 @@ These commands close that gap:
     required channel is missing.
 
 ``pypi-parity``
-    For the scheduled audit: the newest ``v*`` release tag must be the newest
-    non-yanked version of both PyPI projects.
+    For the scheduled audit: the newest release older than the grace period
+    must be installable (present and not yanked) from both PyPI projects.
 
 Usage::
 
@@ -47,6 +47,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -172,19 +173,19 @@ def newest(versions: Iterable[str]) -> str | None:
     return max(parsed)[1] if parsed else None
 
 
-def newest_installable(releases: Mapping[str, Sequence[Mapping[str, Any]]]) -> str | None:
-    """The newest PyPI version with at least one file that is not yanked."""
-    return newest(v for v, files in releases.items() if any(not f.get("yanked") for f in files))
+def installable(releases: Mapping[str, Sequence[Mapping[str, Any]]]) -> set[str]:
+    """PyPI versions with at least one file that is not yanked."""
+    return {v for v, files in releases.items() if any(not f.get("yanked") for f in files)}
 
 
-def parity_problems(tag: str | None, pypi: Mapping[str, str | None]) -> list[str]:
+def parity_problems(tag: str | None, pypi: Mapping[str, set[str]]) -> list[str]:
+    """The newest settled release must be installable from PyPI for every project."""
     if tag is None:
-        return ["no v* release tag found"]
+        return ["no settled v* release found"]
     return [
-        f"the newest release tag is v{tag} but the newest installable {project} on PyPI is "
-        f"{version or 'none'}"
-        for project, version in pypi.items()
-        if version != tag
+        f"release v{tag} is not installable from PyPI as {project}"
+        for project, versions in pypi.items()
+        if tag not in versions
     ]
 
 
@@ -387,22 +388,39 @@ def consistency(version: str, repo: str, choco_result: str) -> None:
         sys.exit(1)
 
 
+def settled_tags(releases: Iterable[Mapping[str, Any]], now: float, grace: float) -> list[str]:
+    """Tags of published releases older than ``grace`` seconds (PyPI follows them)."""
+    tags = []
+    for release in releases:
+        if release.get("draft") or release.get("prerelease") or not release.get("published_at"):
+            continue
+        published = datetime.fromisoformat(str(release["published_at"]).replace("Z", "+00:00"))
+        if now - published.timestamp() >= grace:
+            tags.append(str(release["tag_name"]))
+    return tags
+
+
 @main.command("pypi-parity")
 @click.option("--repo", default=REPOSITORY, show_default=True)
-def pypi_parity(repo: str) -> None:
-    """The newest release tag is the newest installable version of both projects."""
+@click.option(
+    "--grace-minutes",
+    default=90,
+    show_default=True,
+    help="Ignore releases younger than this: their PyPI upload may still be running.",
+)
+def pypi_parity(repo: str, grace_minutes: int) -> None:
+    """The newest settled release is installable from both PyPI projects."""
     releases = get_json(f"https://api.github.com/repos/{repo}/releases?per_page=30")
-    tag = newest(r["tag_name"] for r in releases if not r.get("draft") and not r.get("prerelease"))
+    tag = newest(settled_tags(releases, time.time(), grace_minutes * 60))
     pypi = {
-        p: newest_installable(get_json(f"https://pypi.org/pypi/{p}/json")["releases"])
-        for p in PROJECTS
+        p: installable(get_json(f"https://pypi.org/pypi/{p}/json")["releases"]) for p in PROJECTS
     }
     problems = parity_problems(tag, pypi)
     for problem in problems:
         click.echo(f"::error::{problem}", err=True)
     if problems:
         sys.exit(1)
-    click.echo(f"v{tag} is the newest installable dcert and dcert-mcp on PyPI")
+    click.echo(f"release v{tag} is installable from PyPI as dcert and dcert-mcp")
 
 
 if __name__ == "__main__":

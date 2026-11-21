@@ -54,25 +54,22 @@ def test_formula_version_and_tool_table() -> None:
     assert rc.tool_table(readme) == ["a", "b_c"]
 
 
-def test_newest_installable_skips_yanked_and_prereleases() -> None:
+def test_installable_skips_yanked_and_empty_releases() -> None:
     releases = {
         "4.0.3": [{"yanked": True}],
         "4.0.10": [{"yanked": False}],
-        "4.0.9": [{"yanked": False}],
-        "4.1.0rc1": [{"yanked": False}],
         "4.0.11": [],
     }
-    assert rc.newest_installable(releases) == "4.0.10"
+    assert rc.installable(releases) == {"4.0.10"}
     assert rc.newest(["v4.0.9", "v4.0.10", "v4.0.0-beta"]) == "4.0.10"
 
 
 def test_parity_problems() -> None:
-    assert rc.parity_problems("4.0.9", {"dcert": "4.0.9", "dcert-mcp": "4.0.9"}) == []
-    assert rc.parity_problems("4.0.9", {"dcert": "4.0.8", "dcert-mcp": None}) == [
-        "the newest release tag is v4.0.9 but the newest installable dcert on PyPI is 4.0.8",
-        "the newest release tag is v4.0.9 but the newest installable dcert-mcp on PyPI is none",
+    assert rc.parity_problems("4.0.9", {"dcert": {"4.0.9", "4.0.10"}, "dcert-mcp": {"4.0.9"}}) == []
+    assert rc.parity_problems("4.0.4", {"dcert": {"4.0.5"}, "dcert-mcp": {"4.0.4"}}) == [
+        "release v4.0.4 is not installable from PyPI as dcert"
     ]
-    assert rc.parity_problems(None, {}) == ["no v* release tag found"]
+    assert rc.parity_problems(None, {}) == ["no settled v* release found"]
 
 
 def test_summary_table_and_optional_channels() -> None:
@@ -87,3 +84,14 @@ def test_summary_table_and_optional_channels() -> None:
     assert "| Chocolatey push | warning |" in table
     assert rc.chocolatey("skipped") == []
     assert rc.chocolatey("cancelled") == ["the publish-chocolatey job result is cancelled"]
+
+
+def test_settled_tags_ignore_young_drafts_and_prereleases() -> None:
+    now = 1_000_000.0
+    releases = [
+        {"tag_name": "v4.0.10", "published_at": "1970-01-12T13:46:00Z"},  # 40 s before now
+        {"tag_name": "v4.0.9", "published_at": "1970-01-12T10:00:00Z"},
+        {"tag_name": "v4.1.0-rc1", "published_at": "1970-01-01T00:00:00Z", "prerelease": True},
+        {"tag_name": "v4.2.0", "draft": True, "published_at": None},
+    ]
+    assert rc.settled_tags(releases, now, 90 * 60) == ["v4.0.9"]

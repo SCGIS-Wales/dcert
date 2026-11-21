@@ -223,8 +223,13 @@ environments; a release where any channel fails; any CI failure not explained by
 - [ ] **D.4 ci: recovery by workflow_dispatch** (F2). Inputs tag and project; downloads wheels from the
   release, verifies SHA256SUMS, publishes with skip-existing in the same environments.
   Session notes:
-- [ ] **D.5 ci: scheduled PyPI consistency in audit.yml** (F2).
-  Session notes:
+- [x] **D.5 ci: scheduled PyPI consistency in audit.yml** (F2).
+  Session notes: 2026-11-21. Job `pypi-parity` in audit.yml, in the report job's needs.
+  `release_check.py pypi-parity` checks that the newest release older than `--grace-minutes`
+  (90) is present and not yanked on both projects; comparing "newest tag equals newest PyPI
+  version" gave a false failure while a release was in flight (the GitHub release appears
+  before the PyPI upload), so the check is presence of the settled release. Live: 4.0.7
+  (90 min grace) and 4.0.8 (no grace) pass; 4.0.4 would fail for dcert (unit test).
 - [ ] **D.6 ci: audit every archive and published wheel** (F27).
   Session notes:
 - [ ] **D.7 ci: environment rename.** Not chosen (D2 option a).
