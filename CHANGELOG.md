@@ -20,6 +20,16 @@ summary is written.
 
 ### Security
 
+- Track OpenSSL releases instead of a guessed date: the daily audit runs
+  `scripts/ci/openssl_upstream.py check`, which fails when OpenSSL publishes a
+  patch release newer than a floor or the Windows source pin, and
+  `openssl_upstream.py update` raises both after verifying the new tarball
+  against the published SHA256. The dated 3.5.10 floor (1 December 2026) is
+  removed, so the Windows build no longer fails if that release slips.
+- Code scanning: tests generate a random password per run instead of literal
+  passwords, a checked-in CodeQL config excludes test-only files with every
+  query still enabled, and `SECURITY.md` documents the triage rules.
+
 - Link OpenSSL 3.5 LTS (built from the official source, SHA256 pinned) in the
   Windows binaries instead of the out of support 3.6 from `openssl-src`, and
   remove the OpenSSL exception. The floor check is a hard gate for the Windows binary and report-only for the dynamically linked Linux and macOS binaries.
@@ -49,7 +59,7 @@ summary is written.
   for its async OIDC client.
 - Add an OpenSSL floor gate: `scripts/check_openssl_floor.py` runs `dcert --version` on
   every built binary and fails below the per branch floor in
-  `scripts/openssl_floor.yaml` (3.5.9 and 4.0.3, rising on 1 December 2026).
+  `scripts/openssl_floor.yaml` (3.5.9 and 4.0.3).
   The out of support OpenSSL 3.6 on Windows and macOS is a dated exception.
 - Upgrade `zlib1g` in the Docker image (CVE-2026-85091) on top of the pinned
   base layer.

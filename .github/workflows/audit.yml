@@ -80,6 +80,26 @@ jobs:
           pip-audit -r latest.txt --no-deps --disable-pip --strict
           pip-audit -r lowest.txt --no-deps --disable-pip --strict
 
+  openssl-upstream:
+    name: OpenSSL releases
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Fails when OpenSSL has published a patch release newer than a floor or
+      # the Windows source pin, so a new security release is picked up the day
+      # it appears rather than on a guessed date.
+      - name: Floors and Windows pin against upstream releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pip install click pyyaml
+          python scripts/ci/openssl_upstream.py check
+
   release-binaries:
     name: Latest release binaries
     runs-on: ubuntu-latest
@@ -118,7 +138,7 @@ jobs:
 
   report:
     name: Open or update the failure issue
-    needs: [rust, exceptions, python, release-binaries, image]
+    needs: [rust, exceptions, openssl-upstream, python, release-binaries, image]
     if: failure()
     runs-on: ubuntu-latest
     timeout-minutes: 5
