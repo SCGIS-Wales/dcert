@@ -335,8 +335,10 @@ The classification is one of:
 
 | Classification | Meaning |
 |----------------|---------|
-| `publicly_trusted` | Chain verifies up to a root in the embedded **Mozilla/CCADB** root set |
-| `private_pki` | Chain terminates in a private (non-public) root CA |
+| `publicly_trusted` | Chain verifies up to a root in the embedded **Mozilla/CCADB** root set for websites |
+| `publicly_trusted_email` | Chain verifies up to a root Mozilla trusts for email (S/MIME) only, such as Sectigo Public Email Protection Root R46 or a DigiCert S/MIME root; browsers do not trust it for websites |
+| `industry_pki` | Chain verifies up to the root of an industry PKI browsers do not trust, currently the **X9 Financial PKI** (DigiCert) for mutual TLS between financial institutions |
+| `private_pki` | Chain terminates in a private root CA that belongs to none of these programs |
 | `self_signed` | A single self-signed certificate, not issued by any CA |
 | `incomplete` | Chain neither reaches a public root nor presents a self-signed root (an issuer is missing) — try `--resolve-issuers` |
 
@@ -355,6 +357,28 @@ reports expiry separately).
 Each certificate that is itself a recognized public root carries an
 `is_public_root: true` attribute in JSON/YAML (usually absent, since servers
 don't send the root).
+
+**Trust programs beyond the website roots.** `webpki-root-certs` contains only
+the roots Mozilla trusts for websites, so dcert also embeds the 52 roots Mozilla
+trusts for email only (from NSS `certdata.txt`) and the X9 Financial PKI roots
+and intermediates, each checked against its published SHA-256
+(`scripts/trust_anchors.yaml`). They are matched by the same signature check,
+never by name, and only for this classification: dcert does not trust them
+when it verifies a TLS connection. JSON and YAML report the program:
+
+| Field | Meaning |
+|-------|---------|
+| `trust_program` | `mozilla_tls`, `mozilla_email` or `x9_financial` |
+| `operator` | Who operates the program |
+| `purpose` | `server_auth`, `email` or `industry_mtls` |
+| `preproduction` | `true` for an X9 test (UAT) root |
+| `purpose_note` | The leaf's EKU does not fit the root, for example a client authentication certificate under a website root (public TLS becomes serverAuth only: Sectigo stops issuing clientAuth on 10 February 2027, Chrome requires serverAuth only certificates from 15 March 2027) |
+
+`publicly_trusted` stays `true` only for website roots. `--compliance` applies
+the CA/Browser Forum rules (validity limit, Certificate Transparency, serverAuth)
+in full only to website chains; for X9 and email-only chains they are advisory.
+To verify a connection to an X9 endpoint, pass DigiCert's X9 roots with
+`--ca-cert`.
 
 **Optional network probe (`--resolve-issuers`).** For `incomplete` or
 `private_pki` results you can follow the certificate's AIA "CA Issuers" URLs to

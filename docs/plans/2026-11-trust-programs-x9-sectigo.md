@@ -1,6 +1,6 @@
 # Trust programs plan: X9 Financial PKI, S/MIME roots and client authentication
 
-Author: Dejan Gregor. Date: 2026-11-21. Status: in progress. Decisions T1 to T3 taken as recommended on 2026-11-21.
+Author: Dejan Gregor. Date: 2026-11-21. Status: implemented 2026-11-21 (decisions T1 to T3 as recommended); T3 not done by decision.
 
 ## Problem
 
@@ -151,18 +151,27 @@ Decided 2026-11-21 (Dejan: "Proceed"): T1 `publicly_trusted_email`, T2 `industry
 
 ## Phase M: surfaces
 
-- [ ] **M.1 MCP, Python and docs.** The MCP tools return the new fields through `root_trust`;
+- [x] **M.1 MCP, Python and docs.** The MCP tools return the new fields through `root_trust`;
   regenerate the typed wrappers if a schema changes; README classification table and a trust
   programs section; `scripts/check_docs_commands.py` passes.
-  Session notes:
+  Session notes: 2026-11-21. README classification table and a "Trust programs beyond the
+  website roots" section with the new fields; the `analyze_certificate` MCP description names
+  the new values. The MCP tools return `root_trust` from the CLI, so they carry the fields
+  without code changes; tool schemas are unchanged, so `gen_typed_tools.py --check` passes;
+  `check_docs_commands.py` passes (451 flags, 30 tools).
 
 ## Phase T: tests
 
-- [ ] **T.1 Tests.** A fake root that copies an X9 root's name and a fake root that copies
+- [x] **T.1 Tests.** A fake root that copies an X9 root's name and a fake root that copies
   Sectigo Public Email Protection Root R46 must not match; an X9 intermediate fixture; a UAT
   root marked preproduction; `publicly_trusted` unchanged for every existing test chain; the
   `sources.yaml` hash test.
-  Session notes:
+  Session notes: 2026-11-21. Done across P, C and K: impostor roots copying the X9 RSA 4096
+  Root and Sectigo Public Email Protection Root R46 names classify as `private_pki`; the X9 RSA
+  4096 ICA alone classifies as `industry_pki`; an X9 UAT root is `preproduction`; a website
+  root keeps `publicly_trusted` with `mozilla_tls`; X9 fingerprints are checked in Rust and in
+  `test_gen_trust_anchors.py`; scoped compliance and the clientAuth cutoff are tested. Full
+  suites: 722 tests, 968 with the mcp feature.
 
 ## Not in scope
 
