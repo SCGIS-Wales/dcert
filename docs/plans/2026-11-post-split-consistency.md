@@ -321,9 +321,12 @@ environments; a release where any channel fails; any CI failure not explained by
 - [ ] **G.1 docs: CHANGELOG structure** (F18). Keep a Changelog layout; each PR adds one line under
   Unreleased; the release job moves Unreleased under the new version heading.
   Session notes:
-- [ ] **G.2 docs: reconcile the October plan** (F19). Carry forward 5.4, 6.1 to 6.5, 7.1, 7.2, 8.1;
+- [x] **G.2 docs: reconcile the October plan** (F19). Carry forward 5.4, 6.1 to 6.5, 7.1, 7.2, 8.1;
   supersede 7.3 (E.2), 7.4 (B.2), 7.5 (C.1, E.2), 8.2 (B, F), 8.3 (A.1, G.1).
-  Session notes:
+  Session notes: 2026-11-21. Each of the 14 items carries a dated note. One deviation from D5:
+  8.2 is carried forward, not superseded, because `--cipher-notation` and `verify-key --dir`
+  exist but the MCP field renames and `docs/architecture.md` do not, and B and F did not do
+  them. 7.2 checked against tools/list: no `kb_*` tool exists. Result: 10 open, 4 superseded.
 - [ ] **G.3 Owner: stale branches** (F29).
   Session notes:
 

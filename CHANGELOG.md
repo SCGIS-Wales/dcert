@@ -176,6 +176,8 @@ summary is written.
 
 ### Changed
 
+- The October TLS policy plan is reconciled with 4.x: ten items carried forward as still
+  open, four superseded by the post split consistency plan, each with its reason.
 - `dcert --help`, `dcert --version` and the Cargo description describe the CLI only:
   "dcert is a command line tool that decodes, validates and converts X.509
   certificates and diagnoses TLS endpoints." (was "... CLI and MCP server").
