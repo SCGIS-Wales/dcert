@@ -340,13 +340,30 @@ environments; a release where any channel fails; any CI failure not explained by
   exist but the MCP field renames and `docs/architecture.md` do not, and B and F did not do
   them. 7.2 checked against tools/list: no `kb_*` tool exists. Result: 10 open, 4 superseded.
 - [ ] **G.3 Owner: stale branches** (F29).
-  Session notes:
+  Session notes: 2026-11-21. `plan/1-8-supply-chain`: PR #93 merged and both of its last
+  commits are on main; deletion was blocked for the agent, so Dejan deletes it. `plan/5-4-live-alb`
+  has no pull request and holds the unmerged live ALB tests (October plan 5.4, carried
+  forward): keep it. D3 (environment protection) done: `pypi` and `pypi-dcert` accept only
+  `main` and `v*` tags. N2 done: repository description names both programs.
 
 ## Phase H: final verification
 
-- [ ] **H.1 Verification against the resulting release.** Tags versus PyPI for both projects; install from
+- [x] **H.1 Verification against the resulting release.** Tags versus PyPI for both projects; install from
   PyPI; handshake; GHCR tags; Chocolatey feed; release assets; open issues and pull requests.
-  Session notes:
+  Session notes: 2026-11-21 against v4.0.11 (the release of the last plan pull request, #171).
+  Releases: v4.0.8 (#145), v4.0.9 (#146), v4.0.10 (#156), v4.0.11 (#147 to #171 merged in
+  sequence: pending runs were cancelled and one run released, as D.1 intends); the
+  documentation-only #147 and #148 cut no tag. `release_check.py consistency --version 4.0.11`:
+  GitHub release assets, both PyPI projects, GHCR, Homebrew tap and Chocolatey push all ok
+  (the `release-consistency` job also passed in the run). `pypi-parity`: v4.0.11 installable
+  from both projects; no PyPI gap since 4.0.5. Fresh `uv pip install dcert-mcp==4.0.11` from
+  PyPI: `dcert 4.0.11` with the S1 description, handshake 30 tools. `verify-pypi` failed on
+  macOS only, because PyPI's simple index lagged its JSON API (fixed in #176); the other two
+  platforms passed. The bump commit moved `Unreleased` under `## 4.0.11 (2026-11-21)` (G.1).
+  Chocolatey's public feed still lists 3.0.x versions (moderation, owner check). Open pull
+  requests: #172 to #176 from this session; no open issues. Dependabot's handling of
+  `requirements/*.txt` (E.6) is still to be seen on its first run. Not done, owner: A.0 (yanks),
+  G.3 (delete `plan/1-8-supply-chain`; `plan/5-4-live-alb` holds unmerged work and stays).
 
 ## Owner actions
 
