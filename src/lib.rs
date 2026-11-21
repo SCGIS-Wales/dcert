@@ -32,4 +32,5 @@ pub mod tlsopts;
 pub mod tlspolicy;
 pub mod tlsscan;
 pub mod trust;
+pub mod trust_programs;
 pub mod vault;
