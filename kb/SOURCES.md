@@ -200,3 +200,17 @@ the ciphers by policy table and says so in the entry's `notes`.
 | API Gateway security policies | https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-security-policies-list.html |
 | Mozilla server side TLS guidelines 6.0 | https://ssl-config.mozilla.org/guidelines/6.0.json |
 
+
+## Trust programs (X9 Financial PKI, email only roots, clientAuth)
+
+Read on 2026-11-21 for `tls.handshake.x9-financial-pki`, `tls.handshake.email-only-root`
+and the clientAuth compliance finding.
+
+| Topic | URL |
+|-------|-----|
+| DigiCert community roots, X9 Financial PKI section | https://knowledge.digicert.com/general-information/community-root-authority-certificates |
+| DigiCert, issuing X9 certificates | https://docs.digicert.com/en/trust-lifecycle-manager/enroll-and-manage-certificates/enrollment-how-to-guides/issue-x9-certificates-via-certcentral.html |
+| Sectigo, clarifying X9 PKI | https://www.sectigo.com/blog/clarifying-x9-pki-what-x9-certificates-are-and-are-not |
+| Sectigo, Chrome Root Program clientAuth and private PKI | https://www.sectigo.com/blog/chrome-root-program-clientauth-private-pki |
+| Sectigo public certificate chains | https://www.sectigo.com/knowledge-base/detail/Access-New-Sectigo-Certificate-Chain |
+| NSS certdata.txt (email trust bits), NSS_3_134_RTM | https://raw.githubusercontent.com/nss-dev/nss/NSS_3_134_RTM/lib/ckfw/builtins/certdata.txt |
