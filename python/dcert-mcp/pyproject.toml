@@ -5,7 +5,7 @@
 [project]
 name = "dcert-mcp"
 version = "4.0.10"
-description = "MCP server for TLS certificate analysis, with an optional FastMCP proxy and typed client"
+description = "dcert-mcp is a Model Context Protocol server that gives AI assistants the dcert certificate and TLS tools."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"

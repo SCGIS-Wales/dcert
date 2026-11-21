@@ -244,12 +244,18 @@ environments; a release where any channel fails; any CI failure not explained by
   `description` set to S1; a unit test asserts the constant equals `CARGO_PKG_DESCRIPTION` and
   does not mention MCP. `tests/cli_tests.rs::test_no_args_shows_help` matched the old
   wording and now matches S1.
-- [ ] **F.2 docs: one sentence per program in every channel** (F31).
+- [x] **F.2 docs: one sentence per program in every channel** (F31).
   S1: "dcert is a command line tool that decodes, validates and converts X.509 certificates and
   diagnoses TLS endpoints."
   S2: "dcert-mcp is a Model Context Protocol server that gives AI assistants the dcert certificate and
   TLS tools."
-  Session notes:
+  Session notes: 2026-11-21. S2 in `MCP_DESCRIPTION` (help, version, serverInfo; the existing
+  serverInfo test reads the constant), S1 and S2 as the PyPI summaries and in the README header,
+  Homebrew desc "Decode, validate and convert X.509 certificates and diagnose TLS endpoints"
+  (74 characters, no article, does not start with the name, as `brew audit` wants), OCI title
+  and description labels through docker/metadata-action. Not done: the Chocolatey nuspec (Dejan
+  excluded Chocolatey work) and the Glama listing (external, owner). Docker examples already use
+  `--entrypoint dcert` since A.1.
 
 ## Phase G: changelog and plan reconciliation
 

@@ -5,9 +5,10 @@ use std::time::Duration;
 
 use dcert::debug::sanitize_url;
 
-/// Canonical description for dcert-mcp, consistent with the CLI.
+/// Canonical one sentence description of dcert-mcp (S2 in the post split
+/// consistency plan), used by `--help`, `--version` and `serverInfo`.
 pub(crate) const MCP_DESCRIPTION: &str =
-    "MCP server for TLS certificate analysis, format conversion, and key verification — for AI-powered IDEs";
+    "dcert-mcp is a Model Context Protocol server that gives AI assistants the dcert certificate and TLS tools.";
 
 /// Guidance sent to clients in the `initialize` result. MCP clients typically
 /// add it to the model's context, so it says which tool fits which question

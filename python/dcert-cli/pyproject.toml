@@ -5,7 +5,7 @@
 [project]
 name = "dcert"
 version = "4.0.10"
-description = "TLS certificate analysis, format conversion and key verification CLI"
+description = "dcert is a command line tool that decodes, validates and converts X.509 certificates and diagnoses TLS endpoints."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.9"

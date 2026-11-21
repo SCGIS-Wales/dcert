@@ -6,7 +6,7 @@
 [![Python versions](https://img.shields.io/pypi/pyversions/dcert-mcp)](https://pypi.org/project/dcert-mcp/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-The [dcert](https://github.com/SCGIS-Wales/dcert) MCP server for TLS certificate analysis. The server is a prebuilt Rust executable (`dcert-mcp`), installed as a wheel script, so starting it runs no Python. The optional `proxy` extra adds a [FastMCP](https://github.com/PrefectHQ/fastmcp) proxy, typed async client and the `dcert-mcp-proxy` command. Tools added to the Rust server are discovered at runtime, so the Python layer never needs to change.
+dcert-mcp is a Model Context Protocol server that gives AI assistants the dcert certificate and TLS tools. The server is a prebuilt Rust executable (`dcert-mcp`), installed as a wheel script, so starting it runs no Python. The optional `proxy` extra adds a [FastMCP](https://github.com/PrefectHQ/fastmcp) proxy, typed async client and the `dcert-mcp-proxy` command. Tools added to the Rust server are discovered at runtime, so the Python layer never needs to change.
 
 This package is separate from [`dcert`](https://pypi.org/project/dcert/), the command line tool. Installing `dcert-mcp` pulls in `dcert` at the same version and nothing else.
 

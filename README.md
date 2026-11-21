@@ -2,7 +2,7 @@
   <img src="assets/logo.svg" alt="dcert logo" width="400">
   <h1>dcert</h1>
   <p><strong>TLS Certificate Decoder & Validator</strong></p>
-  <p>A Rust CLI and MCP server for X.509 certificate analysis, format conversion, and key verification.<br>Reads certificates from PEM files or HTTPS endpoints. Validates TLS connections, checks revocation status,<br>converts between PFX and PEM formats, and integrates with AI-powered IDEs via the Model Context Protocol (MCP).</p>
+  <p>dcert is a command line tool that decodes, validates and converts X.509 certificates and diagnoses TLS endpoints.<br>dcert-mcp is a Model Context Protocol server that gives AI assistants the dcert certificate and TLS tools.</p>
   <p>
     <a href="https://github.com/SCGIS-Wales/dcert/actions/workflows/ci.yml"><img src="https://github.com/SCGIS-Wales/dcert/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI/CD Pipeline"></a>
     <a href="https://pypi.org/project/dcert/"><img src="https://img.shields.io/pypi/v/dcert?label=dcert" alt="dcert on PyPI"></a>

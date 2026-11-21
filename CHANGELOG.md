@@ -173,6 +173,9 @@ summary is written.
 - `dcert --help`, `dcert --version` and the Cargo description describe the CLI only:
   "dcert is a command line tool that decodes, validates and converts X.509
   certificates and diagnoses TLS endpoints." (was "... CLI and MCP server").
+- One sentence per program everywhere it is described: `dcert-mcp --help`, `--version`
+  and `serverInfo.description`, both PyPI project summaries, the README header, the
+  Homebrew `desc` and new OCI title and description labels on the Docker image.
 - The negotiated cipher (`tls_cipher` in JSON and YAML) is a record
   `{openssl, iana, code_point, protocol, forward_secrecy, aead}` by default,
   and pretty output names it in every notation. `--cipher-notation iana` or
