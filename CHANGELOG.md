@@ -92,6 +92,8 @@ summary is written.
 - README Installation section for pip, uv, uvx and pipx, with a package table, the
   wheel platforms and what to do on platforms without a wheel (ask for `dcert>=4`;
   an unpinned install there falls back to the platform independent 3.0.77).
+- MCP client configuration through `uvx dcert-mcp` for Claude Code, Kiro, JetBrains
+  and VS Code, with no install step.
 - `python/dcert-cli/` and `scripts/build_wheels.py --project`: the zero dependency
   `dcert` CLI wheel of the PyPI split. The executable is installed from
   `.data/scripts`, so no Python runs when you type `dcert`; the wheel has no
