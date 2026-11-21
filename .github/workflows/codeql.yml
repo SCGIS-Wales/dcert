@@ -36,8 +36,7 @@ jobs:
           # needs scanning.
           - language: rust
             build-mode: none
-          # The Python wrapper downloads and executes release binaries, so it
-          # is scanned too.
+          # The dcert-mcp proxy and typed client (python/dcert-mcp).
           - language: python
             build-mode: none
     steps:
@@ -51,6 +50,7 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
+          config-file: ./.github/codeql/codeql-config.yml
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4

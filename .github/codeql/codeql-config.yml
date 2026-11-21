@@ -1,0 +1,16 @@
+# CodeQL configuration, used by .github/workflows/codeql.yml.
+#
+# Test-only files are not scanned: they are not shipped, and they exist to
+# print certificates and use fixture values on purpose. Tests inside `src/`
+# modules (`#[cfg(test)]`) are still scanned, so they must not hard-code
+# credentials either (they generate a random password per run).
+#
+# Every query of the default suite stays enabled. Triage of the alerts that
+# remain is described in SECURITY.md ("Code scanning").
+name: dcert CodeQL config
+
+paths-ignore:
+  - tests
+  - src/mcp/tests.rs
+  - python/dcert-mcp/tests
+  - scripts/test_*.py

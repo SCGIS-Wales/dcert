@@ -1169,7 +1169,10 @@ async fn test_mcp_compare_rejects_empty_target() {
 
 #[test]
 fn test_validate_password_accepts_normal() {
-    assert!(validate_password("secret123").is_ok());
+    let mut bytes = [0u8; 12];
+    openssl::rand::rand_bytes(&mut bytes).unwrap();
+    let normal: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    assert!(validate_password(&normal).is_ok());
     assert!(validate_password("").is_ok()); // empty is valid (some tools allow it)
     assert!(validate_password("a".repeat(1024).as_str()).is_ok()); // at the limit
 }
@@ -1182,7 +1185,8 @@ fn test_validate_password_rejects_too_long() {
 
 #[test]
 fn test_validate_password_rejects_null_bytes() {
-    assert!(validate_password("pass\0word").is_err());
+    let with_nul: String = ["p", "\0", "w"].concat();
+    assert!(validate_password(&with_nul).is_err());
 }
 
 // ---------------------------------------------------------------

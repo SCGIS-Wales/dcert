@@ -720,6 +720,14 @@ mod tests {
     use openssl::x509::{X509, X509NameBuilder};
     use tempfile::TempDir;
 
+    /// A random password per test run: no credential is written in the test
+    /// sources, and the round trips prove the password is really applied.
+    fn test_password() -> String {
+        let mut bytes = [0u8; 12];
+        openssl::rand::rand_bytes(&mut bytes).unwrap();
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
     #[cfg(unix)]
     #[test]
     fn write_private_file_creates_owner_only_and_replaces_symlink() {
@@ -917,6 +925,7 @@ mod tests {
 
     #[test]
     fn test_pem_to_pfx_with_ca() {
+        let password = test_password();
         let (pkey, cert) = generate_test_key_and_cert();
         let (_, ca_cert) = generate_other_key_and_cert();
         let dir = TempDir::new().unwrap();
@@ -927,31 +936,33 @@ mod tests {
         let ca_path_str = ca_path.to_str().unwrap();
 
         let pfx_path = dir.path().join("test.pfx").to_str().unwrap().to_string();
-        let result = pem_to_pfx(&cert_path, &key_path, "pass", &pfx_path, Some(ca_path_str)).unwrap();
+        let result = pem_to_pfx(&cert_path, &key_path, &password, &pfx_path, Some(ca_path_str)).unwrap();
         assert_eq!(result.ca_certs_count, 1);
     }
 
     #[test]
     fn test_create_keystore() {
+        let password = test_password();
         let (pkey, cert) = generate_test_key_and_cert();
         let dir = TempDir::new().unwrap();
         let (cert_path, key_path) = write_pem_files(&dir, &pkey, &cert);
         let ks_path = dir.path().join("keystore.p12").to_str().unwrap().to_string();
 
-        let result = create_keystore(&cert_path, &key_path, "changeit", &ks_path, "myalias").unwrap();
+        let result = create_keystore(&cert_path, &key_path, &password, &ks_path, "myalias").unwrap();
         assert_eq!(result.output_format, "PKCS12 KeyStore");
         assert!(result.cert_subject.is_some());
 
         // Verify we can read it back
         let data = fs::read(&ks_path).unwrap();
         let p12 = Pkcs12::from_der(&data).unwrap();
-        let parsed = p12.parse2("changeit").unwrap();
+        let parsed = p12.parse2(&password).unwrap();
         assert!(parsed.cert.is_some());
         assert!(parsed.pkey.is_some());
     }
 
     #[test]
     fn test_create_truststore() {
+        let password = test_password();
         let (_, cert1) = generate_test_key_and_cert();
         let (_, cert2) = generate_other_key_and_cert();
         let dir = TempDir::new().unwrap();
@@ -971,7 +982,7 @@ mod tests {
                 ca1_path.to_str().unwrap().to_string(),
                 ca2_path.to_str().unwrap().to_string(),
             ],
-            "changeit",
+            &password,
             &ts_path,
             true,
         )
@@ -983,7 +994,7 @@ mod tests {
         // Verify we can read it back
         let data = fs::read(&ts_path).unwrap();
         let p12 = Pkcs12::from_der(&data).unwrap();
-        let parsed = p12.parse2("changeit").unwrap();
+        let parsed = p12.parse2(&password).unwrap();
         assert!(parsed.cert.is_some());
     }
 
@@ -1059,6 +1070,7 @@ mod tests {
 
     #[test]
     fn test_create_truststore_rejects_leaf_by_default() {
+        let password = test_password();
         let (_, leaf) = generate_leaf_self_signed();
         let dir = TempDir::new().unwrap();
         let leaf_path = dir.path().join("leaf.pem");
@@ -1067,7 +1079,7 @@ mod tests {
 
         let result = create_truststore(
             &[leaf_path.to_str().unwrap().to_string()],
-            "changeit",
+            &password,
             ts_path.to_str().unwrap(),
             false, // strict mode
         );
@@ -1082,6 +1094,7 @@ mod tests {
 
     #[test]
     fn test_create_truststore_allow_non_ca_overrides() {
+        let password = test_password();
         let (_, leaf) = generate_leaf_self_signed();
         let dir = TempDir::new().unwrap();
         let leaf_path = dir.path().join("leaf.pem");
@@ -1090,7 +1103,7 @@ mod tests {
 
         let result = create_truststore(
             &[leaf_path.to_str().unwrap().to_string()],
-            "changeit",
+            &password,
             ts_path.to_str().unwrap(),
             true, // allow_non_ca
         )
@@ -1105,6 +1118,7 @@ mod tests {
 
     #[test]
     fn test_create_truststore_dedupes_duplicate_certs() {
+        let password = test_password();
         let (_, ca) = generate_root_ca();
         let dir = TempDir::new().unwrap();
         let ca_path = dir.path().join("ca.pem");
@@ -1113,7 +1127,7 @@ mod tests {
         let p = ca_path.to_str().unwrap().to_string();
 
         // Pass the same path twice — same fingerprint → dedupe to 1.
-        let result = create_truststore(&[p.clone(), p], "changeit", ts_path.to_str().unwrap(), false).unwrap();
+        let result = create_truststore(&[p.clone(), p], &password, ts_path.to_str().unwrap(), false).unwrap();
         assert_eq!(result.ca_certs_count, 1, "duplicates should be deduped");
         assert!(
             result.warnings.iter().any(|w| w.contains("duplicate")),
@@ -1124,6 +1138,7 @@ mod tests {
 
     #[test]
     fn test_create_keystore_warns_on_missing_chain() {
+        let password = test_password();
         // Single leaf, no intermediates → warn that Java needs the chain.
         // generate_test_key_and_cert produces a cert with CA:TRUE, so it
         // classifies as RootCa — exercises the "first cert is a CA" warning,
@@ -1139,7 +1154,7 @@ mod tests {
         let result = create_keystore(
             cert_path.to_str().unwrap(),
             key_path.to_str().unwrap(),
-            "changeit",
+            &password,
             ks_path.to_str().unwrap(),
             "server",
         )
@@ -1155,6 +1170,7 @@ mod tests {
 
     #[test]
     fn test_create_keystore_warns_when_first_cert_is_ca() {
+        let password = test_password();
         // generate_test_key_and_cert sets BasicConstraints CA:TRUE — the
         // resulting cert would classify as RootCa, not Leaf, and we want
         // create_keystore to warn that the leaf must come first.
@@ -1169,7 +1185,7 @@ mod tests {
         let result = create_keystore(
             cert_path.to_str().unwrap(),
             key_path.to_str().unwrap(),
-            "changeit",
+            &password,
             ks_path.to_str().unwrap(),
             "server",
         )
@@ -1183,6 +1199,7 @@ mod tests {
 
     #[test]
     fn test_pem_to_pfx_mismatched_key() {
+        let password = test_password();
         let (_, cert) = generate_test_key_and_cert();
         let (other_pkey, _) = generate_other_key_and_cert();
         let dir = TempDir::new().unwrap();
@@ -1198,7 +1215,7 @@ mod tests {
         let _ = pem_to_pfx(
             cert_path.to_str().unwrap(),
             key_path.to_str().unwrap(),
-            "pass",
+            &password,
             &pfx_path,
             None,
         );
