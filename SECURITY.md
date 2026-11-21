@@ -221,6 +221,16 @@ cosign verify ghcr.io/scgis-wales/dcert@<digest> \
 
 All GitHub Actions are pinned to commit SHAs.
 
+### Code scanning
+
+CodeQL scans the Rust crate, the `dcert-mcp` Python package and the workflows on every pull request, on `main` and weekly, with every query of the default suite enabled (`.github/codeql/codeql-config.yml`). Test-only files are not scanned; tests inside `src/` modules are, so they generate a random password per run instead of hard-coding one.
+
+Triage rules for an alert:
+
+- **Fix it** when it is real. Secrets dcert handles (Vault tokens, passwords, PKCS#12 passwords, private keys, OIDC tokens) must never reach output or logs: tokens are shown only through `mask_token`, keys only as type and size.
+- **Dismiss it as a false positive, with the reason in the dismissal comment,** only when the flagged value is public by design. `rust/cleartext-logging` flags any value whose name contains words such as `cert` or `key`; for a certificate tool most of those are certificate subjects, serials, validity dates, fingerprints, file paths and host names, which are the output the user asked for. A path to a key file is not the key.
+- Never dismiss an alert as "used in tests" or "won't fix" to clear the list, and never switch a query off for the whole repository.
+
 ### OpenSSL
 
 dcert links OpenSSL, and the version in each artefact is part of its security posture. `scripts/openssl_floor.yaml` records the minimum patch release per supported branch (3.5 and 4.0), and CI runs `dcert --version` on every built binary. It fails the build below the floor for binaries that carry their own OpenSSL (Windows) and reports for the rest.
