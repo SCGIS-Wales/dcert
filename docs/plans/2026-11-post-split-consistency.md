@@ -228,8 +228,10 @@ environments; a release where any channel fails; any CI failure not explained by
   Session notes:
 - [ ] **E.3 ci: Python 3.15 in the python-mcp matrix** (F23).
   Session notes:
-- [ ] **E.4 chore: remove .coverage and fix .gitignore** (F24).
-  Session notes:
+- [x] **E.4 chore: remove .coverage and fix .gitignore** (F24).
+  Session notes: 2026-11-21. `git rm --cached python/dcert-mcp/.coverage`; `.gitignore` patterns
+  moved to `python/*/`, with `.coverage`, `coverage.xml`, `extras.txt`, `runtime.in`,
+  `latest.txt` and `lowest.txt`. `git ls-files` finds none of them.
 - [ ] **E.5 ci: uv scenarios and MCP handshake in the install test** (F25).
   Session notes:
 - [ ] **E.6 build: hash pinned requirements per extra** (F26).

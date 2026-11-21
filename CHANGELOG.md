@@ -292,6 +292,9 @@ summary is written.
 
 ### Fixed
 
+- The coverage database `python/dcert-mcp/.coverage` is no longer tracked, and
+  `.gitignore` covers the files the Python gate generates in the `python/<project>/`
+  layout.
 - Documentation: `dcert diagnose` uses `--client-key` (the README showed `--key`,
   which exits with an argument error); the Docker CLI examples pass
   `--entrypoint dcert`; Homebrew is `brew install scgis-wales/tap/dcert` and installs
