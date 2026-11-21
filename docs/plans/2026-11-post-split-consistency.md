@@ -239,8 +239,11 @@ environments; a release where any channel fails; any CI failure not explained by
 
 ## Phase F: CLI wording and channel consistency
 
-- [ ] **F.1 fix: CLI description** (F17). S1.
-  Session notes:
+- [x] **F.1 fix: CLI description** (F17). S1.
+  Session notes: 2026-11-21. `DCERT_DESCRIPTION` and `long_about` in src/cli.rs and the Cargo
+  `description` set to S1; a unit test asserts the constant equals `CARGO_PKG_DESCRIPTION` and
+  does not mention MCP. `tests/cli_tests.rs::test_no_args_shows_help` matched the old
+  wording and now matches S1.
 - [ ] **F.2 docs: one sentence per program in every channel** (F31).
   S1: "dcert is a command line tool that decodes, validates and converts X.509 certificates and
   diagnoses TLS endpoints."

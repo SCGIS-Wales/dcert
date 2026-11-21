@@ -217,9 +217,10 @@ pub enum CipherNotation {
     All,
 }
 
-/// Canonical one-liner description used by CLI, MCP, and Cargo.toml.
+/// Canonical one sentence description of the CLI, used by `--help`, `--version`
+/// and the `description` in Cargo.toml (kept equal by a unit test).
 pub const DCERT_DESCRIPTION: &str =
-    "TLS certificate analysis, format conversion, and key verification — CLI and MCP server";
+    "dcert is a command line tool that decodes, validates and converts X.509 certificates and diagnoses TLS endpoints.";
 
 /// Long version string: version + description, for `dcert --version`.
 pub fn dcert_long_version() -> &'static str {
@@ -242,7 +243,7 @@ pub fn dcert_long_version() -> &'static str {
 #[command(name = "dcert")]
 #[command(about = DCERT_DESCRIPTION)]
 #[command(
-    long_about = "TLS certificate analysis, format conversion, and key verification — CLI and MCP server.\n\n\
+    long_about = "dcert is a command line tool that decodes, validates and converts X.509 certificates and diagnoses TLS endpoints.\n\n\
     The 'check' command is the default and can be omitted:\n  \
     dcert example.com  ≡  dcert check example.com"
 )]
@@ -1590,5 +1591,16 @@ mod tests {
             "tests/data/valid.pem",
         ]);
         assert!(matches!(cli.command, Command::VerifyKey(_)));
+    }
+}
+
+#[cfg(test)]
+mod description_tests {
+    use super::DCERT_DESCRIPTION;
+
+    #[test]
+    fn description_names_the_cli_only_and_matches_cargo_toml() {
+        assert!(!DCERT_DESCRIPTION.contains("MCP"));
+        assert_eq!(DCERT_DESCRIPTION, env!("CARGO_PKG_DESCRIPTION"));
     }
 }
