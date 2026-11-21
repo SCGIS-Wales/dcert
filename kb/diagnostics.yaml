@@ -467,9 +467,9 @@ entries:
       The chain anchors on a first generation DigiCert root (DigiCert Global
       Root CA, DigiCert High Assurance EV Root CA or DigiCert Assured ID
       Root CA). Chrome and Mozilla removed these G1 roots on 2026-04-15 as
-      part of the root programs' lifecycle limits, so the embedded public
-      root set no longer contains them and the chain is reported as private
-      or incomplete. DigiCert moved default issuance to its G2 hierarchies
+      part of the root programs' lifecycle limits for websites, so the chain
+      is reported as trusted for email only (Mozilla still trusts these
+      roots for S/MIME), or as incomplete. DigiCert moved default issuance to its G2 hierarchies
       in 2023 and to the G5 roots (DigiCert TLS RSA4096 Root G5 and DigiCert
       TLS ECC P384 Root G5) from 2026-10-15; certificates still chaining to
       G1 come from a legacy or pinned chain.
@@ -481,6 +481,65 @@ entries:
       - https://knowledge.digicert.com/alerts/digicert-root-strategy-aligning-with-industry-standards
       - https://wiki.mozilla.org/CA/Root_CA_Lifecycles
       - https://googlechrome.github.io/chromerootprogram/
+
+  - id: tls.handshake.x9-financial-pki
+    title: Chain anchors on the X9 Financial PKI
+    layer: tls_handshake
+    category: mtls
+    weight: 0.85
+    signals:
+      - type: root_class
+        is: industry_pki
+        required: true
+        weight: 2
+      - type: chain_name
+        pattern: '(?i)O=X9 Financial PKI'
+      - type: verify_result
+        pattern: '(?i)unable to get (local )?issuer|self.signed|unable to verify|certificate verify failed|untrusted'
+      - type: error
+        pattern: '(?i)unable to get (local )?issuer|self.signed|certificate verify failed|unknown ca'
+    root_cause: >
+      The certificate comes from the X9 Financial PKI, the industry PKI for
+      mutual TLS between financial institutions that DigiCert operates under
+      the ASC X9 certificate policy. It is publicly operated but deliberately
+      outside the browser root programs, so browsers, operating systems and
+      default truststores do not trust it, and verification fails until the
+      client installs the X9 roots. It is one of the options for mutual TLS
+      now that clientAuth leaves public TLS certificates (2027).
+    remediation:
+      - Install the X9 Financial PKI roots (and the RSA 4096 ICA and ICA EU intermediates) from DigiCert's knowledge base into the client's truststore; for dcert itself pass them with --ca-cert.
+      - Do not serve X9 certificates on endpoints browsers reach; use a publicly trusted TLS certificate there.
+      - For a counterparty that requires X9 (for example DTCC), install exactly the chain it names.
+    references:
+      - https://knowledge.digicert.com/general-information/community-root-authority-certificates
+      - https://docs.digicert.com/en/trust-lifecycle-manager/enroll-and-manage-certificates/enrollment-how-to-guides/issue-x9-certificates-via-certcentral.html
+
+  - id: tls.handshake.email-only-root
+    title: Server certificate chains to a root trusted for email only
+    layer: tls_handshake
+    category: tls
+    weight: 0.8
+    signals:
+      - type: root_class
+        is: publicly_trusted_email
+        required: true
+        weight: 2
+      - type: verify_result
+        pattern: '(?i)unable to get (local )?issuer|self.signed|unable to verify|certificate verify failed|untrusted'
+      - type: error
+        pattern: '(?i)unable to get (local )?issuer|self.signed|certificate verify failed|unknown ca'
+    root_cause: >
+      The chain anchors on a root Mozilla trusts for email (S/MIME) and not
+      for websites, for example Sectigo Public Email Protection Root R46 or
+      E46 or a DigiCert S/MIME root, or on a former website root now trusted
+      for email only. The CA is public, but browsers and TLS clients that use
+      the website trust bits reject the chain for a server.
+    remediation:
+      - Use a certificate from the CA's TLS server hierarchy (for Sectigo, Sectigo Public Server Authentication Root R46 or E46) on the server.
+      - If the certificate is a client certificate for mTLS, configure the server to trust that email root explicitly for client authentication, or move to a private CA or an industry PKI.
+    references:
+      - https://www.sectigo.com/knowledge-base/detail/Access-New-Sectigo-Certificate-Chain
+      - https://wiki.mozilla.org/CA/Included_Certificates
 
   - id: tls.handshake.chrome-distrusted-root-chunghwa-netlock
     title: Chain anchors on a root Chrome distrusts for new certificates (Chunghwa Telecom, NetLock)

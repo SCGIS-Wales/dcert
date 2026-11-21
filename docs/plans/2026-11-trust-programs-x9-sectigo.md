@@ -120,22 +120,34 @@ Decided 2026-11-21 (Dejan: "Proceed"): T1 `publicly_trusted_email`, T2 `industry
 
 ## Phase K: compliance and diagnostics
 
-- [ ] **K.1 clientAuth in public TLS certificates.** A compliance finding when a leaf under a
+- [x] **K.1 clientAuth in public TLS certificates.** A compliance finding when a leaf under a
   `mozilla_tls` root carries the clientAuth EKU: Chrome requires serverAuth only TLS
   certificates from 15 March 2027 and Sectigo stops issuing clientAuth on 10 February 2027.
   Severity info before the issuer's cutoff, warning after it. Suggest a private CA, an industry
   PKI such as X9, or a PSD2 QWAC for EU banking.
-  Session notes:
-- [ ] **K.2 Rules per program.** CA/Browser Forum checks (398 day validity, SCT presence) apply
+  Session notes: 2026-11-21. In `check_eku_compliance`: a clientAuth leaf without serverAuth
+  under a `PublicTls` chain gets a finding citing 10 February 2027 (Sectigo) and 15 March 2027
+  (Chrome), info before 10 February 2027 and a warning from then (`client_auth_severity`). The
+  existing clientAuth-with-serverAuth warning now also names both dates.
+- [x] **K.2 Rules per program.** CA/Browser Forum checks (398 day validity, SCT presence) apply
   only to `mozilla_tls` chains; X9 chains are checked against the X9 certificate policy, read
   first and cited per finding; email chains against the S/MIME Baseline Requirements where
   dcert already has rules, otherwise skipped with a note. Confirm on a real X9 leaf which
   checks misfire today before changing anything.
-  Session notes:
-- [ ] **K.3 Knowledge base entries.** `diagnose` entries for "chain anchors to the X9 PKI and
+  Session notes: 2026-11-21. `ChainScope` (`PublicTls`, `Program(id)`, `Private`, `Unknown`) from
+  `root_trust`, passed by `output.rs`; `Unknown` (no trust check) keeps the old heuristic. For
+  `Program` chains: validity over the SC-081 limit is a warning naming the program, missing
+  SCTs are info, and a non-serverAuth EKU is info. Confirmed on a fixture shaped like an X9
+  client leaf (no SCTs, 731 days, clientAuth only): before, a validity error and a CT warning;
+  now no error. The X9 certificate policy itself was not read, so no X9 specific limits are
+  asserted; the findings say the program's own policy sets them.
+- [x] **K.3 Knowledge base entries.** `diagnose` entries for "chain anchors to the X9 PKI and
   the client lacks the root" (install the DigiCert X9 bundle, or pass it with `--ca-cert`) and
   "server presents a certificate from an email only root".
-  Session notes:
+  Session notes: 2026-11-21. `tls.handshake.x9-financial-pki` (category mtls) and
+  `tls.handshake.email-only-root` in `kb/diagnostics.yaml`, sources in `kb/SOURCES.md`;
+  `dcert kb validate` passes (86 entries) and `dcert diagnose` on the X9 RSA 4096 ICA names the
+  X9 entry. The DigiCert G1 entry's text now says such chains are reported as email-only.
 
 ## Phase M: surfaces
 

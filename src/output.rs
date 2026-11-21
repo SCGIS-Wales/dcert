@@ -660,7 +660,10 @@ pub fn process_target(
 
     // Run compliance checks if requested
     let compliance_report = if compliance_mode {
-        Some(compliance::check_chain_compliance(&infos))
+        Some(compliance::check_chain_compliance_in(
+            &infos,
+            compliance::ChainScope::from_trust(root_trust.as_ref()),
+        ))
     } else {
         None
     };

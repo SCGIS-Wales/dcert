@@ -1,4 +1,5 @@
 use crate::cert::CertInfo;
+use crate::trust::{RootTrustClass, RootTrustInfo};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
@@ -338,12 +339,63 @@ pub struct ChainComplianceReport {
 /// The certificates should have been parsed with `extensions: true` so that
 /// key size, signature algorithm, key usage, and EKU information is available.
 pub fn check_chain_compliance(infos: &[CertInfo]) -> ChainComplianceReport {
+    check_chain_compliance_in(infos, ChainScope::Unknown)
+}
+
+/// Which rules a chain answers to, from its root trust classification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChainScope {
+    /// Anchored on a root browsers trust for websites: the CA/Browser Forum
+    /// Baseline Requirements and the browser root program policies apply.
+    PublicTls,
+    /// Anchored on another publicly operated trust program (for example
+    /// `mozilla_email` or `x9_financial`), whose own policy applies.
+    Program(&'static str),
+    /// Self-signed or a private root.
+    Private,
+    /// Not classified (no trust check ran); guessed from the chain.
+    Unknown,
+}
+
+impl ChainScope {
+    /// The scope for a [`RootTrustInfo`], or [`ChainScope::Unknown`] without one.
+    pub fn from_trust(trust: Option<&RootTrustInfo>) -> Self {
+        let Some(trust) = trust else {
+            return Self::Unknown;
+        };
+        match trust.classification {
+            RootTrustClass::PubliclyTrusted => Self::PublicTls,
+            RootTrustClass::PubliclyTrustedEmail | RootTrustClass::IndustryPki => {
+                Self::Program(trust.trust_program.unwrap_or("other"))
+            }
+            RootTrustClass::PrivatePki | RootTrustClass::SelfSigned => Self::Private,
+            RootTrustClass::Incomplete | RootTrustClass::Unknown => Self::Unknown,
+        }
+    }
+
+    fn program_name(self) -> Option<&'static str> {
+        match self {
+            Self::Program("x9_financial") => Some("the X9 Financial PKI"),
+            Self::Program("mozilla_email") => Some("an email (S/MIME) only root"),
+            Self::Program(_) => Some("a trust program outside the browser root programs"),
+            _ => None,
+        }
+    }
+}
+
+/// Run compliance checks with the chain's [`ChainScope`]: the CA/Browser Forum
+/// rules bind only [`ChainScope::PublicTls`] chains.
+pub fn check_chain_compliance_in(infos: &[CertInfo], scope: ChainScope) -> ChainComplianceReport {
     let mut reports = Vec::with_capacity(infos.len());
-    let issuer_private = chain_looks_private(infos);
+    let scope = match scope {
+        ChainScope::Unknown if chain_looks_private(infos) => ChainScope::Private,
+        other => other,
+    };
+    let issuer_private = !matches!(scope, ChainScope::PublicTls | ChainScope::Unknown);
 
     for info in infos {
         let is_leaf = info.index == 0;
-        let findings = check_certificate_compliance(info, is_leaf, issuer_private);
+        let findings = check_certificate_compliance(info, is_leaf, issuer_private, scope);
         let compliant = is_compliant(&findings);
         reports.push(CertComplianceReport {
             index: info.index,
@@ -389,18 +441,23 @@ fn is_ca_certificate(info: &CertInfo, is_leaf: bool) -> bool {
 /// the chain level guess from [`chain_looks_private`]; it only softens the
 /// validity period verdict, because the SC-081 limits bind publicly trusted
 /// CAs and not private PKIs.
-fn check_certificate_compliance(info: &CertInfo, is_leaf: bool, issuer_private: bool) -> Vec<CertFinding> {
+fn check_certificate_compliance(
+    info: &CertInfo,
+    is_leaf: bool,
+    issuer_private: bool,
+    scope: ChainScope,
+) -> Vec<CertFinding> {
     let mut findings = Vec::new();
 
     check_key_compliance(info, is_leaf, &mut findings);
     check_signature_algorithm(info, &mut findings);
     check_expiry_compliance(info, &mut findings);
-    check_validity_period(info, is_leaf, issuer_private, &mut findings);
-    check_certificate_transparency(info, &mut findings);
+    check_validity_period(info, is_leaf, issuer_private, scope, &mut findings);
+    check_certificate_transparency(info, scope, &mut findings);
 
     if is_leaf {
         check_san_compliance(info, &mut findings);
-        check_eku_compliance(info, &mut findings);
+        check_eku_compliance(info, scope, &mut findings);
         check_revocation_pointers(info, &mut findings);
     } else {
         check_ca_compliance(info, &mut findings);
@@ -593,7 +650,13 @@ fn check_expiry_compliance(info: &CertInfo, findings: &mut Vec<CertFinding>) {
 /// issued (`issuer_private`, see [`chain_looks_private`]) because a private
 /// PKI is not bound by the Baseline Requirements, though the same limits are
 /// still good practice there.
-fn check_validity_period(info: &CertInfo, is_leaf: bool, issuer_private: bool, findings: &mut Vec<CertFinding>) {
+fn check_validity_period(
+    info: &CertInfo,
+    is_leaf: bool,
+    issuer_private: bool,
+    scope: ChainScope,
+    findings: &mut Vec<CertFinding>,
+) {
     let Some((not_before, validity_days)) = validity_days(info) else {
         return;
     };
@@ -612,14 +675,23 @@ fn check_validity_period(info: &CertInfo, is_leaf: bool, issuer_private: bool, f
 
     let (limit, window) = max_subscriber_validity_days(not_before);
     if validity_days > limit {
-        let (severity, suffix) = if issuer_private {
+        let (severity, suffix) = if let Some(program) = scope.program_name() {
+            (
+                Severity::Warning,
+                format!(
+                    " This chain is anchored on {program}, which browsers do not trust, so the limit is advisory \
+                     and reported as a warning; the program's own certificate policy sets its limits."
+                ),
+            )
+        } else if issuer_private {
             (
                 Severity::Warning,
                 " This chain appears to be privately issued (self signed or anchored on a root outside the \
-                 public root programs), so the limit is advisory and reported as a warning.",
+                 public root programs), so the limit is advisory and reported as a warning."
+                    .to_string(),
             )
         } else {
-            (Severity::Error, "")
+            (Severity::Error, String::new())
         };
         findings.push(CertFinding {
             severity,
@@ -720,7 +792,7 @@ fn check_revocation_pointers(info: &CertInfo, findings: &mut Vec<CertFinding>) {
 }
 
 /// Check for Certificate Transparency SCTs (required by major browsers).
-fn check_certificate_transparency(info: &CertInfo, findings: &mut Vec<CertFinding>) {
+fn check_certificate_transparency(info: &CertInfo, scope: ChainScope, findings: &mut Vec<CertFinding>) {
     if info.ct_present {
         let sct_msg = match info.sct_count {
             Some(count) => format!("Certificate Transparency: {count} SCT(s) embedded (compliant with CT policy)"),
@@ -730,6 +802,15 @@ fn check_certificate_transparency(info: &CertInfo, findings: &mut Vec<CertFindin
             severity: Severity::Info,
             category: "Certificate Transparency".to_string(),
             message: sct_msg,
+        });
+    } else if let Some(program) = scope.program_name() {
+        findings.push(CertFinding {
+            severity: Severity::Info,
+            category: "Certificate Transparency".to_string(),
+            message: format!(
+                "No embedded SCTs. Certificate Transparency is required by browsers for publicly trusted TLS \
+                 certificates; this chain is anchored on {program}, where it is not expected."
+            ),
         });
     } else {
         findings.push(CertFinding {
@@ -783,6 +864,21 @@ fn check_san_compliance(info: &CertInfo, findings: &mut Vec<CertFinding>) {
     }
 }
 
+/// Sectigo's last day for clientAuth in public TLS certificates is 9 February
+/// 2027; Chrome's serverAuth only rule for new certificates starts 15 March
+/// 2027. Before the first date a clientAuth only public leaf is Info, after
+/// it a Warning.
+fn client_auth_severity(now: OffsetDateTime) -> Severity {
+    let cutoff = time::Date::from_calendar_date(2027, time::Month::February, 10)
+        .map(|d| d.midnight().assume_utc())
+        .unwrap_or(OffsetDateTime::UNIX_EPOCH);
+    if now < cutoff {
+        Severity::Info
+    } else {
+        Severity::Warning
+    }
+}
+
 /// Check Extended Key Usage for leaf certificates.
 ///
 /// serverAuth is required. clientAuth alongside serverAuth is a Warning: the
@@ -790,12 +886,37 @@ fn check_san_compliance(info: &CertInfo, findings: &mut Vec<CertFinding>) {
 /// serverAuth only leaf certificates, and the large public CAs have stopped
 /// adding clientAuth (Google Trust Services in April 2026, Let's Encrypt in
 /// February 2026 with the tlsclient profile retired in July 2026).
-fn check_eku_compliance(info: &CertInfo, findings: &mut Vec<CertFinding>) {
+fn check_eku_compliance(info: &CertInfo, scope: ChainScope, findings: &mut Vec<CertFinding>) {
     match &info.extended_key_usage {
         Some(eku) => {
             let has_server_auth = eku.iter().any(|u| u == "serverAuth");
             let has_client_auth = eku.iter().any(|u| u == "clientAuth");
-            if has_server_auth {
+            if let Some(program) = scope.program_name()
+                && !has_server_auth
+            {
+                findings.push(CertFinding {
+                    severity: Severity::Info,
+                    category: "Extended Key Usage".to_string(),
+                    message: format!(
+                        "EKU {} under {program}: not a TLS server certificate, which is expected for this \
+                         trust program.",
+                        eku.join(", ")
+                    ),
+                });
+            } else if has_client_auth && !has_server_auth && scope == ChainScope::PublicTls {
+                findings.push(CertFinding {
+                    severity: client_auth_severity(OffsetDateTime::now_utc()),
+                    category: "Extended Key Usage".to_string(),
+                    message: format!(
+                        "Client authentication certificate ({}) under a root trusted for websites. Public TLS \
+                         hierarchies are becoming serverAuth only: Sectigo stops issuing clientAuth on 10 \
+                         February 2027 and Chrome requires serverAuth only TLS certificates from 15 March 2027. \
+                         Move mTLS identities to a private CA, an industry PKI such as the X9 Financial PKI, \
+                         or a PSD2 QWAC for EU banking.",
+                        eku.join(", ")
+                    ),
+                });
+            } else if has_server_auth {
                 findings.push(CertFinding {
                     severity: Severity::Info,
                     category: "Extended Key Usage".to_string(),
@@ -806,9 +927,10 @@ fn check_eku_compliance(info: &CertInfo, findings: &mut Vec<CertFinding>) {
                         severity: Severity::Warning,
                         category: "Extended Key Usage".to_string(),
                         message: "clientAuth present on a TLS server certificate. The Chrome Root Program policy \
-                                  requires serverAuth only leaf certificates from publicly trusted CAs (Google \
-                                  Trust Services stopped issuing clientAuth in April 2026, Let's Encrypt removed \
-                                  it in February 2026 and retired the tlsclient profile in July 2026); mTLS client \
+                                  requires serverAuth only leaf certificates from publicly trusted CAs (new \
+                                  certificates from 15 March 2027; Google Trust Services stopped issuing clientAuth \
+                                  in April 2026, Let's Encrypt removed it in February 2026 and retired the tlsclient \
+                                  profile in July 2026, and Sectigo stops on 10 February 2027); mTLS client \
                                   identities should come from a private CA."
                             .to_string(),
                     });
@@ -1016,7 +1138,7 @@ mod tests {
         cert.not_before = "2026-01-01T00:00:00Z".to_string();
         cert.not_after = "2026-12-31T00:00:00Z".to_string(); // ~365 days, 398 day window
         let mut findings = Vec::new();
-        check_validity_period(&cert, true, false, &mut findings);
+        check_validity_period(&cert, true, false, ChainScope::PublicTls, &mut findings);
         assert!(
             !findings
                 .iter()
@@ -1032,7 +1154,7 @@ mod tests {
         cert.not_before = "2026-01-01T00:00:00Z".to_string();
         cert.not_after = "2028-01-01T00:00:00Z".to_string(); // ~730 days
         let mut findings = Vec::new();
-        check_validity_period(&cert, true, false, &mut findings);
+        check_validity_period(&cert, true, false, ChainScope::PublicTls, &mut findings);
         let f = findings
             .iter()
             .find(|f| f.category == "Validity Period")
@@ -1049,7 +1171,7 @@ mod tests {
         cert.not_before = "2026-01-01T00:00:00Z".to_string();
         cert.not_after = "2028-01-01T00:00:00Z".to_string();
         let mut findings = Vec::new();
-        check_validity_period(&cert, true, true, &mut findings);
+        check_validity_period(&cert, true, true, ChainScope::Private, &mut findings);
         let f = findings
             .iter()
             .find(|f| f.category == "Validity Period")
@@ -1077,7 +1199,7 @@ mod tests {
         cert.not_before = "2026-06-01T00:00:00Z".to_string();
         cert.not_after = "2027-06-01T00:00:00Z".to_string(); // 365 days, 200 day window
         let mut findings = Vec::new();
-        check_validity_period(&cert, true, false, &mut findings);
+        check_validity_period(&cert, true, false, ChainScope::PublicTls, &mut findings);
         let f = &findings[0];
         assert_eq!(f.severity, Severity::Error);
         assert!(f.message.contains("200 day maximum"), "{}", f.message);
@@ -1090,20 +1212,20 @@ mod tests {
         cert.not_before = "2027-06-01T00:00:00Z".to_string();
         cert.not_after = "2027-09-30T00:00:00Z".to_string(); // 121 days, 100 day window
         let mut findings = Vec::new();
-        check_validity_period(&cert, true, false, &mut findings);
+        check_validity_period(&cert, true, false, ChainScope::PublicTls, &mut findings);
         assert_eq!(findings[0].severity, Severity::Error);
         assert!(findings[0].message.contains("100 day maximum"));
 
         cert.not_before = "2029-06-01T00:00:00Z".to_string();
         cert.not_after = "2029-07-31T00:00:00Z".to_string(); // 60 days, 47 day window
         let mut findings = Vec::new();
-        check_validity_period(&cert, true, false, &mut findings);
+        check_validity_period(&cert, true, false, ChainScope::PublicTls, &mut findings);
         assert_eq!(findings[0].severity, Severity::Error);
         assert!(findings[0].message.contains("47 day maximum"));
 
         cert.not_after = "2029-07-15T00:00:00Z".to_string(); // 44 days, fine
         let mut findings = Vec::new();
-        check_validity_period(&cert, true, false, &mut findings);
+        check_validity_period(&cert, true, false, ChainScope::PublicTls, &mut findings);
         assert_eq!(findings[0].severity, Severity::Info);
         assert!(findings[0].message.contains("47 day limit"));
     }
@@ -1114,7 +1236,7 @@ mod tests {
         ca.not_before = "2026-06-01T00:00:00Z".to_string();
         ca.not_after = "2046-06-01T00:00:00Z".to_string(); // 20 years
         let mut findings = Vec::new();
-        check_validity_period(&ca, false, false, &mut findings);
+        check_validity_period(&ca, false, false, ChainScope::PublicTls, &mut findings);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].severity, Severity::Info);
         assert!(findings[0].message.contains("CA certificate"));
@@ -1122,7 +1244,7 @@ mod tests {
         // A CA=true certificate at index 0 (a lone root) is also exempt.
         ca.index = 0;
         let mut findings = Vec::new();
-        check_validity_period(&ca, true, false, &mut findings);
+        check_validity_period(&ca, true, false, ChainScope::PublicTls, &mut findings);
         assert_eq!(findings[0].severity, Severity::Info);
     }
 
@@ -1131,7 +1253,7 @@ mod tests {
         let mut cert = make_leaf_cert_with_extensions();
         cert.not_before = "not a date".to_string();
         let mut findings = Vec::new();
-        check_validity_period(&cert, true, false, &mut findings);
+        check_validity_period(&cert, true, false, ChainScope::PublicTls, &mut findings);
         assert!(findings.is_empty());
     }
 
@@ -1279,7 +1401,7 @@ mod tests {
     fn test_ct_present() {
         let cert = make_leaf_cert_with_extensions();
         let mut findings = Vec::new();
-        check_certificate_transparency(&cert, &mut findings);
+        check_certificate_transparency(&cert, ChainScope::PublicTls, &mut findings);
         assert!(
             !findings
                 .iter()
@@ -1293,7 +1415,7 @@ mod tests {
         cert.ct_present = false;
         cert.sct_count = None;
         let mut findings = Vec::new();
-        check_certificate_transparency(&cert, &mut findings);
+        check_certificate_transparency(&cert, ChainScope::PublicTls, &mut findings);
         assert!(findings.iter().any(|f| f.severity == Severity::Warning));
     }
 
@@ -1343,7 +1465,7 @@ mod tests {
     fn test_eku_server_auth_present() {
         let cert = make_leaf_cert_with_extensions();
         let mut findings = Vec::new();
-        check_eku_compliance(&cert, &mut findings);
+        check_eku_compliance(&cert, ChainScope::PublicTls, &mut findings);
         assert!(!findings.iter().any(|f| f.severity == Severity::Warning));
     }
 
@@ -1352,7 +1474,7 @@ mod tests {
         let mut cert = make_leaf_cert_with_extensions();
         cert.extended_key_usage = Some(vec!["clientAuth".to_string()]);
         let mut findings = Vec::new();
-        check_eku_compliance(&cert, &mut findings);
+        check_eku_compliance(&cert, ChainScope::Unknown, &mut findings);
         assert!(findings.iter().any(|f| f.severity == Severity::Warning));
     }
 
@@ -1618,7 +1740,7 @@ mod tests {
         let mut cert = make_leaf_cert_with_extensions();
         cert.extended_key_usage = Some(vec!["serverAuth".to_string(), "clientAuth".to_string()]);
         let mut findings = Vec::new();
-        check_eku_compliance(&cert, &mut findings);
+        check_eku_compliance(&cert, ChainScope::PublicTls, &mut findings);
         let w = findings
             .iter()
             .find(|f| f.severity == Severity::Warning)
@@ -1633,7 +1755,7 @@ mod tests {
         let mut cert = make_leaf_cert_with_extensions();
         cert.extended_key_usage = Some(vec!["clientAuth".to_string()]);
         let mut findings = Vec::new();
-        check_eku_compliance(&cert, &mut findings);
+        check_eku_compliance(&cert, ChainScope::Unknown, &mut findings);
         assert_eq!(findings.len(), 1);
         assert!(findings[0].message.contains("serverAuth not found"));
     }
@@ -1643,7 +1765,108 @@ mod tests {
         let mut ca = make_ca_cert();
         ca.extended_key_usage = Some(vec!["serverAuth".to_string(), "clientAuth".to_string()]);
         let mut findings = Vec::new();
-        check_eku_compliance(&ca, &mut findings);
+        check_eku_compliance(&ca, ChainScope::PublicTls, &mut findings);
         assert!(!findings.iter().any(|f| f.severity == Severity::Warning));
+    }
+
+    // --- chain scope from the root trust classification ----------------------
+
+    fn x9_client_leaf() -> CertInfo {
+        let mut leaf = make_leaf_cert_with_extensions();
+        leaf.ct_present = false;
+        leaf.sct_count = None;
+        leaf.extended_key_usage = Some(vec!["clientAuth".to_string()]);
+        leaf.not_before = "2026-07-01T00:00:00Z".to_string();
+        leaf.not_after = "2028-07-01T00:00:00Z".to_string();
+        leaf
+    }
+
+    fn findings(report: &ChainComplianceReport, category: &str) -> Vec<CertFinding> {
+        report.certificates[0]
+            .findings
+            .iter()
+            .filter(|f| f.category == category)
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn an_x9_chain_is_not_held_to_the_browser_rules() {
+        let mut ca = make_ca_cert();
+        ca.issuer = "CN=X9 Financial PKI - RSA 4096 Root".to_string();
+        let report = check_chain_compliance_in(&[x9_client_leaf(), ca], ChainScope::Program("x9_financial"));
+        let leaf = &report.certificates[0];
+        let errors = leaf.findings.iter().filter(|f| f.severity == Severity::Error).count();
+        assert_eq!(errors, 0, "an X9 chain must have no compliance error");
+        let ct = findings(&report, "Certificate Transparency");
+        assert_eq!(ct[0].severity, Severity::Info);
+        assert!(ct[0].message.contains("X9 Financial PKI"));
+        let eku = findings(&report, "Extended Key Usage");
+        assert_eq!(eku[0].severity, Severity::Info);
+        let validity = findings(&report, "Validity Period");
+        assert_eq!(validity[0].severity, Severity::Warning);
+        assert!(validity[0].message.contains("X9 Financial PKI"));
+    }
+
+    #[test]
+    fn the_same_x9_leaf_without_a_trust_result_keeps_the_old_verdicts() {
+        let mut ca = make_ca_cert();
+        ca.issuer = "CN=X9 Financial PKI - RSA 4096 Root".to_string();
+        let report = check_chain_compliance(&[x9_client_leaf(), ca]);
+        assert_eq!(
+            findings(&report, "Certificate Transparency")[0].severity,
+            Severity::Warning
+        );
+        assert_eq!(findings(&report, "Validity Period")[0].severity, Severity::Error);
+    }
+
+    #[test]
+    fn a_client_auth_leaf_under_a_website_root_cites_the_2027_dates() {
+        let mut leaf = make_leaf_cert_with_extensions();
+        leaf.extended_key_usage = Some(vec!["clientAuth".to_string()]);
+        let report = check_chain_compliance_in(&[leaf], ChainScope::PublicTls);
+        let eku = findings(&report, "Extended Key Usage");
+        assert!(eku[0].message.contains("10 February 2027"));
+        assert!(eku[0].message.contains("15 March 2027"));
+    }
+
+    #[test]
+    fn client_auth_severity_rises_at_the_sectigo_cutoff() {
+        let before = time::Date::from_calendar_date(2026, time::Month::November, 21)
+            .unwrap()
+            .midnight()
+            .assume_utc();
+        let after = time::Date::from_calendar_date(2027, time::Month::February, 10)
+            .unwrap()
+            .midnight()
+            .assume_utc();
+        assert_eq!(client_auth_severity(before), Severity::Info);
+        assert_eq!(client_auth_severity(after), Severity::Warning);
+    }
+
+    #[test]
+    fn scope_follows_the_root_trust_classification() {
+        let mut info = RootTrustInfo {
+            classification: RootTrustClass::IndustryPki,
+            publicly_trusted: false,
+            trust_anchor_subject: None,
+            trust_anchor_sha256: None,
+            anchor_present_in_chain: false,
+            chain_completed_via_aia: false,
+            private_backend_reachable: None,
+            trust_program: Some("x9_financial"),
+            operator: None,
+            purpose: None,
+            preproduction: None,
+            purpose_note: None,
+            source: "embedded",
+            detail: None,
+        };
+        assert_eq!(ChainScope::from_trust(Some(&info)), ChainScope::Program("x9_financial"));
+        info.classification = RootTrustClass::PubliclyTrusted;
+        assert_eq!(ChainScope::from_trust(Some(&info)), ChainScope::PublicTls);
+        info.classification = RootTrustClass::Incomplete;
+        assert_eq!(ChainScope::from_trust(Some(&info)), ChainScope::Unknown);
+        assert_eq!(ChainScope::from_trust(None), ChainScope::Unknown);
     }
 }

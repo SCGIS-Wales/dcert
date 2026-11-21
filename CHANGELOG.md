@@ -12,6 +12,12 @@ nothing (documentation, plans) do not cut a release and wait under
 
 ### Changed
 
+- Compliance follows the chain's trust program: for X9 Financial PKI and email-only
+  chains the CA/Browser Forum validity limit is a warning, missing SCTs are info, and a
+  non-serverAuth EKU is expected; a clientAuth-only leaf under a website root cites
+  Sectigo's 10 February 2027 and Chrome's 15 March 2027 serverAuth-only dates (info
+  until the first, then a warning). New diagnose entries explain X9 chains and server
+  certificates under email-only roots.
 - Root trust classification knows trust programs beyond Mozilla's website roots. A chain
   anchored on a root Mozilla trusts for email only (for example Sectigo Public Email
   Protection Root R46) is `publicly_trusted_email`, and one anchored on the X9 Financial
