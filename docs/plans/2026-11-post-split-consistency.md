@@ -233,8 +233,10 @@ environments; a release where any channel fails; any CI failure not explained by
   `analyze_certificate`.
 - [ ] **E.2 feat: generated typed wrappers for all tools** (F22). Existing signatures unchanged.
   Session notes:
-- [ ] **E.3 ci: Python 3.15 in the python-mcp matrix** (F23).
-  Session notes:
+- [x] **E.3 ci: Python 3.15 in the python-mcp matrix** (F23).
+  Session notes: 2026-11-21. Locally on CPython 3.15.2 with the proxy, otel and dev extras:
+  mypy clean, 326 passed (99.29 %), integration included. "3.15" added to the matrix; the
+  classifier stays.
 - [x] **E.4 chore: remove .coverage and fix .gitignore** (F24).
   Session notes: 2026-11-21. `git rm --cached python/dcert-mcp/.coverage`; `.gitignore` patterns
   moved to `python/*/`, with `.coverage`, `coverage.xml`, `extras.txt`, `runtime.in`,

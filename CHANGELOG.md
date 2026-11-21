@@ -387,6 +387,8 @@ summary is written.
 
 ### CI
 
+- The dcert-mcp tests run on Python 3.15 too, which the package classifiers already
+  claimed.
 - Documentation-only pushes no longer cut a release: `auto-tag` runs
   `scripts/ci/release_paths.py`, which skips the tag when every changed path matches
   `scripts/release_paths.yaml` (root `*.md`, `docs/**` and repository metadata) or the
