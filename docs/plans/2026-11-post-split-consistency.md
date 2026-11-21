@@ -212,9 +212,14 @@ environments; a release where any channel fails; any CI failure not explained by
   README tool table rather than a fixed 30, so adding a tool needs only the README row C.1
   already enforces. Checked locally: `wait-pypi --version 4.0.8` passes at once;
   `handshake` against the installed 4.0.7 server reports 30 tools.
-- [ ] **D.3 ci: release consistency summary** (F2). `if: always()` job checks the GitHub release assets,
+- [x] **D.3 ci: release consistency summary** (F2). `if: always()` job checks the GitHub release assets,
   both PyPI projects, GHCR, the tap formula and Chocolatey; writes a job summary table.
-  Session notes:
+  Session notes: 2026-11-21. `release_check.py consistency`; GHCR is checked through the
+  registry API with an anonymous pull token (no Docker needed), the tap through the contents
+  API. Chocolatey is reported but not required: the job is skipped without a key and the feed
+  shows a version only after moderation. Run locally: 4.0.8 all ok; 4.0.4 reports the missing
+  PyPI dcert (the F2 gap); 4.0.9 during its own release run reports the release and PyPI as
+  missing and GHCR and the tap as ok.
 - [ ] **D.4 ci: recovery by workflow_dispatch** (F2). Inputs tag and project; downloads wheels from the
   release, verifies SHA256SUMS, publishes with skip-existing in the same environments.
   Session notes:
