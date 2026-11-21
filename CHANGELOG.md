@@ -10,6 +10,8 @@ nothing (documentation, plans) do not cut a release and wait under
 
 ## Unreleased
 
+## 4.0.14 (2026-11-21)
+
 ### CI
 
 - The Chocolatey push waits for the moderation queue: when earlier versions of dcert are
