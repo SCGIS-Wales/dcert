@@ -127,6 +127,28 @@ def missing_assets(names: Iterable[str], version: str) -> list[str]:
     return [name for name in expected_assets(version) if name not in present]
 
 
+def simple_index_files(project: str) -> list[str]:
+    """Wheel file names the PyPI simple index (what pip and uv read) lists for ``project``."""
+    data = json.loads(
+        get(
+            f"https://pypi.org/simple/{project}/",
+            {"Accept": "application/vnd.pypi.simple.v1+json", "Cache-Control": "no-cache"},
+        )
+    )
+    return [str(f["filename"]) for f in data.get("files", [])]
+
+
+def simple_index_problems(project: str, version: str, files: Iterable[str]) -> list[str]:
+    """The platform wheels of ``version`` the simple index does not list yet."""
+    listed = set(files)
+    dist = project.replace("-", "_")
+    return [
+        f"the simple index does not list {dist}-{version}-py3-none-{platform}.whl yet"
+        for platform in WHEEL_PLATFORMS
+        if f"{dist}-{version}-py3-none-{platform}.whl" not in listed
+    ]
+
+
 def pypi_problems(project: str, version: str, release: Mapping[str, Any] | None) -> list[str]:
     """Problems with one project's PyPI release: absent, yanked, or wheels missing."""
     if release is None:
@@ -285,13 +307,16 @@ def main() -> None:
 @click.option("--timeout", default=900, show_default=True, help="Seconds to wait.")
 @click.option("--interval", default=20, show_default=True)
 def wait_pypi(version: str, timeout: int, interval: int) -> None:
-    """Wait until both PyPI projects serve VERSION."""
+    """Wait until both PyPI projects serve VERSION in the JSON API and the simple index."""
     deadline = time.monotonic() + timeout
     while True:
+        # The JSON API can serve a release before the simple index that pip
+        # and uv read (and its CDN caches) lists its files, so wait for both.
         problems = [
             p
             for project in PROJECTS
             for p in pypi_problems(project, version, pypi_release(project, version))
+            + simple_index_problems(project, version, simple_index_files(project))
         ]
         if not problems:
             click.echo(f"PyPI serves dcert and dcert-mcp {version}")

@@ -2157,7 +2157,12 @@ jobs:
         run: |
           python -m venv "$RUNNER_TEMP/pip-env"
           BIN="$RUNNER_TEMP/pip-env/bin"; [ -d "$BIN" ] || BIN="$RUNNER_TEMP/pip-env/Scripts"
-          "$BIN/python" -m pip install --quiet --no-cache-dir --index-url https://pypi.org/simple "dcert-mcp==$VERSION"
+          # A CDN edge can lag the index the wait step saw; retry before failing.
+          for attempt in 1 2 3; do
+            "$BIN/python" -m pip install --quiet --no-cache-dir --index-url https://pypi.org/simple "dcert-mcp==$VERSION" && break
+            [ "$attempt" = 3 ] && exit 1
+            echo "attempt $attempt failed; retrying in 60 s"; sleep 60
+          done
           "$BIN/dcert" --version
           "$BIN/dcert-mcp" --version
           python scripts/ci/release_check.py handshake --binary "$BIN/dcert-mcp" --version "$VERSION"
@@ -2166,7 +2171,11 @@ jobs:
         run: |
           uv venv --quiet --python 3.12 "$RUNNER_TEMP/uv-env"
           BIN="$RUNNER_TEMP/uv-env/bin"; [ -d "$BIN" ] || BIN="$RUNNER_TEMP/uv-env/Scripts"
-          uv pip install --quiet --no-cache --python "$RUNNER_TEMP/uv-env" --index-url https://pypi.org/simple "dcert-mcp==$VERSION"
+          for attempt in 1 2 3; do
+            uv pip install --quiet --no-cache --python "$RUNNER_TEMP/uv-env" --index-url https://pypi.org/simple "dcert-mcp==$VERSION" && break
+            [ "$attempt" = 3 ] && exit 1
+            echo "attempt $attempt failed; retrying in 60 s"; sleep 60
+          done
           "$BIN/dcert" --version
           python scripts/ci/release_check.py handshake --binary "$BIN/dcert-mcp" --version "$VERSION"
 
