@@ -291,6 +291,8 @@ HTTP status line (not the full response body)."
 pub fn print_root_trust_pretty(trust: &RootTrustInfo) {
     let colored_label = match trust.classification {
         RootTrustClass::PubliclyTrusted => "Publicly trusted CA".green().bold(),
+        RootTrustClass::PubliclyTrustedEmail => "Publicly trusted for email (S/MIME) only".cyan().bold(),
+        RootTrustClass::IndustryPki => "Industry PKI (not trusted by browsers)".cyan().bold(),
         RootTrustClass::PrivatePki => "Private PKI".yellow().bold(),
         RootTrustClass::SelfSigned => "Self-signed".red().bold(),
         RootTrustClass::Incomplete => "Incomplete chain".yellow().bold(),
@@ -309,6 +311,16 @@ pub fn print_root_trust_pretty(trust: &RootTrustInfo) {
     }
     if let Some(ref fp) = trust.trust_anchor_sha256 {
         println!("  Anchor SHA-256 : {fp}");
+    }
+    if let Some(program) = trust.trust_program {
+        let operator = trust.operator.map(|o| format!(" ({o})")).unwrap_or_default();
+        println!("  Trust program  : {program}{}", operator.dimmed());
+    }
+    if trust.preproduction == Some(true) {
+        println!("  Preproduction  : {}", "yes (test root)".yellow());
+    }
+    if let Some(ref note) = trust.purpose_note {
+        println!("  {} {note}", "Purpose:".yellow().bold());
     }
     if trust.chain_completed_via_aia {
         println!("  Chain completed via AIA: {}", "yes".cyan());

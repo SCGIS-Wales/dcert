@@ -38,6 +38,7 @@ use x509_parser::prelude::FromDer;
 use crate::cert::{fingerprint_hex, format_x509_name_with_keys as format_name};
 use crate::debug::debug_log;
 use crate::proxy::ProxyConfig;
+use crate::trust_programs::{Program, Purpose};
 
 /// Maximum issuer-chain hops to follow when resolving via AIA. Bounds work and
 /// guards against pathological/looping AIA pointers.
@@ -60,6 +61,12 @@ const CCADB_BUNDLE_URL: &str = "https://curl.se/ca/cacert.pem";
 pub enum RootTrustClass {
     /// The chain verifies up to a root in the embedded public root store.
     PubliclyTrusted,
+    /// The chain verifies up to a root Mozilla trusts for email (S/MIME) and
+    /// not for websites, such as Sectigo Public Email Protection Root R46.
+    PubliclyTrustedEmail,
+    /// The chain verifies up to the root of an industry PKI that browsers do
+    /// not trust, such as the X9 Financial PKI (see `trust_program`).
+    IndustryPki,
     /// The chain terminates in a private (non-public) root CA.
     PrivatePki,
     /// A single self-signed certificate (not issued by any CA).
@@ -94,6 +101,24 @@ pub struct RootTrustInfo {
     /// (AIA "CA Issuers" endpoint) was reachable. `None` when not probed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub private_backend_reachable: Option<bool>,
+    /// The trust program the anchor belongs to: `mozilla_tls`,
+    /// `mozilla_email` or `x9_financial`. Absent for private and self-signed
+    /// chains.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trust_program: Option<&'static str>,
+    /// Who operates that trust program.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operator: Option<&'static str>,
+    /// What the trust program vouches for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<Purpose>,
+    /// Whether the anchor is a preproduction (test) root of its program.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preproduction: Option<bool>,
+    /// The leaf's purpose disagrees with what its root is trusted for (for
+    /// example a client authentication certificate under a website root).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub purpose_note: Option<String>,
     /// Which public-root source was used: `embedded` or `embedded+refreshed`.
     pub source: &'static str,
     /// Short human-readable explanation.
@@ -115,6 +140,50 @@ pub struct PublicRoots {
     store: X509Store,
     fingerprints: HashSet<Vec<u8>>,
     source: &'static str,
+    /// The other trust programs (`crate::trust_programs::PROGRAMS`), tried in
+    /// order when a chain does not reach the Mozilla website set.
+    programs: Vec<ProgramStore>,
+}
+
+/// One trust program prepared for verification.
+struct ProgramStore {
+    program: &'static Program,
+    store: X509Store,
+    /// Intermediates the program publishes; they complete chains whose server
+    /// omitted them but are never anchors.
+    intermediates: Vec<X509>,
+    /// SHA-256 fingerprints of the program's preproduction roots.
+    preproduction: HashSet<Vec<u8>>,
+}
+
+impl ProgramStore {
+    fn build(program: &'static Program) -> Result<Self> {
+        let mut builder = X509StoreBuilder::new().map_err(|e| anyhow::anyhow!("Failed to create trust store: {e}"))?;
+        builder
+            .set_flags(X509VerifyFlags::NO_CHECK_TIME)
+            .map_err(|e| anyhow::anyhow!("Failed to set store flags: {e}"))?;
+        let mut intermediates = Vec::new();
+        let mut preproduction = HashSet::new();
+        for (cert, anchor) in crate::trust_programs::certificates(program) {
+            match anchor {
+                Some(a) if !a.root => intermediates.push(cert),
+                _ => {
+                    if anchor.is_some_and(|a| a.preproduction)
+                        && let Ok(fp) = cert.digest(MessageDigest::sha256())
+                    {
+                        preproduction.insert(fp.to_vec());
+                    }
+                    let _ = builder.add_cert(cert);
+                }
+            }
+        }
+        Ok(Self {
+            program,
+            store: builder.build(),
+            intermediates,
+            preproduction,
+        })
+    }
 }
 
 impl std::fmt::Debug for PublicRoots {
@@ -185,10 +254,15 @@ impl PublicRoots {
                 fingerprints.insert(fp.to_vec());
             }
         }
+        let programs = crate::trust_programs::PROGRAMS
+            .iter()
+            .map(ProgramStore::build)
+            .collect::<Result<Vec<_>>>()?;
         Ok(Self {
             store: builder.build(),
             fingerprints,
             source,
+            programs,
         })
     }
 
@@ -227,6 +301,11 @@ pub fn assess_root_trust(
         anchor_present_in_chain: false,
         chain_completed_via_aia: false,
         private_backend_reachable: None,
+        trust_program: None,
+        operator: None,
+        purpose: None,
+        preproduction: None,
+        purpose_note: None,
         source: roots.source,
         detail: None,
     };
@@ -268,84 +347,169 @@ struct AnchorInfo {
     subject: String,
     sha256: String,
     present_in_chain: bool,
+    sha256_raw: Vec<u8>,
 }
 
-/// Core offline classification of an in-memory chain.
+/// Verify `leaf` with `untrusted` helpers against `store`; the anchoring
+/// root when the chain verifies, `None` otherwise.
+fn anchor_in(store: &X509Store, leaf: &X509, untrusted: &[X509], certs: &[X509]) -> Option<AnchorInfo> {
+    let mut stack = Stack::new().ok()?;
+    for c in untrusted {
+        stack.push(c.clone()).ok()?;
+    }
+    let mut ctx = X509StoreContext::new().ok()?;
+    ctx.init(store, leaf, &stack, |c| {
+        if !c.verify_cert()? {
+            return Ok(None);
+        }
+        Ok(c.chain().and_then(|chain| chain.iter().last()).map(|root| AnchorInfo {
+            subject: format_name(root.subject_name()),
+            sha256: fingerprint_hex(root),
+            present_in_chain: cert_in_chain(root, certs),
+            sha256_raw: root
+                .digest(MessageDigest::sha256())
+                .map(|d| d.to_vec())
+                .unwrap_or_default(),
+        }))
+    })
+    .ok()
+    .flatten()
+}
+
+/// Core offline classification of an in-memory chain: the Mozilla website set
+/// first, then each other trust program, then private or self-signed.
 fn classify(roots: &PublicRoots, certs: &[X509], info: &mut RootTrustInfo) {
     let leaf = &certs[0];
+    let supplied = &certs[1..];
+    info.trust_program = None;
+    info.operator = None;
+    info.purpose = None;
+    info.preproduction = None;
 
-    let Ok(mut stack) = Stack::new() else {
+    if let Some(anchor) = anchor_in(&roots.store, leaf, supplied, certs) {
+        info.classification = RootTrustClass::PubliclyTrusted;
+        info.publicly_trusted = true;
+        info.trust_program = Some("mozilla_tls");
+        info.operator = Some("Mozilla root program (CCADB)");
+        info.purpose = Some(Purpose::ServerAuth);
+        set_anchor(info, anchor);
+        info.detail = Some("Chain anchors to a publicly trusted root CA (Mozilla/CCADB).".to_string());
+        info.purpose_note = purpose_note(leaf, Purpose::ServerAuth);
         return;
-    };
-    for c in &certs[1..] {
-        let _ = stack.push(c.clone());
     }
 
-    // verify_cert against the public store; capture the anchoring root details.
-    let verdict: std::result::Result<(bool, Option<AnchorInfo>), openssl::error::ErrorStack> = {
-        let Ok(mut ctx) = X509StoreContext::new() else {
-            return;
+    for program in &roots.programs {
+        let mut untrusted = supplied.to_vec();
+        untrusted.extend(program.intermediates.iter().cloned());
+        let Some(anchor) = anchor_in(&program.store, leaf, &untrusted, certs) else {
+            continue;
         };
-        ctx.init(&roots.store, leaf, &stack, |c| {
-            let ok = c.verify_cert()?;
-            let mut anchor = None;
-            if ok
-                && let Some(chain) = c.chain()
-                && let Some(root) = chain.iter().last()
-            {
-                anchor = Some(AnchorInfo {
-                    subject: format_name(root.subject_name()),
-                    sha256: fingerprint_hex(root),
-                    present_in_chain: cert_in_chain(root, certs),
-                });
-            }
-            Ok((ok, anchor))
-        })
-    };
+        let p = program.program;
+        info.publicly_trusted = false;
+        info.classification = match p.purpose {
+            Purpose::Email => RootTrustClass::PubliclyTrustedEmail,
+            Purpose::IndustryMtls | Purpose::ServerAuth => RootTrustClass::IndustryPki,
+        };
+        info.trust_program = Some(p.id);
+        info.operator = Some(p.operator);
+        info.purpose = Some(p.purpose);
+        info.preproduction =
+            (!program.preproduction.is_empty()).then(|| program.preproduction.contains(&anchor.sha256_raw));
+        let test_root = if info.preproduction == Some(true) {
+            " The anchor is a preproduction (test) root."
+        } else {
+            ""
+        };
+        info.detail = Some(match p.purpose {
+            Purpose::Email => format!(
+                "Chain anchors to a root Mozilla trusts for email (S/MIME) only: publicly operated, but not \
+                 trusted by browsers for websites ({}).{test_root}",
+                p.operator
+            ),
+            _ => format!(
+                "Chain anchors to the {} ({}): an industry PKI for mutual TLS, not trusted by browsers; clients \
+                 must install its roots.{test_root}",
+                p.name, p.operator
+            ),
+        });
+        set_anchor(info, anchor);
+        info.purpose_note = purpose_note(leaf, p.purpose);
+        return;
+    }
 
-    match verdict {
-        Ok((true, anchor)) => {
-            info.classification = RootTrustClass::PubliclyTrusted;
-            info.publicly_trusted = true;
-            if let Some(AnchorInfo {
-                subject,
-                sha256: fp,
-                present_in_chain: present,
-            }) = anchor
-            {
-                info.trust_anchor_subject = Some(subject);
-                info.trust_anchor_sha256 = Some(fp);
-                info.anchor_present_in_chain = present;
-            }
-            info.detail = Some("Chain anchors to a publicly trusted root CA (Mozilla/CCADB).".to_string());
+    info.publicly_trusted = false;
+    info.purpose_note = None;
+    let Some(top) = certs.last() else {
+        return;
+    };
+    if is_self_signed(top) {
+        info.trust_anchor_subject = Some(format_name(top.subject_name()));
+        info.trust_anchor_sha256 = Some(fingerprint_hex(top));
+        info.anchor_present_in_chain = true;
+        if certs.len() == 1 {
+            info.classification = RootTrustClass::SelfSigned;
+            info.detail = Some("Single self-signed certificate — not issued by any CA.".to_string());
+        } else {
+            info.classification = RootTrustClass::PrivatePki;
+            info.detail = Some(
+                "Chain terminates in a private self-signed root not in any public root program dcert knows \
+                 (Mozilla websites or email, X9 Financial PKI)."
+                    .to_string(),
+            );
         }
-        _ => {
-            info.publicly_trusted = false;
-            let Some(top) = certs.last() else {
-                return;
-            };
-            if is_self_signed(top) {
-                info.trust_anchor_subject = Some(format_name(top.subject_name()));
-                info.trust_anchor_sha256 = Some(fingerprint_hex(top));
-                info.anchor_present_in_chain = true;
-                if certs.len() == 1 {
-                    info.classification = RootTrustClass::SelfSigned;
-                    info.detail = Some("Single self-signed certificate — not issued by any CA.".to_string());
-                } else {
-                    info.classification = RootTrustClass::PrivatePki;
-                    info.detail = Some(
-                        "Chain terminates in a private self-signed root not in any public root program.".to_string(),
-                    );
-                }
-            } else {
-                info.classification = RootTrustClass::Incomplete;
-                info.detail = Some(
-                    "Chain does not reach a publicly trusted root and no self-signed root was presented \
-                     (an issuer is missing). Re-run with --resolve-issuers to fetch it."
-                        .to_string(),
-                );
-            }
-        }
+    } else {
+        info.classification = RootTrustClass::Incomplete;
+        info.detail = Some(
+            "Chain does not reach a publicly trusted root and no self-signed root was presented \
+             (an issuer is missing). Re-run with --resolve-issuers to fetch it."
+                .to_string(),
+        );
+    }
+}
+
+fn set_anchor(info: &mut RootTrustInfo, anchor: AnchorInfo) {
+    info.trust_anchor_subject = Some(anchor.subject);
+    info.trust_anchor_sha256 = Some(anchor.sha256);
+    info.anchor_present_in_chain = anchor.present_in_chain;
+}
+
+/// Extended key usages of a certificate, by short name (`serverAuth`, ...).
+fn extended_key_usages(cert: &X509) -> Option<(bool, bool, bool)> {
+    let der = cert.to_der().ok()?;
+    let (_, parsed) = x509_parser::parse_x509_certificate(&der).ok()?;
+    let eku = parsed.extended_key_usage().ok()??.value;
+    Some((
+        eku.server_auth || eku.any,
+        eku.client_auth || eku.any,
+        eku.email_protection || eku.any,
+    ))
+}
+
+/// A note when the leaf's extended key usage does not fit what the anchor's
+/// trust program vouches for. CA certificates (the anchor itself) get none.
+fn purpose_note(leaf: &X509, purpose: Purpose) -> Option<String> {
+    if is_self_signed(leaf) {
+        return None;
+    }
+    let (server, client, email) = extended_key_usages(leaf)?;
+    match purpose {
+        Purpose::ServerAuth if client && !server => Some(
+            "Client authentication certificate under a root trusted for websites. Public TLS hierarchies are \
+             becoming serverAuth only (Chrome: new certificates from 15 March 2027; Sectigo stops issuing \
+             clientAuth on 10 February 2027); use a private CA or an industry PKI for mTLS."
+                .to_string(),
+        ),
+        Purpose::Email if server => Some(
+            "Server authentication certificate under a root trusted for email only: browsers will not trust \
+             it for websites."
+                .to_string(),
+        ),
+        Purpose::Email if !email && client => Some(
+            "Client authentication certificate under an email (S/MIME) root: accepted only by servers that \
+             trust this root for client authentication."
+                .to_string(),
+        ),
+        _ => None,
     }
 }
 
@@ -908,5 +1072,154 @@ mod tests {
             !subjects.iter().any(|s| s.contains("O=Entrust")),
             "no Entrust root should remain in the embedded set"
         );
+    }
+
+    // --- trust programs other than the Mozilla website set ------------------
+
+    fn x9(name: &str) -> Vec<u8> {
+        let anchor = crate::trust_programs::X9_ANCHORS
+            .iter()
+            .find(|a| a.name == name)
+            .expect("anchor");
+        X509::from_pem(anchor.pem.as_bytes()).unwrap().to_der().unwrap()
+    }
+
+    fn email_root(cn: &str) -> Vec<u8> {
+        X509::stack_from_pem(crate::trust_programs::MOZILLA_EMAIL_BUNDLE.as_bytes())
+            .unwrap()
+            .into_iter()
+            .find(|c| format_name(c.subject_name()).contains(cn))
+            .expect("email root")
+            .to_der()
+            .unwrap()
+    }
+
+    /// A self-signed CA that copies `subject` from `model`, and a leaf it signs.
+    fn impostor_chain(model: &[u8], eku: &str) -> Vec<Vec<u8>> {
+        use openssl::asn1::Asn1Time;
+        use openssl::bn::BigNum;
+        use openssl::ec::{EcGroup, EcKey};
+        use openssl::nid::Nid;
+        use openssl::pkey::PKey;
+        use openssl::x509::extension::{BasicConstraints, ExtendedKeyUsage};
+        use openssl::x509::{X509Builder, X509NameBuilder};
+
+        let model = X509::from_der(model).unwrap();
+        let key = |_: ()| {
+            PKey::from_ec_key(EcKey::generate(&EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap()).unwrap())
+                .unwrap()
+        };
+        let (ca_key, leaf_key) = (key(()), key(()));
+        let build = |subject: &openssl::x509::X509NameRef,
+                     issuer: &openssl::x509::X509NameRef,
+                     public: &PKey<openssl::pkey::Private>,
+                     signer: &PKey<openssl::pkey::Private>,
+                     ca: bool| {
+            let mut b = X509Builder::new().unwrap();
+            b.set_version(2).unwrap();
+            b.set_serial_number(&BigNum::from_u32(7).unwrap().to_asn1_integer().unwrap())
+                .unwrap();
+            b.set_subject_name(subject).unwrap();
+            b.set_issuer_name(issuer).unwrap();
+            b.set_pubkey(public).unwrap();
+            b.set_not_before(&Asn1Time::days_from_now(0).unwrap()).unwrap();
+            b.set_not_after(&Asn1Time::days_from_now(30).unwrap()).unwrap();
+            if ca {
+                b.append_extension(BasicConstraints::new().critical().ca().build().unwrap())
+                    .unwrap();
+            } else {
+                let mut e = ExtendedKeyUsage::new();
+                match eku {
+                    "client" => e.client_auth(),
+                    _ => e.server_auth(),
+                };
+                b.append_extension(e.build().unwrap()).unwrap();
+            }
+            b.sign(signer, MessageDigest::sha256()).unwrap();
+            b.build()
+        };
+        let ca = build(model.subject_name(), model.subject_name(), &ca_key, &ca_key, true);
+        let mut leaf_name = X509NameBuilder::new().unwrap();
+        leaf_name.append_entry_by_text("CN", "client.example.com").unwrap();
+        let leaf_name = leaf_name.build();
+        let leaf = build(&leaf_name, model.subject_name(), &leaf_key, &ca_key, false);
+        vec![leaf.to_der().unwrap(), ca.to_der().unwrap()]
+    }
+
+    #[test]
+    fn x9_intermediate_classifies_as_industry_pki() {
+        let ders = vec![x9("X9FinancialPKI-RSA4096ICA-1")];
+        let info = assess_root_trust(&roots(), &ders, &offline_opts(), &no_proxy());
+        assert_eq!(info.classification, RootTrustClass::IndustryPki);
+        assert!(!info.publicly_trusted);
+        assert_eq!(info.trust_program, Some("x9_financial"));
+        assert_eq!(info.purpose, Some(Purpose::IndustryMtls));
+        assert_eq!(info.preproduction, Some(false));
+        assert!(!info.anchor_present_in_chain);
+        assert!(
+            info.trust_anchor_subject
+                .unwrap()
+                .contains("X9 Financial PKI - RSA 4096 Root")
+        );
+    }
+
+    #[test]
+    fn x9_uat_root_is_marked_preproduction() {
+        let ders = vec![x9("X9FinancialPKIRSA2048RootUAT")];
+        let info = assess_root_trust(&roots(), &ders, &offline_opts(), &no_proxy());
+        assert_eq!(info.classification, RootTrustClass::IndustryPki);
+        assert_eq!(info.preproduction, Some(true));
+        assert!(info.detail.unwrap().contains("preproduction"));
+    }
+
+    #[test]
+    fn sectigo_email_protection_root_is_publicly_trusted_for_email() {
+        let ders = vec![email_root("Sectigo Public Email Protection Root R46")];
+        let info = assess_root_trust(&roots(), &ders, &offline_opts(), &no_proxy());
+        assert_eq!(info.classification, RootTrustClass::PubliclyTrustedEmail);
+        assert!(!info.publicly_trusted);
+        assert_eq!(info.trust_program, Some("mozilla_email"));
+        assert_eq!(info.purpose, Some(Purpose::Email));
+    }
+
+    #[test]
+    fn a_website_root_stays_publicly_trusted_with_its_program() {
+        let embedded = webpki_root_certs::TLS_SERVER_ROOT_CERTS[0].as_ref().to_vec();
+        let info = assess_root_trust(&roots(), &[embedded], &offline_opts(), &no_proxy());
+        assert_eq!(info.classification, RootTrustClass::PubliclyTrusted);
+        assert!(info.publicly_trusted);
+        assert_eq!(info.trust_program, Some("mozilla_tls"));
+    }
+
+    #[test]
+    fn a_root_that_copies_an_x9_or_sectigo_name_is_private() {
+        for model in [
+            x9("X9FinancialPKIRSA4096Root"),
+            email_root("Sectigo Public Email Protection Root R46"),
+        ] {
+            let info = assess_root_trust(
+                &roots(),
+                &impostor_chain(&model, "server"),
+                &offline_opts(),
+                &no_proxy(),
+            );
+            assert_eq!(info.classification, RootTrustClass::PrivatePki);
+            assert_eq!(info.trust_program, None);
+        }
+    }
+
+    #[test]
+    fn purpose_notes() {
+        let model = x9("X9FinancialPKIRSA4096Root");
+        let client = X509::from_der(&impostor_chain(&model, "client")[0]).unwrap();
+        let server = X509::from_der(&impostor_chain(&model, "server")[0]).unwrap();
+        assert!(
+            purpose_note(&client, Purpose::ServerAuth)
+                .unwrap()
+                .contains("15 March 2027")
+        );
+        assert!(purpose_note(&server, Purpose::ServerAuth).is_none());
+        assert!(purpose_note(&server, Purpose::Email).unwrap().contains("email only"));
+        assert!(purpose_note(&client, Purpose::IndustryMtls).is_none());
     }
 }
