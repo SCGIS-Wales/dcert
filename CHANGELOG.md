@@ -395,6 +395,9 @@ summary is written.
   of the GitHub release assets (4 archives, 8 wheels, 2 SBOMs, `SHA256SUMS`), both PyPI
   projects, the GHCR tag, the Homebrew formula and the Chocolatey job, failing when a
   required channel is missing.
+- The daily audit checks that the newest release (older than 90 minutes) is installable
+  from both PyPI projects and that a fresh uv environment resolves `dcert-mcp`; a
+  failure opens the "Security audit failing" issue like the other audit jobs.
 - The dcert-mcp tests run on Python 3.15 too, which the package classifiers already
   claimed.
 - Documentation-only pushes no longer cut a release: `auto-tag` runs

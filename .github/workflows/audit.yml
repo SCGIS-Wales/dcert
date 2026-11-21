@@ -100,6 +100,30 @@ jobs:
           pip install click pyyaml
           python scripts/ci/openssl_upstream.py check
 
+  pypi-parity:
+    name: PyPI matches the releases
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The newest release (older than 90 minutes, so a release in progress is
+      # not reported) must be installable from both PyPI projects, and a fresh
+      # environment must resolve dcert-mcp from PyPI with uv.
+      - name: Newest release on PyPI, and a fresh install resolves
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pip install --quiet click uv==0.13.9
+          python scripts/ci/release_check.py pypi-parity
+          uv venv --quiet --python 3.12 "$RUNNER_TEMP/env"
+          uv pip install --no-cache --python "$RUNNER_TEMP/env" dcert-mcp
+          "$RUNNER_TEMP/env/bin/dcert" --version
+          "$RUNNER_TEMP/env/bin/dcert-mcp" --version
+
   release-binaries:
     name: Latest release binaries
     runs-on: ubuntu-latest
@@ -138,7 +162,7 @@ jobs:
 
   report:
     name: Open or update the failure issue
-    needs: [rust, exceptions, openssl-upstream, python, release-binaries, image]
+    needs: [rust, exceptions, openssl-upstream, pypi-parity, python, release-binaries, image]
     if: failure()
     runs-on: ubuntu-latest
     timeout-minutes: 5
