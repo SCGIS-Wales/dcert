@@ -1,7 +1,9 @@
 # dcert-mcp
 
 [![CI/CD Pipeline](https://github.com/SCGIS-Wales/dcert/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/SCGIS-Wales/dcert/actions/workflows/ci.yml)
-[![PyPI version](https://img.shields.io/pypi/v/dcert-mcp)](https://pypi.org/project/dcert-mcp/)
+[![dcert-mcp on PyPI](https://img.shields.io/pypi/v/dcert-mcp?label=dcert-mcp)](https://pypi.org/project/dcert-mcp/)
+[![dcert on PyPI](https://img.shields.io/pypi/v/dcert?label=dcert)](https://pypi.org/project/dcert/)
+[![Python versions](https://img.shields.io/pypi/pyversions/dcert-mcp)](https://pypi.org/project/dcert-mcp/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 The [dcert](https://github.com/SCGIS-Wales/dcert) MCP server for TLS certificate analysis. The server is a prebuilt Rust executable (`dcert-mcp`), installed as a wheel script, so starting it runs no Python. The optional `proxy` extra adds a [FastMCP](https://github.com/PrefectHQ/fastmcp) proxy, typed async client and the `dcert-mcp-proxy` command. Tools added to the Rust server are discovered at runtime, so the Python layer never needs to change.

@@ -94,6 +94,10 @@ summary is written.
   an unpinned install there falls back to the platform independent 3.0.77).
 - MCP client configuration through `uvx dcert-mcp` for Claude Code, Kiro, JetBrains
   and VS Code, with no install step.
+- The dcert PyPI page describes the tool, lists pip and uv installs, examples, the
+  wheel platforms and the security properties of the wheel. Badges show both PyPI
+  projects; the Python versions badge is the one of `dcert-mcp`, because `dcert`
+  runs no Python and declares no Python version classifiers.
 - `python/dcert-cli/` and `scripts/build_wheels.py --project`: the zero dependency
   `dcert` CLI wheel of the PyPI split. The executable is installed from
   `.data/scripts`, so no Python runs when you type `dcert`; the wheel has no

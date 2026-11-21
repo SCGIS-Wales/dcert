@@ -140,9 +140,13 @@ environments; a release where any channel fails; any CI failure not explained by
   Verified with an initialize and tools/list handshake through `uvx dcert-mcp@4.0.7` on macOS:
   serverInfo 4.0.7, 30 tools. `claude mcp add` itself was not run, to leave the user's Claude Code
   configuration untouched.
-- [ ] **B.3 docs: badges and the PyPI page of dcert** (F11, F14). No Python version classifiers on dcert
+- [x] **B.3 docs: badges and the PyPI page of dcert** (F11, F14). No Python version classifiers on dcert
   (the wheel runs no Python). Acceptance: no badge renders "missing".
-  Session notes:
+  Session notes: 2026-11-21. shields.io JSON: `pypi/pyversions/dcert` is "missing",
+  `pypi/pyversions/dcert-mcp` is "3.12 | 3.13 | 3.14 | 3.15", both `pypi/v` badges render 4.0.7.
+  uv and ruff do declare Python 3.x classifiers, but they contain Python code; the dcert wheel is
+  one executable, so the pyversions badge uses dcert-mcp. Badge rows in the root README, both
+  package READMEs. dcert PyPI page rewritten per R5 (examples run against a 4.0.7 build).
 - [ ] **B.4 docs: dcert-mcp development instructions and environment table** (F15).
   Session notes:
 - [ ] **B.5 docs: root Development, Acknowledgements and CLAUDE.md** (F16, F20).

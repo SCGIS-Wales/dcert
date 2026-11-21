@@ -5,9 +5,10 @@
   <p>A Rust CLI and MCP server for X.509 certificate analysis, format conversion, and key verification.<br>Reads certificates from PEM files or HTTPS endpoints. Validates TLS connections, checks revocation status,<br>converts between PFX and PEM formats, and integrates with AI-powered IDEs via the Model Context Protocol (MCP).</p>
   <p>
     <a href="https://github.com/SCGIS-Wales/dcert/actions/workflows/ci.yml"><img src="https://github.com/SCGIS-Wales/dcert/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI/CD Pipeline"></a>
-    <a href="https://pypi.org/project/dcert/"><img src="https://img.shields.io/pypi/v/dcert" alt="PyPI version"></a>
-    <a href="https://pypi.org/project/dcert/"><img src="https://img.shields.io/pypi/dm/dcert" alt="PyPI Downloads"></a>
-    <a href="https://pypi.org/project/dcert/"><img src="https://img.shields.io/pypi/pyversions/dcert" alt="Python"></a>
+    <a href="https://pypi.org/project/dcert/"><img src="https://img.shields.io/pypi/v/dcert?label=dcert" alt="dcert on PyPI"></a>
+    <a href="https://pypi.org/project/dcert-mcp/"><img src="https://img.shields.io/pypi/v/dcert-mcp?label=dcert-mcp" alt="dcert-mcp on PyPI"></a>
+    <a href="https://pypi.org/project/dcert-mcp/"><img src="https://img.shields.io/pypi/pyversions/dcert-mcp" alt="dcert-mcp Python versions"></a>
+    <a href="https://pypi.org/project/dcert/"><img src="https://img.shields.io/pypi/dm/dcert" alt="dcert downloads"></a>
     <a href="https://github.com/SCGIS-Wales/dcert"><img src="https://img.shields.io/badge/Rust-stable-000000?logo=rust&logoColor=white" alt="Rust"></a>
     <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
   </p>
