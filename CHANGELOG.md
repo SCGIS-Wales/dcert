@@ -10,6 +10,8 @@ nothing (documentation, plans) do not cut a release and wait under
 
 ## Unreleased
 
+## 4.0.13 (2026-11-21)
+
 ### Changed
 
 - Root trust classification also knows the Chrome, Apple and Microsoft TLS root stores
