@@ -1,0 +1,2493 @@
+{
+ "source": "Common CA Database (CCADB) TLS server authentication reports, CDLA-Permissive-2.0",
+ "stores": [
+  "mozilla",
+  "chrome",
+  "apple",
+  "microsoft"
+ ],
+ "roots": [
+  {
+   "sha256": "8AC552AD577E37AD2C6808D72AA331D6A96B4B3FEBFF34CE9BC0578E08055EC3",
+   "spki_sha256": "1F3C9FD4FDBB50A055BCCA7FE5A581A92099CEF1E9E476D6BAEF0C910831C7B3",
+   "name": "A-Trust-Root-07",
+   "owner": "A-Trust",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "7A38F708A35A31E42E1CF3220F9A2D273E7666354618B2464657D43D8E77ADC2",
+   "spki_sha256": "69A693DC4D6C24EBBB82362E62DD887F519E254722B5614EEB651A54914CD7B4",
+   "name": "A-Trust-Root-09",
+   "owner": "A-Trust",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "55926084EC963A64B96E2ABE01CE0BA86A64FBFEBCC7AAB5AFC155B37FD76066",
+   "spki_sha256": "25D4913CF587097414D29D26F6C1B1942CD6D64EAF45D0FCF81526ADBA96D324",
+   "name": "Actalis Authentication Root CA",
+   "owner": "Actalis",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "4EFAADA2543E1E02666998574B3BAD96AE264088FA5917F75D32E7A609D1869C",
+   "spki_sha256": "CCA4EB68C98622E2264879B61562EAD139559C91FE6B6AB3081EB19631426855",
+   "name": "Actalis TLS Server ECC Root CA 2025",
+   "owner": "Actalis",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "6D0E47DFDE7CF48308CD4C6C1517DD1AF033DCC72BB0501C04268B03B58A9085",
+   "spki_sha256": "8F94CEDD9A5C168BE13D0511F67E92664E89876224CEF12F7FCEB91A67F8E6F0",
+   "name": "Actalis TLS Server RSA Root CA 2025",
+   "owner": "Actalis",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "2E44102AB58CB85419451C8E19D9ACF3662CAFBC614B6A53960A30F7D0E2EB41",
+   "spki_sha256": "C942262C0C7C0A95BB152B71C42556DDBE9A04FA8378373550D2B7CE27D952A3",
+   "name": "TunTrust Root CA",
+   "owner": "Agence Nationale de Certification Electronique",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "8ECDE6884F3D87B1125BA31AC3FCB13D7016DE7F57CC904FE1CB97C6AE98196E",
+   "spki_sha256": "FBE3018031F9586BCBF41727E417B7D1C45C2F47F93BE372A17B96B50757D5A2",
+   "name": "Amazon Root CA 1",
+   "owner": "Amazon Trust Services",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "1BA5B2AA8C65401A82960118F80BEC4F62304D83CEC4713A19C39C011EA46DB4",
+   "spki_sha256": "7F4296FC5B6A4E3B35D3C369623E364AB1AF381D8FA7121533C9D6C633EA2461",
+   "name": "Amazon Root CA 2",
+   "owner": "Amazon Trust Services",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1820966399
+    }
+   }
+  },
+  {
+   "sha256": "18CE6CFE7BF14E60B2E347B8DFE868CB31D02EBB3ADA271569F50343B46DB3A4",
+   "spki_sha256": "36ABC32656ACFC645C61B71613C4BF21C787F5CABBEE48348D58597803D7ABC9",
+   "name": "Amazon Root CA 3",
+   "owner": "Amazon Trust Services",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1820966399
+    }
+   }
+  },
+  {
+   "sha256": "E35D28419ED02025CFA69038CD623962458DA5C695FBDEA3C22B0BFB25897092",
+   "spki_sha256": "F7ECDED5C66047D28ED6466B543C40E0743ABE81D109254DCF845D4C2C7853C5",
+   "name": "Amazon Root CA 4",
+   "owner": "Amazon Trust Services",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "568D6905A2C88708A4B3025190EDCFEDB1974A606A13C6E5290FCB2AE63EDAB5",
+   "spki_sha256": "2B071C59A0A0AE76B0EADB2BAD23BAD4580B69C3601B630C2EAF0613AFA83F92",
+   "name": "Starfield Services Root Certificate Authority - G2",
+   "owner": "Amazon Trust Services",
+   "stores": [
+    "mozilla",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "apple": {
+     "constraints": "[\"Server Authentication\",\"Client Authentication\",\"Code Signing\",\"Timestamp Signing\"]"
+    }
+   }
+  },
+  {
+   "sha256": "6B328085625318AA50D173C98D8BDA09D57E27413D114CF787A0F5D06C030CF6",
+   "spki_sha256": "DE7B6932E9C44582CE0DE07ABDAB7EEA90C75D6D2A07331DF57BD5CB88553D13",
+   "name": "Certum EC-384 CA",
+   "owner": "Asseco Data Systems S.A.",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "630CCB83B0180A992495E039D2613C3287A8102F8A8D703DB1330A3E86D4E653",
+   "spki_sha256": "DDF469B7A279BB252D97EE2D3B0ABF60F60D0FA54918AA95D30235800F9CDA1A",
+   "name": "Certum TLS ECC Root CA",
+   "owner": "Asseco Data Systems S.A.",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "ED12A6E9289239D66CA1D244CE90C623AC305AD05602DA352BCFC5FEF2C4458D",
+   "spki_sha256": "8C8474414760A2F5986F6AC802A66F37EB6B360DD8EE7747A8B6C92F08B34D9E",
+   "name": "Certum TLS RSA Root CA",
+   "owner": "Asseco Data Systems S.A.",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "5C58468D55F58E497E743982D2B50010B6D165374ACF83A7D4A32DB768C4408E",
+   "spki_sha256": "AA2630A7B617B04D0A294BAB7A8CAAA5016E6DBE604837A83A85719FAB667EB5",
+   "name": "Certum Trusted Network CA",
+   "owner": "Asseco Data Systems S.A.",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1790812799
+    }
+   }
+  },
+  {
+   "sha256": "B676F2EDDAE8775CD36CB0F63CD1D4603961F49E6265BA013A2F0307B6D0B804",
+   "spki_sha256": "6B3B57E9EC88D1BB3D01637FF33C7698B3C9758255E9F01EA9178F3E7F3B2B52",
+   "name": "Certum Trusted Network CA 2",
+   "owner": "Asseco Data Systems S.A.",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "FE7696573855773E37A95E7AD4D9CC96C30157C15D31765BA9B15704E1AE78FD",
+   "spki_sha256": "681DC482C296C8402C6EBB20E68309A3BC846523AE34B984A84EE697A3312DB7",
+   "name": "Certum Trusted Root CA",
+   "owner": "Asseco Data Systems S.A.",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "F356BEA244B7A91EB35D53CA9AD7864ACE018E2D35D5F8F96DDF68A6F41AA474",
+   "spki_sha256": "E5CA37BC7B6C361979BC6B123CA9A1DB019046D7FF5F57DFB854B19D10B0682F",
+   "name": "Atos TrustedRoot 2011",
+   "owner": "Atos",
+   "stores": [
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "B2FAE53E14CCD7AB9212064701AE279C1D8988FACB775FA8A008914E663988A8",
+   "spki_sha256": "608963C78C455E6E34B072468ACE0956CFF18D34643F9F305B7162FA181979FC",
+   "name": "Atos TrustedRoot Root CA ECC TLS 2021",
+   "owner": "Atos",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "81A9088EA59FB364C548A6F85559099B6F0405EFBF18E5324EC9F457BA00112F",
+   "spki_sha256": "F7CA77A610E3D42447240692DBD57CFD13CF042ACD2062E6A62B87B9ED81C1A7",
+   "name": "Atos TrustedRoot Root CA RSA TLS 2021",
+   "owner": "Atos",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "04048028BF1F2864D48F9AD4D83294366A828856553F3B14303F90147F5D40EF",
+   "spki_sha256": "3B0D73B4BE4A854ADC3E51D7EF9FA48AEFBB2CDD824D67BDC7D7D09A2ABC2D43",
+   "name": "Autoridad de Certificacion Firmaprofesional CIF A62634068",
+   "owner": "Autoridad de Certificacion Firmaprofesional",
+   "stores": [
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "apple": {
+     "constraints": "\"allowed_policies\": [\"Server Authentication\", \"Client Authentication\"]"
+    }
+   }
+  },
+  {
+   "sha256": "57DE0583EFD2B26E0361DA99DA9DF4648DEF7EE8441C3B728AFA9BCDE0F9B26A",
+   "spki_sha256": "3B0D73B4BE4A854ADC3E51D7EF9FA48AEFBB2CDD824D67BDC7D7D09A2ABC2D43",
+   "name": "Autoridad de Certificacion Firmaprofesional CIF A62634068",
+   "owner": "Autoridad de Certificacion Firmaprofesional",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "microsoft"
+   ],
+   "limits": {
+    "mozilla": {
+     "distrust_after": "8/6/2026"
+    },
+    "chrome": {
+     "distrust_after_unix": 1785999664
+    }
+   }
+  },
+  {
+   "sha256": "FB8FEC759169B9106B1E511644C618C51304373F6C0643088D8BEFFD1B997599",
+   "spki_sha256": "9A52FF6A3CB6E353A08567E0DC9C395B300D60A22292AB8C18C1656B2983AE90",
+   "name": "ANF Secure Server Root CA",
+   "owner": "Autoridad de Certificación (ANF AC)",
+   "stores": [
+    "mozilla",
+    "chrome"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1799971199
+    }
+   }
+  },
+  {
+   "sha256": "F3896F88FE7C0A882766A7FA6AD2749FB57A7F3E98FB769C1FA7B09C2C44D5AE",
+   "spki_sha256": "EBC55F21E88D49EDE81C0075AB08B3C73B81F0F33E37D7641A1D01B6E602DC9D",
+   "name": "BJCA Global Root CA1",
+   "owner": "BEIJING CERTIFICATE AUTHORITY Co., Ltd.",
+   "stores": [
+    "mozilla"
+   ]
+  },
+  {
+   "sha256": "574DF6931E278039667B720AFDC1600FC27EB66DD3092979FB73856487212882",
+   "spki_sha256": "CC94A5A0319FF77A4CCADD821C4C59674E44D52816CBD1DFE2C761370AD4D21C",
+   "name": "BJCA Global Root CA2",
+   "owner": "BEIJING CERTIFICATE AUTHORITY Co., Ltd.",
+   "stores": [
+    "mozilla"
+   ]
+  },
+  {
+   "sha256": "9A114025197C5BB95D94E63D55CD43790847B646B23CDF11ADA4A00EFF15FB48",
+   "spki_sha256": "5955AE291574A931342CF7450E16652EDE1E0FB3097E1571DFAC11C915601564",
+   "name": "Buypass Class 2 Root CA",
+   "owner": "Buypass",
+   "stores": [
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1761955199
+    }
+   }
+  },
+  {
+   "sha256": "EDF7EBBCA27A2A384D387B7D4010C666E2EDB4843E4C29B4AE1D5B9332E6B24D",
+   "spki_sha256": "B03D87B056D08CC9D4E675EF19CA83AB53532168A8258598BE72E6D85C7DD7C1",
+   "name": "Buypass Class 3 Root CA",
+   "owner": "Buypass",
+   "stores": [
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1761955199
+    }
+   }
+  },
+  {
+   "sha256": "B4585F22E4AC756A4E8612A1361C5D9D031A93FD84FEBB778FA3068B0FC42DC2",
+   "spki_sha256": "1EF64625DAA2E5D433D7449AE31A200D1025E0012A8FECFA70932F8B599B75DD",
+   "name": "Certainly Root E1",
+   "owner": "Certainly LLC",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple"
+   ]
+  },
+  {
+   "sha256": "77B82CD8644C4305F7ACC5CB156B45675004033D51C60C6202A8E0C33467D3A0",
+   "spki_sha256": "3F93F3FCF79D225D213EEF6A4A3F5885CF84FE3D7A7A3C11553517688C0E2100",
+   "name": "Certainly Root R1",
+   "owner": "Certainly LLC",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple"
+   ]
+  },
+  {
+   "sha256": "E3B6A2DB2ED7CE48842F7AC53241C7B71D54144BFB40C11F3F1D0B42F5EEA12D",
+   "spki_sha256": "510D20E5C47F63CF666B20F61AF62BC099A42AC824FFA443A2DA7C90B1808A91",
+   "name": "Certigna",
+   "owner": "Certigna",
+   "stores": [
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "D48D3D23EEDB50A459E55197601C27774B9D7B18C94D5A059511A10250B93168",
+   "spki_sha256": "8E8046EC4CAC015A507CE0D2D0154A4B40E8E42B3165CFA546571435112D17E5",
+   "name": "Certigna Root CA",
+   "owner": "Certigna",
+   "stores": [
+    "chrome",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1781481599
+    }
+   }
+  },
+  {
+   "sha256": "5CC3D78E4E1D5E45547A04E6873E64F90CF9536D1CCC2EF800F355C4C5FD70FD",
+   "spki_sha256": "DD5ED1C090F9F448061BAA94A6BB11017544E9EEFAA20CC714CE6C633F5DC629",
+   "name": "CFCA EV ROOT",
+   "owner": "China Financial Certification Authority (CFCA)",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "apple": {
+     "constraints": "{\"name\":\"CFCA EV ROOT\",\"hash\":\"5cc3d78e4e1d5e45547a04e6873e64f90cf9536d1ccc2ef800f355c4c5fd70fd\",\"allowed_policies\":[\"Server Authentication\",\"Client Authentication\",\"Code Signing\",\"Timestamp Signing\"]}"
+    }
+   }
+  },
+  {
+   "sha256": "F015CE3CC239BFEF064BE9F1D2C417E1A0264A0A94BE1F0C8D121864EB6949CC",
+   "spki_sha256": "79CAAF5347E6E4A94C8E78A98496FC74020F809EDE13F220FAB6104C8DED329F",
+   "name": "HiPKI Root CA - G1",
+   "owner": "Chunghwa Telecom",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1754006399
+    }
+   }
+  },
+  {
+   "sha256": "C0A6F4DC63A24BFDCF54EF2A6A082A0A72DE35803E2FF5FF527AE5D87206DFD5",
+   "spki_sha256": "62554C17005543B237215F04268DCD2FD1C470240AD3C8660E25AE2C59630F55",
+   "name": "ePKI Root Certification Authority",
+   "owner": "Chunghwa Telecom",
+   "stores": [
+    "apple"
+   ]
+  },
+  {
+   "sha256": "2605875AFCC176B2D66DD66A995D7F8D5EBB86CE120D0E7E9E7C6EF294A27D4C",
+   "spki_sha256": "C06C872FC2D0AC08D78D421981FBDA4E35500D0946F79894EDD21AC29DEC0719",
+   "name": "ComSign Global Root CA",
+   "owner": "ComSign",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "4B009C1034494F9AB56BBA3BA1D62731FC4D20D8955ADCEC10A925607261E338",
+   "spki_sha256": "581CC15821169694C39C2991B53E93AB945A42B076661774C2ECF38A3323ACEA",
+   "name": "SecureSign Root CA14",
+   "owner": "Cybertrust Japan / JCSI",
+   "stores": [
+    "mozilla",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "E778F0F095FE843729CD1A0082179E5314A9C291442805E1FB1D8FB6B8886C3A",
+   "spki_sha256": "F0011F92FCF9BE36C7A5B36E7BC862AB20E94EF36FEA8A561DB0A8D7750C1F51",
+   "name": "SecureSign Root CA15",
+   "owner": "Cybertrust Japan / JCSI",
+   "stores": [
+    "mozilla",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "E59AAA816009C22BFF5B25BAD37DF306F049797C1F81D85AB089E657BD8F0044",
+   "spki_sha256": "603F76F28C9FEBA83EC751EDB66C8D7523EA40FE49FE74427629F50DABBCF55A",
+   "name": "D-TRUST BR Root CA 1 2020",
+   "owner": "D-Trust",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1820966399
+    }
+   }
+  },
+  {
+   "sha256": "0552E6F83FDF65E8FA9670E666DF28A4E21340B510CBE52566F97C4FB94B2BD1",
+   "spki_sha256": "AC76F63A46E761B5ACC3259705C920CB7F0563D248D8D180F934AF68099A15F9",
+   "name": "D-TRUST BR Root CA 2 2023",
+   "owner": "D-Trust",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1820966399
+    }
+   }
+  },
+  {
+   "sha256": "08170D1AA36453901A2F959245E347DB0C8D37ABAABC56B81AA100DC958970DB",
+   "spki_sha256": "9D37E4A989EAB3882D116052FC8B58446702CB593726E4604C3795940C7103E2",
+   "name": "D-TRUST EV Root CA 1 2020",
+   "owner": "D-Trust",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1819670399
+    }
+   }
+  },
+  {
+   "sha256": "8E8221B2E7D4007836A1672F0DCC299C33BC07D316F132FA1A206D587150F1CE",
+   "spki_sha256": "E753CDD9F13413C7CA9CDA82962F8C0CE5ED13D1657312954AF5267EB2CB7C79",
+   "name": "D-TRUST EV Root CA 2 2023",
+   "owner": "D-Trust",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1819670399
+    }
+   }
+  },
+  {
+   "sha256": "49E7A442ACF0EA6287050054B52564B650E4F49E42E348D6AA38E039E957B1C1",
+   "spki_sha256": "ECA0F181402CE7A8652B31B4D036DF247E3A30B7F41A50D91EC4F90B006B43A1",
+   "name": "D-TRUST Root Class 3 CA 2 2009",
+   "owner": "D-Trust",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1780012799
+    }
+   }
+  },
+  {
+   "sha256": "EEC5496B988CE98625B934092EEC2908BED0B0F316C2D4730C84EAF1F3D34881",
+   "spki_sha256": "FF342FB6C4C8BD30A4706F73489539F19E6E48CC05F46254654F6610DBC540E9",
+   "name": "D-TRUST Root Class 3 CA 2 EV 2009",
+   "owner": "D-Trust",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1780012799
+    }
+   }
+  },
+  {
+   "sha256": "209E956AF04DF3996507C887D356230D6EB49FDBDD2D8A058FF50B8F80F690AA",
+   "spki_sha256": "4EF7DACF77EDB751F704035FB5C6C442351EC7220AF90BDF82FD047BD3C24187",
+   "name": "Australian Defence Public Root CA",
+   "owner": "Department of Defence Australia",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "91E2F5788D5810EBA7BA58737DE1548A8ECACD014598BC0B143E041B17052552",
+   "spki_sha256": "6106C0E3A0A299831875127BD7D3CC1859803D511CAC11EB6E0840DD166FC10E",
+   "name": "T-TeleSec GlobalRoot Class 2",
+   "owner": "Deutsche Telekom Security GmbH",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1780012799
+    }
+   }
+  },
+  {
+   "sha256": "FD73DAD31C644FF1B43BEF0CCDDA96710B9CD9875ECA7E31707AF3E96D522BBD",
+   "spki_sha256": "8D767764B3CBDA08929D072A22A561F4DCDD1BC57D3CBDDC948C47D2B47F9122",
+   "name": "T-TeleSec GlobalRoot Class 3",
+   "owner": "Deutsche Telekom Security GmbH",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1780012799
+    },
+    "apple": {
+     "constraints": "{\"name\":\"T-TeleSec GlobalRoot Class 3\",\"hash\":\"fd73dad31c644ff1b43bef0ccdda96710b9cd9875eca7e31707af3e96d522bbd\",\"allowed_policies\":[\"Server Authentication\",\"Client Authentication\",\"Code Signing\",\"Timestamp Signing\"]}"
+    }
+   }
+  },
+  {
+   "sha256": "578AF4DED0853F4E5998DB4AEAF9CBEA8D945F60B620A38D1A3C13B2BC7BA8E1",
+   "spki_sha256": "EAB0DE5A46419010B01B2D55553FC111AA82B43D9395EDFEAEAA8C76E6AD1995",
+   "name": "Telekom Security TLS ECC Root 2020",
+   "owner": "Deutsche Telekom Security GmbH",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1819670399
+    }
+   }
+  },
+  {
+   "sha256": "EFC65CADBB59ADB6EFE84DA22311B35624B71B3B1EA0DA8B6655174EC8978646",
+   "spki_sha256": "0E05E9BB23869EB689DC56839DCEC475A3AE75FA6B50BC5A4978360CBE673323",
+   "name": "Telekom Security TLS RSA Root 2023",
+   "owner": "Deutsche Telekom Security GmbH",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1819670399
+    }
+   }
+  },
+  {
+   "sha256": "3E9099B5015E8F486C00BCEA9D111EE721FABA355A89BCF1DF69561E3DC6325C",
+   "spki_sha256": "23F2EDFF3EDE90259A9E30F40AF8F912A5E5B3694E6938440341F6060E014FFA",
+   "name": "DigiCert Assured ID Root CA",
+   "owner": "DigiCert",
+   "stores": [
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "7D05EBB682339F8C9451EE094EEBFEFA7953A114EDB2F44949452FAB7D2FC185",
+   "spki_sha256": "F1C6BA670CFC88E4DF52973CAE420F0A089DD474144FE5806C420064E1591229",
+   "name": "DigiCert Assured ID Root G2",
+   "owner": "DigiCert",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1789430399
+    }
+   }
+  },
+  {
+   "sha256": "7E37CB8B4C47090CAB36551BA6F45DB840680FBA166A952DB100717F43053FC2",
+   "spki_sha256": "15EED339594B304F8CF847B477371D8D6FEC61F4DB2B01AF589E7C53B35CAE4C",
+   "name": "DigiCert Assured ID Root G3",
+   "owner": "DigiCert",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1789430399
+    }
+   }
+  },
+  {
+   "sha256": "C1468CF2254E6004B24696ABA209D1A30BA6E2DFF68A9A4E32C6AB414F90C8D9",
+   "spki_sha256": "BDACCBF2E8B27C0C02A689EE866C9B86EC04442AFCDDDD5D4EC36DEF21E761DD",
+   "name": "DigiCert ECC P384 Root G5",
+   "owner": "DigiCert",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "4348A0E9444C78CB265E058D5E8944B4D84F9662BD26DB257F8934A443C70161",
+   "spki_sha256": "AFF988906DDE12955D9BEBBF928FDCC31CCE328D5B9384F21C8941CA26E20391",
+   "name": "DigiCert Global Root CA",
+   "owner": "DigiCert",
+   "stores": [
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "CB3CCBB76031E5E0138F8DD39A23F9DE47FFC35E43C1144CEA27D46A5AB1CB5F",
+   "spki_sha256": "8BB593A93BE1D0E8A822BB887C547890C3E706AAD2DAB76254F97FB36B82FC26",
+   "name": "DigiCert Global Root G2",
+   "owner": "DigiCert",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1820966399
+    }
+   }
+  },
+  {
+   "sha256": "31AD6648F8104138C738F39EA4320133393E3A18CC02296EF97C2AC9EF6731D0",
+   "spki_sha256": "B94C198300CEC5C057AD0727B70BBE91816992256439A7B32F4598119DDA9C97",
+   "name": "DigiCert Global Root G3",
+   "owner": "DigiCert",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1820966399
+    }
+   }
+  },
+  {
+   "sha256": "7431E5F4C3C1CE4690774F0B61E05440883BA9A01ED00BA6ABD7806ED3B118CF",
+   "spki_sha256": "5A889647220E54D6BD8A16817224520BB5C78E58984BD570506388B9DE0F075F",
+   "name": "DigiCert High Assurance EV Root CA",
+   "owner": "DigiCert",
+   "stores": [
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "E46A392204A8DCA342A71C1CA9A60C9185B9A930370120C3B9C7E3856F0D8F3B",
+   "spki_sha256": "A495C8D110E8B9E200F370AEDA3FF92EE43F8E3D4EC0DB1C0DC58BD762880BA5",
+   "name": "DigiCert RSA4096 Root G5",
+   "owner": "DigiCert",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "018E13F0772532CF809BD1B17281867283FC48C6E13BE9C69812854A490C1B05",
+   "spki_sha256": "A02FAFA192C8CB81CB1341554F9C05B71CCA2A890B0D1298D683647C961EFBDF",
+   "name": "DigiCert TLS ECC P384 Root G5",
+   "owner": "DigiCert",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "371A00DC0533B3721A7EEB40E8419E70799D2B0A0F2C1D80693165F7CEC4AD75",
+   "spki_sha256": "6A97B51C8219E93E5DEC64BAD5806CDEB0F8355BE47E757010B702456E01AAFD",
+   "name": "DigiCert TLS RSA4096 Root G5",
+   "owner": "DigiCert",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "552F7BDCF1A7AF9E6CE672017F4F12ABF77240C78E761AC203D1D9D20AC89988",
+   "spki_sha256": "59DF317BFA9F4F0AB7CA514D7772296AA2C765B87664D08B96E57399E364729C",
+   "name": "DigiCert Trusted Root G4",
+   "owner": "DigiCert",
+   "stores": [
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1789430399
+    }
+   }
+  },
+  {
+   "sha256": "8A866FD1B276B57E578E921C65828A2BED58E9F2F288054134B7F1F4BFC9CC74",
+   "spki_sha256": "86A68F050034126A540D39DB2C5F917EF66A94FB9619FA1ECD827CEA46BA0CB0",
+   "name": "QuoVadis Root CA 1 G3",
+   "owner": "DigiCert",
+   "stores": [
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "85A0DD7DD720ADB7FF05F83D542B209DC7FF4528F7D677B18389FEA5E5C49E86",
+   "spki_sha256": "8FD112C3C8370F147D5CCD3A7D865EB8DD540783BAC69FC60088E3743FF33378",
+   "name": "QuoVadis Root CA 2",
+   "owner": "DigiCert",
+   "stores": [
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "8FE4FB0AF93A4D0D67DB0BEBB23E37C71BF325DCBCDD240EA04DAF58B47E1840",
+   "spki_sha256": "4A49EDBD2F8F8230BD5592B313573FE1C172A45FA98011CC1EDDBB36ADE3FCE5",
+   "name": "QuoVadis Root CA 2 G3",
+   "owner": "DigiCert",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1820966399
+    },
+    "apple": {
+     "constraints": "{\"name\":\"QuoVadis Root CA 2 G3\",\"hash\":\"8fe4fb0af93a4d0d67db0bebb23e37c71bf325dcbcdd240ea04daf58b47e1840\",\"allowed_policies\":[\"Server Authentication\",\"Client Authentication\",\"Code Signing\",\"Timestamp Signing\"]}"
+    }
+   }
+  },
+  {
+   "sha256": "18F1FC7F205DF8ADDDEB7FE007DD57E3AF375A9C4D8D73546BF4F1FED1E18D35",
+   "spki_sha256": "0C7ACAA710226720BBC940349EE2E6148652A89DBF406A232C895F6DC78EBB9A",
+   "name": "QuoVadis Root CA 3",
+   "owner": "DigiCert",
+   "stores": [
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "88EF81DE202EB018452E43F864725CEA5FBD1FC2D9D205730709C5D8B8690F46",
+   "spki_sha256": "F3438E23B3CE532522FACF307923F58FD18608E9BA7ADDC30E952B43C49616C3",
+   "name": "QuoVadis Root CA 3 G3",
+   "owner": "DigiCert",
+   "stores": [
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1820966399
+    }
+   }
+  },
+  {
+   "sha256": "6E1FD3AE0D2D477C8F5EE5F335CC5B6356872654E5356A73D8C0A30A17C252A2",
+   "spki_sha256": "C777D6AF5DDFDD2F820C1589A401BA796E6191168232C393DE8FA6510DA992AE",
+   "name": "QuoVadis TLS ECC P384 Root G4",
+   "owner": "DigiCert",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "C8A2D38A24F5AC302D8A08EBD38923D9A750B49220F092E82D1C53249E1533D0",
+   "spki_sha256": "FAD2D9A49B5EC58616A052D82B459BC42725C8ED13070C6CFB82307F115593FE",
+   "name": "QuoVadis TLS RSA 4096 Root G4",
+   "owner": "DigiCert",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "68AD50909B04363C605EF13581A939FF2C96372E3F12325B0A6861E1D59F6603",
+   "spki_sha256": "BFE82909872E4434F115C51A56168019594D0E03DCA363D9F3B4839D0BABCDE5",
+   "name": "Verizon Global Root CA",
+   "owner": "DigiCert",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "E23D4A036D7B70E9F595B1422079D2B91EDFBB1FB651A0633EAA8A9DC5F80703",
+   "spki_sha256": "702116CCD8BF23E16466F0E0DBA0ED6A239A9C1CD6A8F5A66B39AF3595020385",
+   "name": "CA Disig Root R2",
+   "owner": "Disig, a.s.",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "6248199FEA4811FD34AA96EF0A26DE52134B73A9A2A99678F0C2EBADF8663EF8",
+   "spki_sha256": "6C40941018EEC3846B13FAFE074704894EDF95A64C393150FD2F703F4C43D3FD",
+   "name": "CA Disig TLS Root R3",
+   "owner": "Disig, a.s.",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "2A99F5BC1174B73CBB1D620884E01C34E51CCB3978DA125F0E33268883BF4158",
+   "spki_sha256": "6B1A505E0246F2F60C490FF0C097A7BE27210CBB7500237F88B0CD48298BC9B8",
+   "name": "Certinomis - Root CA",
+   "owner": "Docaposte Certinomis SAS",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "1501F89C5C4DCF36CF588A17C9FD7CFCEB9EE01E8729BE355E25DE80EB6284B4",
+   "spki_sha256": "9962AB1699B0EB7C7E8A578BC79893042031C1158C633613199A90B9652A2A75",
+   "name": "CAEDICOM Root",
+   "owner": "EDICOM",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "0376AB1D54C5F9803CE4B2E201A0EE7EEF7B57B636E8A93C9B8D4860C96F5FA7",
+   "spki_sha256": "6C464B9A5B233A5E874DA765C26F045010D2DDCFF45794F0B4C7E4AAFA501495",
+   "name": "AffirmTrust Commercial",
+   "owner": "Entrust",
+   "stores": [
+    "apple"
+   ],
+   "limits": {
+    "apple": {
+     "constraints": "{\"name\":\"AffirmTrust Commercial\",\"hash\":\"0376ab1d54c5f9803ce4b2e201a0ee7eef7b57b636e8a93c9b8d4860c96f5fa7\",\"allowed_policies\":[\"Server Authentication\",\"Client Authentication\",\"Code Signing\",\"Timestamp Signing\"]}"
+    }
+   }
+  },
+  {
+   "sha256": "0A81EC5A929777F145904AF38D5D509F66B5E2C58FCDB531058B0E17F3F0B41B",
+   "spki_sha256": "94072AD3F58F70F93098E5A5F6C04C96C710BD849D83184919AE90EB890AE400",
+   "name": "AffirmTrust Networking",
+   "owner": "Entrust",
+   "stores": [
+    "apple"
+   ],
+   "limits": {
+    "apple": {
+     "constraints": "{\"name\":\"AffirmTrust Networking\",\"hash\":\"0a81ec5a929777f145904af38d5d509f66b5e2c58fcdb531058b0e17f3f0b41b\",\"allowed_policies\":[\"Server Authentication\",\"Client Authentication\",\"Code Signing\",\"Timestamp Signing\"]}"
+    }
+   }
+  },
+  {
+   "sha256": "70A73F7F376B60074248904534B11482D5BF0E698ECC498DF52577EBF2E93B9A",
+   "spki_sha256": "C7F43B4CF5B71568294F822B53762605F6DDD15CADECE739E9E2C3CBA61E9D67",
+   "name": "AffirmTrust Premium",
+   "owner": "Entrust",
+   "stores": [
+    "apple"
+   ],
+   "limits": {
+    "apple": {
+     "constraints": "{\"name\":\"AffirmTrust Premium\",\"hash\":\"70a73f7f376b60074248904534b11482d5bf0e698ecc498df52577ebf2e93b9a\",\"allowed_policies\":[\"Server Authentication\",\"Client Authentication\",\"Code Signing\",\"Timestamp Signing\"]}"
+    }
+   }
+  },
+  {
+   "sha256": "BD71FDF6DA97E4CF62D1647ADD2581B07D79ADF8397EB4ECBA9C5E8488821423",
+   "spki_sha256": "3219B09114FF495A3EB6EB00C2EFEAB34002AE5F0A56C7679EA087A3FA037E4F",
+   "name": "AffirmTrust Premium ECC",
+   "owner": "Entrust",
+   "stores": [
+    "apple"
+   ],
+   "limits": {
+    "apple": {
+     "constraints": "{\"name\":\"AffirmTrust Premium ECC\",\"hash\":\"bd71fdf6da97e4cf62d1647add2581b07d79adf8397eb4ecba9c5e8488821423\",\"allowed_policies\":[\"Server Authentication\",\"Client Authentication\",\"Code Signing\",\"Timestamp Signing\"]}"
+    }
+   }
+  },
+  {
+   "sha256": "5AB4FCDB180B5B6AF0D262A2375A2C77D25602015D96648756611E2E78C53AD3",
+   "spki_sha256": "BE3280C6863C770A33C9040BD97D5540B216D1D91DB8B088CEAC1197DAE1D660",
+   "name": "Fina Root CA",
+   "owner": "Financijska agencija (Fina)",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "BFFF8FD04433487D6A8AA60C1A29767A9FC2BBB05E420F713A13B992891D3893",
+   "spki_sha256": "CEB19411C65052C757F941EB826C96941E4D08D096C7DB7E7EA3C4F8C13F1A13",
+   "name": "GDCA TrustAUTH R5 ROOT",
+   "owner": "Global Digital Cybersecurity Authority Co., Ltd. (Formerly Guang Dong Certificate Authority (GDCA))",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "179FBC148A3DD00FD24EA13458CC43BFA7F59C8182D783A513F6EBEC100C8924",
+   "spki_sha256": "7E0EAD76BB6819DC2F54511A84354F6E8B307B9DD82058EA6C004F01D9DDA5DF",
+   "name": "GlobalSign",
+   "owner": "GlobalSign nv-sa",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1790812799
+    }
+   }
+  },
+  {
+   "sha256": "2CABEAFE37D06CA22ABA7391C0033D25982952C453647349763A3AB5AD6CCF69",
+   "spki_sha256": "682747F8BA621B87CDD3BC295ED5CABCE722A1C0C0363D1D68B38928D2787F1E",
+   "name": "GlobalSign",
+   "owner": "GlobalSign nv-sa",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1790812799
+    }
+   }
+  },
+  {
+   "sha256": "CBB522D7B7F127AD6A0113865BDF1CD4102E7D0759AF635A7CF4720DC963C53B",
+   "spki_sha256": "706BB1017C855C59169BAD5C1781CF597F12D2CAD2F63D1A4AA37493800FFB80",
+   "name": "GlobalSign",
+   "owner": "GlobalSign nv-sa",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1790812799
+    }
+   }
+  },
+  {
+   "sha256": "EBD41040E4BB3EC742C9E381D31EF2A41A48B6685C96E7CEF3C1DF6CD4331C99",
+   "spki_sha256": "2BCEE858158CF5465FC9D76F0DFA312FEF25A4DCA8501DA9B46B67D1FBFA1B64",
+   "name": "GlobalSign Root CA",
+   "owner": "GlobalSign nv-sa",
+   "stores": [
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "CBB9C44D84B8043E1050EA31A69F514955D7BFD2E2C6B49301019AD61D9F5058",
+   "spki_sha256": "E04A022CE32F4CCF2C7F6046287B828A32A909F5E751447F83FD2C71F6FD8173",
+   "name": "GlobalSign Root E46",
+   "owner": "GlobalSign nv-sa",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "4FA3126D8D3A11D1C4855A4F807CBAD6CF919D3A5A88B03BEA2C6372D93C40C9",
+   "spki_sha256": "AE7F962CB9E6A7DBF7B833FB18FA9B71A89175DF949C232B6A9EF7CB3DF2BBFC",
+   "name": "GlobalSign Root R46",
+   "owner": "GlobalSign nv-sa",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "C3846BF24B9E93CA64274C0EC67C1ECC5E024FFCACD2D74019350E81FE546AE4",
+   "spki_sha256": "5632D97BFA775BF3C99DDEA52FC2553410864016729C52DD6524C8A9C3B4489F",
+   "name": "Go Daddy Class 2 Certification Authority",
+   "owner": "GoDaddy",
+   "stores": [
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "45140B3247EB9CC8C5B4F0D7B53091F73292089E6E5A63E2749DD3ACA9198EDA",
+   "spki_sha256": "2A8F2D8AF0EB123898F74C866AC3FA669054E23C17BC7A95BD0234192DC635D0",
+   "name": "Go Daddy Root Certificate Authority - G2",
+   "owner": "GoDaddy",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "25CF3DA8E9B97ADDBF92543C2B82527C8A4E2CFF2062A6483040D4B64ACE719F",
+   "spki_sha256": "80A8C921A7194AE63A6DB0E7BB5DD617FAEE7E9B3F14AC0621AAB145BE672990",
+   "name": "GoDaddy TLS Root CA - R1",
+   "owner": "GoDaddy",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "1465FA205397B876FAA6F0A9958E5590E40FCC7FAA4FB7C2C8677521FB5FB658",
+   "spki_sha256": "15F14AC45C9C7DA233D3479164E8137FE35EE0F38AE858183F08410EA82AC4B4",
+   "name": "Starfield Class 2 Certification Authority",
+   "owner": "GoDaddy",
+   "stores": [
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "2CE1CB0BF9D2F9E102993FBE215152C3B2DD0CABDE1C68E5319B839154DBB7F5",
+   "spki_sha256": "808D68B3FAB4884A5F971ACE7D10550D7A95A163774F3EC36AFFFB213FBE4C74",
+   "name": "Starfield Root Certificate Authority - G2",
+   "owner": "GoDaddy",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "apple": {
+     "constraints": "{\"name\":\"Starfield Root Certificate Authority - G2\",\"hash\":\"2ce1cb0bf9d2f9e102993fbe215152c3b2dd0cabde1c68e5319b839154dbb7f5\",\"allowed_policies\":[\"Server Authentication\",\"Client Authentication\",\"Code Signing\",\"Timestamp Signing\"]}"
+    }
+   }
+  },
+  {
+   "sha256": "97366DA00BAF6730A84D1A8CBA5BAD7961C46BCE707E09241CC9C4C7E3C64F10",
+   "spki_sha256": "C30F47F39B33023201E01FC538B757932E53B2B34B8778D1C41C5C951CF8AA56",
+   "name": "Starfield TLS Root CA - R1",
+   "owner": "GoDaddy",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "2A575471E31340BC21581CBD2CF13E158463203ECE94BCF9D3CC196BF09A5472",
+   "spki_sha256": "871A9194F4EED5B312FF40C84C1D524AED2F778BBFF25F138CF81F680A7ADC67",
+   "name": "GTS Root R1",
+   "owner": "Google Trust Services LLC",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "D947432ABDE7B7FA90FC2E6B59101B1280E0E1C7E4E40FA3C6887FFF57A7F4CF",
+   "spki_sha256": "871A9194F4EED5B312FF40C84C1D524AED2F778BBFF25F138CF81F680A7ADC67",
+   "name": "GTS Root R1",
+   "owner": "Google Trust Services LLC",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "8D25CD97229DBF70356BDA4EB3CC734031E24CF00FAFCFD32DC76EB5841C7EA8",
+   "spki_sha256": "55F77DE41C03792428F8D518C55104225BE43A5598D926A528AD653E1CCEC7BF",
+   "name": "GTS Root R2",
+   "owner": "Google Trust Services LLC",
+   "stores": [
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "C45D7BB08E6D67E62E4235110B564E5F78FD92EF058C840AEA4E6455D7585C60",
+   "spki_sha256": "55F77DE41C03792428F8D518C55104225BE43A5598D926A528AD653E1CCEC7BF",
+   "name": "GTS Root R2",
+   "owner": "Google Trust Services LLC",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "15D5B8774619EA7D54CE1CA6D0B0C403E037A917F131E8A04E1E6B7A71BABCE5",
+   "spki_sha256": "4179EDD981EF747477B49626408AF43DAA2CA7AB7F9E082C1060F84096774348",
+   "name": "GTS Root R3",
+   "owner": "Google Trust Services LLC",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "34D8A73EE208D9BCDB0D956520934B4E40E69482596E8B6F73C8426B010A6F48",
+   "spki_sha256": "4179EDD981EF747477B49626408AF43DAA2CA7AB7F9E082C1060F84096774348",
+   "name": "GTS Root R3",
+   "owner": "Google Trust Services LLC",
+   "stores": [
+    "mozilla",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "349DFA4058C5E263123B398AE795573C4E1313C83FE68F93556CD5E8031B3C7D",
+   "spki_sha256": "9847E5653E5E9E847516E5CB818606AA7544A19BE67FD7366D506988E8D84347",
+   "name": "GTS Root R4",
+   "owner": "Google Trust Services LLC",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "71CCA5391F9E794B04802530B363E121DA8A3043BB26662FEA4DCA7FC951A4BD",
+   "spki_sha256": "9847E5653E5E9E847516E5CB818606AA7544A19BE67FD7366D506988E8D84347",
+   "name": "GTS Root R4",
+   "owner": "Google Trust Services LLC",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "B085D70B964F191A73E4AF0D54AE7A0E07AAFDAF9B71DD0862138AB7325A24A2",
+   "spki_sha256": "08B3A6335FCE5EF48F8F0E543986C07FD18A3B1226129F61864BBD5BDD1F1CC9",
+   "name": "GlobalSign",
+   "owner": "Google Trust Services LLC",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1820966399
+    }
+   }
+  },
+  {
+   "sha256": "BEC94911C2955676DB6C0A550986D76E3BA005667C442C9762B4FBB773DE228C",
+   "spki_sha256": "08B3A6335FCE5EF48F8F0E543986C07FD18A3B1226129F61864BBD5BDD1F1CC9",
+   "name": "GlobalSign",
+   "owner": "Google Trust Services LLC",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "6E0BFF069A26994C15DE2C4888CC54AF84882E5495B7FBF66BE9CCFFEC7489F6",
+   "spki_sha256": "96352D0AD875C027DB82D599BAA8D42E5C472649981ECEED3BFC65F4C81FD5C1",
+   "name": "Autoridade Certificadora Raiz Brasileira v10",
+   "owner": "Government of Brazil, Instituto Nacional de Tecnologia da Informação (ITI)",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "5546A52504FBA74F61FFD4890067529ADE3B9C9D07E502592831CCDA9B369FD3",
+   "spki_sha256": "48A8A7ECD03A83B26AEC7574D09D6453E95F90360634CE204BCBD473997D4C05",
+   "name": "DVV Gov. Root CA - G3 ECC",
+   "owner": "Government of Finland, Population Register Centre’s (Väestörekisterikeskus, VRK)",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "D3ED3FC40AD26B52E001E1E18F4B9449529DEB75A81D5EB680D7B62DB23BA96D",
+   "spki_sha256": "BB0CE7040314A143DCD10E65CCAEEF7010E1B784D15D195D77B5601956BF9E3F",
+   "name": "DVV Gov. Root CA - G3 RSA",
+   "owner": "Government of Finland, Population Register Centre’s (Väestörekisterikeskus, VRK)",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "34FF2A4409DC1383E9F8966E8ADFE5719EBA373FD0AD5E2F49F90EE07CF5D4C1",
+   "spki_sha256": "122312C081949106B7049F3FEBF199C010ADA13E3281CD358A41E7BD09C829D7",
+   "name": "VRK Gov. Root CA - G2",
+   "owner": "Government of Finland, Population Register Centre’s (Väestörekisterikeskus, VRK)",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "5A2FC03F0C83B090BBFA40604B0988446C7636183DF9846E17101A447FB8EFD6",
+   "spki_sha256": "2541E53BA5B3B07ACBE7097AC4A03E040C11CF7A6D4A67CB213D558B50167A06",
+   "name": "Hongkong Post Root CA 3",
+   "owner": "Government of Hong Kong (SAR), Hongkong Post, Certizen",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "B724689B79B2EF9421EF8F5CC733EB093851B170EE715177005A09F226D8C91A",
+   "spki_sha256": "688977E68862A593E25336F4F4563ECA58998D04B40EF9C89AA637B2AA159B18",
+   "name": "CCA India 2022 SPL",
+   "owner": "Government of India, Ministry of Communications & Information Technology, Controller of Certifying Authorities (CCA)",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "1CF341AE35341AC3AE1DC68D5B10DC0C9DC1307656F75FD92CA2C68489D52E9A",
+   "spki_sha256": "2BBD5357548A6F4BB963DC1E0F9AF986C6528EF951FA2213123CDCE64823C921",
+   "name": "MOIS SSL Root CA",
+   "owner": "Government of Korea, KLID",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "9A6EC012E1A7DA9DBE34194D478AD7C0DB1822FB071DF12981496ED104384113",
+   "spki_sha256": "05570AE6EB0FCEB4210E6DB79486B7094CAF200401E149B6677441B5F25E449B",
+   "name": "ACCVRAIZ1",
+   "owner": "Government of Spain, Autoritat de Certificació de la Comunitat Valenciana (ACCV)",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "EBC5570C29018C4D67B1AA127BAF12F703B4611EBC17B7DAB5573894179B93FA",
+   "spki_sha256": "2FC5667A4B9A2678ED6AC6AD25465FCBF6094BFCD9504097C7A8FA47ADE5E888",
+   "name": "AC RAIZ FNMT-RCM",
+   "owner": "Government of Spain, Fábrica Nacional de Moneda y Timbre (FNMT)",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "554153B13D2CF9DDB753BFBE1A4E0AE08D0AA4187058FE60A2B862B2E4B87BCB",
+   "spki_sha256": "453B74809B69019627F2F843001DB5950CDD1D45371053E7F3DFDBC3714113C6",
+   "name": "AC RAIZ FNMT-RCM SERVIDORES SEGUROS",
+   "owner": "Government of Spain, Fábrica Nacional de Moneda y Timbre (FNMT)",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "FC23DDFB7AA505D605B2F492FA1587E3738A074A17C0CF06FADFC725650FA42A",
+   "spki_sha256": "21C10DC287DA461A907363DC8F28E072E79B0B50E73E8818D587E2B340CB4093",
+   "name": "AC RAIZ FNMT-RCM SERVIDORES SEGUROS G2R",
+   "owner": "Government of Spain, Fábrica Nacional de Moneda y Timbre (FNMT)",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "46EDC3689046D53A453FB3104AB80DCAEC658B2660EA1629DD7E867990648716",
+   "spki_sha256": "55E00BE277CEB0545299F24FD9F877E2ACF32852DB43FFCD29BCA74B39B4C9FA",
+   "name": "TUBITAK Kamu SM SSL Kok Sertifikasi - Surum 1",
+   "owner": "Government of Turkey, Kamu Sertifikasyon Merkezi (Kamu SM)",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "apple": {
+     "constraints": "{\"name\":\"TUBITAK Kamu SM SSL Kok Sertifikasi - Surum 1\",\"hash\":\"46edc3689046d53a453fb3104ab80dcaec658b2660ea1629dd7e867990648716\",\"allowed_policies\":[\"Server Authentication\",\"Client Authentication\",\"Code Signing\",\"Timestamp Signing\"]}"
+    }
+   }
+  },
+  {
+   "sha256": "D7BA3F4FF8AD05633451470DDA3378A3491B90005E5C687D2B68D53647CFDD66",
+   "spki_sha256": "5899D913EAD119B9CDB7BA2F30EFE0DF68AD2CD225BDF493E8323A25AA4DBE23",
+   "name": "Halcom Root Certificate Authority",
+   "owner": "HALCOM d.d.",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "3F99CC474ACFCE4DFED58794665E478D1547739F2E780F1BB4CA9B133097D401",
+   "spki_sha256": "FC784300EC8DF4D3D1BAD763835182918D52A9FF0238BDF695A1CD9BDB98321C",
+   "name": "HARICA TLS ECC Root CA 2021",
+   "owner": "HARICA",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "D95D0E8EDA79525BF9BEB11B14D2100D3294985F0C62D9FABD9CD999ECCB7B1D",
+   "spki_sha256": "693C9AA6B245B3B0261637750863EADB6C248A16E52D6F4BC90C86BBF32D7042",
+   "name": "HARICA TLS RSA Root CA 2021",
+   "owner": "HARICA",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "44B545AA8A25E65A73CA15DC27FC36D24C1CB9953A066539B11582DC487B4833",
+   "spki_sha256": "BB52086D0639E8DB332775AC8F4E8435D92CEB00F4E24F28FC0EABE240772E80",
+   "name": "Hellenic Academic and Research Institutions ECC RootCA 2015",
+   "owner": "HARICA",
+   "stores": [
+    "mozilla",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "A040929A02CE53B4ACF4F2FFC6981CE4496F755E6D45FE0B2A692BCD52523F36",
+   "spki_sha256": "50CC86BA96DB3263C79A43EAD07553D9F56659E6907E72D8C026637A1CDC85DC",
+   "name": "Hellenic Academic and Research Institutions RootCA 2015",
+   "owner": "HARICA",
+   "stores": [
+    "mozilla",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "5D56499BE4D2E08BCFCAD08A3E38723D50503BDE706948E42F55603019E528AE",
+   "spki_sha256": "07E854F26A7CBD389927AA041BFEF1B6CD21DD143818AD947DC655A9E587FE88",
+   "name": "IdenTrust Commercial Root CA 1",
+   "owner": "IdenTrust Services, LLC",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "983D826BA9C87F653FF9E8384C5413E1D59ACF19DDC9C98CECAE5FDEA2AC229C",
+   "spki_sha256": "BAEE4F07E312F4BDFF7DF07F3EE4C6E80F968EC4ED4DA179DAAAA3ADC1C55D15",
+   "name": "IdenTrust Commercial Root TLS ECC CA 2",
+   "owner": "IdenTrust Services, LLC",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "4C53D6746D9502530D235A82F9CF8382F5779D5DDDDBD373ABE1724FC1EFE796",
+   "spki_sha256": "946065411C0539CB06F2E56133B9F875D6F19C7F01C2B395DA248B90CC6D8E23",
+   "name": "IdenTrust Commercial Root TLS RSA CA 2",
+   "owner": "IdenTrust Services, LLC",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "30D0895A9A448A262091635522D1F52010B5867ACAE12C78EF958FD4F4389F2F",
+   "spki_sha256": "58DD61FEB36EA7D258724371709149CB121337864CACB2D0999AD20739D06477",
+   "name": "IdenTrust Public Sector Root CA 1",
+   "owner": "IdenTrust Services, LLC",
+   "stores": [
+    "mozilla",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "96BCEC06264976F37460779ACF28C5A7CFE8A3C0AAE11A8FFCEE05C0BDDF08C6",
+   "spki_sha256": "0B9FA5A59EED715C26C1020C711B4F6EC42D58B0015E14337A39DAD301C5AFC3",
+   "name": "ISRG Root X1",
+   "owner": "Internet Security Research Group",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "apple": {
+     "constraints": "{\"name\":\"ISRG Root X1\",\"hash\":\"96bcec06264976f37460779acf28c5a7cfe8a3c0aae11a8ffcee05c0bddf08c6\",\"allowed_policies\":[\"Server Authentication\",\"Client Authentication\",\"Code Signing\",\"Timestamp Signing\"]}"
+    }
+   }
+  },
+  {
+   "sha256": "69729B8E15A86EFC177A57AFB7171DFC64ADD28C2FCA8CF1507E34453CCB1470",
+   "spki_sha256": "762195C225586EE6C0237456E2107DC54F1EFC21F61A792EBD515913CCE68332",
+   "name": "ISRG Root X2",
+   "owner": "Internet Security Research Group",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "apple": {
+     "constraints": "{\"name\":\"ISRG Root X2\",\"hash\":\"69729b8e15a86efc177a57afb7171dfc64add28c2fca8cf1507e34453ccb1470\",\"allowed_policies\":[\"Server Authentication\",\"Client Authentication\",\"Code Signing\",\"Timestamp Signing\"]}"
+    }
+   }
+  },
+  {
+   "sha256": "2530CC8E98321502BAD96F9B1FBA1B099E2D299E0F4548BB914F363BC0D4531F",
+   "spki_sha256": "952C2039C0243EB515DD73D83FC3643184874FEB0862A9837731ED9B4742E17A",
+   "name": "Izenpe.com",
+   "owner": "Izenpe S.A.",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "mozilla": {
+     "distrust_after": "4/15/2026"
+    },
+    "chrome": {
+     "distrust_after_unix": 1776211199
+    }
+   }
+  },
+  {
+   "sha256": "A1339D33281A0B56E557D3D32B1CE7F9367EB094BD5FA72A7E5004C8DED7CAFE",
+   "spki_sha256": "6E364B6133DEEFDCBB21273C5F445A20AFBC05038D5B021C0C2153039016345B",
+   "name": "SZAFIR ROOT CA2",
+   "owner": "Krajowa Izba Rozliczeniowa S.A. (KIR)",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "3C5F81FEA5FAB82C64BFA2EAECAFCDE8E077FC8620A7CAE537163DF36EDBF378",
+   "spki_sha256": "616167201433AEA6C8E5E3070AFCAF6749188F814BD1ABB179AE8DAD3ABF26EC",
+   "name": "Microsec e-Szigno Root CA 2009",
+   "owner": "Microsec Ltd.",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1790812799
+    }
+   }
+  },
+  {
+   "sha256": "BEB00B30839B9BC32C32E4447905950641F26421B15ED089198B518AE2EA1B99",
+   "spki_sha256": "42431627EA76CC78697F915E3455B1B2EC82FF2F6380EE6423EF3C0840B7E631",
+   "name": "e-Szigno Root CA 2017",
+   "owner": "Microsec Ltd.",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1790812799
+    }
+   }
+  },
+  {
+   "sha256": "B49141502D00663D740F2E7EC340C52800962666121A36D09CF7DD2B90384FB4",
+   "spki_sha256": "47487900A1BEB9EE08CCBC1116A8EC55F454B638994319F051B984023CED6423",
+   "name": "e-Szigno TLS Root CA 2023",
+   "owner": "Microsec Ltd.",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "358DF39D764AF9E1B766E9C972DF352EE15CFAC227AF6AD1D70E8E4A6EDCBA02",
+   "spki_sha256": "35F53CE1264611E03340FE37E1EC7D4CC986C5613DCA70FD04AA44545F2DAF28",
+   "name": "Microsoft ECC Root Certificate Authority 2017",
+   "owner": "Microsoft Corporation",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "C741F70F4B2A8D88BF2E71C14122EF53EF10EBA0CFA5E64CFA20F418853073E0",
+   "spki_sha256": "B2F7298B52BF2C3CAC4DDFE72DE4D682AC58957595982F2B62301AF597C699C5",
+   "name": "Microsoft RSA Root Certificate Authority 2017",
+   "owner": "Microsoft Corporation",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "A7C8681042F3675AA8505D3BA313D80F8AC3250FDF874AD29B834689C087FB11",
+   "spki_sha256": "D9FD822613737D118EB94FF75F4F28EF11EE97D26F4584126B3579F722CFD540",
+   "name": "NAVER Cloud Trust Services ECC Root G1",
+   "owner": "NAVER Cloud Trust Services",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "49A2762987788D4834B32305D767760F244D507742E8C2539FD4CA3AD52C16EE",
+   "spki_sha256": "F7E8F0C546B48431D656A8042A9466EAC807DA2A34441D671C36186541413C86",
+   "name": "NAVER Cloud Trust Services RSA Root G1",
+   "owner": "NAVER Cloud Trust Services",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "88F438DCF8FFD1FA8F429115FFE5F82AE1E06E0C70C375FAAD717B34A49E7265",
+   "spki_sha256": "786FFA578618C3B9A311175E50816F4DDA0605C3869F296EBC5943BF09F4E904",
+   "name": "NAVER Global Root Certification Authority",
+   "owner": "NAVER Cloud Trust Services",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "6C61DAC3A2DEF031506BE036D2A6FE401994FBD13DF9C8D466599274C446EC98",
+   "spki_sha256": "F48BADD7DF6A06690D0AE31373B12855F8DEDB14517F362A313101CC98CC6B35",
+   "name": "NetLock Arany (Class Gold) Főtanúsítvány",
+   "owner": "NETLOCK",
+   "stores": [
+    "mozilla",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "EB7E05AA58E7BD328A282BF8867033F3C035342B516EE85C01673DFFFFBBFE58",
+   "spki_sha256": "5094B73B736ADF73A0CBF43E27BF14407B4A36AA363A457FCE33949CEBA8E649",
+   "name": "NetLock Platina (Class Platinum) Főtanúsítvány",
+   "owner": "NETLOCK",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "65353833CF234C79562164F90849C0D104DBABF8EE41064D83E8CBE03BA1C5A5",
+   "spki_sha256": "3EE6B341402851B27E64021A3023AAC7C1A0D2DEF27D5BCE5C2DBEB0B22DCC71",
+   "name": "Netrust Root CA 2",
+   "owner": "Netrust Pte Ltd",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "EEC997C0C30F216F7E3B8B307D2BAE42412D753FC8219DAFD1520B2572850F49",
+   "spki_sha256": "D439DD80F1E3BC5C9E5F13E8BFF7A8887DF9DC1C3E19D76AF70C8F8D985EEF22",
+   "name": "OISTE Server Root ECC G1",
+   "owner": "OISTE",
+   "stores": [
+    "mozilla",
+    "chrome"
+   ]
+  },
+  {
+   "sha256": "9AE36232A5189FFDDB353DFD26520C015395D22777DAC59DB57B98C089A651E6",
+   "spki_sha256": "B964E141D3A55CAE180EA6A1A8D4A297DE26F11833C673569D196FB533A98710",
+   "name": "OISTE Server Root RSA G1",
+   "owner": "OISTE",
+   "stores": [
+    "mozilla",
+    "chrome"
+   ]
+  },
+  {
+   "sha256": "6B9C08E86EB0F767CFAD65CD98B62149E5494A67F5845E7BD1ED019F27B86BD6",
+   "spki_sha256": "149F2EE63B9A5E5803240A770DC991FC2E3445E62831C245A49BC4F1F738FF9C",
+   "name": "OISTE WISeKey Global Root GB CA",
+   "owner": "OISTE",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1790812799
+    }
+   }
+  },
+  {
+   "sha256": "8560F91C3624DABA9570B5FEA0DBE36FF11A8323BE9486854FB3F34A5571198D",
+   "spki_sha256": "FD371BEA9755FF60C8828C849B8E5215DE532D61B009855FA0AD630D90EEF82E",
+   "name": "OISTE WISeKey Global Root GC CA",
+   "owner": "OISTE",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1790812799
+    }
+   }
+  },
+  {
+   "sha256": "7A77C6C61EEEB9AA65C4EA410D65D895B26A81123283009DB104B48DE80B2479",
+   "spki_sha256": "8E15D426CD04898F218BE2E5FE3784F375094CC435DC61AD86C4A3C01511DBE1",
+   "name": "OATI WebCARES Root CA",
+   "owner": "Open Access Technology International, Inc. (OATI)",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "30F4E5DD679FDE8FD11EB6E0C531615C438B06EDD9F59CBAB49680AA2B6990D9",
+   "spki_sha256": "9DE4650DC1B56452D868B27FBEA1596515CFEB79C15B54FB16D2A4A8C7836982",
+   "name": "OATI webCARES Server Root CA",
+   "owner": "Open Access Technology International, Inc. (OATI)",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "AC7F7862E685C7A7D9826A58EA32D183D4893FCC8F8FD6D900C9769A987E77F0",
+   "spki_sha256": "C372F6D18EBEE5AA23D9E919F3E6BE98488EC01607DF3162FC192E4B1346AFB3",
+   "name": "PostSignum Root QCA 4",
+   "owner": "PostSignum",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "F9A17A00E5C294BA9614A715819AF57F3FD48CC413453FBB8A5FC7E97964E2BC",
+   "spki_sha256": "CFE016B124E93C7BB4F1D8D01C2A209391D8EC3C310E6EABC14BDBF0F52C1F60",
+   "name": "I.CA TLS Root CA/RSA 05/2022",
+   "owner": "První certifikační autorita, a.s.",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "6AB2AB75F51CB4F4F0156203FBF6F646232F514BE059F62833308B82B4D72DB1",
+   "spki_sha256": "294679E0F97FFD474F19567B36382394E1B4960E030975E66353452034A3C5EA",
+   "name": "SECOM TLS ECC Root CA 2024",
+   "owner": "SECOM Trust Systems Co., Ltd.",
+   "stores": [
+    "mozilla",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "1435F225C5D252D7A21948CC3CE62AECFA88001E3DD72D1CC3555100EB372F93",
+   "spki_sha256": "F0E0B6FBE8B74D4F82D8ED8F8BD6A3D083DC19DB3D2CEDB1061CCB76D848EE7D",
+   "name": "SECOM TLS RSA Root CA 2024",
+   "owner": "SECOM Trust Systems Co., Ltd.",
+   "stores": [
+    "mozilla",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "E74FBDA55BD564C473A36B441AA799C8A68E077440E8288B9FA1E50E4BBACA11",
+   "spki_sha256": "3329BFA13B6007AB5FC3713F0ACB289426E2FBC99CC5C110A914B139571600B6",
+   "name": "Security Communication ECC RootCA1",
+   "owner": "SECOM Trust Systems Co., Ltd.",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "513B2CECB810D4CDE5DD85391ADFC6C2DD60D87BB736D2B521484AA47A0EBEF6",
+   "spki_sha256": "3380709AF3B096BE3CC2A40548142C0A520028DB09E2CB77AE2206616AB6CBB4",
+   "name": "Security Communication RootCA2",
+   "owner": "SECOM Trust Systems Co., Ltd.",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "FAD540811AFAE0DC767CDF6572A088FA3CE8493DD82B3B869A67D10AAB4E8124",
+   "spki_sha256": "21AE412566324725FFEFC1DCCF88F16F8D6BF4DBBB37FE8CABA47E8D66C2CDF9",
+   "name": "SI-TRUST Root",
+   "owner": "SI-TRUST",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "22A2C1F7BDED704CC1E701B5F408C310880FE956B5DE2A4A44F99C873A25A7C8",
+   "spki_sha256": "348767CDAD3BDD28B2B8DD5351AEC30C68CEC5CD69D276DF3827DBC4F5806464",
+   "name": "SSL.com EV Root Certification Authority ECC",
+   "owner": "SSL.com",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1781481599
+    },
+    "apple": {
+     "constraints": "\"allowed_policies\": [\"Server Authentication\", \"Client Authentication\"]"
+    }
+   }
+  },
+  {
+   "sha256": "2E7BF16CC22485A7BBE2AA8696750761B0AE39BE3B2FE9D0CC6D4EF73491425C",
+   "spki_sha256": "7CD67C248F69D83FC2F9BB01DCB1F7AD67A363D046043796D0984C3A231F6BB0",
+   "name": "SSL.com EV Root Certification Authority RSA R2",
+   "owner": "SSL.com",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1781481599
+    },
+    "apple": {
+     "constraints": "\"allowed_policies\": [\"Server Authentication\", \"Client Authentication\"]"
+    }
+   }
+  },
+  {
+   "sha256": "3417BB06CC6007DA1B961C920B8AB4CE3FAD820E4AA30B9ACBC4A74EBDCEBC65",
+   "spki_sha256": "A320F4D534D7BE97C1AE8DD0499735BC895C323ADD2D388BFCCF662C23D7F99A",
+   "name": "SSL.com Root Certification Authority ECC",
+   "owner": "SSL.com",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1781481599
+    }
+   }
+  },
+  {
+   "sha256": "85666A562EE0BE5CE925C1D8890A6F76A87EC16D4D7D5F29EA7419CF20123B69",
+   "spki_sha256": "D1C45377EBDCD618CD1651DC2E02C21D751E5AA9FCD1B3431FF6ECF6A31348FA",
+   "name": "SSL.com Root Certification Authority RSA",
+   "owner": "SSL.com",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1781481599
+    }
+   }
+  },
+  {
+   "sha256": "C32FFD9F46F936D16C3673990959434B9AD60AAFBB9E7CF33654F144CC1BA143",
+   "spki_sha256": "1BF00D5C8F13C094DD17E00504CF0888850F12FD067FA1F92C0FDBF60B86E321",
+   "name": "SSL.com TLS ECC Root CA 2022",
+   "owner": "SSL.com",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "8FAF7D2E2CB4709BB8E0B33666BF75A5DD45B5DE480F8EA8D4BFE6BEBC17F2ED",
+   "spki_sha256": "2BCF553A66F570900DDD32BA6DFE1ECC06C9182D662DC1B60E1F7B767C2BDD54",
+   "name": "SSL.com TLS RSA Root CA 2022",
+   "owner": "SSL.com",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "4200F5043AC8590EBB527D209ED1503029FBCBD41CA1B506EC27F15ADE7DAC69",
+   "spki_sha256": "2596904DC4D699AE20C2CEF4DCE47F285937D77464AC370746F52DEA76BA0C28",
+   "name": "Secure Global CA",
+   "owner": "SSL.com",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "F1C1B50AE5A20DD8030EC9F6BC24823DD367B5255759B4E71B61FCE9F7375D73",
+   "spki_sha256": "77290717614B25F12964EBDB38B5F83CAADC0F6C36B0777F880FC6DEE1D339CC",
+   "name": "SecureTrust CA",
+   "owner": "SSL.com",
+   "stores": [
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "97552015F5DDFC3C8788C006944555408894450084F100867086BC1A2BB58DC8",
+   "spki_sha256": "2E06CAE1FC20B200E6FB748557A4444BEC9317DFFF2E4151669E0F7944F0A9E0",
+   "name": "Trustwave Global Certification Authority",
+   "owner": "SSL.com",
+   "stores": [
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "945BBC825EA554F489D1FD51A73DDF2EA624AC7019A05205225C22A78CCFA8B4",
+   "spki_sha256": "497128FC90656B87290482B223EFB72240FE9C421E79938DE5F8110CB0BE9056",
+   "name": "Trustwave Global ECC P256 Certification Authority",
+   "owner": "SSL.com",
+   "stores": [
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "55903859C8C0C3EBB8759ECE4E2557225FF5758BBD38EBD48276601E1BD58097",
+   "spki_sha256": "828B0EEFF24654E8FF5841A29DD5D4E3ED30952CA43425A79283407208D39D16",
+   "name": "Trustwave Global ECC P384 Certification Authority",
+   "owner": "SSL.com",
+   "stores": [
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "CECDDC905099D8DADFC5B1D209B737CBE2C18CFB2C10C0FF0BCF0D3286FC1AA2",
+   "spki_sha256": "051CF9FA95E40E9B83EDAEDA6961F6168C7879C4660172479CDD51AB03CEA62B",
+   "name": "XRamp Global Certification Authority",
+   "owner": "SSL.com",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "D7A7A0FB5D7E2731D771E9484EBCDEF71D5F0C3E0A2948782BC83EE0EA699EF4",
+   "spki_sha256": "BD153ED7B0434F6886B17BCE8BBE84ED340C7132D702A8F4FA318F756ECBD6F3",
+   "name": "AAA Certificate Services",
+   "owner": "Sectigo",
+   "stores": [
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "0C2CD63DF7806FA399EDE809116B575BF87989F06518F9808C860503178BAF66",
+   "spki_sha256": "006D7BE7555DD82026442C4F1A27A80E89A1989CB87B34448ED2194C18196D5E",
+   "name": "COMODO Certification Authority",
+   "owner": "Sectigo",
+   "stores": [
+    "apple"
+   ]
+  },
+  {
+   "sha256": "1A0D20445DE5BA1862D19EF880858CBCE50102B36E8F0A040C3C69E74522FE6E",
+   "spki_sha256": "006D7BE7555DD82026442C4F1A27A80E89A1989CB87B34448ED2194C18196D5E",
+   "name": "COMODO Certification Authority",
+   "owner": "Sectigo",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "1793927A0614549789ADCE2F8F34F7F0B66D0F3AE3A3B84D21EC15DBBA4FADC7",
+   "spki_sha256": "E7CA91BBFBB18788057B3A8070446EA5291160194102F7DCC3B9848C63CB9CD5",
+   "name": "COMODO ECC Certification Authority",
+   "owner": "Sectigo",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1790812799
+    }
+   }
+  },
+  {
+   "sha256": "52F0E1C4E58EC629291B60317F074671B85D7EA80D5B07273463534B32B40234",
+   "spki_sha256": "82B5F84DAF47A59C7AB521E4982AEFA40A53406A3AEC26039EFA6B2E0E7244C1",
+   "name": "COMODO RSA Certification Authority",
+   "owner": "Sectigo",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1790812799
+    }
+   }
+  },
+  {
+   "sha256": "73C176434F1BC6D5ADF45B0E76E727287C8DE57616C1E6E6141A2B2CBC7D8E4C",
+   "spki_sha256": "6DBFAE00D37B9CD73F8FB47DE65917AF00E0DDDF42DBCEAC20C17C0275EE2095",
+   "name": "Entrust Root Certification Authority",
+   "owner": "Sectigo",
+   "stores": [
+    "apple"
+   ]
+  },
+  {
+   "sha256": "02ED0EB28C14DA45165C566791700D6451D7FB56F0B2AB1D3B8EB070E56EDFF5",
+   "spki_sha256": "FEA2B7D645FBA73D753C1EC9A7870C40E1F7B0C561E927B985BF711866E36F22",
+   "name": "Entrust Root Certification Authority - EC1",
+   "owner": "Sectigo",
+   "stores": [
+    "apple"
+   ]
+  },
+  {
+   "sha256": "43DF5774B03E7FEF5FE40D931A7BEDF1BB2E6B42738C4E6D3841103D3AA7F339",
+   "spki_sha256": "76EE8590374C715437BBCA6BBA6028EADDE2DC6DBBB8C3F610E851F11D1AB7F5",
+   "name": "Entrust Root Certification Authority - G2",
+   "owner": "Sectigo",
+   "stores": [
+    "apple"
+   ]
+  },
+  {
+   "sha256": "DB3517D1F6732A2D5AB97C533EC70779EE3270A62FB4AC4238372460E6F01E88",
+   "spki_sha256": "36D7C79F3D089A0FF79972D90923DEA5CA76B4CCBAF7C2751CB152E9494F52D0",
+   "name": "Entrust Root Certification Authority - G4",
+   "owner": "Sectigo",
+   "stores": [
+    "apple"
+   ]
+  },
+  {
+   "sha256": "6DC47172E01CBCB0BF62580D895FE2B8AC9AD4F873801E0C10B9C837D21EB177",
+   "spki_sha256": "1EA3C5E43ED66C2DA2983A42A4A79B1E906786CE9F1B58621419A00463A87D38",
+   "name": "Entrust.net Certification Authority (2048)",
+   "owner": "Sectigo",
+   "stores": [
+    "apple"
+   ]
+  },
+  {
+   "sha256": "C90F26F0FB1B4018B22227519B5CA2B53E2CA5B3BE5CF18EFE1BEF47380C5383",
+   "spki_sha256": "B0B56335468561F5BB9FA12D801784A633A572705D34F32B643445DFA8B005D1",
+   "name": "Sectigo Public Server Authentication Root E46",
+   "owner": "Sectigo",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "7BB647A62AEEAC88BF257AA522D01FFEA395E0AB45C73F93F65654EC38F25A06",
+   "spki_sha256": "0E8BB18BBEEFB381BE21BFC1A206D317298462AD104855F04A0542699708D3D4",
+   "name": "Sectigo Public Server Authentication Root R46",
+   "owner": "Sectigo",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "4FF460D54B9C86DABFBCFC5712E0400D2BED3FBC4D4FBDAA86E06ADCD2A9AD7A",
+   "spki_sha256": "2021917E98263945C859C43F1D73CB4139053C414FA03CA3BC7EE88614298F3B",
+   "name": "USERTrust ECC Certification Authority",
+   "owner": "Sectigo",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1790812799
+    }
+   }
+  },
+  {
+   "sha256": "E793C9B02FD8AA13E21C31228ACCB08119643B749C898964B1746D46C3D4CBD2",
+   "spki_sha256": "C784333D20BCD742B9FDC3236F4E509B8937070E73067E254DD3BF9C45BF4DDE",
+   "name": "USERTrust RSA Certification Authority",
+   "owner": "Sectigo",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1790812799
+    }
+   }
+  },
+  {
+   "sha256": "D43AF9B35473755C9684FC06D7D8CB70EE5C28E773FB294EB41EE71722924D24",
+   "spki_sha256": "5C41A73AB2C35DFCD771F6FD6E3E8FAC9B469D386CADDA56A95B646EB48CCA34",
+   "name": "UCA Extended Validation Root",
+   "owner": "Shanghai Electronic Certification Authority Co., Ltd.",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "9BEA11C976FE014764C1BE56A6F914B5A560317ABD9988393382E5161AA0493C",
+   "spki_sha256": "1255CABE8152FA64DF942F7A47417E29F96C1CE11BF8C84ECBE2815CC1280810",
+   "name": "UCA Global G2 Root",
+   "owner": "Shanghai Electronic Certification Authority Co., Ltd.",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "62DD0BE9B9F50A163EA0F8E75C053B1ECA57EA55C8688F647C6881F2C8357B95",
+   "spki_sha256": "40FCFC28875DCCBFEBCBDF6CD7433312DA63C4EFCF3BD7B1B505C22020AE0274",
+   "name": "SwissSign Gold CA - G2",
+   "owner": "SwissSign AG",
+   "stores": [
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "193144F431E0FDDB740717D4DE926A571133884B4360D30E272913CBE660CE41",
+   "spki_sha256": "EBC978AE0DD9E5822D6B19652596F620C93D7CAEFA952191CB050A632CA9005F",
+   "name": "SwissSign RSA TLS Root CA 2022 - 1",
+   "owner": "SwissSign AG",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1813017599
+    }
+   }
+  },
+  {
+   "sha256": "BE6C4DA2BBB9BA59B6F3939768374246C3C005993FA98F020D1DEDBED48A81D5",
+   "spki_sha256": "9318226F8C83AFE47F5F47C24F59CE12DBA8C73B181BEE6B2EA1F40A06BC1869",
+   "name": "SwissSign Silver CA - G2",
+   "owner": "SwissSign AG",
+   "stores": [
+    "apple"
+   ]
+  },
+  {
+   "sha256": "3F63BB2814BE174EC8B6439CF08D6D56F0B7C405883A5648A334424D6B3EC558",
+   "spki_sha256": "06600B94C0318BB6967F0C7787CC8A1032A179C4E95E3C5760B32E290F7FEC9B",
+   "name": "TWCA CYBER Root CA",
+   "owner": "Taiwan-CA Inc. (TWCA)",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "59769007F7685D0FCD50872F9F95D5755A5B2B457D81F3692B610A98672F0E1B",
+   "spki_sha256": "C444B5B66CE5D71E1B5E40F27385C95CBFD24A05B56F70CAC0992F0F50C3379C",
+   "name": "TWCA Global Root CA",
+   "owner": "Taiwan-CA Inc. (TWCA)",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1789430399
+    }
+   }
+  },
+  {
+   "sha256": "BFD88FE1101C41AE3E801BF8BE56350EE9BAD1A6B9BD515EDC5C6D5B8711AC44",
+   "spki_sha256": "92C46879626EF2CC1ECEA50C72FB5E385844095F21CBF3B283CB82E6B9FC6A58",
+   "name": "TWCA Root Certification Authority",
+   "owner": "Taiwan-CA Inc. (TWCA)",
+   "stores": [
+    "mozilla",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "098E08A91DBBF77478B96CCEB89B1413A5DA37B7C862606A955DEB07179F4326",
+   "spki_sha256": "4C821D7D89ADF08C1E951C92B841B4A3C18261B9CE426F337CC0E3805499BA0E",
+   "name": "Telia EC TLS Root CA v3",
+   "owner": "Telia Company",
+   "stores": [
+    "mozilla",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "D13DB1294C45EBC6FC86C6BBF69FA29BDFE692DFF7C713C243C7A956C6A2284C",
+   "spki_sha256": "536CFDAE8A6257BF14266C43285958D0F9B937E3068E2A215374170133A9FFCC",
+   "name": "Telia RSA TLS Root CA v3",
+   "owner": "Telia Company",
+   "stores": [
+    "mozilla",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "242B69742FCB1E5B2ABF98898B94572187544E5B4D9911786573621F6A74B82C",
+   "spki_sha256": "C2B3C31A4A29850AA8F3CF472A1169FF71B416579F6A4482EC7744B83DF988AC",
+   "name": "Telia Root CA v2",
+   "owner": "Telia Company",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "DD6936FE21F8F077C123A1A521C12224F72255B73E03A7260693E8A24B0FA389",
+   "spki_sha256": "10BA3485CA8BB6880AB9531A4063E4001555561C7F2E055165F49B2D74FC5F6B",
+   "name": "TeliaSonera Root CA v1",
+   "owner": "Telia Company",
+   "stores": [
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "2A8DA2F8D23E0CD3B5871ECFB0F42276CA73230667F474EEDE71C5EE32CC3EC6",
+   "spki_sha256": "244803CFA35953385D06657AC4E5AB4F2BC0405277BE662ADB905E1498B1DEFD",
+   "name": "Thailand National Root Certification Authority - G1",
+   "owner": "Thailand National Root Certificate Authority (Electronic Transactions Development Agency)",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "E0D3226AEB1163C2E48FF9BE3B50B4C6431BE7BB1EACC5C36B5D5EC509039A08",
+   "spki_sha256": "8685AD850F7F56CD16943BCB70B434E7356E1B8BDC613406E2EA8DE46092B636",
+   "name": "TrustAsia Global Root CA G3",
+   "owner": "TrustAsia Technologies, Inc.",
+   "stores": [
+    "mozilla"
+   ]
+  },
+  {
+   "sha256": "BE4B56CB5056C0136A526DF444508DAA36A0B54F42E4AC38F72AF470E479654C",
+   "spki_sha256": "07A2904D4BFF9604EA1331AE990E9FFE331232E69ECB8A08CD49D8E34757DB41",
+   "name": "TrustAsia Global Root CA G4",
+   "owner": "TrustAsia Technologies, Inc.",
+   "stores": [
+    "mozilla"
+   ]
+  },
+  {
+   "sha256": "C0076B9EF0531FB1A656D67C4EBE97CD5DBAA41EF44598ACC2489878C92D8711",
+   "spki_sha256": "F4632E58701C0BD7DAFC7E3831355EC433FC13777DE286683E8EC50964DF0452",
+   "name": "TrustAsia TLS ECC Root CA",
+   "owner": "TrustAsia Technologies, Inc.",
+   "stores": [
+    "mozilla",
+    "chrome"
+   ]
+  },
+  {
+   "sha256": "06C08D7DAFD876971EB1124FE67F847EC0C7A158D3EA53CBE940E2EA9791F4C3",
+   "spki_sha256": "5628872E245FE66148B80BADEAC9C40F6252E642FA9595AECE4B3E8A58B8FD46",
+   "name": "TrustAsia TLS RSA Root CA",
+   "owner": "TrustAsia Technologies, Inc.",
+   "stores": [
+    "mozilla",
+    "chrome"
+   ]
+  },
+  {
+   "sha256": "E6BE68CE06FE0DA0C140F1AEB00B67B636C5EEA9422088929362375CE086DB39",
+   "spki_sha256": "D6EC6348A7C4D42AC48D9C43145A8CD71971362363267C6673A77B8A8573A66B",
+   "name": "Visa Public ECC Root CA",
+   "owner": "Visa",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "E6432FCE6B48F4E889B2FE183F8B480F72ECF80F57389B0E9C6E89CF04AD69D1",
+   "spki_sha256": "C44B349E5BACC94A9AE8CAFA241CCA42B6A589EDAB8644142DB561BCB778E59C",
+   "name": "Visa TLS Root CA",
+   "owner": "Visa",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "EAA962C4FA4A6BAFEBE415196D351CCD888D4F53F3FA8AE6D7C466A94E6042BB",
+   "spki_sha256": "DBC1E3A15238A0483BCDB8FDEC616E03E705A48E2A501157CADF3B9C7311C5E5",
+   "name": "certSIGN ROOT CA",
+   "owner": "certSIGN",
+   "stores": [
+    "apple"
+   ]
+  },
+  {
+   "sha256": "657CFE2FA73FAA38462571F332A2363A46FCE7020951710702CDFBB6EEDA3305",
+   "spki_sha256": "CBAD7B1D384849DF0946B7EE8E7F5F7CE3AED876FDA7BC9D30D8B16F29FF2C53",
+   "name": "certSIGN ROOT CA G2",
+   "owner": "certSIGN",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "5E3571F33F45A7DF1537A68B5FFB9E036AF9D2F5BC4C9717130DC43D7175AAC7",
+   "spki_sha256": "9E5A34B08929BC0A581C8936AAFD6AB7517BB15188B4F6FC02C45906F71595B0",
+   "name": "GLOBALTRUST",
+   "owner": "e-commerce monitoring GmbH",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "416B1F9E84E74C1D19B23D8D7191C6AD81246E641601F599132729F507BEB3CC",
+   "spki_sha256": "E0C780C629903E126F1D919570DCE7C496F85F33AAE66B9A3147EE75F8D1620A",
+   "name": "GLOBALTRUST 2015",
+   "owner": "e-commerce monitoring GmbH",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "9A296A5182D1D451A2E37F439B74DAAFA267523329F90F9A0D2007C334E23C9A",
+   "spki_sha256": "FEE8AF929175687F4638A3FC983DB8ECD0E5E2A83E737F3FB77B4C22FCBAC0A6",
+   "name": "GLOBALTRUST 2020",
+   "owner": "e-commerce monitoring GmbH",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "BC4D809B15189D78DB3E1D8CF4F9726A795DA1643CA5F1358E1DDB0EDC0D7EB3",
+   "spki_sha256": "EABC185C4E82D942B1A5978BA3C0181487D6B3B9974E5C49F72F6D0BD9637150",
+   "name": "emSign ECC Root CA - C3",
+   "owner": "eMudhra Technologies Limited",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "86A1ECBA089C4A8D3BBE2734C612BA341D813E043CF9E8A862CD5C57A36BBE6B",
+   "spki_sha256": "8D417DB2DD8BF5E3084D1E3F196D583849D81BDD4C00C70B9D39369E96B8C782",
+   "name": "emSign ECC Root CA - G3",
+   "owner": "eMudhra Technologies Limited",
+   "stores": [
+    "apple",
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "125609AA301DA0A249B97A8239CB6A34216F44DCAC9F3954B14292F2E8C8608F",
+   "spki_sha256": "B7408B4D2BE0238BA37004DD34E276C6019BD2F24C9DB7D4980F5F6C359A4BCC",
+   "name": "emSign Root CA - C1",
+   "owner": "eMudhra Technologies Limited",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "40F6AF0346A99AA1CD1D555A4E9CCE62C7F9634603EE406615833DC8C8D00367",
+   "spki_sha256": "376A1A7082A593DCCC20D561D119E9AB8D30F11CC321D0A37FA41F0DF284E01C",
+   "name": "emSign Root CA - G1",
+   "owner": "eMudhra Technologies Limited",
+   "stores": [
+    "mozilla",
+    "chrome",
+    "apple",
+    "microsoft"
+   ],
+   "limits": {
+    "mozilla": {
+     "distrust_after": "11/16/2026"
+    },
+    "chrome": {
+     "distrust_after_unix": 1794873599
+    }
+   }
+  },
+  {
+   "sha256": "CEF71E70B7C29ADDF6C30CD19E614B38FD5F02A435A0EEDDD0087E183D101A51",
+   "spki_sha256": "ECE28E35289CE8621C72407949E5050052AD4607CC332EAF9B546029AACBFB7A",
+   "name": "emSign Root TLS CA - G1",
+   "owner": "eMudhra Technologies Limited",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "7DD78D5F4F13459A83DFF9ABBBA62EDBAF6F2D102BF257FD712F4D9F2746ED8D",
+   "spki_sha256": "C619E4780ED8E0ABEDA24AD732567DE4383A7EA941338F6D1A7D1B49AC792FE9",
+   "name": "emSign Root TLS CA - G3",
+   "owner": "eMudhra Technologies Limited",
+   "stores": [
+    "microsoft"
+   ]
+  },
+  {
+   "sha256": "30FBBA2C32238E2A98547AF97931E550428B9B3F1C8EEB6633DCFA86C5B27DD3",
+   "spki_sha256": "A246B822F96CFECC155156E5476957845492ACF32187EC8A2EF12D89618D711D",
+   "name": "vTrus ECC Root CA",
+   "owner": "iTrusChina Co., Ltd.",
+   "stores": [
+    "mozilla",
+    "chrome"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1799971199
+    }
+   }
+  },
+  {
+   "sha256": "8A71DE6559336F426C26E53880D00D88A18DA4C6A91F0DCB6194E206C5C96387",
+   "spki_sha256": "E06647E52610160C3E83C42D22E39AA8750C584D6C24AFAED54A61164742000A",
+   "name": "vTrus Root CA",
+   "owner": "iTrusChina Co., Ltd.",
+   "stores": [
+    "mozilla",
+    "chrome"
+   ],
+   "limits": {
+    "chrome": {
+     "distrust_after_unix": 1799971199
+    }
+   }
+  }
+ ]
+}

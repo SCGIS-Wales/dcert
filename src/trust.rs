@@ -67,6 +67,12 @@ pub enum RootTrustClass {
     /// The chain verifies up to the root of an industry PKI that browsers do
     /// not trust, such as the X9 Financial PKI (see `trust_program`).
     IndustryPki,
+    /// The chain verifies up to a TLS root of Chrome, Apple or Microsoft that
+    /// Mozilla does not include (see `root_stores`).
+    PubliclyTrustedOther,
+    /// The chain verifies up to a cloud provider's CA for its managed
+    /// services, such as the Amazon RDS CAs (see `trust_program`).
+    CloudServiceCa,
     /// The chain terminates in a private (non-public) root CA.
     PrivatePki,
     /// A single self-signed certificate (not issued by any CA).
@@ -115,12 +121,26 @@ pub struct RootTrustInfo {
     /// Whether the anchor is a preproduction (test) root of its program.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preproduction: Option<bool>,
+    /// The TLS root stores that trust this chain's anchor for this leaf:
+    /// `mozilla`, `chrome`, `apple`, `microsoft` (from CCADB).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub root_stores: Option<Vec<String>>,
+    /// For a private chain whose issuer names a cloud provider's per-instance
+    /// CA: which service it is and how to fetch its CA (not a trust verdict).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_hint: Option<String>,
+    /// Store limits that exclude this leaf (a distrust-after date).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub store_notes: Option<Vec<String>>,
     /// The leaf's purpose disagrees with what its root is trusted for (for
     /// example a client authentication certificate under a website root).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub purpose_note: Option<String>,
     /// Which public-root source was used: `embedded` or `embedded+refreshed`.
     pub source: &'static str,
+    /// The leaf's notBefore (Unix time), for store distrust-after dates.
+    #[serde(skip)]
+    pub leaf_not_before: Option<i64>,
     /// Short human-readable explanation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
@@ -306,7 +326,14 @@ pub fn assess_root_trust(
         purpose: None,
         preproduction: None,
         purpose_note: None,
+        root_stores: None,
+        store_notes: None,
+        service_hint: None,
         source: roots.source,
+        leaf_not_before: chain_ders
+            .first()
+            .and_then(|der| x509_parser::parse_x509_certificate(der).ok())
+            .map(|(_, c)| c.validity().not_before.timestamp()),
         detail: None,
     };
 
@@ -348,6 +375,7 @@ struct AnchorInfo {
     sha256: String,
     present_in_chain: bool,
     sha256_raw: Vec<u8>,
+    cert: X509,
 }
 
 /// Verify `leaf` with `untrusted` helpers against `store`; the anchoring
@@ -370,6 +398,7 @@ fn anchor_in(store: &X509Store, leaf: &X509, untrusted: &[X509], certs: &[X509])
                 .digest(MessageDigest::sha256())
                 .map(|d| d.to_vec())
                 .unwrap_or_default(),
+            cert: root.to_owned(),
         }))
     })
     .ok()
@@ -408,7 +437,9 @@ fn classify(roots: &PublicRoots, certs: &[X509], info: &mut RootTrustInfo) {
         info.publicly_trusted = false;
         info.classification = match p.purpose {
             Purpose::Email => RootTrustClass::PubliclyTrustedEmail,
-            Purpose::IndustryMtls | Purpose::ServerAuth => RootTrustClass::IndustryPki,
+            Purpose::ServerAuth => RootTrustClass::PubliclyTrustedOther,
+            Purpose::CloudService => RootTrustClass::CloudServiceCa,
+            Purpose::IndustryMtls => RootTrustClass::IndustryPki,
         };
         info.trust_program = Some(p.id);
         info.operator = Some(p.operator);
@@ -421,6 +452,15 @@ fn classify(roots: &PublicRoots, certs: &[X509], info: &mut RootTrustInfo) {
             ""
         };
         info.detail = Some(match p.purpose {
+            Purpose::ServerAuth => "Chain anchors to a TLS root that Chrome, Apple or Microsoft trusts but Mozilla \
+                                    does not (see root_stores); clients using Mozilla's roots (Firefox, curl, most \
+                                    Linux distributions) reject it."
+                .to_string(),
+            Purpose::CloudService => format!(
+                "Chain anchors to the {} ({}): a provider CA for its managed service endpoints, in no browser \
+                 root store; clients must install the provider's CA bundle.",
+                p.name, p.operator
+            ),
             Purpose::Email => format!(
                 "Chain anchors to a root Mozilla trusts for email (S/MIME) only: publicly operated, but not \
                  trusted by browsers for websites ({}).{test_root}",
@@ -439,6 +479,7 @@ fn classify(roots: &PublicRoots, certs: &[X509], info: &mut RootTrustInfo) {
 
     info.publicly_trusted = false;
     info.purpose_note = None;
+    info.service_hint = service_hint(certs);
     let Some(top) = certs.last() else {
         return;
     };
@@ -467,10 +508,38 @@ fn classify(roots: &PublicRoots, certs: &[X509], info: &mut RootTrustInfo) {
     }
 }
 
+/// A hint for chains issued by a cloud provider's per-instance CA, matched by
+/// issuer name. Only names confirmed on real certificates are listed: Cloud
+/// SQL's per-instance server CA (`O=Google, Inc`, `CN=Google Cloud SQL Server
+/// CA`, plus a per-instance dnQualifier).
+fn service_hint(certs: &[X509]) -> Option<String> {
+    let names = certs
+        .iter()
+        .flat_map(|c| [format_name(c.issuer_name()), format_name(c.subject_name())]);
+    for name in names {
+        if name.contains("CN=Google Cloud SQL Server CA") && name.contains("O=Google, Inc") {
+            return Some(
+                "Google Cloud SQL per-instance server CA: private to the instance by design. Fetch it with \
+                 `gcloud sql instances describe INSTANCE --format='value(serverCaCert.cert)'` and pass it with \
+                 --ca-cert."
+                    .to_string(),
+            );
+        }
+    }
+    None
+}
+
 fn set_anchor(info: &mut RootTrustInfo, anchor: AnchorInfo) {
     info.trust_anchor_subject = Some(anchor.subject);
     info.trust_anchor_sha256 = Some(anchor.sha256);
     info.anchor_present_in_chain = anchor.present_in_chain;
+    info.root_stores = None;
+    info.store_notes = None;
+    if let Some((stores, entries)) = crate::root_stores::stores_of(&anchor.cert) {
+        let (trusted, notes) = crate::root_stores::trusting(&stores, &entries, info.leaf_not_before);
+        info.root_stores = Some(trusted);
+        info.store_notes = (!notes.is_empty()).then_some(notes);
+    }
 }
 
 /// Extended key usages of a certificate, by short name (`serverAuth`, ...).
@@ -1221,5 +1290,121 @@ mod tests {
         assert!(purpose_note(&server, Purpose::ServerAuth).is_none());
         assert!(purpose_note(&server, Purpose::Email).unwrap().contains("email only"));
         assert!(purpose_note(&client, Purpose::IndustryMtls).is_none());
+    }
+
+    // --- other root stores and cloud provider CAs --------------------------
+
+    fn from_bundle(bundle: &str, cn: &str) -> Vec<u8> {
+        X509::stack_from_pem(bundle.as_bytes())
+            .unwrap()
+            .into_iter()
+            .find(|c| format_name(c.subject_name()).contains(cn))
+            .unwrap_or_else(|| panic!("{cn} not in bundle"))
+            .to_der()
+            .unwrap()
+    }
+
+    fn classify_der(der: Vec<u8>) -> RootTrustInfo {
+        assess_root_trust(&roots(), &[der], &offline_opts(), &no_proxy())
+    }
+
+    #[test]
+    fn a_chrome_apple_microsoft_root_is_publicly_trusted_other() {
+        let info = classify_der(from_bundle(
+            crate::trust_programs::OTHER_STORES_BUNDLE,
+            "CN=Buypass Class 2 Root CA",
+        ));
+        assert_eq!(info.classification, RootTrustClass::PubliclyTrustedOther);
+        assert!(!info.publicly_trusted);
+        assert_eq!(info.trust_program, Some("other_root_stores"));
+        let stores = info.root_stores.unwrap();
+        assert!(!stores.contains(&"mozilla".to_string()));
+        assert!(stores.contains(&"microsoft".to_string()));
+    }
+
+    #[test]
+    fn an_email_only_mozilla_root_with_tls_trust_elsewhere_is_other_not_email() {
+        let info = classify_der(from_bundle(
+            crate::trust_programs::OTHER_STORES_BUNDLE,
+            "CN=DigiCert Global Root CA",
+        ));
+        assert_eq!(info.classification, RootTrustClass::PubliclyTrustedOther);
+        assert_eq!(
+            info.root_stores,
+            Some(vec!["apple".to_string(), "microsoft".to_string()])
+        );
+    }
+
+    #[test]
+    fn a_mozilla_root_reports_its_stores() {
+        let info = classify_der(webpki_root_certs::TLS_SERVER_ROOT_CERTS[0].as_ref().to_vec());
+        assert_eq!(info.classification, RootTrustClass::PubliclyTrusted);
+        assert!(info.root_stores.unwrap().contains(&"mozilla".to_string()));
+    }
+
+    #[test]
+    fn an_rds_regional_root_is_a_cloud_service_ca() {
+        let info = classify_der(from_bundle(
+            crate::trust_programs::AWS_RDS_BUNDLE,
+            "CN=Amazon RDS us-east-1 Root CA RSA2048 G1",
+        ));
+        assert_eq!(info.classification, RootTrustClass::CloudServiceCa);
+        assert_eq!(info.trust_program, Some("aws_rds"));
+        assert_eq!(info.purpose, Some(Purpose::CloudService));
+        assert!(info.root_stores.is_none());
+        assert!(info.detail.unwrap().contains("CA bundle"));
+    }
+
+    #[test]
+    fn roots_that_copy_other_store_and_rds_names_are_private() {
+        for model in [
+            from_bundle(crate::trust_programs::OTHER_STORES_BUNDLE, "CN=Buypass Class 2 Root CA"),
+            from_bundle(
+                crate::trust_programs::AWS_RDS_BUNDLE,
+                "CN=Amazon RDS us-east-1 Root CA RSA2048 G1",
+            ),
+        ] {
+            let info = assess_root_trust(
+                &roots(),
+                &impostor_chain(&model, "server"),
+                &offline_opts(),
+                &no_proxy(),
+            );
+            assert_eq!(info.classification, RootTrustClass::PrivatePki);
+            assert!(info.root_stores.is_none());
+        }
+    }
+
+    #[test]
+    fn a_cloud_sql_server_ca_chain_gets_a_service_hint() {
+        use openssl::x509::X509NameBuilder;
+        let mut name = X509NameBuilder::new().unwrap();
+        name.append_entry_by_text("C", "US").unwrap();
+        name.append_entry_by_text("O", "Google, Inc").unwrap();
+        name.append_entry_by_text("CN", "Google Cloud SQL Server CA").unwrap();
+        name.append_entry_by_text("dnQualifier", "68c79386-0000-0000-0000-000000000000")
+            .unwrap();
+        let name = name.build();
+        let mut model = openssl::x509::X509Builder::new().unwrap();
+        model.set_subject_name(&name).unwrap();
+        let key = openssl::pkey::PKey::from_ec_key(
+            openssl::ec::EcKey::generate(
+                &openssl::ec::EcGroup::from_curve_name(openssl::nid::Nid::X9_62_PRIME256V1).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        model.set_pubkey(&key).unwrap();
+        model
+            .set_not_before(&openssl::asn1::Asn1Time::days_from_now(0).unwrap())
+            .unwrap();
+        model
+            .set_not_after(&openssl::asn1::Asn1Time::days_from_now(1).unwrap())
+            .unwrap();
+        model.sign(&key, MessageDigest::sha256()).unwrap();
+        let chain = impostor_chain(&model.build().to_der().unwrap(), "server");
+        let info = assess_root_trust(&roots(), &chain, &offline_opts(), &no_proxy());
+        assert_eq!(info.classification, RootTrustClass::PrivatePki);
+        assert!(info.service_hint.unwrap().contains("gcloud sql instances describe"));
     }
 }

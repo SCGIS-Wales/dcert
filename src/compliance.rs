@@ -364,8 +364,8 @@ impl ChainScope {
             return Self::Unknown;
         };
         match trust.classification {
-            RootTrustClass::PubliclyTrusted => Self::PublicTls,
-            RootTrustClass::PubliclyTrustedEmail | RootTrustClass::IndustryPki => {
+            RootTrustClass::PubliclyTrusted | RootTrustClass::PubliclyTrustedOther => Self::PublicTls,
+            RootTrustClass::PubliclyTrustedEmail | RootTrustClass::IndustryPki | RootTrustClass::CloudServiceCa => {
                 Self::Program(trust.trust_program.unwrap_or("other"))
             }
             RootTrustClass::PrivatePki | RootTrustClass::SelfSigned => Self::Private,
@@ -377,6 +377,7 @@ impl ChainScope {
         match self {
             Self::Program("x9_financial") => Some("the X9 Financial PKI"),
             Self::Program("mozilla_email") => Some("an email (S/MIME) only root"),
+            Self::Program("aws_rds") => Some("the Amazon RDS certificate authority"),
             Self::Program(_) => Some("a trust program outside the browser root programs"),
             _ => None,
         }
@@ -1859,12 +1860,21 @@ mod tests {
             purpose: None,
             preproduction: None,
             purpose_note: None,
+            root_stores: None,
+            store_notes: None,
+            service_hint: None,
             source: "embedded",
+            leaf_not_before: None,
             detail: None,
         };
         assert_eq!(ChainScope::from_trust(Some(&info)), ChainScope::Program("x9_financial"));
         info.classification = RootTrustClass::PubliclyTrusted;
         assert_eq!(ChainScope::from_trust(Some(&info)), ChainScope::PublicTls);
+        info.classification = RootTrustClass::PubliclyTrustedOther;
+        assert_eq!(ChainScope::from_trust(Some(&info)), ChainScope::PublicTls);
+        info.classification = RootTrustClass::CloudServiceCa;
+        info.trust_program = Some("aws_rds");
+        assert_eq!(ChainScope::from_trust(Some(&info)), ChainScope::Program("aws_rds"));
         info.classification = RootTrustClass::Incomplete;
         assert_eq!(ChainScope::from_trust(Some(&info)), ChainScope::Unknown);
         assert_eq!(ChainScope::from_trust(None), ChainScope::Unknown);

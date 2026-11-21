@@ -293,6 +293,8 @@ pub fn print_root_trust_pretty(trust: &RootTrustInfo) {
         RootTrustClass::PubliclyTrusted => "Publicly trusted CA".green().bold(),
         RootTrustClass::PubliclyTrustedEmail => "Publicly trusted for email (S/MIME) only".cyan().bold(),
         RootTrustClass::IndustryPki => "Industry PKI (not trusted by browsers)".cyan().bold(),
+        RootTrustClass::PubliclyTrustedOther => "Publicly trusted, but not by Mozilla".yellow().bold(),
+        RootTrustClass::CloudServiceCa => "Cloud provider service CA".cyan().bold(),
         RootTrustClass::PrivatePki => "Private PKI".yellow().bold(),
         RootTrustClass::SelfSigned => "Self-signed".red().bold(),
         RootTrustClass::Incomplete => "Incomplete chain".yellow().bold(),
@@ -315,6 +317,22 @@ pub fn print_root_trust_pretty(trust: &RootTrustInfo) {
     if let Some(program) = trust.trust_program {
         let operator = trust.operator.map(|o| format!(" ({o})")).unwrap_or_default();
         println!("  Trust program  : {program}{}", operator.dimmed());
+    }
+    if let Some(ref stores) = trust.root_stores {
+        println!(
+            "  Root stores    : {}",
+            if stores.is_empty() {
+                "none for this certificate".to_string()
+            } else {
+                stores.join(", ")
+            }
+        );
+    }
+    if let Some(ref hint) = trust.service_hint {
+        println!("  {} {hint}", "Service:".cyan().bold());
+    }
+    for note in trust.store_notes.iter().flatten() {
+        println!("  {} {note}", "Store limit:".yellow().bold());
     }
     if trust.preproduction == Some(true) {
         println!("  Preproduction  : {}", "yes (test root)".yellow());

@@ -22,6 +22,8 @@ pub enum Purpose {
     Email,
     /// Mutual TLS between members of an industry PKI.
     IndustryMtls,
+    /// A cloud provider's CA for its own managed service endpoints.
+    CloudService,
 }
 
 /// One embedded certificate of a trust program.
@@ -138,8 +140,26 @@ pub const X9_ANCHORS: &[Anchor] = &[
 /// Roots Mozilla trusts for email and not for websites (generated).
 pub const MOZILLA_EMAIL_BUNDLE: &str = include_str!("trust_anchors/mozilla_email.pem");
 
+/// Roots of the Chrome, Apple or Microsoft TLS stores that Mozilla does not
+/// include (generated from CCADB, see `src/trust_anchors/NOTICE`).
+pub const OTHER_STORES_BUNDLE: &str = include_str!("trust_anchors/root_stores.pem");
+
+/// The Amazon RDS (Aurora, DocumentDB, Neptune) regional database CA roots.
+pub const AWS_RDS_BUNDLE: &str = include_str!("trust_anchors/aws_rds.pem");
+
 /// The programs tried, in order, after the Mozilla website set.
 pub const PROGRAMS: &[Program] = &[
+    // Before the email set: a root Mozilla trusts for email only may still be
+    // a TLS root of another store (DigiCert Global Root CA, GTS Root R2).
+    Program {
+        id: "other_root_stores",
+        name: "Chrome, Apple or Microsoft TLS root store",
+        operator: "Chrome, Apple or Microsoft root program (CCADB)",
+        purpose: Purpose::ServerAuth,
+        browser_trusted: true,
+        anchors: &[],
+        bundle: Some(OTHER_STORES_BUNDLE),
+    },
     Program {
         id: "mozilla_email",
         name: "Mozilla email (S/MIME) root store",
@@ -157,6 +177,15 @@ pub const PROGRAMS: &[Program] = &[
         browser_trusted: false,
         anchors: X9_ANCHORS,
         bundle: None,
+    },
+    Program {
+        id: "aws_rds",
+        name: "Amazon RDS certificate authority",
+        operator: "Amazon Web Services (RDS, Aurora, DocumentDB, Neptune)",
+        purpose: Purpose::CloudService,
+        browser_trusted: false,
+        anchors: &[],
+        bundle: Some(AWS_RDS_BUNDLE),
     },
 ];
 
@@ -240,8 +269,12 @@ mod tests {
     }
 
     #[test]
-    fn programs_are_not_browser_trusted() {
-        assert!(PROGRAMS.iter().all(|p| !p.browser_trusted));
+    fn only_the_other_root_stores_are_browser_trusted() {
+        assert!(
+            PROGRAMS
+                .iter()
+                .all(|p| p.browser_trusted == (p.id == "other_root_stores"))
+        );
         assert!(PROGRAMS.iter().all(|p| !certificates(p).is_empty()));
     }
 }

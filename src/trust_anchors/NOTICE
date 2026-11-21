@@ -1,0 +1,17 @@
+Data in this directory and where it comes from
+
+root_stores.json, root_stores.pem
+  Derived from the Common CA Database (CCADB) TLS server authentication
+  reports for Mozilla, Chrome, Apple and Microsoft. Attribution: Common CA
+  Database (CCADB), https://www.ccadb.org/. Licensed under the Community Data
+  License Agreement - Permissive, Version 2.0 (https://cdla.dev/permissive-2-0/).
+  The CCADB does not endorse dcert.
+
+mozilla_email.pem
+  Derived from NSS certdata.txt (Mozilla), see scripts/trust_anchors.yaml.
+
+x9/
+  X9 Financial PKI certificates as published by DigiCert.
+
+aws_rds.pem
+  Amazon RDS certificate bundle as published by Amazon Web Services.

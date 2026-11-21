@@ -467,9 +467,10 @@ entries:
       The chain anchors on a first generation DigiCert root (DigiCert Global
       Root CA, DigiCert High Assurance EV Root CA or DigiCert Assured ID
       Root CA). Chrome and Mozilla removed these G1 roots on 2026-04-15 as
-      part of the root programs' lifecycle limits for websites, so the chain
-      is reported as trusted for email only (Mozilla still trusts these
-      roots for S/MIME), or as incomplete. DigiCert moved default issuance to its G2 hierarchies
+      part of the root programs' lifecycle limits for websites. Apple and
+      Microsoft still trust them for TLS, so the chain is reported as
+      publicly trusted but not by Mozilla (root_stores names the stores), or
+      as incomplete; Firefox, curl and most Linux clients reject it. DigiCert moved default issuance to its G2 hierarchies
       in 2023 and to the G5 roots (DigiCert TLS RSA4096 Root G5 and DigiCert
       TLS ECC P384 Root G5) from 2026-10-15; certificates still chaining to
       G1 come from a legacy or pinned chain.
@@ -513,6 +514,61 @@ entries:
     references:
       - https://knowledge.digicert.com/general-information/community-root-authority-certificates
       - https://docs.digicert.com/en/trust-lifecycle-manager/enroll-and-manage-certificates/enrollment-how-to-guides/issue-x9-certificates-via-certcentral.html
+
+  - id: tls.handshake.root-not-in-mozilla
+    title: Chain trusted by Chrome, Apple or Microsoft but not by Mozilla
+    layer: tls_handshake
+    category: tls
+    weight: 0.8
+    signals:
+      - type: root_class
+        is: publicly_trusted_other
+        required: true
+        weight: 2
+      - type: verify_result
+        pattern: '(?i)unable to get (local )?issuer|self.signed|unable to verify|certificate verify failed|untrusted'
+      - type: error
+        pattern: '(?i)unable to get (local )?issuer|self.signed|certificate verify failed|unknown ca'
+    root_cause: >
+      The chain anchors on a root that one or more of the Chrome, Apple and
+      Microsoft TLS root stores include but Mozilla's does not (root_trust
+      root_stores lists which). Windows or macOS clients may accept it while
+      Firefox, curl, OpenSSL based tools and most Linux distributions, which
+      use Mozilla's roots, reject it. Typical causes are a root Mozilla
+      removed or never accepted (for example DigiCert Global Root CA, Buypass)
+      or a national or government CA that only Microsoft includes.
+    remediation:
+      - Reissue the certificate from a hierarchy all four root stores include, and serve the chain the CA supplies with it.
+      - Until then, give non-Windows clients the root explicitly (SSL_CERT_FILE or --ca-cert) if the root is acceptable to you.
+    references:
+      - https://www.ccadb.org/resources
+      - https://wiki.mozilla.org/CA/Included_Certificates
+
+  - id: tls.handshake.aws-rds-ca
+    title: Amazon RDS, Aurora, DocumentDB or Neptune endpoint
+    layer: tls_handshake
+    category: tls
+    weight: 0.85
+    signals:
+      - type: root_class
+        is: cloud_service_ca
+        required: true
+        weight: 2
+      - type: chain_name
+        pattern: '(?i)OU=Amazon RDS'
+      - type: verify_result
+        pattern: '(?i)unable to get (local )?issuer|self.signed|unable to verify|certificate verify failed|untrusted'
+    root_cause: >
+      The server certificate was issued by the Amazon RDS certificate
+      authority (one root per region and key type, such as Amazon RDS
+      us-east-1 Root CA RSA2048 G1). It is in no browser or operating system
+      root store, so clients verify it only with the bundle AWS publishes.
+    remediation:
+      - Download https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem (or the regional bundle) and configure it as the database client's CA file; for dcert pass it with --ca-cert.
+      - Use sslmode=verify-full (PostgreSQL) or the equivalent so the hostname is checked as well as the chain.
+    references:
+      - https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/UsingWithRDS.SSL.html
+      - https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/UsingWithRDS.SSL-certificate-rotation.html
 
   - id: tls.handshake.email-only-root
     title: Server certificate chains to a root trusted for email only

@@ -10,6 +10,16 @@ nothing (documentation, plans) do not cut a release and wait under
 
 ## Unreleased
 
+### Changed
+
+- Root trust classification also knows the Chrome, Apple and Microsoft TLS root stores
+  (CCADB) and the Amazon RDS CAs: a chain to a root those stores trust but Mozilla
+  does not is `publicly_trusted_other` (for example DigiCert Global Root CA, GTS Root R2,
+  Buypass), an RDS, Aurora, DocumentDB or Neptune endpoint is `cloud_service_ca`, and a
+  Google Cloud SQL per-instance CA gets a `service_hint`. `root_trust.root_stores` lists
+  the stores that trust each anchor, honouring Mozilla's and Chrome's distrust-after
+  dates (`store_notes`).
+
 ## 4.0.12 (2026-11-21)
 
 ### Changed
