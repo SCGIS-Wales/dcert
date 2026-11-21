@@ -275,6 +275,13 @@ summary is written.
 
 ### Fixed
 
+- Documentation: `dcert diagnose` uses `--client-key` (the README showed `--key`,
+  which exits with an argument error); the Docker CLI examples pass
+  `--entrypoint dcert`; Homebrew is `brew install scgis-wales/tap/dcert` and installs
+  prebuilt binaries; the Linux requirement is glibc 2.34 (RHEL 9, Ubuntu 22.04,
+  Debian 12) everywhere; the dcert PyPI page builds from source with
+  `cargo install --git`; release notes print lower case Docker image names, which
+  Docker requires, and list the pip and uv install commands.
 - `dcert policy test` could never be `conformant` on OpenSSL 3.2 and later.
   Excluded suites are now offered at security level 0, so
   `TLS_AES_128_CCM_8_SHA256` (64 bit security to these releases) is tested
