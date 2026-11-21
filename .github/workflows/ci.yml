@@ -362,7 +362,7 @@ jobs:
         run: ruff format --check ../../scripts
 
       - name: Mypy (build scripts)
-        run: mypy --strict ../../scripts/build_wheels.py ../../scripts/sync_defaults.py ../../scripts/gen_cipher_table.py ../../scripts/fetch_aws_tls_policies.py ../../scripts/check_cli_deps.py ../../scripts/check_openssl_floor.py ../../scripts/check_exceptions.py ../../scripts/ci/openssl_pin.py ../../scripts/ci/extras_requirements.py ../../scripts/ci/openssl_upstream.py ../../scripts/ci/release_paths.py ../../scripts/check_docs_commands.py ../../scripts/ci/release_check.py
+        run: mypy --strict ../../scripts/build_wheels.py ../../scripts/sync_defaults.py ../../scripts/gen_cipher_table.py ../../scripts/fetch_aws_tls_policies.py ../../scripts/check_cli_deps.py ../../scripts/check_openssl_floor.py ../../scripts/check_exceptions.py ../../scripts/ci/openssl_pin.py ../../scripts/ci/extras_requirements.py ../../scripts/ci/openssl_upstream.py ../../scripts/ci/release_paths.py ../../scripts/check_docs_commands.py ../../scripts/ci/release_check.py ../../scripts/gen_typed_tools.py
 
       - name: Defaults in step with src/limits.rs
         run: python ../../scripts/sync_defaults.py --check
@@ -482,6 +482,9 @@ jobs:
 
       - name: Check the dcert-mcp environment table against config.yaml
         run: python scripts/check_docs_commands.py env-table
+
+      - name: Generated typed wrappers match the server's tools
+        run: python scripts/gen_typed_tools.py --binary docs-bin/dcert-mcp --check
 
   # Links in the Markdown documents, including anchors inside the README.
   # Hosts that refuse automated requests are excluded in .lycheeignore.

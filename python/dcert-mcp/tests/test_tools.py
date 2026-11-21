@@ -853,3 +853,84 @@ def test_default_session_is_rebuilt_for_a_new_event_loop(monkeypatch, caplog):
 async def test_tls_policy_test_needs_exactly_one_of_policy_or_identify(kwargs):
     with pytest.raises(ValueError, match="exactly one"):
         await tls_policy_test(target="e", **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Generated wrappers (scripts/gen_typed_tools.py)
+# ---------------------------------------------------------------------------
+
+
+def test_generated_wrappers_are_exported_and_disjoint_from_the_hand_written_ones():
+    import dcert_mcp
+    from dcert_mcp import generated_tools
+
+    generated = {f.__name__ for f in generated_tools.GENERATED_TOOL_FUNCTIONS}
+    handwritten = {f.__name__ for f in TOOL_FUNCTIONS}
+    assert len(generated) == 13
+    assert not generated & handwritten
+    for name in generated:
+        assert name in dcert_mcp.__all__
+        assert getattr(dcert_mcp, name) is getattr(generated_tools, name)
+    assert all(inspect.iscoroutinefunction(f) for f in generated_tools.GENERATED_TOOL_FUNCTIONS)
+
+
+async def test_generated_wrapper_sends_only_non_default_arguments(open_session):
+    from dcert_mcp import create_csr, diagnose_endpoint, vault_list
+
+    call = AsyncMock(return_value=OK)
+    async with open_session(call) as (session, _clients):
+        await create_csr(
+            session=session,
+            common_name="api.example.com",
+            csr_output_path="a.csr",
+            key_output_path="a.key",
+            key_algorithm="ecdsa-p256",
+            subject_alternative_names=["DNS:api.example.com"],
+        )
+        await diagnose_endpoint(
+            session=session, target="e", timeout_=5, connect_to=["a:443:b:8443"]
+        )
+        await vault_list(session=session)
+    assert call.await_args_list[0].args[1] == {
+        "common_name": "api.example.com",
+        "csr_output_path": "a.csr",
+        "key_output_path": "a.key",
+        "key_algorithm": "ecdsa-p256",
+        "subject_alternative_names": ["DNS:api.example.com"],
+    }
+    assert call.await_args_list[1].args[1] == {
+        "target": "e",
+        "timeout": 5,
+        "connect_to": ["a:443:b:8443"],
+    }
+    assert call.await_args_list[2].args[1] == {}
+
+
+async def test_generated_wrapper_requires_its_required_arguments(open_session):
+    from dcert_mcp import validate_csr
+
+    async with open_session(AsyncMock(return_value=OK)) as (session, _clients):
+        with pytest.raises(ValueError, match="requires 'csr_file'"):
+            await validate_csr(session=session, csr_file=None)  # type: ignore[arg-type]
+
+
+def _required_arguments(function):
+    """Placeholder values for every required keyword of a generated wrapper."""
+    values = {"str": "x", "int": 1, "bool": True, "float": 1.0}
+    arguments = {}
+    for name, parameter in inspect.signature(function).parameters.items():
+        if parameter.default is inspect.Parameter.empty:
+            arguments[name] = values.get(str(parameter.annotation).split(" ")[0], "x")
+    return arguments
+
+
+async def test_every_generated_wrapper_calls_its_own_tool(open_session):
+    from dcert_mcp import generated_tools
+
+    call = AsyncMock(return_value=OK)
+    async with open_session(call) as (session, _clients):
+        for function in generated_tools.GENERATED_TOOL_FUNCTIONS:
+            await function(session=session, **_required_arguments(function))
+    assert [c.args[0] for c in call.await_args_list] == [
+        f.__name__ for f in generated_tools.GENERATED_TOOL_FUNCTIONS
+    ]
