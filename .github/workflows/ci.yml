@@ -1282,6 +1282,9 @@ jobs:
             type=raw,value=${{ needs.auto-tag.outputs.version }},enable=${{ needs.auto-tag.outputs.created == 'true' }}
             type=raw,value=latest,enable=${{ needs.auto-tag.outputs.created == 'true' }}
             type=ref,event=branch
+          labels: |
+            org.opencontainers.image.title=dcert
+            org.opencontainers.image.description=The dcert command line tool and the dcert-mcp MCP server (the default entrypoint; run the CLI with --entrypoint dcert).
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -1360,7 +1363,7 @@ jobs:
           # Create Homebrew formula with proper structure for tap
           cat > dcert.rb << 'EOF'
           class Dcert < Formula
-            desc "TLS certificate decoder, validator, and MCP server"
+            desc "Decode, validate and convert X.509 certificates and diagnose TLS endpoints"
             homepage "https://github.com/SCGIS-Wales/dcert"
             version "VERSION_PLACEHOLDER"
             license "MIT"
