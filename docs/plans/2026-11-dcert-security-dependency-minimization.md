@@ -467,8 +467,8 @@ One pull request per checkbox. Branch name `plan/S<phase>-<n>-<slug>`. Each pull
 
 ### Phase S7: final verification
 
-- [ ] **S7.1 After snapshot and published comparison.** Repeat S0.1 into `docs/security/after/`, add a before and after table to `SECURITY.md`, and confirm every objective in section 2.
-  - Session notes: Partly done. After snapshot in `docs/security/after/` and the before and after table in `SECURITY.md` are in. Not ticked: objectives O1, O2 (zero dependency `dcert` wheel) and O9 for wheels depend on the PyPI split, which is not started. S4b and S5.1/S5.2 are open for the same reason.
+- [x] **S7.1 After snapshot and published comparison.** Repeat S0.1 into `docs/security/after/`, add a before and after table to `SECURITY.md`, and confirm every objective in section 2.
+  - Session notes (2026-11-21): Done, verified on release 4.0.5, the first with both PyPI projects published. `dcert` 4.0.5 has no `Requires-Dist` on any of its four wheels; `dcert-mcp` 4.0.5 requires only `dcert==4.0.5` outside its extras. `cargo audit bin` passes on all eight shipped binaries (the CLI binaries embed 145 to 153 crates and none of `rmcp`, `reqwest`, `hyper`, `tokio`, `rustls` or `aws-lc`); both SBOMs are attached and their attestations verify; Trivy, zizmor and the OpenSSL floor jobs pass; the scheduled audit ran green on 2026-11-20 and 2026-11-21. Earlier note: partly done. After snapshot in `docs/security/after/` and the before and after table in `SECURITY.md` are in. Not ticked: objectives O1, O2 (zero dependency `dcert` wheel) and O9 for wheels depend on the PyPI split, which is not started. S4b and S5.1/S5.2 are open for the same reason.
 
 ## 7. Sequencing with the packaging split
 
@@ -501,16 +501,16 @@ Stop and ask Dejan before: S5.2 (proxy extra); S4.1 if only an exception is poss
 
 ## 10. Definition of done for security
 
-- [ ] `cargo audit` and `cargo deny check` pass with empty ignore lists.
-- [ ] `cargo audit bin` passes for all eight shipped binaries, and the CLI binaries contain no banned crate.
-- [ ] `dcert` wheel metadata has no `Requires-Dist` line on all four platforms.
-- [ ] `uv audit --locked` and the `lowest-direct` audit pass for `dcert-mcp`.
-- [ ] Every artefact reports an OpenSSL version at or above the recorded floor, or a dated exception exists.
-- [ ] Trivy passes on the image; the report only scan is attached to the run.
-- [ ] zizmor passes on every workflow.
-- [ ] The scheduled audit has run green at least once.
-- [ ] Two binary SBOMs are attached to the release and attested.
-- [ ] `SECURITY.md` shows the before and after table and explains the per binary evidence.
+- [x] `cargo audit` and `cargo deny check` pass with empty ignore lists.
+- [x] `cargo audit bin` passes for all eight shipped binaries, and the CLI binaries contain no banned crate.
+- [x] `dcert` wheel metadata has no `Requires-Dist` line on all four platforms.
+- [x] The `lowest-direct` and latest audits pass for `dcert-mcp` (in CI and daily). There is no `uv.lock` after the split: `dcert==<version>` cannot resolve before the release publishes it, so the locked audit was replaced by these two (see S5.3).
+- [x] Every artefact reports an OpenSSL version at or above the recorded floor, or a dated exception exists.
+- [x] Trivy passes on the image; the report only scan is attached to the run.
+- [x] zizmor passes on every workflow.
+- [x] The scheduled audit has run green at least once.
+- [x] Two binary SBOMs are attached to the release and attested.
+- [x] `SECURITY.md` shows the before and after table and explains the per binary evidence.
 
 ## 11. Sources
 
