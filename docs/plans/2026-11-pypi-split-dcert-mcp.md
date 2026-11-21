@@ -53,8 +53,15 @@ the user types `dcert`. A user of the MCP server must not need the proxy.
    tag is created on the cut-over commit's parent and the first split release is
    4.0.1.
 6. **Publishing.** `dcert` first, then `dcert-mcp` (it depends on `dcert`),
-   each with trusted publishing and attestations from the existing `pypi`
-   environment. `dcert-mcp` is a new PyPI project name.
+   each with trusted publishing and attestations. `dcert-mcp` is a new PyPI
+   project name. *Corrected 2026-11-21:* one shared `pypi` environment did not
+   work, because PyPI refused the `dcert` upload with "OIDC scoped token is not
+   valid for project dcert"; since PR #141 `dcert` publishes from the
+   `pypi-dcert` environment and `dcert-mcp` from `pypi`.
+   **Decision: one workflow, not `ci-mcp.yml`.** Reason: `dcert-mcp` pins
+   `dcert==<v>`, so both must come from the same run in a fixed order, and PyPI
+   matches the top level workflow file, so a second file needs its own
+   publishers and cannot be called as a reusable workflow.
 
 ## Phases
 
