@@ -10,6 +10,14 @@ nothing (documentation, plans) do not cut a release and wait under
 
 ## Unreleased
 
+### Added
+
+- Embedded trust anchors for root trust classification beyond Mozilla's website set
+  (`src/trust_anchors/`, sources in `scripts/trust_anchors.yaml`): the 52 roots Mozilla
+  trusts for email only, among them Sectigo Public Email Protection Root R46 and E46
+  and the DigiCert S/MIME roots (from NSS 3.134), and the X9 Financial PKI roots and
+  intermediates (DigiCert), each checked against the published SHA-256.
+
 ### Fixed
 
 - `verify-pypi` waits until PyPI's simple index (what pip and uv read) lists every wheel,

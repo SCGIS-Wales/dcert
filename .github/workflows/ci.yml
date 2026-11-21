@@ -360,7 +360,7 @@ jobs:
         run: ruff format --check ../../scripts
 
       - name: Mypy (build scripts)
-        run: mypy --strict ../../scripts/build_wheels.py ../../scripts/sync_defaults.py ../../scripts/gen_cipher_table.py ../../scripts/fetch_aws_tls_policies.py ../../scripts/check_cli_deps.py ../../scripts/check_openssl_floor.py ../../scripts/check_exceptions.py ../../scripts/ci/openssl_pin.py ../../scripts/ci/extras_requirements.py ../../scripts/ci/openssl_upstream.py ../../scripts/ci/release_paths.py ../../scripts/check_docs_commands.py ../../scripts/ci/release_check.py ../../scripts/gen_typed_tools.py ../../scripts/ci/pin_extras.py
+        run: mypy --strict ../../scripts/build_wheels.py ../../scripts/sync_defaults.py ../../scripts/gen_cipher_table.py ../../scripts/fetch_aws_tls_policies.py ../../scripts/check_cli_deps.py ../../scripts/check_openssl_floor.py ../../scripts/check_exceptions.py ../../scripts/ci/openssl_pin.py ../../scripts/ci/extras_requirements.py ../../scripts/ci/openssl_upstream.py ../../scripts/ci/release_paths.py ../../scripts/check_docs_commands.py ../../scripts/ci/release_check.py ../../scripts/gen_typed_tools.py ../../scripts/ci/pin_extras.py ../../scripts/gen_trust_anchors.py
 
       - name: Defaults in step with src/limits.rs
         run: python ../../scripts/sync_defaults.py --check
@@ -451,6 +451,13 @@ jobs:
           scripts/test_check_cli_deps.py scripts/test_check_openssl_floor.py scripts/test_check_exceptions.py scripts/test_openssl_pin.py
           scripts/test_dcert_wheel.py scripts/test_dcert_mcp_wheel.py scripts/test_extras_requirements.py scripts/test_openssl_upstream.py
           scripts/test_release_paths.py scripts/test_check_docs_commands.py scripts/test_release_check.py
+          scripts/test_gen_trust_anchors.py
+
+      # The embedded trust anchors (src/trust_anchors/) match their sources:
+      # the Mozilla email set regenerates from the pinned NSS certdata.txt
+      # and every X9 file has the fingerprint DigiCert publishes.
+      - name: Embedded trust anchors match their sources
+        run: python scripts/gen_trust_anchors.py --check
 
   # The documentation must match the binaries: every documented subcommand
   # and flag exists, every flag is documented, and the README tool table

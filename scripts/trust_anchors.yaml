@@ -1,0 +1,77 @@
+# Sources of the trust anchors embedded in src/trust_anchors/ for root trust
+# classification (src/trust_programs.rs). Recognising a root here never makes
+# dcert trust it for a TLS connection; it only names the trust program a chain
+# belongs to. scripts/gen_trust_anchors.py writes the Mozilla email set and,
+# with --check, verifies every embedded file against this list.
+
+mozilla_email:
+  # Roots Mozilla trusts for email (S/MIME) and not for websites, from NSS's
+  # certdata.txt at a release tag. Roots trusted for websites are in
+  # webpki-root-certs already. Roots with an email distrust date are left out.
+  nss_tag: NSS_3_134_RTM
+  url: https://raw.githubusercontent.com/nss-dev/nss/{tag}/lib/ckfw/builtins/certdata.txt
+  sha256: 6d177e33ab54b338edfee24dc3868585833636716a320a725137ab4a15927292
+  output: src/trust_anchors/mozilla_email.pem
+
+# The X9 Financial PKI, operated by DigiCert under the ASC X9 certificate
+# policy. Fingerprints as published in DigiCert's knowledge base (INFO163,
+# https://knowledge.digicert.com/general-information/community-root-authority-certificates),
+# retrieved 2026-11-21 and matched by the downloaded files.
+x9_financial:
+  retrieved: "2026-11-21"
+  anchors:
+    - file: src/trust_anchors/x9/X9FinancialPKIECCP256Root.pem
+      url: https://cacerts.digicert.com/X9FinancialPKIECCP256Root.crt.pem
+      sha256: D9DE4153E4336D7E481E3152575721BD0D36A7ABAF4DB861473BB76451E50936
+      kind: root
+      stage: production
+    - file: src/trust_anchors/x9/X9FinancialPKIRSA2048Root.pem
+      url: https://cacerts.digicert.com/X9FinancialPKIRSA2048Root.crt.pem
+      sha256: 49B62A0249E48FEE51682DE5C152E4BE03C774532B79A5D81F2F408DA5850263
+      kind: root
+      stage: production
+    - file: src/trust_anchors/x9/X9FinancialPKIRSA4096Root.pem
+      url: https://cacerts.digicert.com/X9FinancialPKIRSA4096Root.crt.pem
+      sha256: A4C1515606CD7E010F5158CC88CF8B03C35CD4D8080D283F56CCEABD924CDAB5
+      kind: root
+      stage: production
+    - file: src/trust_anchors/x9/X9FinancialPKI-RSA4096ICA-1.pem
+      url: https://cacerts.digicert.com/X9FinancialPKI-RSA4096ICA-1.crt.pem
+      sha256: 674D91CB7B97A3C19F9B3ABC832710B17C21E7416FAD74CB3F715DDBAF050DC5
+      kind: intermediate
+      stage: production
+    - file: src/trust_anchors/x9/X9FinancialPKI-RSA4096ICAEU-1.pem
+      url: http://cacerts.digicert.eu/X9FinancialPKI-RSA4096ICAEU-1.crt.pem
+      sha256: B2850B71353A785539D84578B3935DD4267AB07C1E68D769B66669D05374DBBB
+      kind: intermediate
+      stage: production
+    - file: src/trust_anchors/x9/X9FinancialPKIECCP256RootUAT.pem
+      url: https://cacerts.digicert.com/X9FinancialPKIECCP256RootUAT.crt.pem
+      sha256: 37E76B622A446680D175533A1A4920330DD7F608001E568EEA824D8818C0D299
+      kind: root
+      stage: preproduction
+    - file: src/trust_anchors/x9/X9FinancialPKIRSA2048RootUAT.pem
+      url: https://cacerts.digicert.com/X9FinancialPKIRSA2048RootUAT.crt.pem
+      sha256: 061B0149E4CC58B87FA85211B8EB472FB599CB0E05A39F3818B396C98C33A0F8
+      kind: root
+      stage: preproduction
+    - file: src/trust_anchors/x9/X9FinancialPKIRSA4096RootUAT.pem
+      url: https://cacerts.digicert.com/X9FinancialPKIRSA4096RootUAT.crt.pem
+      sha256: 3FEA4F45787FE5AE4A2ED4E8E3D63B69D7F91BCF90B13447168F36DF800AC83E
+      kind: root
+      stage: preproduction
+    - file: src/trust_anchors/x9/X9FinancialPKI-MLDSA-87Root-UAT.pem
+      url: https://cacerts.digicert.com/X9FinancialPKI-MLDSA-87Root-UAT.crt.pem
+      sha256: 78937B264BC9257E1229EB32B77C088E1244AF9D161B40EAA468FC85F2AE3D60
+      kind: root
+      stage: preproduction
+    - file: src/trust_anchors/x9/X9FinancialPKI-MLDSA-65Root-UAT.pem
+      url: https://cacerts.digicert.com/X9FinancialPKI-MLDSA-65Root-UAT.crt.pem
+      sha256: E16FFEEF4BB2BD65AE0622E5AF20B00B8E68008A8B2CC5802A3EA47E77A58903
+      kind: root
+      stage: preproduction
+    - file: src/trust_anchors/x9/X9FinancialPKI-MLDSA-44Root-UAT.pem
+      url: https://cacerts.digicert.com/X9FinancialPKI-MLDSA-44Root-UAT.crt.pem
+      sha256: 393A1C2F6441DBF4D465465F655BC8B97DC8733313E7D4BA018F3B1501717556
+      kind: root
+      stage: preproduction
