@@ -138,22 +138,43 @@ Nothing is downloaded at run time.
 
 ## Environment variables forwarded to the binary
 
-| Category | Variables |
-|----------|-----------|
-| Proxy | `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` (and lowercase variants) |
-| TLS | `SSL_CERT_FILE`, `SSL_CERT_DIR`, `REQUESTS_CA_BUNDLE` |
-| dcert | `DCERT_PATH`, `DCERT_MCP_TIMEOUT`, `DCERT_MCP_CONNECTION_TIMEOUT`, `DCERT_MCP_READ_TIMEOUT` |
+The proxy starts `dcert-mcp` with only these variables from its own environment (`subprocess.passthrough_env` in `config.yaml`); everything else is dropped. An entry ending in `*` forwards every variable with that prefix.
+
+<!-- env-table: generated from src/dcert_mcp/config.yaml; CI checks it -->
+| Group | Variables |
+|-------|-----------|
+| Process | `HOME`, `USER`, `PATH`, `TMPDIR`, `XDG_CACHE_HOME` |
+| Loader | `LD_LIBRARY_PATH`, `DYLD_LIBRARY_PATH`, `DYLD_FALLBACK_LIBRARY_PATH` |
+| Proxy | `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `ALL_PROXY`, `http_proxy`, `https_proxy`, `no_proxy`, `all_proxy` |
+| Trust | `SSL_CERT_FILE`, `SSL_CERT_DIR`, `REQUESTS_CA_BUNDLE` |
+| dcert | `DCERT_PATH`, `DCERT_PROXY`, `DCERT_NOPROXY`, `DCERT_KB_FILE`, `DCERT_MCP_*` |
+| Vault | `VAULT_ADDR`, `VAULT_TOKEN`, `VAULT_CACERT`, `VAULT_CAPATH`, `VAULT_SKIP_VERIFY` |
+<!-- /env-table -->
+
+`DCERT_MCP_*` covers the server's own settings, for example `DCERT_MCP_TIMEOUT`, `DCERT_MCP_CONNECTION_TIMEOUT`, `DCERT_MCP_READ_TIMEOUT` and `DCERT_MCP_ALLOWED_TARGETS`.
 
 ## Development
 
+The package has no build backend of its own: CI builds the wheels with `scripts/build_wheels.py`, so `pip install -e` does not apply. Tests run from the source tree (`pythonpath = ["src"]` in the pytest configuration) with the extras' requirements installed:
+
 ```bash
+# From the repository root, build the server the integration tests start
+cargo build --release --bin dcert-mcp --features mcp
+export DCERT_MCP_BINARY="$PWD/target/release/dcert-mcp"
+
 cd python/dcert-mcp
-pip install -e ".[proxy,otel,dev]" --no-deps  # then install the extras' requirements
+# The requirements of the proxy, otel and dev extras, exactly as CI installs them
+python ../../scripts/ci/extras_requirements.py proxy otel dev > extras.txt
+pip install -r extras.txt          # or: uv venv && uv pip install -r extras.txt
+
+# The same checks as CI
 ruff check src tests ../../scripts
 ruff format --check src tests ../../scripts
 mypy
-pytest
+pytest -q
 ```
+
+Without `DCERT_MCP_BINARY` (or a compiled `dcert-mcp` on `PATH`) the integration tests are skipped.
 
 ## License
 
