@@ -347,7 +347,7 @@ jobs:
         run: ruff format --check ../../scripts
 
       - name: Mypy (build scripts)
-        run: mypy --strict ../../scripts/build_wheels.py ../../scripts/sync_defaults.py ../../scripts/gen_cipher_table.py ../../scripts/fetch_aws_tls_policies.py ../../scripts/check_cli_deps.py ../../scripts/check_openssl_floor.py ../../scripts/check_exceptions.py ../../scripts/ci/openssl_pin.py ../../scripts/ci/extras_requirements.py ../../scripts/ci/openssl_upstream.py ../../scripts/ci/release_paths.py
+        run: mypy --strict ../../scripts/build_wheels.py ../../scripts/sync_defaults.py ../../scripts/gen_cipher_table.py ../../scripts/fetch_aws_tls_policies.py ../../scripts/check_cli_deps.py ../../scripts/check_openssl_floor.py ../../scripts/check_exceptions.py ../../scripts/ci/openssl_pin.py ../../scripts/ci/extras_requirements.py ../../scripts/ci/openssl_upstream.py ../../scripts/ci/release_paths.py ../../scripts/check_docs_commands.py
 
       - name: Defaults in step with src/limits.rs
         run: python ../../scripts/sync_defaults.py --check
@@ -431,7 +431,39 @@ jobs:
           scripts/test_gen_cipher_table.py scripts/test_fetch_aws_tls_policies.py
           scripts/test_check_cli_deps.py scripts/test_check_openssl_floor.py scripts/test_check_exceptions.py scripts/test_openssl_pin.py
           scripts/test_dcert_wheel.py scripts/test_dcert_mcp_wheel.py scripts/test_extras_requirements.py scripts/test_openssl_upstream.py
-          scripts/test_release_paths.py
+          scripts/test_release_paths.py scripts/test_check_docs_commands.py
+
+  # The documentation must match the binaries: every documented subcommand
+  # and flag exists, every flag is documented, and the README tool table
+  # equals the server's tools/list (scripts/check_docs_commands.py).
+  docs-commands:
+    name: Documentation matches the binaries
+    needs: [ build-linux ]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Download Linux x86_64 artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dcert-x86_64-unknown-linux-gnu
+          path: ./docs-bin
+
+      - name: Check documented commands, flags and tools
+        run: |
+          tar xzf docs-bin/dcert-x86_64-unknown-linux-gnu.tar.gz -C docs-bin
+          chmod +x docs-bin/dcert docs-bin/dcert-mcp
+          pip install --quiet pyyaml click
+          python scripts/check_docs_commands.py commands --bin-dir docs-bin
 
   # src/ciphers_table.rs is generated from the vendored IANA registry. The
   # table must regenerate byte for byte; a newer registry on iana.org is

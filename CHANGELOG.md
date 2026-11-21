@@ -386,6 +386,11 @@ summary is written.
   releases with that push; `[skip release]` defers a release rather than dropping it.
 - `auto-tag` no longer fails when main moves on during its run: the version bump push is
   rejected, nothing is tagged, and the run of the newer commit releases both changes.
+- New job `docs-commands`: `scripts/check_docs_commands.py` walks `--help` of the
+  built `dcert` and `dcert-mcp` and fails on a documented subcommand or flag that does
+  not exist (the `--key` regression), on a flag no document mentions, and on an MCP
+  tool table that differs from the server's `tools/list`. Covers the READMEs,
+  SECURITY.md and the release notes template.
 - Only the platform wheels, each bundling `dcert` and `dcert-mcp`, are
   published to PyPI and attached to GitHub releases. The universal wheel and
   the sdist carried no binary and downloaded it from GitHub on first use,

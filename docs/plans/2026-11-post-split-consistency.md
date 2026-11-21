@@ -162,10 +162,15 @@ environments; a release where any channel fails; any CI failure not explained by
 
 ## Phase C: documentation gates in CI
 
-- [ ] **C.1 ci: `scripts/check_docs_commands.py`** (F28). Walks `--help` of dcert and dcert-mcp; checks
+- [x] **C.1 ci: `scripts/check_docs_commands.py`** (F28). Walks `--help` of dcert and dcert-mcp; checks
   commands and flags in fenced blocks and inline code of the READMEs, SECURITY.md and the release
   notes template; checks the MCP tool table against tools/list. Fixture test for the F6 regression.
-  Session notes:
+  Session notes: 2026-11-21. Arguments are read left to right like clap, so parent flags before
+  a subcommand (`dcert vault --debug issue`) and the default `check` subcommand work; flags that
+  take values are read from help. On this branch: 451 flags, 30 tools, no problems; reverting
+  the A.1 fix (`--key`) makes it fail on README lines 475, 484 and 1086. Every flag of both
+  binaries is already mentioned somewhere, so `undocumented_ok` starts empty. `dcert-mcp-proxy`
+  is not walked: the job has no FastMCP install, and its flags are Python (click) not clap.
 - [ ] **C.2 ci: environment table check** (F15). Subcommand `env-table` compares the README table with
   config.yaml.
   Session notes:
