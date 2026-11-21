@@ -222,8 +222,15 @@ environments; a release where any channel fails; any CI failure not explained by
 
 ## Phase E: Python package fixes
 
-- [ ] **E.1 fix: proxy advertises the dcert-mcp identity** (F21).
-  Session notes:
+- [x] **E.1 fix: proxy advertises the dcert-mcp identity** (F21).
+  Session notes: 2026-11-21. FastMCP 4.2.4 `FastMCP.__init__` accepts `version` and
+  `website_url`, which `create_proxy(**settings)` passes on. Before: `serverInfo` was
+  `{name: dcert-mcp, version: 4.2.4}`. `create_server` now passes `dcert_mcp.__version__` and the
+  repository URL. Instructions need no code: a raw stdio handshake shows FastMCP already
+  forwards the Rust server's `instructions` in `initialize` (`FastMCP.instructions` stays
+  `None`, which misled the first check). Unit test on the server object; integration test
+  through `fastmcp.Client` checks name, version, website and that the instructions mention
+  `analyze_certificate`.
 - [ ] **E.2 feat: generated typed wrappers for all tools** (F22). Existing signatures unchanged.
   Session notes:
 - [ ] **E.3 ci: Python 3.15 in the python-mcp matrix** (F23).

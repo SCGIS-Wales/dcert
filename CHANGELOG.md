@@ -298,6 +298,8 @@ summary is written.
 
 ### Fixed
 
+- `dcert-mcp-proxy` advertises the dcert-mcp identity: `serverInfo.version` is the
+  package version (was FastMCP's own, 4.2.4) and `websiteUrl` is the project.
 - The coverage database `python/dcert-mcp/.coverage` is no longer tracked, and
   `.gitignore` covers the files the Python gate generates in the `python/<project>/`
   layout.

@@ -15,12 +15,17 @@ from fastmcp.server import create_proxy
 from fastmcp.server.auth import AuthProvider
 from fastmcp.server.providers.proxy import FastMCPProxy
 
+from dcert_mcp import __version__
 from dcert_mcp.binary import find_binary
 from dcert_mcp.config import load_config
 from dcert_mcp.middleware import build_middleware
 from dcert_mcp.resilience import ResilienceConfig, resilience_config_from_env
 
 logger = logging.getLogger(__name__)
+
+#: Advertised in ``serverInfo.websiteUrl``, as the Rust server does.
+WEBSITE_URL = "https://github.com/SCGIS-Wales/dcert"
+
 
 #: Environment variables forwarded to the Rust subprocess (from config.yaml).
 PASSTHROUGH_ENV_VARS: tuple[str, ...] = load_config().passthrough_env
@@ -66,6 +71,10 @@ def create_server(
 ) -> FastMCPProxy:
     """Create the FastMCP proxy server with the resilience middleware attached.
 
+    The proxy advertises the dcert-mcp identity (this package's version and the
+    project URL) instead of FastMCP's defaults; FastMCP forwards the Rust
+    server's instructions in the ``initialize`` result.
+
     Args:
         binary_path: Explicit path to ``dcert-mcp``; auto detected when ``None``.
         name: Server name advertised over MCP; defaults to the configured name.
@@ -78,7 +87,13 @@ def create_server(
         FileNotFoundError: If the binary cannot be located.
     """
     transport = create_transport(binary_path, env)
-    server = create_proxy(transport, name=name or load_config().server.name, auth=auth)
+    server = create_proxy(
+        transport,
+        name=name or load_config().server.name,
+        version=__version__,
+        website_url=WEBSITE_URL,
+        auth=auth,
+    )
     for middleware in build_middleware(resilience or resilience_config_from_env()):
         server.add_middleware(middleware)
     return server
