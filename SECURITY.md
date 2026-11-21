@@ -221,7 +221,17 @@ cosign verify ghcr.io/scgis-wales/dcert@<digest> \
 
 All GitHub Actions are pinned to commit SHAs.
 
-### Code scanning
+### Release publishing
+
+Both PyPI projects are published from `.github/workflows/ci.yml` with PyPI trusted publishing (OIDC). No PyPI API token exists in the repository or its secrets.
+
+| PyPI project | Job | GitHub environment | Order |
+| --- | --- | --- | --- |
+| `dcert` | `publish-pypi-dcert` | `pypi-dcert` | first |
+| `dcert-mcp` | `publish-pypi-mcp` | `pypi` | after `dcert`, because it requires `dcert` at the same version |
+
+Each project has its own environment because PyPI matches a trusted publisher on the workflow file and the environment: with one environment for both, the token minted for the job was valid for only one of the two projects ("OIDC scoped token is not valid for project dcert"). Both jobs upload with `pypa/gh-action-pypi-publish`, which adds PEP 740 attestations, and retry with `skip-existing` so a partial upload completes on the next attempt. PyPI matches only the top level workflow file, so publishing cannot move into a reusable workflow or a second workflow file without a new trusted publisher per project.
+
 
 CodeQL scans the Rust crate, the `dcert-mcp` Python package and the workflows on every pull request, on `main` and weekly, with every query of the default suite enabled (`.github/codeql/codeql-config.yml`). Test-only files are not scanned; tests inside `src/` modules are, so they generate a random password per run instead of hard-coding one.
 

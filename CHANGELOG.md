@@ -104,6 +104,8 @@ summary is written.
 - README Development lists the full local gate and how the two binaries are built;
   Acknowledgements name the current direct dependencies (ureq replaced reqwest);
   CLAUDE.md names both PyPI projects and the `python/dcert-mcp` gate paths.
+- SECURITY.md documents release publishing: which job and GitHub environment publish
+  each PyPI project, why there are two environments, and that no PyPI token exists.
 - `python/dcert-cli/` and `scripts/build_wheels.py --project`: the zero dependency
   `dcert` CLI wheel of the PyPI split. The executable is installed from
   `.data/scripts`, so no Python runs when you type `dcert`; the wheel has no

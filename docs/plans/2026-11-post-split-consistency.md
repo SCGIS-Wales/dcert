@@ -156,8 +156,9 @@ environments; a release where any channel fails; any CI failure not explained by
   Session notes: 2026-11-21. Acknowledgements from `cargo tree -e normal --depth 1` (ureq,
   rust_xlsxwriter, rustls-native-certs, serde_json added). `python -m pytest scripts -q`: 105
   passed.
-- [ ] **B.6 docs: trusted publishers in SECURITY.md and the split plan correction** (F4, F5).
-  Session notes:
+- [x] **B.6 docs: trusted publishers in SECURITY.md and the split plan correction** (F4, F5).
+  Session notes: 2026-11-21. SECURITY.md "Release publishing" with a job, environment and order
+  table read from ci.yml; split plan design point 6 corrected with the one-workflow decision.
 
 ## Phase C: documentation gates in CI
 
