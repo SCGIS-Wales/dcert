@@ -359,6 +359,11 @@ summary is written.
 
 ### CI
 
+- Documentation-only pushes no longer cut a release: `auto-tag` runs
+  `scripts/ci/release_paths.py`, which skips the tag when every changed path matches
+  `scripts/release_paths.yaml` (root `*.md`, `docs/**` and repository metadata) or the
+  commit title contains `[skip release]`. Package READMEs, `kb/` data and anything
+  else that ships still release, and an unclassifiable push releases.
 - Only the platform wheels, each bundling `dcert` and `dcert-mcp`, are
   published to PyPI and attached to GitHub releases. The universal wheel and
   the sdist carried no binary and downloaded it from GitHub on first use,
