@@ -10,6 +10,12 @@ nothing (documentation, plans) do not cut a release and wait under
 
 ## Unreleased
 
+### Fixed
+
+- `verify-pypi` waits until PyPI's simple index (what pip and uv read) lists every wheel,
+  not only the JSON API, and retries each install; the 4.0.11 macOS check failed because
+  the index lagged the API by a few minutes, although the release itself was complete.
+
 ## 4.0.11 (2026-11-21)
 
 ### Added

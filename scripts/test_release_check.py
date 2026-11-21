@@ -95,3 +95,14 @@ def test_settled_tags_ignore_young_drafts_and_prereleases() -> None:
         {"tag_name": "v4.2.0", "draft": True, "published_at": None},
     ]
     assert rc.settled_tags(releases, now, 90 * 60) == ["v4.0.9"]
+
+
+def test_simple_index_problems_name_the_missing_wheels() -> None:
+    files = [
+        f"dcert_mcp-4.0.11-py3-none-{p}.whl" for p in rc.WHEEL_PLATFORMS if p != "macosx_11_0_arm64"
+    ]
+    assert rc.simple_index_problems("dcert-mcp", "4.0.11", files) == [
+        "the simple index does not list dcert_mcp-4.0.11-py3-none-macosx_11_0_arm64.whl yet"
+    ]
+    full = [f"dcert-4.0.11-py3-none-{p}.whl" for p in rc.WHEEL_PLATFORMS]
+    assert rc.simple_index_problems("dcert", "4.0.11", full) == []
