@@ -285,8 +285,16 @@ environments; a release where any channel fails; any CI failure not explained by
   already on PyPI, pip had taken the published wheel and the proxy handshake caught it
   (FastMCP's 4.2.4 reported). Run locally on macOS arm64 against wheels built from this tree:
   all scenarios pass, both handshakes report dcert-mcp 4.0.8 with 30 tools.
-- [ ] **E.6 build: hash pinned requirements per extra** (F26).
-  Session notes:
+- [x] **E.6 build: hash pinned requirements per extra** (F26).
+  Session notes: 2026-11-21. `scripts/ci/pin_extras.py` compiles proxy, proxy+otel and
+  proxy+otel+dev with `uv pip compile --universal --python-version 3.12 --generate-hashes`
+  (uv 0.13.9, as CI). The input goes through stdin: a temporary `.in` file made the "via"
+  annotations machine specific and the first `--check` failed. 64 pins for proxy. Installed
+  with `--require-hashes --only-binary=:all:` on CPython 3.12 and 3.15: 329 tests pass on both.
+  `python-lint` and `python-mcp` install `dev.txt` with hashes; `python-lint` runs
+  `pin_extras.py --check` and pip-audit on the runtime files. Dependabot's pip entry already
+  watches `/python/dcert-mcp`; whether it raises pins inside `requirements/` is to be confirmed
+  on its first run (H.1).
 
 ## Phase F: CLI wording and channel consistency
 

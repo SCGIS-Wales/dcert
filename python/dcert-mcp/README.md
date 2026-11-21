@@ -20,6 +20,8 @@ This package is separate from [`dcert`](https://pypi.org/project/dcert/), the co
 
 Requires Python 3.12 or later. Wheels exist for Linux x86_64 (glibc 2.34 or later: RHEL 9, Ubuntu 22.04, Debian 12 and later), macOS Intel, macOS Apple Silicon and Windows x86_64. Only these platform wheels are published, so an install from PyPI, a private mirror or a downloaded wheel never fetches anything from GitHub. On any other platform pip reports "no matching distribution"; build the binaries from source and point `DCERT_MCP_BINARY` at the server.
 
+For a reproducible install of the extra, `requirements/proxy.txt` (and `otel.txt` for `[proxy,otel]`) in the [repository](https://github.com/SCGIS-Wales/dcert/tree/main/python/dcert-mcp/requirements) pins every package with hashes for all platforms: `pip install --require-hashes -r proxy.txt` next to `pip install dcert-mcp`.
+
 Without the extra, the Rust server works on its own (`dcert-mcp` speaks MCP over stdio, or HTTP with `--mode http`). The Python helpers below need the extra: importing one without it fails with a single line naming it, for example `dcert_mcp needs the optional package 'fastmcp'. Install it with: pip install "dcert-mcp[proxy]"`.
 
 ## Quick start
@@ -165,9 +167,8 @@ cargo build --release --bin dcert-mcp --features mcp
 export DCERT_MCP_BINARY="$PWD/target/release/dcert-mcp"
 
 cd python/dcert-mcp
-# The requirements of the proxy, otel and dev extras, exactly as CI installs them
-python ../../scripts/ci/extras_requirements.py proxy otel dev > extras.txt
-pip install -r extras.txt          # or: uv venv && uv pip install -r extras.txt
+# The requirements of the proxy, otel and dev extras, hash pinned, exactly as CI installs them
+pip install --require-hashes -r requirements/dev.txt   # or: uv venv && uv pip install -r requirements/dev.txt
 
 # The same checks as CI
 ruff check src tests ../../scripts
