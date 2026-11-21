@@ -10,6 +10,8 @@ nothing (documentation, plans) do not cut a release and wait under
 
 ## Unreleased
 
+## 4.0.12 (2026-11-21)
+
 ### Changed
 
 - Compliance follows the chain's trust program: for X9 Financial PKI and email-only
