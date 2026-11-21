@@ -243,3 +243,16 @@ async def test_proxy_advertises_the_package_version_and_rust_instructions():
         assert info.version == dcert_mcp.__version__
         assert info.website_url == WEBSITE_URL
         assert "analyze_certificate" in (client.instructions or "")
+
+
+async def test_every_server_tool_has_a_typed_wrapper():
+    from fastmcp import Client
+
+    from dcert_mcp.generated_tools import GENERATED_TOOL_FUNCTIONS
+    from dcert_mcp.server import create_server
+    from dcert_mcp.tools import TOOL_FUNCTIONS
+
+    async with Client(create_server()) as client:
+        served = {tool.name for tool in await client.list_tools()}
+    wrapped = {f.__name__ for f in (*TOOL_FUNCTIONS, *GENERATED_TOOL_FUNCTIONS)}
+    assert served == wrapped

@@ -78,6 +78,20 @@ _EXPORTS = {
     "tls_scan": "tools",
     "truncate_response": "resilience",
     "verify_key_match": "tools",
+    "create_csr": "generated_tools",
+    "diagnose_endpoint": "generated_tools",
+    "explain_edge_term": "generated_tools",
+    "validate_certificate": "generated_tools",
+    "validate_csr": "generated_tools",
+    "vault_issue": "generated_tools",
+    "vault_list": "generated_tools",
+    "vault_renew": "generated_tools",
+    "vault_revoke": "generated_tools",
+    "vault_sign": "generated_tools",
+    "vault_store": "generated_tools",
+    "vault_validate": "generated_tools",
+    "verify_key_auto_discover": "generated_tools",
+    "GENERATED_TOOL_FUNCTIONS": "generated_tools",
 }
 
 __all__ = [
@@ -124,6 +138,20 @@ __all__ = [
     "list_tls_policies",
     "show_tls_policy",
     "tls_policy_test",
+    "create_csr",
+    "diagnose_endpoint",
+    "explain_edge_term",
+    "validate_certificate",
+    "validate_csr",
+    "vault_issue",
+    "vault_list",
+    "vault_renew",
+    "vault_revoke",
+    "vault_sign",
+    "vault_store",
+    "vault_validate",
+    "verify_key_auto_discover",
+    "GENERATED_TOOL_FUNCTIONS",
 ]
 
 

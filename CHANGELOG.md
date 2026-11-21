@@ -89,6 +89,7 @@ summary is written.
 
 ### Added
 
+- Typed async wrappers for the 13 tools the Python client did not wrap (`create_csr`, `diagnose_endpoint`, `explain_edge_term`, `validate_certificate`, `validate_csr`, `vault_issue`, `vault_list`, `vault_renew`, `vault_revoke`, `vault_sign`, `vault_store`, `vault_validate`, `verify_key_auto_discover`), generated from the server's tool schemas by `scripts/gen_typed_tools.py`; CI fails when they fall behind the server. The 17 hand-written wrappers are unchanged.
 - README Installation section for pip, uv, uvx and pipx, with a package table, the
   wheel platforms and what to do on platforms without a wheel (ask for `dcert>=4`;
   an unpinned install there falls back to the platform independent 3.0.77).

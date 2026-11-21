@@ -257,8 +257,15 @@ environments; a release where any channel fails; any CI failure not explained by
   `None`, which misled the first check). Unit test on the server object; integration test
   through `fastmcp.Client` checks name, version, website and that the instructions mention
   `analyze_certificate`.
-- [ ] **E.2 feat: generated typed wrappers for all tools** (F22). Existing signatures unchanged.
-  Session notes:
+- [x] **E.2 feat: generated typed wrappers for all tools** (F22). Existing signatures unchanged.
+  Session notes: 2026-11-21. D8 (generate) taken. `scripts/gen_typed_tools.py` reads tools/list,
+  skips every tool `tools.py` already wraps, and writes `generated_tools.py` (13 wrappers,
+  keyword-only, typed from the JSON schema incl. `$defs` and nullable types; a schema parameter
+  named `timeout` becomes `timeout_`). The output is already ruff-formatted and passes
+  `mypy --strict`. Exported lazily from `dcert_mcp`; additive only, no existing signature
+  changed. `--check` runs in the `docs-commands` job. Tests: argument building, required
+  arguments, every wrapper calls its own tool, and (integration) every server tool has a
+  wrapper. 331 passed, 99.32 %.
 - [x] **E.3 ci: Python 3.15 in the python-mcp matrix** (F23).
   Session notes: 2026-11-21. Locally on CPython 3.15.2 with the proxy, otel and dev extras:
   mypy clean, 326 passed (99.29 %), integration included. "3.15" added to the matrix; the
