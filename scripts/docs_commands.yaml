@@ -1,0 +1,41 @@
+# Configuration for scripts/check_docs_commands.py.
+#
+# The check runs the built binaries' --help, walks every subcommand, and fails
+# when a documented command line uses a subcommand or flag the binary does not
+# have, when a flag of the binary is mentioned in no document, or when the MCP
+# tool table in the README differs from the tools the server lists.
+
+# Markdown documents scanned for command lines (fenced blocks and inline code).
+documents:
+  - README.md
+  - python/dcert-cli/README.md
+  - python/dcert-mcp/README.md
+  - SECURITY.md
+
+# The release notes are a heredoc inside this workflow, between these lines.
+release_notes:
+  workflow: .github/workflows/ci.yml
+  start: "cat > release-notes.md <<EOF"
+  end: "EOF"
+
+# Programs whose command lines are checked. default_subcommand applies when
+# the first argument is not a subcommand (dcert example.com is dcert check).
+programs:
+  dcert:
+    default_subcommand: check
+  dcert-mcp: {}
+
+# Fenced block languages that hold command lines; others (json, yaml, python)
+# are skipped.
+shell_languages: ["", bash, sh, shell, console, powershell, text]
+
+# Flags every program accepts but help lists only once.
+global_flags: ["-h", "--help", "-V", "--version"]
+
+# Flags a binary has that need not appear in any document, with the reason.
+undocumented_ok: {}
+
+# The MCP tool table: the first table after this heading in this document.
+tool_table:
+  document: README.md
+  heading: "### Tools"
