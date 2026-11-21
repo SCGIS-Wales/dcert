@@ -186,6 +186,9 @@ environments; a release where any channel fails; any CI failure not explained by
   The first CI run found 10 real broken anchors: the README table of contents linked
   `#dcert-check--certificate-analysis-default`, but GitHub maps each space and hyphen of
   "dcert [check] -- ..." to its own `-` (`#dcert-check----...`); fixed in this PR.
+  Later the same day: links of the form `github.com/SCGIS-Wales/dcert/(tree|blob)/main/<path>`
+  are remapped to the checkout, because E.6 links to `python/dcert-mcp/requirements/`, which is
+  on main only after it merges (lychee reported 404 for the stack top).
 
 ## Phase D: release integrity
 

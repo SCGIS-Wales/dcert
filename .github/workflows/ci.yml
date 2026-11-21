@@ -492,6 +492,9 @@ jobs:
 
   # Links in the Markdown documents, including anchors inside the README.
   # Hosts that refuse automated requests are excluded in .lycheeignore.
+  # Links into this repository's main branch are checked against the
+  # checkout, so a pull request that adds a file and links to it passes,
+  # and a link to a file that does not exist fails.
   links:
     name: Documentation links
     runs-on: ubuntu-latest
@@ -511,6 +514,7 @@ jobs:
           args: >-
             --no-progress --include-fragments --max-retries 3 --retry-wait-time 5
             --accept 200..=299,403,429
+            --remap 'https://github\.com/SCGIS-Wales/dcert/(?:tree|blob)/main/(.*) file://${{ github.workspace }}/$1'
             './*.md' 'docs/**/*.md' 'python/**/*.md' 'kb/**/*.md'
 
   # src/ciphers_table.rs is generated from the vendored IANA registry. The
