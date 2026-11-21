@@ -1,0 +1,26 @@
+# Changes that do not cut a release.
+#
+# auto-tag in .github/workflows/ci.yml runs scripts/ci/release_paths.py on
+# every push to main. When every changed path matches one of these patterns,
+# or the commit title contains the override marker, no tag is created and no
+# channel (PyPI, Docker, Homebrew, Chocolatey) is published. The change still
+# reaches GitHub at once; the next code release carries it to the package
+# pages.
+#
+# Patterns are matched against repository relative paths with "/" separators:
+# "*" matches within one path segment, "**/" matches any number of leading
+# directories (including none) and a trailing "/**" matches everything below
+# a directory.
+#
+# Anything that ships in a wheel, archive, image or package must not be listed:
+# python/*/README.md is the PyPI long description, so it is a release change.
+
+skip_marker: "[skip release]"
+
+no_release:
+  - "*.md"
+  - "docs/**"
+  - "kb/SOURCES.md"
+  - ".github/ISSUE_TEMPLATE/**"
+  - ".github/codeql/**"
+  - ".github/dependabot.yml"

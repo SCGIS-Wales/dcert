@@ -347,7 +347,7 @@ jobs:
         run: ruff format --check ../../scripts
 
       - name: Mypy (build scripts)
-        run: mypy --strict ../../scripts/build_wheels.py ../../scripts/sync_defaults.py ../../scripts/gen_cipher_table.py ../../scripts/fetch_aws_tls_policies.py ../../scripts/check_cli_deps.py ../../scripts/check_openssl_floor.py ../../scripts/check_exceptions.py ../../scripts/ci/openssl_pin.py ../../scripts/ci/extras_requirements.py ../../scripts/ci/openssl_upstream.py
+        run: mypy --strict ../../scripts/build_wheels.py ../../scripts/sync_defaults.py ../../scripts/gen_cipher_table.py ../../scripts/fetch_aws_tls_policies.py ../../scripts/check_cli_deps.py ../../scripts/check_openssl_floor.py ../../scripts/check_exceptions.py ../../scripts/ci/openssl_pin.py ../../scripts/ci/extras_requirements.py ../../scripts/ci/openssl_upstream.py ../../scripts/ci/release_paths.py
 
       - name: Defaults in step with src/limits.rs
         run: python ../../scripts/sync_defaults.py --check
@@ -431,6 +431,7 @@ jobs:
           scripts/test_gen_cipher_table.py scripts/test_fetch_aws_tls_policies.py
           scripts/test_check_cli_deps.py scripts/test_check_openssl_floor.py scripts/test_check_exceptions.py scripts/test_openssl_pin.py
           scripts/test_dcert_wheel.py scripts/test_dcert_mcp_wheel.py scripts/test_extras_requirements.py scripts/test_openssl_upstream.py
+          scripts/test_release_paths.py
 
   # src/ciphers_table.rs is generated from the vendored IANA registry. The
   # table must regenerate byte for byte; a newer registry on iana.org is
@@ -577,6 +578,24 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.TAP_GITHUB_TOKEN }}
 
+      # Documentation-only pushes and commits titled with [skip release] do
+      # not cut a release (scripts/release_paths.yaml). Anything the script
+      # cannot classify releases.
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Decide whether this push releases
+        id: release
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+          TITLE: ${{ github.event.head_commit.message }}
+        run: |
+          pip install --quiet pyyaml click
+          python scripts/ci/release_paths.py --before "$BEFORE" --after "$AFTER" --title "$TITLE"
+
       - name: Determine next version
         id: version
         run: |
@@ -608,7 +627,7 @@ jobs:
 
       - name: Update Cargo.toml version and create tag
         id: create_tag
-        if: steps.check_tag.outputs.exists == 'false'
+        if: steps.check_tag.outputs.exists == 'false' && steps.release.outputs.release == 'true'
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           TAG="${{ steps.version.outputs.tag }}"

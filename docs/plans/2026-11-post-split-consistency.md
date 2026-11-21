@@ -150,10 +150,15 @@ environments; a release where any channel fails; any CI failure not explained by
 
 ## Phase D: release integrity
 
-- [ ] **D.1 ci: release cadence as decided in D1** (F3, N3). Auto-tag exits early when every changed path
+- [x] **D.1 ci: release cadence as decided in D1** (F3, N3). Auto-tag exits early when every changed path
   matches `scripts/release_paths.yaml` or the commit title has `[skip release]`; Chocolatey push gated
   per D6.
-  Session notes:
+  Session notes: 2026-11-21. `scripts/ci/release_paths.py` with `scripts/release_paths.yaml`;
+  auto-tag creates no tag when every changed path matches or the title has `[skip release]`.
+  Package READMEs are not listed (they are the PyPI long descriptions). Dry run: the PR #142
+  push (c0ec73c..a6eb602) gives `release=false`; the 4.0.7 push gives `release=true`. The D6
+  Chocolatey gate is not done: Dejan excluded Chocolatey work, and versions waiting for
+  moderation are not visible in the public feed, so the gate stays an owner check.
 - [ ] **D.2 ci: post publish verification job** (F2). Poll PyPI for up to 15 minutes; install both with pip
   and uv on Linux, macOS and Windows; `--version` and a tools/list handshake.
   Session notes:
