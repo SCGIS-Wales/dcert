@@ -40,12 +40,16 @@ on any branch, and above all on `main`, must be attributed to api-py alone.
 
 ## Project notes
 
-- Rust CLI and MCP server in `src/` (`dcert`, `dcert-mcp`); Python FastMCP
-  proxy and typed client in `python/`.
+- Rust CLI and MCP server in `src/` (`dcert`, `dcert-mcp`). Two PyPI projects:
+  `python/dcert-cli` publishes `dcert` (the CLI executable only) and
+  `python/dcert-mcp` publishes `dcert-mcp` (the server, requiring `dcert` at the
+  same version, with the FastMCP proxy and typed client in the `proxy` extra and
+  OpenTelemetry in `otel`).
 - Local checks before pushing: `cargo fmt --check`,
   `cargo clippy --all-targets -- -D warnings`, `cargo test`, the same two with
-  `--features mcp` (the MCP server), `python scripts/check_cli_deps.py`, and in `python/`:
-  `ruff check src tests ../scripts`, `ruff format --check src tests ../scripts`,
+  `--features mcp` (the MCP server), `python scripts/check_cli_deps.py`,
+  `python -m pytest scripts -q`, and in `python/dcert-mcp`:
+  `ruff check src tests ../../scripts`, `ruff format --check src tests ../../scripts`,
   `mypy`, `pytest`.
 - `dcert-mcp` needs the `mcp` Cargo feature and the `dcert` CLI is built without
   it, so a plain `cargo build --release` builds only `dcert`. Release builds use

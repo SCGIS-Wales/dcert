@@ -152,8 +152,10 @@ environments; a release where any channel fails; any CI failure not explained by
   groups) between `env-table` markers for C.2. Development steps run as written in a fresh uv
   venv on Python 3.12: ruff, ruff format, mypy, pytest with DCERT_MCP_BINARY (322 passed,
   99.28 % coverage).
-- [ ] **B.5 docs: root Development, Acknowledgements and CLAUDE.md** (F16, F20).
-  Session notes:
+- [x] **B.5 docs: root Development, Acknowledgements and CLAUDE.md** (F16, F20).
+  Session notes: 2026-11-21. Acknowledgements from `cargo tree -e normal --depth 1` (ureq,
+  rust_xlsxwriter, rustls-native-certs, serde_json added). `python -m pytest scripts -q`: 105
+  passed.
 - [ ] **B.6 docs: trusted publishers in SECURITY.md and the split plan correction** (F4, F5).
   Session notes:
 
