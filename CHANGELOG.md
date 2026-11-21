@@ -170,6 +170,9 @@ summary is written.
 
 ### Changed
 
+- `dcert --help`, `dcert --version` and the Cargo description describe the CLI only:
+  "dcert is a command line tool that decodes, validates and converts X.509
+  certificates and diagnoses TLS endpoints." (was "... CLI and MCP server").
 - The negotiated cipher (`tls_cipher` in JSON and YAML) is a record
   `{openssl, iana, code_point, protocol, forward_secrecy, aead}` by default,
   and pretty output names it in every notation. `--cipher-notation iana` or
