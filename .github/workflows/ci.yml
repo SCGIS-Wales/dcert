@@ -350,10 +350,8 @@ jobs:
 
       # The dev extra pins ruff and mypy, so CI and a developer's machine run
       # the same versions.
-      - name: Install the requirements of the extras
-        run: |
-          python ../../scripts/ci/extras_requirements.py proxy otel dev > extras.txt
-          pip install -r extras.txt
+      - name: Install the requirements of the extras (hash pinned)
+        run: pip install --require-hashes -r requirements/dev.txt
 
       - name: Ruff check
         run: ruff check ../../scripts
@@ -362,7 +360,7 @@ jobs:
         run: ruff format --check ../../scripts
 
       - name: Mypy (build scripts)
-        run: mypy --strict ../../scripts/build_wheels.py ../../scripts/sync_defaults.py ../../scripts/gen_cipher_table.py ../../scripts/fetch_aws_tls_policies.py ../../scripts/check_cli_deps.py ../../scripts/check_openssl_floor.py ../../scripts/check_exceptions.py ../../scripts/ci/openssl_pin.py ../../scripts/ci/extras_requirements.py ../../scripts/ci/openssl_upstream.py ../../scripts/ci/release_paths.py ../../scripts/check_docs_commands.py ../../scripts/ci/release_check.py ../../scripts/gen_typed_tools.py
+        run: mypy --strict ../../scripts/build_wheels.py ../../scripts/sync_defaults.py ../../scripts/gen_cipher_table.py ../../scripts/fetch_aws_tls_policies.py ../../scripts/check_cli_deps.py ../../scripts/check_openssl_floor.py ../../scripts/check_exceptions.py ../../scripts/ci/openssl_pin.py ../../scripts/ci/extras_requirements.py ../../scripts/ci/openssl_upstream.py ../../scripts/ci/release_paths.py ../../scripts/check_docs_commands.py ../../scripts/ci/release_check.py ../../scripts/gen_typed_tools.py ../../scripts/ci/pin_extras.py
 
       - name: Defaults in step with src/limits.rs
         run: python ../../scripts/sync_defaults.py --check
@@ -378,6 +376,12 @@ jobs:
           uv pip compile runtime.in --python-version 3.12 --resolution lowest-direct -o lowest.txt
           pip-audit -r latest.txt --no-deps --disable-pip --strict
           pip-audit -r lowest.txt --no-deps --disable-pip --strict
+          pip-audit -r requirements/proxy.txt -r requirements/otel.txt --no-deps --disable-pip --strict
+
+      - name: Hash pinned requirement files are current
+        run: |
+          pip install --quiet click
+          python ../../scripts/ci/pin_extras.py --check
 
   # The dcert-mcp package (python/dcert-mcp). It depends on `dcert` at the same
   # version, which is not on PyPI until the release publishes it, so the package
@@ -405,10 +409,10 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install the package and the requirements of its extras
-        run: |
-          python ../../scripts/ci/extras_requirements.py proxy otel dev > extras.txt
-          pip install -r extras.txt
+      # Hash pinned (requirements/dev.txt, from scripts/ci/pin_extras.py), so
+      # every run tests the same packages that the files pin for users.
+      - name: Install the requirements of the extras (hash pinned)
+        run: pip install --require-hashes -r requirements/dev.txt
 
       - name: Ruff check
         run: ruff check src tests
