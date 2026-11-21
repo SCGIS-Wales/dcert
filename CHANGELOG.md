@@ -388,6 +388,10 @@ summary is written.
 
 ### CI
 
+- The wheel install test also installs with uv (`uv pip install`, `uv tool install
+  dcert-mcp --with-executables-from dcert`, `uvx --from dcert==<version>`) and holds an
+  MCP session with the Rust server and with the proxy on all four platforms, which must
+  report dcert-mcp at the wheel version and the README's tools.
 - New job `verify-pypi` after both PyPI uploads: waits up to 15 minutes until PyPI
   serves both projects, then installs `dcert-mcp==<version>` from PyPI with pip and
   with uv on Linux, macOS and Windows and runs `dcert --version` and an MCP handshake

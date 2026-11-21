@@ -1193,7 +1193,9 @@ jobs:
 
       - name: Install and run
         shell: bash
-        run: python scripts/ci/wheel_install_check.py wheels
+        run: |
+          pip install --quiet uv==0.13.9
+          python scripts/ci/wheel_install_check.py wheels
 
   # Docker image reuses the Linux binary from the build-linux job instead
   # of recompiling from source, cutting build time from ~30min to ~30sec.
