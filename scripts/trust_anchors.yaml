@@ -75,3 +75,27 @@ x9_financial:
       sha256: 393A1C2F6441DBF4D465465F655BC8B97DC8733313E7D4BA018F3B1501717556
       kind: root
       stage: preproduction
+
+# Roots of the Microsoft, Apple and Chrome TLS server authentication stores,
+# from CCADB (Community Data License Agreement - Permissive 2.0; attribution to
+# the Common CA Database is required, see src/trust_anchors/NOTICE). The
+# reports are live, so scripts/gen_root_stores.py --check fails when a store
+# changes and the update is a reviewed pull request.
+root_stores:
+  reports:
+    mozilla: https://ccadb.my.salesforce-sites.com/ccadb/Report?Name=MozillaTLSServerAuthenticationCSV
+    chrome: https://ccadb.my.salesforce-sites.com/ccadb/Report?Name=ChromeTLSServerAuthenticationCSV
+    apple: https://ccadb.my.salesforce-sites.com/ccadb/Report?Name=AppleTLSServerAuthenticationCSV
+    microsoft: https://ccadb.my.salesforce-sites.com/ccadb/Report?Name=MicrosoftTLSServerAuthenticationCSV
+  # Store membership of every root, by certificate and by key.
+  index: src/trust_anchors/root_stores.json
+  # The roots no Mozilla TLS root shares a certificate with (they are not in
+  # webpki-root-certs and need embedding).
+  bundle: src/trust_anchors/root_stores.pem
+
+# Amazon RDS (also Aurora, DocumentDB and Neptune) database server CAs: one
+# root per region and key type, published by AWS as one bundle.
+aws_rds:
+  url: https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+  sha256: 90a6f1a7978a1b1b096dca6c57511ca48d3b8cf052f8e704baf358f34ea2f21b
+  output: src/trust_anchors/aws_rds.pem

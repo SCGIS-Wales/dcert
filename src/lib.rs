@@ -24,6 +24,7 @@ pub mod netpolicy;
 pub mod ocsp;
 pub mod output;
 pub mod proxy;
+pub mod root_stores;
 pub mod secret;
 #[cfg(test)]
 pub(crate) mod testutil;

@@ -137,6 +137,8 @@
         "publicly_trusted",
         "publicly_trusted_email",
         "industry_pki",
+        "publicly_trusted_other",
+        "cloud_service_ca",
         "private_pki",
         "self_signed",
         "incomplete",

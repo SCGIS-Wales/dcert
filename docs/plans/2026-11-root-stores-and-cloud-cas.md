@@ -1,6 +1,6 @@
 # Root stores and cloud provider CAs plan
 
-Author: Dejan Gregor. Date: 2026-11-21. Status: proposed, not started. Builds on
+Author: Dejan Gregor. Date: 2026-11-21. Status: implemented 2026-11-21; decisions R1 to R4 taken as recommended (Dejan: "You can do all the work on my behalf"). Builds on
 `docs/plans/2026-11-trust-programs-x9-sectigo.md` (trust programs registry, pull requests
 #172 to #175).
 
@@ -83,66 +83,94 @@ What this means for dcert users:
 
 ## Phase S: root store data
 
-- [ ] **S.1 CCADB data terms and pinning.** Read https://www.ccadb.org/rootstores/usage and
+- [x] **S.1 CCADB data terms and pinning.** Read https://www.ccadb.org/rootstores/usage and
   record what redistribution of the reports in a binary allows. Stop and ask if it does not.
-  Session notes:
-- [ ] **S.2 Generator.** `scripts/gen_root_stores.py`: download the four TLS reports, verify each
+  Session notes: 2026-11-21. https://www.ccadb.org/rootstores/usage: CCADB data is under
+  CDLA-Permissive-2.0 ("You may use, modify, and redistribute the data freely"), attribution to
+  the CCADB is required and its name may not be used to endorse products. Attribution in
+  `src/trust_anchors/NOTICE`; the page does not name the TLS reports explicitly.
+- [x] **S.2 Generator.** `scripts/gen_root_stores.py`: download the four TLS reports, verify each
   certificate's SHA-256 from its PEM, record per root the stores that include it, Mozilla's
   distrust-after date, Microsoft's Not Before and disabled dates, and Chrome's and Apple's
   constraints; write `src/trust_anchors/root_stores.pem` (roots not in webpki-root-certs) and
   `src/trust_anchors/root_stores.json` (store membership by SPKI for every root). `--check`
   compares with the committed files; the daily audit runs it so a store change opens the
   existing issue.
-  Session notes:
-- [ ] **S.3 AWS RDS anchors.** Add `aws_rds` to `scripts/trust_anchors.yaml` from the global
+  Session notes: 2026-11-21. `scripts/gen_root_stores.py` (sources in `scripts/trust_anchors.yaml`):
+  207 roots in `root_stores.json` (stores, SPKI, Mozilla distrust-after, Chrome
+  `sct_not_after_sec` and permitted DNS names, Apple constraints, Microsoft disabled date) and the
+  95 certificates outside Mozilla in `root_stores.pem`, each PEM checked against its SHA-256.
+  Microsoft "Not Before" dates are not recorded: their EKU lists never include Server
+  Authentication. The reports are live, so `--check` runs in the daily audit (job `root-stores`),
+  not in pull request CI.
+- [x] **S.3 AWS RDS anchors.** Add `aws_rds` to `scripts/trust_anchors.yaml` from the global
   bundle, each root's SHA-256 pinned; `gen_trust_anchors.py --check` fails when AWS adds a
   region, so the update is a reviewed pull request.
-  Session notes:
+  Session notes: 2026-11-21. Global bundle pinned (SHA-256 90a6f1a7...f21b), 114 self-signed regional
+  roots (RSA2048, RSA4096, ECC384 G1), copied to `src/trust_anchors/aws_rds.pem`; checked by the
+  same `--check`.
 
 ## Phase V: verdict
 
-- [ ] **V.1 Store membership.** `root_trust.root_stores` for every chain that anchors on a known
+- [x] **V.1 Store membership.** `root_trust.root_stores` for every chain that anchors on a known
   root (also for `publicly_trusted`, so a Starfield Services G2 chain shows that Chrome lacks it).
-  Session notes:
-- [ ] **V.2 `publicly_trusted_other`.** When the anchor is in Chrome, Apple or Microsoft but not
+  Session notes: 2026-11-21. `src/root_stores.rs` looks a root up by certificate SHA-256, else by SPKI
+  (reissues and cross-signs); `root_trust.root_stores` for every verdict with an anchor.
+- [x] **V.2 `publicly_trusted_other`.** When the anchor is in Chrome, Apple or Microsoft but not
   Mozilla, with `detail` naming the stores and any date that limits trust; a Microsoft Not
   Before date earlier than the leaf's notBefore means Microsoft does not trust this chain, and
   the verdict says so.
-  Session notes:
-- [ ] **V.3 Email-only roots with TLS trust elsewhere.** DigiCert Global Root CA, GTS Root R2 and
+  Session notes: 2026-11-21. Program `other_root_stores` (browser trusted, purpose server_auth) gives
+  `publicly_trusted_other`; Mozilla's and Chrome's distrust-after dates are compared with the
+  leaf's notBefore and drop the store with a `store_notes` entry (Chrome's limit is on SCT
+  times; notBefore is the available proxy). Test: Buypass Class 2 Root CA.
+- [x] **V.3 Email-only roots with TLS trust elsewhere.** DigiCert Global Root CA, GTS Root R2 and
   GlobalSign Root CA are email only in Mozilla but TLS trusted by Apple and Microsoft: report
   `publicly_trusted_other` with both facts rather than `publicly_trusted_email`.
-  Session notes:
-- [ ] **V.4 AWS RDS program.** Chains to the RDS roots get a new classification
+  Session notes: 2026-11-21. `other_root_stores` is tried before `mozilla_email`, so DigiCert Global
+  Root CA is `publicly_trusted_other` with `root_stores: [apple, microsoft]` (test).
+- [x] **V.4 AWS RDS program.** Chains to the RDS roots get a new classification
   `cloud_service_ca` (a provider's service CA, not an industry PKI) with `trust_program: aws_rds`,
   `operator: Amazon Web Services`, and the bundle URL in `detail`.
-  Session notes:
-- [ ] **V.5 Cloud service hints for private chains.** Name based hints only (not a trust verdict)
+  Session notes: 2026-11-21. Program `aws_rds` gives `cloud_service_ca`; test with the us-east-1
+  RSA2048 G1 root, and `dcert diagnose` names the RDS entry.
+- [x] **V.5 Cloud service hints for private chains.** Name based hints only (not a trust verdict)
   for private chains whose issuer matches Google Cloud SQL, Memorystore, AlloyDB or AWS Private
   CA patterns: `root_trust.service_hint` with the provider's command to fetch the CA. Patterns
   verified against real certificates before they ship.
-  Session notes:
+  Session notes: 2026-11-21. Only Google Cloud SQL's per-instance server CA (`O=Google, Inc`, `CN=Google
+  Cloud SQL Server CA`, confirmed by a Cloud SQL forum thread and the InSpec resource docs) gets a
+  `service_hint`. Memorystore, AlloyDB and AWS Private CA names could not be confirmed on real
+  certificates, so they are not matched (the plan required verified patterns).
 
 ## Phase K: compliance and diagnostics
 
-- [ ] **K.1 Compliance scope.** `publicly_trusted_other` chains get the CA/Browser Forum rules (the
+- [x] **K.1 Compliance scope.** `publicly_trusted_other` chains get the CA/Browser Forum rules (the
   other stores require the Baseline Requirements too); `cloud_service_ca` chains are advisory,
   like trust programs.
-  Session notes:
-- [ ] **K.2 Diagnose entries.** "Chain trusted by Windows and Apple but not Mozilla or Chrome"
+  Session notes: 2026-11-21. `ChainScope::from_trust`: `publicly_trusted_other` is `PublicTls`,
+  `cloud_service_ca` is `Program("aws_rds")` (advisory rules).
+- [x] **K.2 Diagnose entries.** "Chain trusted by Windows and Apple but not Mozilla or Chrome"
   (with the store list), "AWS RDS endpoint: install the RDS bundle", "Google Cloud SQL or
   Memorystore per-instance CA", "Azure database still on DigiCert Global Root CA".
-  Session notes:
+  Session notes: 2026-11-21. `tls.handshake.root-not-in-mozilla` and `tls.handshake.aws-rds-ca`; the
+  DigiCert G1 entry text updated; `kb validate` 88 entries. The Azure G1 case is covered by the
+  root-not-in-mozilla and G1 entries; Cloud SQL by the service hint.
 
 ## Phase M: docs and tests
 
-- [ ] **M.1 Docs.** README classification table, the stores table, the cloud provider table and
+- [x] **M.1 Docs.** README classification table, the stores table, the cloud provider table and
   how to pass a provider bundle with `--ca-cert`; MCP descriptions; generated wrappers.
-  Session notes:
-- [ ] **T.1 Tests.** A Microsoft-only root, a root with a Microsoft Not Before date, an Apple-only
+  Session notes: 2026-11-21. README classification and field tables, MCP description; docs check and
+  generated wrappers pass.
+- [x] **T.1 Tests.** A Microsoft-only root, a root with a Microsoft Not Before date, an Apple-only
   distrusted Entrust root, Starfield Services G2 (Chrome missing), GTS Root R2, an RDS regional
   root, impostor roots copying their names, and the freshness checks.
-  Session notes:
+  Session notes: 2026-11-21. Rust: Buypass (other stores), DigiCert Global Root CA (V.3), a Mozilla
+  root's stores, an RDS root, impostors copying Buypass and RDS names, Cloud SQL hint,
+  distrust-after evaluation; Python: generator merge, refused mismatching PEM, committed files
+  consistent. 731 tests, 977 with mcp. Not tested: Starfield Services G2 and GTS Root R2
+  individually (covered by the same lookup).
 
 ## Not in scope
 

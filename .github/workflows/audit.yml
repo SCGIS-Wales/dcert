@@ -124,6 +124,25 @@ jobs:
           "$RUNNER_TEMP/env/bin/dcert" --version
           "$RUNNER_TEMP/env/bin/dcert-mcp" --version
 
+  root-stores:
+    name: Root stores and the AWS RDS bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The embedded store index (CCADB) and the RDS bundle match their
+      # sources; a change in a root store or a new AWS region fails here and
+      # opens the "Security audit failing" issue, and the update is a reviewed
+      # pull request (python scripts/gen_root_stores.py).
+      - name: Embedded root store data is current
+        run: |
+          pip install --quiet click pyyaml
+          python scripts/gen_root_stores.py --check
+
   release-binaries:
     name: Latest release binaries
     runs-on: ubuntu-latest
@@ -196,7 +215,7 @@ jobs:
 
   report:
     name: Open or update the failure issue
-    needs: [rust, exceptions, openssl-upstream, pypi-parity, python, release-binaries, image]
+    needs: [rust, exceptions, openssl-upstream, pypi-parity, root-stores, python, release-binaries, image]
     if: failure()
     runs-on: ubuntu-latest
     timeout-minutes: 5

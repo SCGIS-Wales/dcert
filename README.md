@@ -338,6 +338,8 @@ The classification is one of:
 | `publicly_trusted` | Chain verifies up to a root in the embedded **Mozilla/CCADB** root set for websites |
 | `publicly_trusted_email` | Chain verifies up to a root Mozilla trusts for email (S/MIME) only, such as Sectigo Public Email Protection Root R46 or a DigiCert S/MIME root; browsers do not trust it for websites |
 | `industry_pki` | Chain verifies up to the root of an industry PKI browsers do not trust, currently the **X9 Financial PKI** (DigiCert) for mutual TLS between financial institutions |
+| `publicly_trusted_other` | Chain verifies up to a TLS root that **Chrome, Apple or Microsoft** trust but Mozilla does not (for example DigiCert Global Root CA, GTS Root R2, Buypass, many national CAs); `root_stores` lists which |
+| `cloud_service_ca` | Chain verifies up to a cloud provider's CA for its managed services, currently the **Amazon RDS** regional CAs (RDS, Aurora, DocumentDB, Neptune) |
 | `private_pki` | Chain terminates in a private root CA that belongs to none of these programs |
 | `self_signed` | A single self-signed certificate, not issued by any CA |
 | `incomplete` | Chain neither reaches a public root nor presents a self-signed root (an issuer is missing) — try `--resolve-issuers` |
@@ -360,15 +362,21 @@ don't send the root).
 
 **Trust programs beyond the website roots.** `webpki-root-certs` contains only
 the roots Mozilla trusts for websites, so dcert also embeds the 52 roots Mozilla
-trusts for email only (from NSS `certdata.txt`) and the X9 Financial PKI roots
-and intermediates, each checked against its published SHA-256
+trusts for email only (from NSS `certdata.txt`), the TLS roots of the Chrome,
+Apple and Microsoft stores that Mozilla does not include (from CCADB, under
+CDLA-Permissive-2.0, see `src/trust_anchors/NOTICE`), the Amazon RDS CA bundle,
+and the X9 Financial PKI roots and intermediates, each checked against its
+published SHA-256
 (`scripts/trust_anchors.yaml`). They are matched by the same signature check,
 never by name, and only for this classification: dcert does not trust them
 when it verifies a TLS connection. JSON and YAML report the program:
 
 | Field | Meaning |
 |-------|---------|
-| `trust_program` | `mozilla_tls`, `mozilla_email` or `x9_financial` |
+| `trust_program` | `mozilla_tls`, `other_root_stores`, `mozilla_email`, `x9_financial` or `aws_rds` |
+| `root_stores` | The TLS root stores that trust this anchor for this leaf: `mozilla`, `chrome`, `apple`, `microsoft` (from CCADB; a store's distrust-after date removes it for later leaves) |
+| `store_notes` | A store limit that excludes this leaf, for example "chrome distrusts certificates from this root issued after 2025-10-31" |
+| `service_hint` | For a private chain from a cloud provider's per-instance CA (currently Google Cloud SQL): which service it is and how to fetch its CA |
 | `operator` | Who operates the program |
 | `purpose` | `server_auth`, `email` or `industry_mtls` |
 | `preproduction` | `true` for an X9 test (UAT) root |

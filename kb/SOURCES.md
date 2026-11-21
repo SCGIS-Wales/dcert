@@ -214,3 +214,15 @@ and the clientAuth compliance finding.
 | Sectigo, Chrome Root Program clientAuth and private PKI | https://www.sectigo.com/blog/chrome-root-program-clientauth-private-pki |
 | Sectigo public certificate chains | https://www.sectigo.com/knowledge-base/detail/Access-New-Sectigo-Certificate-Chain |
 | NSS certdata.txt (email trust bits), NSS_3_134_RTM | https://raw.githubusercontent.com/nss-dev/nss/NSS_3_134_RTM/lib/ckfw/builtins/certdata.txt |
+
+## Root stores and cloud provider CAs
+
+Read on 2026-11-21 for `tls.handshake.root-not-in-mozilla` and `tls.handshake.aws-rds-ca`.
+
+| Topic | URL |
+|-------|-----|
+| CCADB resources and TLS reports (CDLA-Permissive-2.0) | https://www.ccadb.org/resources |
+| CCADB data usage terms | https://www.ccadb.org/rootstores/usage |
+| Amazon RDS SSL/TLS | https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/UsingWithRDS.SSL.html |
+| Amazon RDS certificate rotation | https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/UsingWithRDS.SSL-certificate-rotation.html |
+| Cloud SQL SSL/TLS (per-instance server CA) | https://docs.cloud.google.com/sql/docs/mysql/authorize-ssl |
