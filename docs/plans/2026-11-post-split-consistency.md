@@ -207,6 +207,10 @@ environments; a release where any channel fails; any CI failure not explained by
   means no release.
   Also: when main moves during a release run, the bump push is rejected; auto-tag now ends with
   `created=false` and a notice instead of failing, and the newer run releases both changes.
+  D6 done later the same day: the 4.0.13 push got 403 with ten versions (4.0.3 to 4.0.12)
+  waiting for moderation. Versions in moderation are visible on the feed when queried by exact
+  version (`PackageStatus` Submitted), so `release_check.py chocolatey-queue` counts them and
+  `publish-chocolatey` skips with a notice while any is pending.
 - [x] **D.2 ci: post publish verification job** (F2). Poll PyPI for up to 15 minutes; install both with pip
   and uv on Linux, macOS and Windows; `--version` and a tools/list handshake.
   Session notes: 2026-11-21. `scripts/ci/release_check.py` (click, functions) with `wait-pypi`
