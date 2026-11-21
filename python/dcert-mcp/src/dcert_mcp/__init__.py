@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import importlib
 
-__version__ = "4.0.8"
+__version__ = "4.0.9"
 
 #: Names whose absence means the ``proxy`` extra is not installed.
 PROXY_EXTRA_MODULES = frozenset({"fastmcp", "click", "yaml", "starlette", "mcp", "anyio"})
