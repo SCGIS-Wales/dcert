@@ -98,6 +98,9 @@ summary is written.
   wheel platforms and the security properties of the wheel. Badges show both PyPI
   projects; the Python versions badge is the one of `dcert-mcp`, because `dcert`
   runs no Python and declares no Python version classifiers.
+- The dcert-mcp README lists every environment variable the proxy forwards to the
+  server, grouped as in `config.yaml`, and its Development section gives the
+  commands CI runs (`pip install -e` never worked: the package has no build backend).
 - `python/dcert-cli/` and `scripts/build_wheels.py --project`: the zero dependency
   `dcert` CLI wheel of the PyPI split. The executable is installed from
   `.data/scripts`, so no Python runs when you type `dcert`; the wheel has no

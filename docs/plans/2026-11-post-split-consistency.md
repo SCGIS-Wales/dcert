@@ -147,8 +147,11 @@ environments; a release where any channel fails; any CI failure not explained by
   uv and ruff do declare Python 3.x classifiers, but they contain Python code; the dcert wheel is
   one executable, so the pyversions badge uses dcert-mcp. Badge rows in the root README, both
   package READMEs. dcert PyPI page rewritten per R5 (examples run against a 4.0.7 build).
-- [ ] **B.4 docs: dcert-mcp development instructions and environment table** (F15).
-  Session notes:
+- [x] **B.4 docs: dcert-mcp development instructions and environment table** (F15).
+  Session notes: 2026-11-21. Table rebuilt from `subprocess.passthrough_env` (29 entries in six
+  groups) between `env-table` markers for C.2. Development steps run as written in a fresh uv
+  venv on Python 3.12: ruff, ruff format, mypy, pytest with DCERT_MCP_BINARY (322 passed,
+  99.28 % coverage).
 - [ ] **B.5 docs: root Development, Acknowledgements and CLAUDE.md** (F16, F20).
   Session notes:
 - [ ] **B.6 docs: trusted publishers in SECURITY.md and the split plan correction** (F4, F5).
