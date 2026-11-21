@@ -586,15 +586,18 @@ jobs:
         with:
           python-version: "3.12"
 
+      # Compared with the newest release tag, not the previous push: runs on
+      # main queue, and a newer push cancels a pending one, so a code change
+      # whose run was cancelled still releases with the next push.
       - name: Decide whether this push releases
         id: release
         env:
-          BEFORE: ${{ github.event.before }}
           AFTER: ${{ github.sha }}
           TITLE: ${{ github.event.head_commit.message }}
         run: |
           pip install --quiet pyyaml click
-          python scripts/ci/release_paths.py --before "$BEFORE" --after "$AFTER" --title "$TITLE"
+          SINCE=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)
+          python scripts/ci/release_paths.py --before "$SINCE" --after "$AFTER" --title "$TITLE"
 
       - name: Determine next version
         id: version

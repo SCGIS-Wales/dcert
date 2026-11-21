@@ -58,7 +58,7 @@ def test_skip_marker_overrides_code_changes() -> None:
 
 def test_unknown_paths_release() -> None:
     assert rp.decide(None, "docs: x", CONFIG)[0] is True
-    assert rp.decide([], "docs: x", CONFIG)[0] is True
+    assert rp.decide([], "docs: x", CONFIG) == (False, "nothing changed since the last release")
     assert rp.changed_paths("0" * 40, "HEAD") is None
 
 

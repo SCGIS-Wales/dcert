@@ -364,6 +364,9 @@ summary is written.
   `scripts/release_paths.yaml` (root `*.md`, `docs/**` and repository metadata) or the
   commit title contains `[skip release]`. Package READMEs, `kb/` data and anything
   else that ships still release, and an unclassifiable push releases.
+- The release filter compares with the newest release tag instead of the previous push,
+  so a code change whose main run was cancelled in the queue by a newer push still
+  releases with that push; `[skip release]` defers a release rather than dropping it.
 - Only the platform wheels, each bundling `dcert` and `dcert-mcp`, are
   published to PyPI and attached to GitHub releases. The universal wheel and
   the sdist carried no binary and downloaded it from GitHub on first use,
