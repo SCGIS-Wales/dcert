@@ -135,15 +135,49 @@ jobs:
           tool: cargo-audit
 
       # Each binary embeds its exact dependency list (cargo auditable), so this
-      # audits what shipped, not what the source tree resolves today.
-      - name: Download and audit the Linux archive
+      # audits what shipped, not what the source tree resolves today. Every
+      # archive of the newest release: Linux (ELF), macOS (Mach-O, two
+      # architectures) and Windows (PE) are built separately and can differ.
+      - name: Download and audit every release archive
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p release && cd release
-          gh release download --repo "$GITHUB_REPOSITORY" --pattern 'dcert-x86_64-unknown-linux-gnu.tar.gz'
-          tar xzf dcert-x86_64-unknown-linux-gnu.tar.gz
-          cargo audit bin dcert dcert-mcp
+          gh release download --repo "$GITHUB_REPOSITORY" --pattern 'dcert-*.tar.gz' --pattern 'dcert-*.zip'
+          for archive in dcert-*.tar.gz dcert-*.zip; do
+            name="${archive%.tar.gz}"; name="${name%.zip}"
+            mkdir "$name"
+            case "$archive" in
+              *.zip) unzip -q "$archive" -d "$name" ;;
+              *) tar xzf "$archive" -C "$name" ;;
+            esac
+          done
+          ls -R
+          [ "$(find . -mindepth 2 -type f -name 'dcert*' | wc -l)" -eq 8 ] || { echo "::error::expected 8 executables in 4 archives"; exit 1; }
+          cargo audit bin $(find . -mindepth 2 -type f -name 'dcert*')
+
+      # The wheels users install from PyPI, which are what most of them run.
+      # The dcert wheel must declare no dependency at all.
+      - name: Download and audit the published PyPI wheels
+        run: |
+          mkdir -p wheels && cd wheels
+          version=$(curl -fsSL https://pypi.org/pypi/dcert/json | python3 -c 'import json,sys; print(json.load(sys.stdin)["info"]["version"])')
+          echo "newest dcert on PyPI: $version"
+          for project in dcert dcert-mcp; do
+            curl -fsSL "https://pypi.org/pypi/$project/$version/json" \
+              | python3 -c 'import json,sys; print("\n".join(u["url"] for u in json.load(sys.stdin)["urls"] if u["filename"].endswith(".whl")))' \
+              | xargs -n1 curl -fsSLO
+          done
+          [ "$(ls *.whl | wc -l)" -eq 8 ] || { echo "::error::expected 8 wheels for $version"; exit 1; }
+          for wheel in dcert-"$version"-*.whl; do
+            if unzip -p "$wheel" "dcert-$version.dist-info/METADATA" | grep -q '^Requires-Dist:'; then
+              echo "::error::$wheel declares a dependency"; exit 1
+            fi
+          done
+          for wheel in *.whl; do
+            mkdir "${wheel%.whl}" && unzip -q -j "$wheel" '*.data/scripts/*' -d "${wheel%.whl}"
+          done
+          cargo audit bin */dcert*
 
   image:
     name: Published image
