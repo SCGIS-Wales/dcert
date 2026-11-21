@@ -2,18 +2,19 @@
 # plan, objective O7). Read by scripts/check_openssl_floor.py, which runs
 # `dcert --version` on the built binary.
 
-# Newest patch release required on each supported branch.
+# Newest patch release required on each supported branch: the newest release
+# OpenSSL has published on it. The scheduled audit runs
+# `scripts/ci/openssl_upstream.py check` daily and fails when OpenSSL publishes
+# a newer one; `scripts/ci/openssl_upstream.py update` then raises these floors
+# and the Windows pin below in one step.
 floors:
   "3.5": "3.5.9"
   "4.0": "4.0.3"
 
-# Floors that take effect on a date. The script applies every entry whose date
-# has passed, so the bump needs no follow-up pull request.
-scheduled:
-  - date: 2026-12-01
-    floors:
-      "3.5": "3.5.10"
-      "4.0": "4.0.4"
+# Floors that take effect on a date, for a release OpenSSL has announced with a
+# date. Leave empty otherwise: a guessed date fails every build if the release
+# slips. The daily upstream check above covers releases as they appear.
+scheduled: []
 
 # Branches whose fixes come from the host distribution, not from us: the Linux
 # release binary links the system libssl at run time.
@@ -22,10 +23,10 @@ distro_managed:
 
 # The OpenSSL the Windows release build links statically. It is built from the
 # official source tarball by scripts/ci/build_openssl_windows.ps1, which
-# verifies the SHA256 below before building. Bump `version` and `sha256`
-# together (checksum from the release page, github.com/openssl/openssl/releases)
-# whenever the floor above rises; the floor check fails the Windows build if
-# the pin falls behind.
+# verifies the SHA256 below before building. `openssl_upstream.py update` bumps
+# `version` and `sha256` together, after checking the downloaded tarball against
+# the .sha256 file published with the release; the floor check fails the
+# Windows build if the pin falls behind.
 windows_source:
   version: "3.5.9"
   sha256: "603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a"
