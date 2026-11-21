@@ -220,9 +220,16 @@ environments; a release where any channel fails; any CI failure not explained by
   shows a version only after moderation. Run locally: 4.0.8 all ok; 4.0.4 reports the missing
   PyPI dcert (the F2 gap); 4.0.9 during its own release run reports the release and PyPI as
   missing and GHCR and the tap as ok.
-- [ ] **D.4 ci: recovery by workflow_dispatch** (F2). Inputs tag and project; downloads wheels from the
+- [x] **D.4 ci: recovery by workflow_dispatch** (F2). Inputs tag and project; downloads wheels from the
   release, verifies SHA256SUMS, publishes with skip-existing in the same environments.
-  Session notes:
+  Session notes: 2026-11-21. Jobs `recover-guard`, `recover-pypi-dcert` (environment
+  `pypi-dcert`), `recover-pypi-mcp` (environment `pypi`, after dcert). The guard validates the
+  tag format, that the tag exists, downloads the wheels and `SHA256SUMS` from the release,
+  runs `sha256sum -c --strict` and requires the four wheels of each selected project to be
+  present and listed; dry run of the same checks on v4.0.8 passed. Dispatch runs use their own
+  concurrency group so they cannot cancel a pending release run. Not run for 3.0.95 or 4.0.4:
+  filling old versions is Dejan's decision (stop condition); note that 3.0.x wheels are the
+  old combined package.
 - [x] **D.5 ci: scheduled PyPI consistency in audit.yml** (F2).
   Session notes: 2026-11-21. Job `pypi-parity` in audit.yml, in the report job's needs.
   `release_check.py pypi-parity` checks that the newest release older than `--grace-minutes`
