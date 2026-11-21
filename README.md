@@ -44,8 +44,7 @@
 
 ```bash
 # Install via Homebrew
-brew tap SCGIS-Wales/homebrew-tap https://github.com/SCGIS-Wales/homebrew-tap.git
-brew install dcert
+brew install scgis-wales/tap/dcert
 
 # Analyze a live HTTPS endpoint (bare hostname or full URL)
 dcert api.example.com
@@ -86,11 +85,10 @@ dcert diagnose https://api.example.com
 
 ### Homebrew (recommended — macOS and Linux)
 
-Homebrew is the recommended installation method. On Linux it builds from source, which avoids glibc compatibility issues and works on Ubuntu 22.04 and later.
+Homebrew is the recommended installation method. The formula installs the prebuilt `dcert` and `dcert-mcp` binaries on macOS (Intel and Apple Silicon) and Linux x86_64; on Linux they need glibc 2.34 or later (RHEL 9, Ubuntu 22.04, Debian 12).
 
 ```bash
-brew tap SCGIS-Wales/homebrew-tap https://github.com/SCGIS-Wales/homebrew-tap.git
-brew install dcert
+brew install scgis-wales/tap/dcert
 ```
 
 > **Note:** If you don't have Homebrew on Linux, install it first:
@@ -100,7 +98,7 @@ brew install dcert
 
 ### Prebuilt binaries
 
-Download from the [Releases](https://github.com/SCGIS-Wales/dcert/releases) page. Each release includes `dcert` (CLI) and `dcert-mcp` (MCP server). Prebuilt Linux binaries require Ubuntu 22.04 (glibc 2.35) or later.
+Download from the [Releases](https://github.com/SCGIS-Wales/dcert/releases) page. Each release includes `dcert` (CLI) and `dcert-mcp` (MCP server). Prebuilt Linux binaries need glibc 2.34 or later and OpenSSL 3 (RHEL 9, Ubuntu 22.04, Debian 12).
 
 ```bash
 curl -L https://github.com/SCGIS-Wales/dcert/releases/latest/download/dcert-x86_64-unknown-linux-gnu.tar.gz | tar xz
@@ -135,14 +133,14 @@ cargo build --release --bin dcert-mcp --features mcp   # MCP server
 ```bash
 docker pull ghcr.io/scgis-wales/dcert:main
 
-# CLI
-docker run --rm ghcr.io/scgis-wales/dcert:main https://www.google.com
+# CLI (the image's default entrypoint is dcert-mcp)
+docker run --rm --entrypoint dcert ghcr.io/scgis-wales/dcert:main https://www.google.com
 
 # Local PEM file
-docker run --rm -v "$PWD:/data" ghcr.io/scgis-wales/dcert:main /data/cert.pem
+docker run --rm -v "$PWD:/data" --entrypoint dcert ghcr.io/scgis-wales/dcert:main /data/cert.pem
 
-# MCP server
-docker run --rm -i --entrypoint dcert-mcp ghcr.io/scgis-wales/dcert:main
+# MCP server over stdio
+docker run --rm -i ghcr.io/scgis-wales/dcert:main
 ```
 
 ---
@@ -1010,7 +1008,7 @@ dcert diagnose https://api.example.com
 dcert diagnose https://api.example.com --format json
 
 # Probe an mTLS endpoint with a client identity
-dcert diagnose https://api.example.com --client-cert client.pem --key client.key
+dcert diagnose https://api.example.com --client-cert client.pem --client-key client.key
 
 # Probe a specific origin behind the distribution
 dcert diagnose https://api.example.com --connect-to origin.internal:8443
@@ -1481,7 +1479,7 @@ Example with extended timeouts for slow networks:
 `dcert-mcp` logs diagnostic information to stderr at startup. In MCP mode, stderr is separate from the protocol channel (which uses stdio), so these logs are visible in your IDE's MCP server output or logs:
 
 ```
-[dcert-mcp] v3.0.12
+[dcert-mcp] v<version>
 [dcert-mcp] dcert binary: /usr/local/bin/dcert
 [dcert-mcp] subprocess timeout: 60s
 [dcert-mcp] connection timeout: 10s (--timeout)
@@ -1489,6 +1487,7 @@ Example with extended timeouts for slow networks:
 [dcert-mcp] HTTPS proxy: http://proxy.corp.com:8080
 [dcert-mcp] HTTP proxy: (none)
 [dcert-mcp] NO_PROXY: localhost,127.0.0.1
+[dcert-mcp] destinations: unrestricted
 ```
 
 Proxy URLs are logged with passwords masked (shown as `****`).

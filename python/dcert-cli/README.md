@@ -13,7 +13,11 @@ dcert example.com
 
 Wheels exist for Linux x86_64 (glibc 2.34 or later), macOS Intel, macOS Apple
 Silicon and Windows x86_64. On any other platform pip reports "no matching
-distribution"; build from source instead (`cargo install dcert`).
+distribution"; build from source instead:
+
+```bash
+cargo install --git https://github.com/SCGIS-Wales/dcert --locked --bin dcert dcert
+```
 
 ## MCP server
 

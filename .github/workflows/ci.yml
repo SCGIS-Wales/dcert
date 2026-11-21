@@ -1452,24 +1452,28 @@ jobs:
         run: |
           TAG="${{ needs.auto-tag.outputs.tag }}"
           REPO="${{ github.repository }}"
+          # Docker repository names must be lower case.
+          IMAGE_REPO="${REPO,,}"
           cat > release-notes.md <<EOF
           ## Installation
 
           ### Homebrew (recommended — macOS and Linux)
 
-          Homebrew is the recommended installation method. On Linux it builds from source, avoiding glibc compatibility issues across distributions.
+          Homebrew is the recommended installation method. The formula installs the prebuilt binaries on macOS (Intel and Apple Silicon) and Linux x86_64 (glibc 2.34 or later).
 
           \`\`\`bash
-          brew tap SCGIS-Wales/tap
-          brew install dcert
+          brew install scgis-wales/tap/dcert
           \`\`\`
 
-          ### Python (pip)
+          ### Python (pip and uv)
 
           \`\`\`bash
           pip install dcert        # the command line tool
           pip install dcert-mcp    # the MCP server (and dcert)
           pip install "dcert-mcp[proxy]"  # plus the FastMCP proxy and typed client
+          uv tool install dcert    # dcert on PATH in its own environment
+          uv tool install dcert-mcp --with-executables-from dcert
+          uvx dcert example.com    # run once without installing
           \`\`\`
 
           Each wheel carries a prebuilt executable, so nothing is downloaded at install or run time, and \`dcert\` installs no Python dependency. The same wheels are attached to this release for offline and mirror installs:
@@ -1499,7 +1503,7 @@ jobs:
           curl -L https://github.com/${REPO}/releases/download/${TAG}/dcert-aarch64-apple-darwin.tar.gz | tar xz
           chmod +x dcert dcert-mcp && sudo mv dcert dcert-mcp /usr/local/bin/
 
-          # Linux (x86_64, Ubuntu 22.04+)
+          # Linux (x86_64, glibc 2.34+)
           curl -L https://github.com/${REPO}/releases/download/${TAG}/dcert-x86_64-unknown-linux-gnu.tar.gz | tar xz
           chmod +x dcert dcert-mcp && sudo mv dcert dcert-mcp /usr/local/bin/
           \`\`\`
@@ -1523,8 +1527,11 @@ jobs:
           ### Docker
 
           \`\`\`bash
-          docker pull ghcr.io/${REPO}:${TAG#v}
-          docker run --rm -i ghcr.io/${REPO}:latest
+          # The MCP server over stdio (the image's entrypoint)
+          docker pull ghcr.io/${IMAGE_REPO}:${TAG#v}
+          docker run --rm -i ghcr.io/${IMAGE_REPO}:${TAG#v}
+          # The command line tool
+          docker run --rm --entrypoint dcert ghcr.io/${IMAGE_REPO}:${TAG#v} https://www.google.com
           \`\`\`
 
           ### Verifying downloads
