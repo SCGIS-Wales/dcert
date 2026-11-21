@@ -101,6 +101,9 @@ summary is written.
 - The dcert-mcp README lists every environment variable the proxy forwards to the
   server, grouped as in `config.yaml`, and its Development section gives the
   commands CI runs (`pip install -e` never worked: the package has no build backend).
+- README Development lists the full local gate and how the two binaries are built;
+  Acknowledgements name the current direct dependencies (ureq replaced reqwest);
+  CLAUDE.md names both PyPI projects and the `python/dcert-mcp` gate paths.
 - `python/dcert-cli/` and `scripts/build_wheels.py --project`: the zero dependency
   `dcert` CLI wheel of the PyPI split. The executable is installed from
   `.data/scripts`, so no Python runs when you type `dcert`; the wheel has no

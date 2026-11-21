@@ -1945,14 +1945,21 @@ See the [dcert-mcp README](python/dcert-mcp/README.md) for full documentation.
 
 ## Development
 
+`cargo build --release` builds only the `dcert` CLI. The MCP server needs the `mcp` feature and its own build: `cargo build --release --bin dcert-mcp --features mcp`. Release builds use `scripts/ci/build_release.sh`, which builds each binary separately so the CLI never links the server's dependencies.
+
+The local gate, the same checks CI runs:
+
 ```bash
-cargo fmt --all
+cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 cargo clippy --all-targets --features mcp -- -D warnings
 cargo test
 cargo test --features mcp
-cargo build --release
+python scripts/check_cli_deps.py          # the CLI dependency budget
+python -m pytest scripts -q               # tests of the build and CI scripts
 ```
+
+The Python server package has its own checks; see [Development in the dcert-mcp README](python/dcert-mcp/README.md#development).
 
 ## License
 
@@ -1961,17 +1968,24 @@ MIT. See [LICENSE](LICENSE).
 ## Acknowledgements
 
 - X.509 parsing by [x509-parser]
+- TLS connections and OCSP by [openssl]
+- HTTP client (Vault, AIA, CRL and OCSP fetches) by [ureq]
 - CLI framework by [clap]
 - Terminal colors by [colored]
-- TLS connections and OCSP by [openssl]
-- YAML serialization by [serde_norway]
+- JSON and YAML serialization by [serde_json] and [serde_norway]
+- Excel export by [rust_xlsxwriter]
+- Platform trust stores by [rustls-native-certs]
 - Signal handling by [ctrlc]
 - MCP server by [rmcp]
 
 [x509-parser]: https://crates.io/crates/x509-parser
+[openssl]: https://crates.io/crates/openssl
+[ureq]: https://crates.io/crates/ureq
 [clap]: https://crates.io/crates/clap
 [colored]: https://crates.io/crates/colored
-[openssl]: https://crates.io/crates/openssl
+[serde_json]: https://crates.io/crates/serde_json
 [serde_norway]: https://crates.io/crates/serde_norway
+[rust_xlsxwriter]: https://crates.io/crates/rust_xlsxwriter
+[rustls-native-certs]: https://crates.io/crates/rustls-native-certs
 [ctrlc]: https://crates.io/crates/ctrlc
 [rmcp]: https://crates.io/crates/rmcp
