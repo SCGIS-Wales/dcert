@@ -7,14 +7,19 @@ this script first: when every path the push changed matches
 ``scripts/release_paths.yaml``, or the head commit title carries the skip
 marker, it prints ``release=false`` and no tag is created.
 
+``auto-tag`` passes the newest release tag as ``--before``, so the paths are
+everything merged since the last release. Comparing with the previous push
+instead would lose a change whose run was cancelled while it waited in the
+main queue (a newer push cancels a pending run).
+
 Usage::
 
     python scripts/ci/release_paths.py --before <sha> --after <sha> --title "<commit title>"
 
 The answer is written to ``$GITHUB_OUTPUT`` when that is set, and always to
-stdout. Anything uncertain (a new branch, a force push, a failed diff, no
-changed paths) means a release, so the filter can only ever skip a release
-for a change it has positively classified.
+stdout. Anything uncertain (no tag, a failed diff) means a release, so the
+filter can only ever skip a release for a change it has positively
+classified.
 """
 
 from __future__ import annotations
@@ -67,8 +72,10 @@ def decide(paths: Sequence[str] | None, title: str, config: dict[str, Any]) -> t
     marker = str(config.get("skip_marker") or "")
     if marker and marker in title:
         return False, f"the commit title contains {marker}"
-    if not paths:
+    if paths is None:
         return True, "the changed paths are unknown, so release"
+    if not paths:
+        return False, "nothing changed since the last release"
     needing = releasable(paths, list(config.get("no_release") or []))
     if needing:
         shown = ", ".join(needing[:5]) + (" ..." if len(needing) > 5 else "")
@@ -92,7 +99,7 @@ def changed_paths(before: str, after: str) -> list[str] | None:
 
 
 @click.command()
-@click.option("--before", default="", help="The commit before the push (github.event.before).")
+@click.option("--before", default="", help="The newest release tag (or any earlier commit).")
 @click.option("--after", default="HEAD", show_default=True, help="The pushed commit.")
 @click.option("--title", default="", help="The head commit title.")
 @click.option("--config", "config_path", type=click.Path(path_type=Path), default=CONFIG)

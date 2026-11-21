@@ -174,6 +174,12 @@ environments; a release where any channel fails; any CI failure not explained by
   push (c0ec73c..a6eb602) gives `release=false`; the 4.0.7 push gives `release=true`. The D6
   Chocolatey gate is not done: Dejan excluded Chocolatey work, and versions waiting for
   moderation are not visible in the public feed, so the gate stays an owner check.
+  Follow-up the same day: main runs share one concurrency group, and a newer push cancels a
+  pending run, so comparing with `github.event.before` could drop a code change whose run was
+  cancelled. auto-tag now passes the newest `v*` tag as `--before`; an empty diff since the tag
+  means no release.
+  Also: when main moves during a release run, the bump push is rejected; auto-tag now ends with
+  `created=false` and a notice instead of failing, and the newer run releases both changes.
 - [ ] **D.2 ci: post publish verification job** (F2). Poll PyPI for up to 15 minutes; install both with pip
   and uv on Linux, macOS and Windows; `--version` and a tools/list handshake.
   Session notes:

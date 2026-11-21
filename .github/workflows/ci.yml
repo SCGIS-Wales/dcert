@@ -586,15 +586,18 @@ jobs:
         with:
           python-version: "3.12"
 
+      # Compared with the newest release tag, not the previous push: runs on
+      # main queue, and a newer push cancels a pending one, so a code change
+      # whose run was cancelled still releases with the next push.
       - name: Decide whether this push releases
         id: release
         env:
-          BEFORE: ${{ github.event.before }}
           AFTER: ${{ github.sha }}
           TITLE: ${{ github.event.head_commit.message }}
         run: |
           pip install --quiet pyyaml click
-          python scripts/ci/release_paths.py --before "$BEFORE" --after "$AFTER" --title "$TITLE"
+          SINCE=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)
+          python scripts/ci/release_paths.py --before "$SINCE" --after "$AFTER" --title "$TITLE"
 
       - name: Determine next version
         id: version
@@ -666,7 +669,14 @@ jobs:
           git config user.email "5954680+api-py@users.noreply.github.com"
           git add Cargo.toml Cargo.lock python/dcert-cli/pyproject.toml python/dcert-mcp/pyproject.toml python/dcert-mcp/src/dcert_mcp/__init__.py
           git commit -m "chore: bump version to ${VERSION} [skip ci]"
-          git push origin main
+          # Runs on main queue, so main can move while this one runs. Then
+          # this run hands over instead of failing: the run of the newer
+          # commit compares with the same release tag and releases both.
+          if ! git push origin HEAD:main; then
+            echo "::notice::main moved on during this run; the run of the newer commit releases this change"
+            echo "created=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           # Create and push tag on the version-bump commit
           git tag "$TAG"

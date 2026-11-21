@@ -7,6 +7,10 @@
 # reaches GitHub at once; the next code release carries it to the package
 # pages.
 #
+# The paths are those changed since the newest release tag, so a skipped
+# change is not lost: the next push that needs a release ships it too. The
+# marker therefore defers a release, it does not cancel the change.
+#
 # Patterns are matched against repository relative paths with "/" separators:
 # "*" matches within one path segment, "**/" matches any number of leading
 # directories (including none) and a trailing "/**" matches everything below
