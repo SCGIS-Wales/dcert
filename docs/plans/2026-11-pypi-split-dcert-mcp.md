@@ -114,3 +114,13 @@ the user types `dcert`. A user of the MCP server must not need the proxy.
 
 Stop and ask before yanking or deleting a release. The cut-over and the first
 publish of `dcert-mcp` were approved by the owner ("go autonomous").
+
+## Outcome (2026-11-21)
+
+Release 4.0.5 is the first with both projects on PyPI: `dcert` (four wheels,
+no Python dependencies) and `dcert-mcp` (four wheels, `dcert==4.0.5`, extras
+`proxy` and `otel`). `dcert-mcp` 4.0.3 and 4.0.4 were published while the
+`dcert` upload was still refused (see the owner actions), so they require a
+`dcert` version that does not exist on PyPI and cannot be installed. Yanking
+them is the maintainer's decision.
+
