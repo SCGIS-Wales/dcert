@@ -132,6 +132,8 @@ pub struct PlatformHint {
 #[serde(rename_all = "snake_case")]
 pub enum RootClass {
     PubliclyTrusted,
+    PubliclyTrustedEmail,
+    IndustryPki,
     PrivatePki,
     SelfSigned,
     Incomplete,
@@ -142,6 +144,8 @@ impl From<&RootTrustClass> for RootClass {
     fn from(c: &RootTrustClass) -> Self {
         match c {
             RootTrustClass::PubliclyTrusted => RootClass::PubliclyTrusted,
+            RootTrustClass::PubliclyTrustedEmail => RootClass::PubliclyTrustedEmail,
+            RootTrustClass::IndustryPki => RootClass::IndustryPki,
             RootTrustClass::PrivatePki => RootClass::PrivatePki,
             RootTrustClass::SelfSigned => RootClass::SelfSigned,
             RootTrustClass::Incomplete => RootClass::Incomplete,
@@ -932,6 +936,8 @@ fn evaluate(kind: &SignalKind, ev: &Evidence, platforms: &[PlatformHint]) -> (bo
 fn serde_variant_name(c: &RootClass) -> &'static str {
     match c {
         RootClass::PubliclyTrusted => "publicly_trusted",
+        RootClass::PubliclyTrustedEmail => "publicly_trusted_email",
+        RootClass::IndustryPki => "industry_pki",
         RootClass::PrivatePki => "private_pki",
         RootClass::SelfSigned => "self_signed",
         RootClass::Incomplete => "incomplete",

@@ -88,22 +88,35 @@ Decided 2026-11-21 (Dejan: "Proceed"): T1 `publicly_trusted_email`, T2 `industry
 
 ## Phase C: classification
 
-- [ ] **C.1 Trust programs registry.** `src/trust/programs.rs`: each program has an id
+- [x] **C.1 Trust programs registry.** `src/trust/programs.rs`: each program has an id
   (`mozilla_tls`, `mozilla_email`, `x9_financial`), an operator, a purpose (server auth, email,
   industry mTLS), a browser trusted flag and its anchor set. `classify` tries the programs in
   order and records the first whose store verifies the chain; an embedded intermediate may
   complete the chain, so X9 servers that omit intermediates stop being `incomplete`.
-  Session notes:
-- [ ] **C.2 Output.** `root_trust` gains `trust_program`, `operator`, `purpose` and
+  Session notes: 2026-11-21. `src/trust_programs.rs` (`PROGRAMS`: `mozilla_email`, then
+  `x9_financial`); `PublicRoots` builds one `X509Store` per program (expiry ignored, as for the
+  Mozilla set) and keeps program intermediates as untrusted helpers. `classify` tries the
+  Mozilla website store, then each program, then the private and self-signed fallbacks. The
+  X9 RSA 4096 ICA alone now classifies as `industry_pki` anchored on the RSA 4096 Root.
+- [x] **C.2 Output.** `root_trust` gains `trust_program`, `operator`, `purpose` and
   `preproduction`; `classification` gains the values decided in T1 and T2; `publicly_trusted`
   stays true only for `mozilla_tls`. Pretty output, for example "X9 Financial PKI (DigiCert):
   industry PKI for mTLS, not trusted by browsers" and "Mozilla email trusted root (Sectigo
   Public Email Protection Root R46): trusted for S/MIME, not for websites".
-  Session notes:
-- [ ] **C.3 Purpose against EKU.** Report the leaf's EKUs next to the anchor's purpose and flag
+  Session notes: 2026-11-21. New `classification` values `publicly_trusted_email` and
+  `industry_pki` (also in the diagnostics `RootClass` and `kb/diagnostics.schema.json`); new
+  fields `trust_program` (`mozilla_tls` for website chains), `operator`, `purpose`,
+  `preproduction` (X9 only) and `purpose_note`; pretty output prints the program, operator and
+  test-root flag.
+- [x] **C.3 Purpose against EKU.** Report the leaf's EKUs next to the anchor's purpose and flag
   mismatches, for example a clientAuth only leaf under a website root, or a serverAuth leaf
   under an email only root.
-  Session notes:
+  Session notes: 2026-11-21. `purpose_note` from the leaf's EKU (x509-parser): clientAuth
+  without serverAuth under a website root (cites 15 March 2027 and 10 February 2027),
+  serverAuth under an email-only root, clientAuth under an email root. Tests: X9 intermediate,
+  X9 UAT root (preproduction), Sectigo Email Protection R46, a website root, impostor roots
+  copying the X9 RSA 4096 Root and Sectigo R46 names (private), and the three notes. 717 and
+  963 tests pass.
 
 ## Phase K: compliance and diagnostics
 

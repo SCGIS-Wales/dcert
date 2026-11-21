@@ -135,6 +135,8 @@
       "description": "Root trust classes a signal can test for; mirrors [`RootTrustClass`].",
       "enum": [
         "publicly_trusted",
+        "publicly_trusted_email",
+        "industry_pki",
         "private_pki",
         "self_signed",
         "incomplete",

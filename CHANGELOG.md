@@ -10,6 +10,16 @@ nothing (documentation, plans) do not cut a release and wait under
 
 ## Unreleased
 
+### Changed
+
+- Root trust classification knows trust programs beyond Mozilla's website roots. A chain
+  anchored on a root Mozilla trusts for email only (for example Sectigo Public Email
+  Protection Root R46) is `publicly_trusted_email`, and one anchored on the X9 Financial
+  PKI (DigiCert) is `industry_pki`; both were reported as `private_pki` or `incomplete`.
+  `root_trust` gains `trust_program`, `operator`, `purpose`, `preproduction` and
+  `purpose_note`; `publicly_trusted` stays true only for website roots, and TLS
+  verification is unchanged.
+
 ### Added
 
 - Embedded trust anchors for root trust classification beyond Mozilla's website set
