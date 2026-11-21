@@ -398,6 +398,10 @@ summary is written.
 - The daily audit checks that the newest release (older than 90 minutes) is installable
   from both PyPI projects and that a fresh uv environment resolves `dcert-mcp`; a
   failure opens the "Security audit failing" issue like the other audit jobs.
+- PyPI recovery: running `ci.yml` by hand (`workflow_dispatch`, inputs `tag` and
+  `project`) downloads the wheels of an existing GitHub release, verifies them against
+  its `SHA256SUMS` and publishes them with `skip-existing` through the same environments,
+  so the existing trusted publishers accept them. It runs in its own concurrency group.
 - The dcert-mcp tests run on Python 3.15 too, which the package classifiers already
   claimed.
 - Documentation-only pushes no longer cut a release: `auto-tag` runs
