@@ -391,6 +391,10 @@ summary is written.
   serves both projects, then installs `dcert-mcp==<version>` from PyPI with pip and
   with uv on Linux, macOS and Windows and runs `dcert --version` and an MCP handshake
   that must report the version and the README's tools (`scripts/ci/release_check.py`).
+- New final job `release-consistency` (runs even after a failure): one job summary table
+  of the GitHub release assets (4 archives, 8 wheels, 2 SBOMs, `SHA256SUMS`), both PyPI
+  projects, the GHCR tag, the Homebrew formula and the Chocolatey job, failing when a
+  required channel is missing.
 - The dcert-mcp tests run on Python 3.15 too, which the package classifiers already
   claimed.
 - Documentation-only pushes no longer cut a release: `auto-tag` runs

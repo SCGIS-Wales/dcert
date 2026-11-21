@@ -2126,3 +2126,33 @@ jobs:
           uv pip install --quiet --no-cache --python "$RUNNER_TEMP/uv-env" --index-url https://pypi.org/simple "dcert-mcp==$VERSION"
           "$BIN/dcert" --version
           python scripts/ci/release_check.py handshake --binary "$BIN/dcert-mcp" --version "$VERSION"
+
+  # The last job of a release: one table of every channel in the job summary,
+  # failing when a required channel (GitHub release, both PyPI projects, GHCR,
+  # Homebrew) is missing. It runs even when an earlier job failed, so a
+  # partial release is reported as such instead of as a red job somewhere.
+  release-consistency:
+    name: Release consistency
+    if: ${{ always() && needs.auto-tag.outputs.created == 'true' }}
+    needs: [ auto-tag, release, docker, create-homebrew-formula, publish-chocolatey, publish-pypi-dcert, publish-pypi-mcp, verify-pypi ]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Check every channel
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.auto-tag.outputs.version }}
+          CHOCOLATEY: ${{ needs.publish-chocolatey.result }}
+        run: |
+          pip install --quiet click
+          python scripts/ci/release_check.py consistency --version "$VERSION" --chocolatey "$CHOCOLATEY"
