@@ -492,6 +492,9 @@ jobs:
 
   # Links in the Markdown documents, including anchors inside the README.
   # Hosts that refuse automated requests are excluded in .lycheeignore.
+  # Links into this repository's main branch are checked against the
+  # checkout, so a pull request that adds a file and links to it passes,
+  # and a link to a file that does not exist fails.
   links:
     name: Documentation links
     runs-on: ubuntu-latest
@@ -511,6 +514,7 @@ jobs:
           args: >-
             --no-progress --include-fragments --max-retries 3 --retry-wait-time 5
             --accept 200..=299,403,429
+            --remap 'https://github\.com/SCGIS-Wales/dcert/(?:tree|blob)/main/(.*) file://${{ github.workspace }}/$1'
             './*.md' 'docs/**/*.md' 'python/**/*.md' 'kb/**/*.md'
 
   # src/ciphers_table.rs is generated from the vendored IANA registry. The
@@ -738,6 +742,21 @@ jobs:
           open("Cargo.lock", "w").write(text)
           PYEOF
 
+          # Move the Unreleased CHANGELOG entries under a heading for this
+          # version; Unreleased stays, empty, for the next pull requests.
+          python3 - "$VERSION" <<'PYEOF'
+          import datetime, re, sys
+
+          version = sys.argv[1]
+          text = open("CHANGELOG.md").read()
+          match = re.search(r"^## Unreleased\n(.*?)(?=^## )", text, re.M | re.S)
+          if match and match.group(1).strip():
+              today = datetime.date.today().isoformat()
+              heading = f"## Unreleased\n\n## {version} ({today})\n"
+              text = text[: match.start()] + heading + match.group(1) + text[match.end():]
+              open("CHANGELOG.md", "w").write(text)
+          PYEOF
+
           # Update Python package version
           sed -i "s/^version = \".*\"/version = \"$VERSION\"/" python/dcert-cli/pyproject.toml
           sed -i "s/^version = \".*\"/version = \"$VERSION\"/" python/dcert-mcp/pyproject.toml
@@ -747,7 +766,7 @@ jobs:
           # Commit the version bump
           git config user.name "api-py"
           git config user.email "5954680+api-py@users.noreply.github.com"
-          git add Cargo.toml Cargo.lock python/dcert-cli/pyproject.toml python/dcert-mcp/pyproject.toml python/dcert-mcp/src/dcert_mcp/__init__.py
+          git add Cargo.toml Cargo.lock CHANGELOG.md python/dcert-cli/pyproject.toml python/dcert-mcp/pyproject.toml python/dcert-mcp/src/dcert_mcp/__init__.py
           git commit -m "chore: bump version to ${VERSION} [skip ci]"
           # Runs on main queue, so main can move while this one runs. Then
           # this run hands over instead of failing: the run of the newer

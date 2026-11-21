@@ -186,6 +186,9 @@ environments; a release where any channel fails; any CI failure not explained by
   The first CI run found 10 real broken anchors: the README table of contents linked
   `#dcert-check--certificate-analysis-default`, but GitHub maps each space and hyphen of
   "dcert [check] -- ..." to its own `-` (`#dcert-check----...`); fixed in this PR.
+  Later the same day: links of the form `github.com/SCGIS-Wales/dcert/(tree|blob)/main/<path>`
+  are remapped to the checkout, because E.6 links to `python/dcert-mcp/requirements/`, which is
+  on main only after it merges (lychee reported 404 for the stack top).
 
 ## Phase D: release integrity
 
@@ -243,8 +246,9 @@ environments; a release where any channel fails; any CI failure not explained by
   run locally against v4.0.9 archives and the 4.0.8 PyPI wheels: no vulnerability, one allowed
   informational warning (chrono RUSTSEC-2026-0543, dcert-mcp only), and the dcert METADATA has
   no `Requires-Dist`.
-- [ ] **D.7 ci: environment rename.** Not chosen (D2 option a).
-  Session notes: superseded by D2 (a).
+- [x] **D.7 ci: environment rename.** Not chosen (D2 option a).
+  Session notes: superseded by decision D2 (a), keep `pypi` and `pypi-dcert`; documented in
+  SECURITY.md (B.6).
 
 ## Phase E: Python package fixes
 
@@ -318,9 +322,17 @@ environments; a release where any channel fails; any CI failure not explained by
 
 ## Phase G: changelog and plan reconciliation
 
-- [ ] **G.1 docs: CHANGELOG structure** (F18). Keep a Changelog layout; each PR adds one line under
+- [x] **G.1 docs: CHANGELOG structure** (F18). Keep a Changelog layout; each PR adds one line under
   Unreleased; the release job moves Unreleased under the new version heading.
-  Session notes:
+  Session notes: 2026-11-21. Each of the 457 bullet lines was placed by the commit that first
+  introduced its text (`git log -S`, then the first `v*` tag containing it); `git blame` would
+  have filed edited entries under later releases. Sections: Unreleased, 4.0.1 to 4.0.9, 3.0.81
+  to 3.0.95, 3.0.52 to 3.0.80; one heading per type (the two Security headings merged). Checked
+  that no bullet line was lost. PyPI gaps stated from the JSON API: dcert 3.0.85, 3.0.90,
+  3.0.94, 3.0.95 and 4.0.0 to 4.0.4 are absent; 3.0.85 has no GitHub release. dcert-mcp 4.0.3
+  and 4.0.4 are described as not installable, not as yanked, because A.0 is still open.
+  auto-tag moves Unreleased under `## <version> (<date>)` in the bump commit; dry run on a copy
+  gives the heading once and is a no-op with an empty Unreleased.
 - [x] **G.2 docs: reconcile the October plan** (F19). Carry forward 5.4, 6.1 to 6.5, 7.1, 7.2, 8.1;
   supersede 7.3 (E.2), 7.4 (B.2), 7.5 (C.1, E.2), 8.2 (B, F), 8.3 (A.1, G.1).
   Session notes: 2026-11-21. Each of the 14 items carries a dated note. One deviation from D5:
