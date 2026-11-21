@@ -19,6 +19,12 @@
 
 - [Quick Start](#quick-start)
 - [Installation](#installation)
+  - [Homebrew](#homebrew-macos-and-linux-x86_64)
+  - [pip and uv](#pip-and-uv)
+  - [Prebuilt binaries](#prebuilt-binaries)
+  - [Windows](#windows)
+  - [Docker](#docker)
+  - [Build from source](#build-from-source)
 - [Commands](#commands)
   - [dcert [check] -- Certificate Analysis](#dcert-check--certificate-analysis-default)
   - [dcert csr -- CSR Creation & Validation](#dcert-csr--csr-creation--validation)
@@ -36,15 +42,16 @@
   - [HTTP Transport Mode](#http-transport-mode)
 - [Features by Topic](#features-by-topic)
 - [Use Cases](#use-cases)
-- [Python Package](#python-package)
+- [Python Proxy](#python-proxy)
 - [Development](#development)
 - [License](#license)
 
 ## Quick Start
 
 ```bash
-# Install via Homebrew
+# Install via Homebrew, or run without installing through uv
 brew install scgis-wales/tap/dcert
+uvx dcert example.com
 
 # Analyze a live HTTPS endpoint (bare hostname or full URL)
 dcert api.example.com
@@ -83,18 +90,77 @@ dcert diagnose https://api.example.com
 
 ## Installation
 
-### Homebrew (recommended — macOS and Linux)
+dcert ships as two programs. Install `dcert` for the command line tool. Install `dcert-mcp` to give an AI assistant the same tools; it brings `dcert` with it.
 
-Homebrew is the recommended installation method. The formula installs the prebuilt `dcert` and `dcert-mcp` binaries on macOS (Intel and Apple Silicon) and Linux x86_64; on Linux they need glibc 2.34 or later (RHEL 9, Ubuntu 22.04, Debian 12).
+| Package | What you get | Commands | Python dependencies | Typical user |
+|---|---|---|---|---|
+| `dcert` | Command line tool | `dcert` | None | Engineers and scripts |
+| `dcert-mcp` | MCP server plus `dcert` | `dcert-mcp`, `dcert` | `dcert` only | AI assistant users |
+| `dcert-mcp[proxy]` | Adds the FastMCP proxy and typed client | `dcert-mcp-proxy` | FastMCP and its dependencies | Python integrators |
+| `dcert-mcp[proxy,otel]` | Adds OpenTelemetry export | | FastMCP and OpenTelemetry | Python integrators |
+
+`dcert` and `dcert-mcp` always carry the same version, and `dcert-mcp` requires exactly that `dcert`.
+
+### Homebrew (macOS and Linux x86_64)
+
+The formula installs the prebuilt `dcert` and `dcert-mcp` binaries on macOS (Intel and Apple Silicon) and Linux x86_64; on Linux they need glibc 2.34 or later (RHEL 9, Ubuntu 22.04, Debian 12).
 
 ```bash
 brew install scgis-wales/tap/dcert
+dcert --version
 ```
 
 > **Note:** If you don't have Homebrew on Linux, install it first:
 > ```bash
 > /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 > ```
+
+### pip and uv
+
+Each platform wheel carries a prebuilt executable, so installing from PyPI or a private mirror (Artifactory, Nexus) needs no access to GitHub, and neither package downloads anything at run time.
+
+| Platform | Wheel tag |
+| --- | --- |
+| Linux x86_64, glibc 2.34+ (RHEL 9, Ubuntu 22.04, Debian 12 and later) | `manylinux_2_34_x86_64` |
+| macOS Intel 10.15+ | `macosx_10_15_x86_64` |
+| macOS Apple Silicon 11+ | `macosx_11_0_arm64` |
+| Windows x86_64 | `win_amd64` |
+
+With [uv](https://docs.astral.sh/uv/):
+
+```bash
+# Run dcert once without installing it
+uvx dcert example.com
+
+# Install dcert as a tool on PATH, in its own environment
+uv tool install dcert
+
+# Install the MCP server and also link dcert on PATH
+uv tool install dcert-mcp --with-executables-from dcert
+
+# Upgrade later (dcert-mcp pins its dcert, so both move together)
+uv tool upgrade dcert-mcp
+
+# Install into the active environment, or add to a uv project
+uv pip install dcert-mcp
+uv pip install "dcert-mcp[proxy]"
+uv add dcert-mcp
+```
+
+With pip or [pipx](https://pipx.pypa.io/):
+
+```bash
+pip install dcert                  # the command line tool
+pip install dcert-mcp              # the MCP server (and dcert)
+pip install "dcert-mcp[proxy]"     # plus the FastMCP proxy and typed client
+
+pipx install dcert
+pipx install --include-deps dcert-mcp
+```
+
+Without `--with-executables-from dcert` (uv) or `--include-deps` (pipx), only `dcert-mcp` and `dcert-mcp-proxy` are linked on PATH; the server still finds the `dcert` installed beside it. A tool install (`uv tool`, `pipx`) keeps the dependencies of `dcert-mcp[proxy]` out of your system Python, and uninstalling it removes them again; `pip uninstall` does not remove dependencies.
+
+**Other platforms** (Linux aarch64, musl, Windows arm64) have no 4.x wheel; use Docker or build from source. Ask for `dcert>=4` there: `pip install "dcert>=4"` then fails with "No matching distribution found" and uv reports the platforms that have wheels, whereas an unpinned `pip install dcert` falls back to the old 3.0.77 package, which was platform independent. A uv project that must lock for several platforms can list the supported ones in `[tool.uv] environments`, or name required ones in `[tool.uv] required-environments` so `uv lock` fails early.
 
 ### Prebuilt binaries
 
@@ -114,19 +180,9 @@ Install with [Chocolatey](https://chocolatey.org/):
 choco install dcert
 ```
 
-Or `pip install dcert` (the `win_amd64` wheel carries `dcert.exe`; `pip install dcert-mcp` adds `dcert-mcp.exe`), or download the `dcert-x86_64-pc-windows-msvc.zip` archive from the [Releases](https://github.com/SCGIS-Wales/dcert/releases) page and add the extracted `.exe` files to your `PATH`.
+Or install the `win_amd64` wheels with pip or uv (see [pip and uv](#pip-and-uv)), or download the `dcert-x86_64-pc-windows-msvc.zip` archive from the [Releases](https://github.com/SCGIS-Wales/dcert/releases) page and add the extracted `.exe` files to your `PATH`.
 
 > Note: the Windows build links a static OpenSSL 3.5 (built from the official source in CI) that has no system trust store. If certificate verification fails because no CA roots are found, set `SSL_CERT_FILE` to a CA bundle (e.g. one exported from your organization or a `cacert.pem`).
-
-### Build from source
-
-```bash
-git clone https://github.com/SCGIS-Wales/dcert.git
-cd dcert
-cargo build --release                                  # dcert CLI
-cargo build --release --bin dcert-mcp --features mcp   # MCP server
-# Binaries: target/release/dcert and target/release/dcert-mcp
-```
 
 ### Docker
 
@@ -141,6 +197,24 @@ docker run --rm -v "$PWD:/data" --entrypoint dcert ghcr.io/scgis-wales/dcert:mai
 
 # MCP server over stdio
 docker run --rm -i ghcr.io/scgis-wales/dcert:main
+```
+
+### Build from source
+
+Install only the CLI straight from GitHub (needs OpenSSL 3 headers and `pkg-config`):
+
+```bash
+cargo install --git https://github.com/SCGIS-Wales/dcert --locked --bin dcert dcert
+```
+
+Or build both programs from a clone:
+
+```bash
+git clone https://github.com/SCGIS-Wales/dcert.git
+cd dcert
+cargo build --release                                  # dcert CLI
+cargo build --release --bin dcert-mcp --features mcp   # MCP server
+# Binaries: target/release/dcert and target/release/dcert-mcp
 ```
 
 ---
@@ -1779,27 +1853,9 @@ done
 
 ---
 
-## Python Packages
+## Python Proxy
 
-Two separate PyPI projects. Each platform wheel carries a prebuilt executable, so installing from PyPI or a private mirror (Artifactory, Nexus) needs no access to GitHub, and neither package downloads anything at run time.
-
-| Command | Result | Third party Python packages |
-| --- | --- | --- |
-| `pip install dcert` | the `dcert` command line tool | 0 |
-| `pip install dcert-mcp` | the `dcert-mcp` MCP server, and `dcert` through the dependency | 0 |
-| `pip install "dcert-mcp[proxy]"` | plus the FastMCP proxy, typed client and `dcert-mcp-proxy` | the FastMCP stack |
-| `pip install "dcert-mcp[proxy,otel]"` | plus OpenTelemetry export | the FastMCP stack and OpenTelemetry |
-
-`dcert` and `dcert-mcp` always carry the same version, and `dcert-mcp` requires exactly that `dcert`.
-
-| Platform | Wheel tag |
-| --- | --- |
-| Linux x86_64, glibc 2.34+ (RHEL 9, Ubuntu 22.04, Debian 12 and later) | `manylinux_2_34_x86_64` |
-| macOS Intel 10.15+ | `macosx_10_15_x86_64` |
-| macOS Apple Silicon 11+ | `macosx_11_0_arm64` |
-| Windows x86_64 | `win_amd64` |
-
-The same wheels are attached to every GitHub release. On a host no wheel fits, pip reports "no matching distribution" rather than installing a package without the binary.
+Install with `pip install "dcert-mcp[proxy]"` or `uv pip install "dcert-mcp[proxy]"` (see [pip and uv](#pip-and-uv)). The proxy and typed client wrap the Rust `dcert-mcp` server in [FastMCP](https://gofastmcp.com).
 
 ### Upgrading from 3.x
 

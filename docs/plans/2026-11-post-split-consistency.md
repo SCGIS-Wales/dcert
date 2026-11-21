@@ -62,6 +62,7 @@ Severity: High (users fail or releases are broken), Medium (misleading or a miss
 | N2 | Low, owner | GitHub About | Description and website mention only one project | Update description; link both | Owner |
 | N3 | Medium | Chocolatey | Community feed lists 3.0.78 | Verify moderation queue; cadence (D6) | D.1, owner |
 | N4 | Low | Release notes | Python section lists only local wheel installs | PyPI and uv commands first | A.1 |
+| N5 | High, owner | PyPI | dcert 3.0.13 to 3.0.77 (64 releases) carry a `py3-none-any` wheel or an sdist, so on Linux aarch64, musl and Windows arm64 an unpinned `pip install dcert` installs 3.0.77, the old combined package, instead of failing | Yank 3.0.13 to 3.0.77; README tells those platforms to ask for `dcert>=4` | A.0, B.1 |
 
 ## Decisions
 
@@ -104,7 +105,9 @@ environments; a release where any channel fails; any CI failure not explained by
 
 - [ ] **A.0 Owner: yank dcert-mcp 4.0.3 and 4.0.4.** https://pypi.org/manage/project/dcert-mcp/releases/,
   Options, Yank, reason "Depends on dcert==<v>, which was never published; use 4.0.5 or later".
-  Acceptance: the JSON API shows `yanked: true`.
+  Acceptance: the JSON API shows `yanked: true`. Also yank dcert 3.0.13 to 3.0.77 (N5), reason
+  "Superseded by dcert 4.x; on platforms without a 4.x wheel use Docker or build from source",
+  so an unpinned install on an unsupported platform fails instead of installing 3.0.77.
   Session notes:
 - [x] **A.1 fix: correct documented commands that fail or mislead** (F6 to F10, F14 part, N1, N4).
   README.md, python/dcert-cli/README.md, release notes template in ci.yml: `--client-key`; Homebrew
@@ -120,9 +123,17 @@ environments; a release where any channel fails; any CI failure not explained by
 
 ## Phase B: README restructure and uv documentation
 
-- [ ] **B.1 docs: Installation section with pip, uv and pipx** (F12, F13). Order: Homebrew, pip and uv,
+- [x] **B.1 docs: Installation section with pip, uv and pipx** (F12, F13). Order: Homebrew, pip and uv,
   prebuilt binaries, Windows, Docker, build from source; Quick Start offers `uvx dcert example.com`.
-  Session notes:
+  Session notes: 2026-11-21, verified on macOS arm64 with uv 0.10.9, pipx 1.18.19, Python 3.12:
+  `uvx dcert@4.0.7`, `uv tool install dcert`, `uv tool install dcert-mcp --with-executables-from
+  dcert` (three commands), `uv pip install dcert-mcp` (two packages), `[proxy]` (proxy help runs),
+  `uv add dcert-mcp` then `uv run dcert-mcp --version`, `pipx install dcert`, `pipx install
+  --include-deps dcert-mcp` (three commands). Linux aarch64 checked with `uv pip install
+  --python-platform aarch64-unknown-linux-gnu` (lists the four wheel platforms) and `pip download
+  --platform manylinux_2_34_aarch64`: `dcert==4.0.7` has no match, but unpinned `dcert` resolves
+  to 3.0.77 (finding N5). The Linux x86_64 wheel install is exercised by `wheel-install-test`.
+  No Docker on this host, so the container runs were not repeated.
 - [ ] **B.2 docs: uvx variants of the MCP client configuration** (F13).
   Session notes:
 - [ ] **B.3 docs: badges and the PyPI page of dcert** (F11, F14). No Python version classifiers on dcert
