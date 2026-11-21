@@ -394,6 +394,11 @@ summary is written.
 - `docs-commands` also runs `check_docs_commands.py env-table`, which fails when the
   forwarded environment table in the dcert-mcp README and `passthrough_env` in
   `config.yaml` differ in either direction.
+- New job `links` checks the links and README anchors in the Markdown documents with
+  lychee (pinned by SHA); `build-platform-wheels` runs `twine check --strict` on both
+  wheel sets before anything is published.
+- The README table of contents links to the command sections again (the anchors had
+  two hyphens where GitHub generates four).
 - Only the platform wheels, each bundling `dcert` and `dcert-mcp`, are
   published to PyPI and attached to GitHub releases. The universal wheel and
   the sdist carried no binary and downloaded it from GitHub on first use,

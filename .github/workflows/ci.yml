@@ -468,6 +468,29 @@ jobs:
       - name: Check the dcert-mcp environment table against config.yaml
         run: python scripts/check_docs_commands.py env-table
 
+  # Links in the Markdown documents, including anchors inside the README.
+  # Hosts that refuse automated requests are excluded in .lycheeignore.
+  links:
+    name: Documentation links
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check links
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          fail: true
+          args: >-
+            --no-progress --include-fragments --max-retries 3 --retry-wait-time 5
+            --accept 200..=299,403,429
+            './*.md' 'docs/**/*.md' 'python/**/*.md' 'kb/**/*.md'
+
   # src/ciphers_table.rs is generated from the vendored IANA registry. The
   # table must regenerate byte for byte; a newer registry on iana.org is
   # reported (with a copy in the log) but does not block unrelated changes.
@@ -1098,6 +1121,14 @@ jobs:
               --output python/platform-dist/
           done
           ls -la python/platform-dist/
+
+      # The README of each project is its PyPI page; PyPI rejects an upload
+      # whose long description does not render, after the dcert upload may
+      # already have succeeded. Check both wheel sets before anything ships.
+      - name: Check the wheel metadata (twine check --strict)
+        run: |
+          pip install --quiet twine
+          twine check --strict python/platform-dist/*.whl
 
       - name: Attest wheel build provenance
         if: needs.auto-tag.outputs.created == 'true'

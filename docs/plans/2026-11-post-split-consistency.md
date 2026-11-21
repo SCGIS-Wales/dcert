@@ -176,9 +176,16 @@ environments; a release where any channel fails; any CI failure not explained by
   Session notes: 2026-11-21. Reads the names between the `env-table` markers added in B.4 and
   compares them with `subprocess.passthrough_env` (29 entries) in both directions, plus
   duplicates. Tests: fixture drift both ways, and the repository table is current.
-- [ ] **C.3 ci: link check and wheel metadata check** (F28). lychee pinned by SHA; `twine check --strict`
+- [x] **C.3 ci: link check and wheel metadata check** (F28). lychee pinned by SHA; `twine check --strict`
   on both wheel sets.
-  Session notes:
+  Session notes: 2026-11-21. lychee-action v2.9.0 (e7477775) with `--include-fragments` over the
+  root, docs, python and kb Markdown; placeholders, private hosts, login pages and not yet
+  published release assets in `.lycheeignore`. `twine check --strict` runs in
+  `build-platform-wheels` before upload; the published 4.0.7 wheels pass it and both new package
+  READMEs render with readme_renderer.
+  The first CI run found 10 real broken anchors: the README table of contents linked
+  `#dcert-check--certificate-analysis-default`, but GitHub maps each space and hyphen of
+  "dcert [check] -- ..." to its own `-` (`#dcert-check----...`); fixed in this PR.
 
 ## Phase D: release integrity
 

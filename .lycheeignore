@@ -1,0 +1,20 @@
+# URLs lychee must not fetch (scripts: the "links" job in ci.yml).
+# Documentation placeholders and private addresses
+^https?://([a-z0-9-]+\.)*example\.(com|org|net|invalid)
+^https?://([a-z0-9-]+\.)*example\.corp
+\.internal([:/]|$)
+\.corp\.com
+^https?://(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])
+^https?://proxy(:|/|$)
+^https?://vault(:|/|$)
+# Pages behind a login or that answer bots with errors
+^https://pypi\.org/manage/
+^https://github\.com/[^/]+/[^/]+/settings
+^https://(www\.)?linkedin\.com/
+# Release assets of the newest release exist only after it publishes
+/releases/download/
+/releases/latest/download/
+# Other placeholder hosts used in prose
+^https?://(your-api|target|site|host|internal\.server)(\.com)?([:/]|$)
+^https?://proxy\.corp
+^https://token\.actions\.githubusercontent\.com
