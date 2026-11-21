@@ -10,6 +10,13 @@ nothing (documentation, plans) do not cut a release and wait under
 
 ## Unreleased
 
+### CI
+
+- The Chocolatey push waits for the moderation queue: when earlier versions of dcert are
+  still waiting for moderation (Chocolatey answers 403 at about ten; 4.0.13 was refused
+  with ten pending), the release skips the push with a notice, and the first release
+  after the queue empties publishes the newest version.
+
 ## 4.0.13 (2026-11-21)
 
 ### Changed

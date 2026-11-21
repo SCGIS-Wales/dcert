@@ -1930,8 +1930,35 @@ jobs:
           name: dcert-chocolatey
           path: ./dist-choco
 
+      # Chocolatey's community repository refuses pushes (403) once a package
+      # has about ten versions waiting for moderation. Push only when no
+      # earlier version is waiting; the next release then carries every change.
+      - name: Checkout (for the queue check)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: src
+
+      - name: Earlier versions waiting for moderation
+        id: queue
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.auto-tag.outputs.version }}
+        run: |
+          pip install --quiet click
+          python src/scripts/ci/release_check.py chocolatey-queue --version "$VERSION"
+
+      - name: Skip while the moderation queue is not empty
+        if: steps.queue.outputs.pending != '0'
+        shell: pwsh
+        run: |
+          Write-Host "::notice::Chocolatey push skipped, $env:PENDING earlier version(s) are waiting for moderation."
+        env:
+          PENDING: ${{ steps.queue.outputs.pending }}
+
       - name: Push to chocolatey.org (idempotent, with retry)
-        if: env.CHOCO_API_KEY != ''
+        if: env.CHOCO_API_KEY != '' && steps.queue.outputs.pending == '0'
         shell: pwsh
         run: |
           # Native command stderr must not throw under 'Stop'; rely on exit code.

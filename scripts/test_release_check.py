@@ -106,3 +106,9 @@ def test_simple_index_problems_name_the_missing_wheels() -> None:
     ]
     full = [f"dcert-4.0.11-py3-none-{p}.whl" for p in rc.WHEEL_PLATFORMS]
     assert rc.simple_index_problems("dcert", "4.0.11", full) == []
+
+
+def test_pending_versions_are_the_submitted_ones() -> None:
+    statuses = {"4.0.10": "Approved", "4.0.11": "Submitted", "4.0.12": "Submitted", "4.0.9": None}
+    assert rc.pending_versions(statuses) == ["4.0.11", "4.0.12"]
+    assert rc.pending_versions({"4.0.10": "Approved"}) == []

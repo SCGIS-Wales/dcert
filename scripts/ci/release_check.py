@@ -448,5 +448,57 @@ def pypi_parity(repo: str, grace_minutes: int) -> None:
     click.echo(f"release v{tag} is installable from PyPI as dcert and dcert-mcp")
 
 
+def chocolatey_status(version: str) -> str | None:
+    """``PackageStatus`` of one dcert version on the Chocolatey community feed.
+
+    The feed lists approved versions only; a version waiting for moderation
+    is visible when queried by exact version (``Submitted``). ``None`` when
+    the version was never pushed.
+    """
+    url = f"https://community.chocolatey.org/api/v2/Packages(Id='dcert',Version='{version}')"
+    try:
+        text = get(url).decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise
+    match = re.search(r"<d:PackageStatus>([^<]*)", text)
+    return match[1] if match else None
+
+
+def pending_versions(statuses: Mapping[str, str | None]) -> list[str]:
+    """The versions still waiting for moderation, oldest first."""
+    return [v for v, s in statuses.items() if s == "Submitted"]
+
+
+@main.command("chocolatey-queue")
+@click.option("--version", required=True, help="The version about to be pushed.")
+@click.option("--recent", default=30, show_default=True, help="How many earlier releases to check.")
+@click.option("--repo", default=REPOSITORY, show_default=True)
+def chocolatey_queue(version: str, recent: int, repo: str) -> None:
+    """Whether earlier versions wait for Chocolatey moderation (pending=N to GITHUB_OUTPUT).
+
+    The community repository answers 403 once a package has about ten
+    versions in its moderation queue, so the release pushes only when the
+    queue is empty; the version published next carries every change.
+    """
+    releases = get_json(f"https://api.github.com/repos/{repo}/releases?per_page=100")
+    tags = [str(r["tag_name"]).removeprefix("v") for r in releases if not r.get("draft")]
+    earlier = sorted(
+        (v for v in tags if STABLE_TAG.match("v" + v) and v != version),
+        key=lambda v: tuple(int(p) for p in v.split(".")),
+    )[-recent:]
+    statuses = {v: chocolatey_status(v) for v in earlier}
+    pending = pending_versions(statuses)
+    click.echo(
+        f"{len(pending)} earlier version(s) waiting for Chocolatey moderation: "
+        + (", ".join(pending) or "-")
+    )
+    output = os.environ.get("GITHUB_OUTPUT")
+    if output:
+        with open(output, "a", encoding="utf-8") as handle:
+            handle.write(f"pending={len(pending)}\n")
+
+
 if __name__ == "__main__":
     main()
