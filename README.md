@@ -1386,6 +1386,44 @@ Or add via Claude Code CLI:
 claude mcp add dcert -- dcert-mcp
 ```
 
+#### Without installing (uvx)
+
+[uvx](https://docs.astral.sh/uv/guides/tools/) fetches `dcert-mcp` and its `dcert` from PyPI into a cached environment and runs it, so nothing has to be installed first. Use `"args": ["dcert-mcp@4.0.7"]` instead to pin a version.
+
+For Claude Code, Kiro, Kiro CLI and JetBrains (the `mcpServers` format):
+
+```json
+{
+  "mcpServers": {
+    "dcert": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["dcert-mcp"]
+    }
+  }
+}
+```
+
+For VS Code (`.vscode/mcp.json`):
+
+```json
+{
+  "servers": {
+    "dcert": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["dcert-mcp"]
+    }
+  }
+}
+```
+
+With the Claude Code CLI:
+
+```bash
+claude mcp add dcert -- uvx dcert-mcp
+```
+
 #### VS Code (GitHub Copilot)
 
 Create `.vscode/mcp.json` in your workspace:

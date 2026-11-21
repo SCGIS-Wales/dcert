@@ -134,8 +134,12 @@ environments; a release where any channel fails; any CI failure not explained by
   --platform manylinux_2_34_aarch64`: `dcert==4.0.7` has no match, but unpinned `dcert` resolves
   to 3.0.77 (finding N5). The Linux x86_64 wheel install is exercised by `wheel-install-test`.
   No Docker on this host, so the container runs were not repeated.
-- [ ] **B.2 docs: uvx variants of the MCP client configuration** (F13).
-  Session notes:
+- [x] **B.2 docs: uvx variants of the MCP client configuration** (F13).
+  Session notes: 2026-11-21. One "Without installing (uvx)" subsection after the Claude Code
+  block covers the `mcpServers` clients, VS Code and `claude mcp add`; the Docker snippet is kept.
+  Verified with an initialize and tools/list handshake through `uvx dcert-mcp@4.0.7` on macOS:
+  serverInfo 4.0.7, 30 tools. `claude mcp add` itself was not run, to leave the user's Claude Code
+  configuration untouched.
 - [ ] **B.3 docs: badges and the PyPI page of dcert** (F11, F14). No Python version classifiers on dcert
   (the wheel runs no Python). Acceptance: no badge renders "missing".
   Session notes:
