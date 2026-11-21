@@ -13,6 +13,7 @@ from dcert_mcp.middleware import ReadOnlyCachingMiddleware, ResilienceMiddleware
 from dcert_mcp.resilience import resilience_config_from_env
 from dcert_mcp.server import (
     PASSTHROUGH_ENV_VARS,
+    WEBSITE_URL,
     build_subprocess_env,
     create_server,
     create_transport,
@@ -208,3 +209,15 @@ def test_create_client_with_binary(fake_binary):
 def test_create_client_binary_not_found(no_binary):
     with pytest.raises(FileNotFoundError, match="dcert-mcp binary not found"):
         create_client()
+
+
+# ---------------------------------------------------------------------------
+# Advertised identity
+# ---------------------------------------------------------------------------
+
+
+def test_create_server_advertises_the_dcert_mcp_identity(fake_binary):
+    server = create_server(binary_path=str(fake_binary))
+    assert server.name == "dcert-mcp"
+    assert server.version == dcert_mcp.__version__
+    assert server.website_url == WEBSITE_URL

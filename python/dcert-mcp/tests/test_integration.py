@@ -228,3 +228,18 @@ async def test_session_lifecycle():
         for tool in (analyze_certificate, check_expiry, tls_connection_info):
             assert await tool(target=TEST_TARGET, session=active)
     assert active.connected() is False
+
+
+async def test_proxy_advertises_the_package_version_and_rust_instructions():
+    from fastmcp import Client
+
+    import dcert_mcp
+    from dcert_mcp.server import WEBSITE_URL, create_server
+
+    async with Client(create_server()) as client:
+        info = client.server_info
+        assert info is not None
+        assert info.name == "dcert-mcp"
+        assert info.version == dcert_mcp.__version__
+        assert info.website_url == WEBSITE_URL
+        assert "analyze_certificate" in (client.instructions or "")
